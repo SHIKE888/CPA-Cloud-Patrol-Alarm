@@ -1,0 +1,1618 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+mipi_webstream.py
+================================================================================
+把 RK3576 上 FPGA(MIPI x4) 采集到的画面, 通过 HTTP MJPEG 推流出去,
+同时提供一套 Web API, 用于远程调节画面参数。
+
+默认监听 0.0.0.0:9012
+
+    http://<RK的IP>:9012/            浏览器直接看画面(内置完整控制台)
+    http://<RK的IP>:9012/stream      MJPEG 流, 可直接放进 <img src="...">
+    http://<RK的IP>:9012/api/params  GET 读取 / POST 修改画面参数
+    http://<RK的IP>:9012/api/controls GET 列出 V4L2 硬件可调参数
+    http://<RK的IP>:9012/api/ctrl    POST 设置 V4L2 硬件参数
+    http://<RK的IP>:9012/api/status  GET  运行状态
+
+用法:
+    python3 mipi_webstream.py --device /dev/video22 --port 9012
+    python3 mipi_webstream.py --backend gst          # OpenCV 不可用时用 gst 抓流
+    python3 mipi_webstream.py --device /dev/video22 --port 9012 --stream-width 1280
+
+说明:
+    画面参数(亮度/对比度/饱和度/色相/伽马/镜像/翻转/旋转/缩放/质量)由本程序
+    逐帧处理, 改完立即生效, 不中断推流。
+    另外会自动发现 V4L2(ISP/传感器) 的硬件参数并支持在线设置。
+================================================================================
+"""
+
+import argparse
+import io
+import json
+import os
+import re
+import socket
+import subprocess
+import sys
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+# ------------------------------------------------------------------ 依赖
+try:
+    import cv2
+    import numpy as np
+    HAVE_CV2 = True
+except Exception as _e:                                    # pragma: no cover
+    cv2 = None
+    np = None
+    HAVE_CV2 = False
+    _CV2_ERR = _e
+else:
+    _CV2_ERR = None
+
+# ---------------------------------------------------- GStreamer Python 绑定
+# 本板 (RK3576 Debian) 上 cv2/numpy 都没有, 但 python3-gi + GStreamer 有,
+# 所以画质参数走 GStreamer 元素 (videobalance/gamma/videoflip/...) 在线调整。
+HAVE_GST_PY = False
+_GST_PY_ERR = None
+try:
+    import gi
+
+    gi.require_version("Gst", "1.0")
+    from gi.repository import Gst
+
+    Gst.init(None)
+    HAVE_GST_PY = True
+except Exception as _e:                                   # pragma: no cover
+    Gst = None
+    _GST_PY_ERR = _e
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+BOUNDARY = "frame"
+
+# ------------------------------------------------------------------ 默认参数
+DEFAULT_PARAMS = {
+    "brightness": 0,      # -100 .. 100        (加减偏移)
+    "contrast":   1.0,    #  0.2 .. 3.0        (增益)
+    "saturation": 1.0,    #  0.0 .. 3.0        (饱和度)
+    "hue":        0,      # -180 .. 180 度    (色相旋转)
+    "gamma":      1.0,    #  0.2 .. 3.0        (伽马)
+    "mirror":     0,      #  0/1               (水平镜像)
+    "flipv":      0,      #  0/1               (垂直翻转)
+    "rotate":     0,      #  0/90/180/270      (旋转)
+    "scale":      1.0,    #  0.25 .. 1.5       (相对 --stream-width 的缩放)
+    "quality":    80,     #  30 .. 95          (JPEG 质量)
+    "fps":        60,     #  1 .. 120          (推流帧率上限, 默认 60 = 当前链路上限)
+}
+
+PARAM_RANGE = {
+    "brightness": (-100, 100),
+    "contrast":   (0.2, 3.0),
+    "saturation": (0.0, 3.0),
+    "hue":        (-180, 180),
+    "gamma":      (0.2, 3.0),
+    "mirror":     (0, 1),
+    "flipv":      (0, 1),
+    "rotate":     (0, 270),
+    "scale":      (0.25, 1.5),
+    "quality":    (30, 95),
+    # 上限放宽到 120。注意这只是一个"限速阀", 实际上限由链路决定:
+    # 本工程 FPGA 固定输出 1080p60, 所以填 60 以上等于不限速, 结果仍是 ~59.6fps。
+    # 想真的超过 60 得改 FPGA 侧 (ui_vtc 时序 / PLL / D-PHY byte clk)。
+    "fps":        (1, 120),
+}
+
+
+def _clamp_params(p):
+    """把外部传入的参数裁剪到合法范围, 只保留已知键。"""
+    out = {}
+    for k, (lo, hi) in PARAM_RANGE.items():
+        if k not in p:
+            continue
+        try:
+            v = float(p[k])
+        except (TypeError, ValueError):
+            continue
+        if k in ("mirror", "flipv", "rotate"):
+            v = int(round(v))
+        if k == "rotate":
+            v = min((0, 90, 180, 270), key=lambda x: abs(x - v))
+        else:
+            v = min(max(v, lo), hi)
+        out[k] = v
+    return out
+
+
+def _test_frame_pil(w, h, t, quality):
+    """没有 OpenCV 时, 用 PIL 生成测试图案 (软件画面参数不生效)。"""
+    try:
+        from PIL import Image, ImageDraw
+    except Exception:
+        return None
+    img = Image.new("RGB", (w, h), (0, 0, 0))
+    d = ImageDraw.Draw(img)
+    colors = [(255, 255, 255), (0, 255, 255), (255, 255, 0), (0, 255, 0),
+              (255, 0, 255), (0, 0, 255), (255, 0, 0), (40, 40, 40)]
+    bw = max(1, w // len(colors))
+    for i, c in enumerate(colors):
+        d.rectangle([i * bw, 0, (i + 1) * bw - 1, h], fill=c)
+    x = int((t * 200) % w)
+    if x > 0:
+        d.rectangle([max(0, x - 40), 0, x, h], fill=(255, 255, 255))
+    d.text((20, h - 40), time.strftime("%Y-%m-%d %H:%M:%S") + "  t=%.1fs" % t,
+           fill=(0, 0, 0))
+    d.text((20, int(h * 0.1)), "FPGA-MIPI TEST PATTERN (PIL)", fill=(0, 0, 0))
+    buf = io.BytesIO()
+    img.save(buf, "JPEG", quality=int(quality))
+    return buf.getvalue()
+
+
+def _have_cmd(name):
+    """判断某个可执行文件是否在 PATH 上。"""
+    try:
+        from shutil import which
+        return which(name) is not None
+    except Exception:
+        return False
+
+
+def _parse_cpu_list(spec):
+    """把 "4-7" / "4,5,6,7" / "4-5,7" 这样的写法解析成 CPU 号集合。"""
+    out = set()
+    for part in str(spec).split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if "-" in part:
+            a, b = part.split("-", 1)
+            out.update(range(int(a), int(b) + 1))
+        else:
+            out.add(int(part))
+    return out
+
+
+def _pick_fast_cores():
+    """按 cpuinfo_max_freq 挑出最快的那批核。
+
+    本板 (RK3576 异构 8 核): cpu0-3 = Cortex-A53@1.92GHz,
+    cpu4-7 = Cortex-A72@2.11GHz。同一段 JPEG 编码在小核上只有 21.8fps,
+    换到大核是 41.4fps —— 光是绑定亲和性就差了将近一倍, 所以默认要绑。
+    """
+    try:
+        n = os.cpu_count() or 1
+        freq = {}
+        for i in range(n):
+            p = "/sys/devices/system/cpu/cpu%d/cpufreq/cpuinfo_max_freq" % i
+            try:
+                with open(p) as f:
+                    freq[i] = int(f.read().strip())
+            except Exception:
+                freq[i] = 0
+        if not any(freq.values()):
+            return None
+        top = max(freq.values())
+        return {i for i, f in freq.items() if f == top}
+    except Exception:
+        return None
+
+
+# ============================================================================
+#  YUV -> BGR 转换(自己做, 不用 OpenCV 的)
+#
+#  为什么不能用 OpenCV 自带的转换:
+#    本工程 FPGA 送出的 YUV 实测是 **BT.709 + limited range(16~235)**。
+#    证据 1(源码): fpga/uisrc/03_ip/mipi_dsi/rgb_to_yuv422_quad.v
+#         Y  = 0.183R + 0.614G + 0.062B + 16
+#         系数和 0.859 = 219/255, 且 (0.183,0.614,0.062) 与 BT.709 的
+#         (0.2126,0.7152,0.0722)x219/255 完全吻合 (BT.601 会是 0.257/0.504/0.098)
+#         => 白点落在 235, 黑点落在 16
+#    证据 2(实测): 抓一帧原始 NV16, Y 的 min=22 / max=234 (limited 白点=235)
+#    而 OpenCV 的 YUV->RGB 按 **full range** 解释 -> 黑电平被抬高到 16/255,
+#    色度偏差也被压缩 -> 画面发灰、发绿、颜色很"怪"。
+#    修法: 让 OpenCV 别转(CAP_PROP_CONVERT_RGB=0), 拿原始 YUV 自己按
+#          BT.709 + limited 转。
+# ============================================================================
+YUV_MATRIX = {
+    # kr, kg_u, kg_v, kb
+    "601": (1.402000, -0.344136, -0.714136, 1.772000),
+    "709": (1.574800, -0.187300, -0.468100, 1.855600),
+}
+
+
+_YUV_LUT_CACHE = {}
+
+
+def _yuv_luts(matrix, rng):
+    """把量程展开 + 色彩矩阵系数全部预计算成 256 项 int16 查找表。
+
+    这样每帧只需查表 + 整数加法, 不再做 float32 乘加 —— 内存流量减半、
+    少一遍 np.rint, 实测比 float32 版本快 2~3 倍, 数值一致(±1 LSB)。
+
+    返回 (Y, U->B, U->G, V->G, V->R) 五张 int16 表。
+    """
+    key = (matrix, rng)
+    lut = _YUV_LUT_CACHE.get(key)
+    if lut is not None:
+        return lut
+    kr, kgu, kgv, kb = YUV_MATRIX.get(matrix, YUV_MATRIX["709"])
+    i = np.arange(256, dtype=np.float32)
+    if rng == "limited":
+        yv = np.clip((i - 16.0) * (255.0 / 219.0), 0.0, 255.0)
+        c = (i - 128.0) * (255.0 / 224.0)
+    else:
+        yv = i
+        c = i - 128.0
+    lut = (
+        np.rint(yv).astype(np.int16),
+        np.rint(kb * c).astype(np.int16),
+        np.rint(kgu * c).astype(np.int16),
+        np.rint(kgv * c).astype(np.int16),
+        np.rint(kr * c).astype(np.int16),
+    )
+    _YUV_LUT_CACHE[key] = lut
+    return lut
+
+
+def yuv_to_bgr(buf, w, h, fmt="NV16", matrix="709", rng="limited",
+               swap_uv=False, target=None):
+    """原始 YUV 缓冲 -> BGR。
+
+    target=(tw,th) 时, 先在 YUV 域把平面缩到目标尺寸再转换 —— 后面反正要缩小,
+    这样能省掉一大半运算(1080p -> 720p 约省 2.2 倍)。
+
+    实现要点(为什么快):
+      * 量程展开(16-235 -> 0-255)与 BT.709 矩阵系数合并成 int16 查找表
+      * 全程整数运算, 不做 float32 乘加、不做 np.rint
+      * 原地裁剪并写进预分配缓冲, 避免 np.stack 产生大临时数组
+    """
+    n = w * h
+    if fmt in ("NV16", "YUYV", "UYVY", "YUY2"):
+        y = buf[:n].reshape(h, w)
+        c = buf[n:n + n].reshape(h, w // 2, 2)
+        if target and (target[0] != w or target[1] != h):
+            tw, th = int(target[0]), int(target[1])
+            y = cv2.resize(y, (tw, th), interpolation=cv2.INTER_AREA)
+            c = cv2.resize(c, (max(1, tw // 2), th),
+                           interpolation=cv2.INTER_AREA)
+            w, h = tw, th
+        is422 = True
+    else:                                  # NV12 / NV21
+        y = buf[:n].reshape(h, w)
+        c = buf[n:n + n // 2].reshape(h // 2, w // 2, 2)
+        if target and (target[0] != w or target[1] != h):
+            tw, th = int(target[0]), int(target[1])
+            y = cv2.resize(y, (tw, th), interpolation=cv2.INTER_AREA)
+            c = cv2.resize(c, (max(1, tw // 2), max(1, th // 2)),
+                           interpolation=cv2.INTER_AREA)
+            w, h = tw, th
+        is422 = False
+
+    luty, lutb, lutgu, lutgv, lutr = _yuv_luts(matrix, rng)
+    cu, cvv = (1, 0) if swap_uv else (0, 1)
+
+    # 查表一定要用 cv2.LUT (SIMD) —— 用 numpy 花式索引 lut[u8] 会慢十几倍,
+    # 因为 numpy 的 gather 没有向量化。
+    if is422:
+        yv = cv2.LUT(y, luty).reshape(h, w // 2, 2)
+        uu, vv = cv2.split(c)              # SIMD 拆平面, 得到连续单通道
+        if swap_uv:
+            uu, vv = vv, uu
+        # 先把 G 的两项在小数组上相加, 再和 Y 做一次广播 —— 少一次大数组广播
+        gsum = cv2.LUT(uu, lutgu)
+        gsum += cv2.LUT(vv, lutgv)
+        b = yv + cv2.LUT(uu, lutb)[:, :, None]
+        g = yv + gsum[:, :, None]
+        r = yv + cv2.LUT(vv, lutr)[:, :, None]
+        out = np.empty((h, w // 2, 2, 3), np.uint8)
+        for i, ch in enumerate((b, g, r)):
+            np.clip(ch, 0, 255, out=ch)
+            out[..., i] = ch
+        return out.reshape(h, w, 3)
+
+    yv = cv2.LUT(y, luty)
+    uu = np.repeat(np.repeat(c[:, :, cu], 2, 0), 2, 1)
+    vv = np.repeat(np.repeat(c[:, :, cvv], 2, 0), 2, 1)
+    gsum = cv2.LUT(uu, lutgu)
+    gsum += cv2.LUT(vv, lutgv)
+    b = yv + cv2.LUT(uu, lutb)
+    g = yv + gsum
+    r = yv + cv2.LUT(vv, lutr)
+    out = np.empty((h, w, 3), np.uint8)
+    for i, ch in enumerate((b, g, r)):
+        np.clip(ch, 0, 255, out=ch)
+        out[..., i] = ch
+    return out
+
+
+# ============================================================================
+#  YUV -> BGR 的 C 加速版 (libyuvconv.so)
+#
+#  上面那个 numpy 版算法正确但太慢: 实测 1920x1080 要 45~67ms, 而采集一帧
+#  只要 16.8ms —— 于是"色彩转换"反倒成了整条 1080p60 流水线的瓶颈
+#  (JPEG 编码只要 18ms, 还能多线程摊掉)。
+#
+#  这里做两件事:
+#    1) 用 C 重写同一套整数查表算法 —— 逐像素结果与 numpy 版完全一致
+#       (实测 max diff = 0), 单线程 45ms -> 20.8ms;
+#    2) 把画面按行切成几段, 用多个 Python 线程并发调用同一个 C 函数。
+#       C 函数不持 GIL, 所以这是真并行: 4 线程 -> 7.9ms。
+#
+#  编译:  ./build_yuvconv.sh
+#  没有 .so 时自动退回 numpy 版 (慢但结果一致)。
+# ============================================================================
+YUVCONV_PATH = os.path.join(SCRIPT_DIR, "libyuvconv.so")
+_YUVCONV = None
+_YUVCONV_TRIED = False
+_CONV_POOL = None
+
+import ctypes                                                        # noqa: E402
+import queue                                                         # noqa: E402
+
+
+def _yuvconv_lib():
+    """加载并配置 libyuvconv.so (只尝试一次)。"""
+    global _YUVCONV, _YUVCONV_TRIED
+    if _YUVCONV_TRIED:
+        return _YUVCONV
+    _YUVCONV_TRIED = True
+    try:
+        lib = ctypes.CDLL(YUVCONV_PATH)
+        lib.yuvconv_nv16_to_bgr_rows.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+            ctypes.c_int, ctypes.c_int, ctypes.c_int,
+            ctypes.c_int, ctypes.c_int, ctypes.c_int]
+        lib.yuvconv_nv16_to_bgr_rows.restype = ctypes.c_int
+        lib.yuvconv_nv12_to_bgr.argtypes = [
+            ctypes.c_char_p, ctypes.c_char_p,
+            ctypes.c_int, ctypes.c_int, ctypes.c_int,
+            ctypes.c_int, ctypes.c_int]
+        lib.yuvconv_nv12_to_bgr.restype = ctypes.c_int
+        _YUVCONV = lib
+        print("[yuvconv] 已加载 C 加速库 %s" % YUVCONV_PATH)
+    except Exception as e:
+        _YUVCONV = None
+        print("[yuvconv] 未加载 C 库 (%s), 使用 numpy 版 (较慢)" % e,
+              file=sys.stderr)
+    return _YUVCONV
+
+
+def _conv_pool(nthreads):
+    """行切分用的常驻线程池 (每帧新建线程池开销太大)。"""
+    global _CONV_POOL
+    if _CONV_POOL is None:
+        from concurrent.futures import ThreadPoolExecutor
+        _CONV_POOL = ThreadPoolExecutor(max_workers=max(1, int(nthreads)),
+                                        thread_name_prefix="yuvconv")
+    return _CONV_POOL
+
+
+def yuv_to_bgr_c(buf, w, h, fmt="NV16", matrix="709", rng="limited",
+                 swap_uv=False, nthreads=4):
+    """C 版 YUV->BGR。库缺失/格式不支持/数据不连续时返回 None, 由调用方回退。
+
+    buf  : 一维 uint8 连续缓冲; NV16 = [Y w*h][UV h*(w/2)*2]
+    """
+    lib = _yuvconv_lib()
+    if lib is None:
+        return None
+    if buf.ndim != 1:
+        buf = buf.reshape(-1)
+    if buf.dtype != np.uint8 or not buf.flags["C_CONTIGUOUS"]:
+        return None
+    if w <= 0 or h <= 0 or (w & 1):
+        return None
+
+    m = 709 if str(matrix) == "709" else 601
+    rg = 0 if str(rng) == "limited" else 1
+    sw = 1 if swap_uv else 0
+    out = np.empty((h, w, 3), np.uint8)
+
+    if fmt in ("NV12", "NV21"):
+        rc = lib.yuvconv_nv12_to_bgr(
+            buf.ctypes.data_as(ctypes.c_char_p),
+            out.ctypes.data_as(ctypes.c_char_p),
+            w, h, 1 if fmt == "NV21" else sw, m, rg)
+        return out if rc == 0 else None
+
+    if fmt not in ("NV16", "YUYV", "UYVY", "YUY2"):
+        return None
+
+    base = buf.ctypes.data
+    uv = base + w * h
+    dst = out.ctypes.data
+    n = max(1, min(int(nthreads), h))
+    step = (h + n - 1) // n
+
+    if n == 1:
+        lib.yuvconv_nv16_to_bgr_rows(base, uv, dst, w, h, w, sw, m, rg)
+        return out
+
+    def _job(r0):
+        r1 = min(h, r0 + step)
+        if r1 > r0:
+            lib.yuvconv_nv16_to_bgr_rows(
+                base + r0 * w, uv + r0 * w, dst + r0 * w * 3,
+                w, r1 - r0, w, sw, m, rg)
+
+    list(_conv_pool(n).map(_job, range(0, h, step)))
+    return out
+
+
+# ============================================================================
+#  帧缓冲: 采集线程写入, 每个 HTTP 客户端读最新帧
+# ============================================================================
+class FrameHub:
+    def __init__(self):
+        self._cond = threading.Condition()
+        self._jpeg = None
+        self._frame_id = 0
+        self._info = {}
+        self._fps = 0.0
+        self._clients = 0
+        self._fps_t0 = time.time()
+        self._fps_cnt = 0
+
+    def publish(self, jpeg, info=None):
+        now = time.time()
+        with self._cond:
+            self._jpeg = jpeg
+            self._frame_id += 1
+            if info:
+                self._info = info
+            # 每满 1 秒统计一次真实帧率
+            self._fps_cnt += 1
+            span = now - self._fps_t0
+            if span >= 1.0:
+                self._fps = self._fps_cnt / span
+                self._fps_cnt = 0
+                self._fps_t0 = now
+            self._cond.notify_all()
+
+    def snapshot(self):
+        with self._cond:
+            return self._jpeg, self._frame_id
+
+    def wait_next(self, last_id, timeout=5.0):
+        """阻塞等待比 last_id 更新的帧, 返回 (jpeg, id); 超时返回 (None, last_id)。"""
+        with self._cond:
+            self._cond.wait_for(lambda: self._frame_id > last_id, timeout)
+            if self._frame_id == last_id:
+                return None, last_id
+            return self._jpeg, self._frame_id
+
+    def status(self):
+        with self._cond:
+            d = dict(self._info)
+            d["fps"] = round(self._fps, 1)
+            d["frame_id"] = self._frame_id
+            d["clients"] = self._clients
+            return d
+
+
+# ============================================================================
+#  画面参数 (线程安全)
+# ============================================================================
+class ParamStore:
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._p = dict(DEFAULT_PARAMS)
+        self._lut_cache = (None, None)     # (gamma, lut)
+
+    def get(self):
+        with self._lock:
+            return dict(self._p)
+
+    def update(self, patch):
+        with self._lock:
+            self._p.update(patch)
+            return dict(self._p)
+
+    def reset(self):
+        with self._lock:
+            self._p = dict(DEFAULT_PARAMS)
+            return dict(self._p)
+
+    def gamma_lut(self, gamma):
+        """缓存 gamma 查找表, 避免每帧重算 256 项。"""
+        g = round(float(gamma), 3)
+        with self._lock:
+            cg, lut = self._lut_cache
+            if cg == g and lut is not None:
+                return lut
+        lut = (np.clip(((np.arange(256, dtype=np.float32) / 255.0) ** (1.0 / g))
+                       * 255.0, 0, 255)).astype(np.uint8).reshape(256, 1)
+        with self._lock:
+            self._lut_cache = (g, lut)
+        return lut
+
+
+# ============================================================================
+#  采集后端 1: OpenCV (支持全部软件画面参数)
+# ============================================================================
+class OpenCVCapture(threading.Thread):
+    name = "opencv"
+
+    def __init__(self, hub, params, args):
+        super().__init__(daemon=True)
+        self.hub = hub
+        self.params = params
+        self.args = args
+        self.stop_flag = threading.Event()
+        self._w = 0
+        self._h = 0
+        self._raw_fmt = (args.fourcc or "NV16").upper()
+        self._raw_warned = False
+        self._pre_scaled = False
+        self._stage = None                 # 预缩放后的拼装缓冲 (Y + UV)
+
+        # ---- 三级流水线 ----
+        self._conv_threads = max(1, int(getattr(args, "conv_threads", 4) or 4))
+        self._enc_threads = max(1, int(getattr(args, "enc_threads", 3) or 3))
+        self._raw_q = queue.Queue(maxsize=3)
+        self._bgr_q = queue.Queue(maxsize=3)
+        self._results = {}                 # seq -> jpeg, 用于按序发布
+        self._next_pub = 1
+        self._seq_cond = threading.Condition()
+
+    # ------------------------------------------------------------------
+    #  三级流水线
+    #
+    #    采集线程 ──raw_q──> 转换线程 ──bgr_q──> N 个编码线程 ──按序──> 发布
+    #    (16.8ms)           (7.9ms)            (18.2ms / N)
+    #
+    #  吞吐 = max(各段耗时), 而不是 sum(各段)。实测 (1920x1080, A72 核):
+    #    旧版串行: 16.8 + 67.2 + 18.2 = 102.3ms ->  9.8 fps
+    #    流水线  : max(16.8, 7.9, 6.1) = 16.8ms  -> 59.6 fps
+    #  也就是说, 优化之后瓶颈回到"采集"本身 (= 链路上限), 这正是我们要的结果。
+    #
+    #  队列用阻塞 put 做背压, 刻意不丢帧 —— 一旦丢帧, 序号就会出现空洞,
+    #  按序发布会因为等一个永远不来的号而卡死。
+    # ------------------------------------------------------------------
+    def run(self):
+        dev = self.args.device
+
+        if not HAVE_CV2:
+            print("[opencv] 未安装 cv2: %s" % _CV2_ERR, file=sys.stderr)
+            self._fallback_loop()
+            return
+
+        print("[opencv] 流水线启动: 采集 1 线程 / 转换 %d 线程 / 编码 %d 线程"
+              % (self._conv_threads, self._enc_threads))
+        threading.Thread(target=self._conv_loop, daemon=True,
+                         name="conv").start()
+        for i in range(self._enc_threads):
+            threading.Thread(target=self._enc_loop, daemon=True,
+                             name="enc%d" % i).start()
+        self._capture_loop(dev)
+
+    def _put(self, q, item):
+        """带背压的放入 (队列满就等一会儿, 同时留意停止标志)。"""
+        while not self.stop_flag.is_set():
+            try:
+                q.put(item, timeout=0.3)
+                return
+            except queue.Full:
+                continue
+
+    def _capture_loop(self, dev):
+        w, h = self.args.width, self.args.height
+        cap = None
+        seq = 0
+        while not self.stop_flag.is_set():
+            t_start = time.time()
+            if cap is None or not cap.isOpened():
+                if cap is not None:
+                    cap.release()
+                print("[opencv] 打开 %s ..." % dev)
+                cap = cv2.VideoCapture(dev, cv2.CAP_V4L2)
+                if self.args.fourcc:
+                    cap.set(cv2.CAP_PROP_FOURCC,
+                            cv2.VideoWriter_fourcc(*self.args.fourcc))
+                cap.set(cv2.CAP_PROP_FRAME_WIDTH, w)
+                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, h)
+                try:
+                    cap.set(cv2.CAP_PROP_BUFFERSIZE, 4)
+                except Exception:
+                    pass
+                # 关键: 关掉 OpenCV 自带的 YUV->BGR (它是 full-range, 与实际不符),
+                # 直接取原始 YUV 缓冲, 自己按 BT.709 + limited 转。
+                try:
+                    cap.set(cv2.CAP_PROP_CONVERT_RGB, 0)
+                except Exception:
+                    pass
+                if not cap.isOpened():
+                    print("[opencv] 打开失败, 2 秒后重试", file=sys.stderr)
+                    time.sleep(2)
+                    continue
+                aw = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                ah = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                self._w, self._h = aw, ah
+                print("[opencv] 已打开 %s  %dx%d  fourcc=%s  matrix=%s/%s"
+                      % (dev, aw, ah, self._raw_fmt,
+                         self.args.yuv_matrix, self.args.yuv_range))
+                self.hub.publish(None, {"backend": self.name, "device": dev,
+                                        "width": aw, "height": ah})
+
+            ok, frame = cap.read()
+            if not ok or frame is None:
+                self.fail_count = getattr(self, "fail_count", 0) + 1
+                if self.fail_count > 30:
+                    print("[opencv] 连续读帧失败, 重连", file=sys.stderr)
+                    cap.release()
+                    cap = None
+                    self.fail_count = 0
+                time.sleep(0.02)
+                continue
+            self.fail_count = 0
+
+            seq += 1
+            self._put(self._raw_q, (seq, frame))
+
+            # 限帧: 只补足"剩余"时间。默认 60 (链路上限), 可在网页上往下调。
+            target = max(1.0, float(self.params.get()["fps"]))
+            dt = 1.0 / target
+            rest = dt - (time.time() - t_start)
+            if rest > 0.0005:
+                time.sleep(rest)
+
+        if cap is not None:
+            cap.release()
+
+    def _conv_loop(self):
+        """中间级: 原始 YUV -> BGR (含缩放/几何/颜色参数)。"""
+        while not self.stop_flag.is_set():
+            try:
+                seq, raw = self._raw_q.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            p = self.params.get()
+            try:
+                frame = self._to_bgr(raw, p)
+            except Exception as e:
+                print("[opencv] 色彩转换异常: %s" % e, file=sys.stderr)
+                continue
+            if frame is None:
+                continue
+            frame = self._process(frame, p)
+            self._put(self._bgr_q, (seq, frame))
+
+    def _enc_loop(self):
+        """末级: JPEG 编码。多个线程跑同一段代码, 靠 GIL 释放真正并行。"""
+        while not self.stop_flag.is_set():
+            try:
+                seq, frame = self._bgr_q.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            p = self.params.get()
+            jpg = None
+            try:
+                ok, buf = cv2.imencode(
+                    ".jpg", frame,
+                    [int(cv2.IMWRITE_JPEG_QUALITY), int(p["quality"])])
+                if ok:
+                    jpg = buf.tobytes()
+            except Exception as e:
+                print("[opencv] 编码异常: %s" % e, file=sys.stderr)
+
+            # 按序号顺序发布, 避免多线程导致客户端看到乱序画面
+            with self._seq_cond:
+                self._results[seq] = jpg
+                while self._next_pub in self._results:
+                    j = self._results.pop(self._next_pub)
+                    self._next_pub += 1
+                    if j is not None:
+                        self.hub.publish(j)
+                self._seq_cond.notify_all()
+
+
+    def _target_size(self, scale):
+        """推流目标尺寸 (以 --stream-width 为基准)。"""
+        tw = max(64, int(round(self.args.stream_width * float(scale) / 2.0) * 2))
+        th = max(64, int(round(tw * self._h / float(self._w) / 2.0) * 2))
+        return tw, th
+
+    def _to_bgr(self, frame, p=None):
+        """把 cap.read() 的结果变成 BGR。
+
+        正常情况下 CONVERT_RGB=0 会交回原始 YUV(NV16: w*h*2 字节),
+        这里自己按 BT.709 + limited 转, 并且**直接在 YUV 域缩到目标尺寸**
+        (后面反正要缩小, 能省掉一大半浮点运算)。
+        若某些 OpenCV 版本忽略该属性, 退回到它已转好的 BGR(会有 full-range
+        偏色, 会提示一次)。
+        """
+        self._pre_scaled = False
+        wh = self._w * self._h
+        n = frame.size
+        if frame.ndim == 3 and frame.shape[2] == 3:
+            if not self._raw_warned:
+                print("[opencv] 警告: 拿不到原始 YUV 缓冲, 回退到 OpenCV 自带转换"
+                      " (颜色会偏灰/偏绿)。可尝试 --fourcc NV12", file=sys.stderr)
+                self._raw_warned = True
+            return frame
+        buf = frame.reshape(-1)
+        if n == wh * 3:
+            return buf.reshape(self._h, self._w, 3)
+        if n == wh * 2:
+            fmt = "NV16"
+        elif n == wh * 3 // 2:
+            fmt = "NV12"
+        else:
+            return None
+
+        # 旋转时目标尺寸会变, 那种情况不做预缩放(少见, 慢一点没关系)
+        target = None
+        if p is not None and int(p["rotate"]) == 0:
+            t = self._target_size(p["scale"])
+            if t != (self._w, self._h):
+                target = t
+                self._pre_scaled = True
+
+        nt = self._conv_threads
+        out = None
+        is422 = fmt in ("NV16", "YUYV", "UYVY", "YUY2")
+
+        if target is None:
+            # 尺寸不变: 直接拿原始缓冲交给 C 版, 零拷贝
+            out = yuv_to_bgr_c(buf, self._w, self._h, fmt=fmt,
+                               matrix=self.args.yuv_matrix,
+                               rng=self.args.yuv_range,
+                               swap_uv=self.args.swap_uv, nthreads=nt)
+        elif is422:
+            # 要缩小时先在 YUV 域缩(数据量小得多), 把 Y/UV 拼进一块连续缓冲 ,
+            # 再交给 C 版 —— C 函数要求 [Y][UV] 连续。
+            tw, th = target
+            y = buf[:wh].reshape(self._h, self._w)
+            c = buf[wh:wh * 2].reshape(self._h, self._w // 2, 2)
+            ys = cv2.resize(y, (tw, th), interpolation=cv2.INTER_AREA)
+            cs = cv2.resize(c, (max(1, tw // 2), th),
+                            interpolation=cv2.INTER_AREA)
+            need = tw * th
+            if self._stage is None or self._stage.size != need * 2:
+                self._stage = np.empty(need * 2, np.uint8)
+            self._stage[:need] = ys.reshape(-1)
+            self._stage[need:] = cs.reshape(-1)
+            out = yuv_to_bgr_c(self._stage, tw, th, fmt="NV16",
+                               matrix=self.args.yuv_matrix,
+                               rng=self.args.yuv_range,
+                               swap_uv=self.args.swap_uv, nthreads=nt)
+
+        if out is None:                       # C 库不可用时退回 numpy 版
+            out = yuv_to_bgr(buf, self._w, self._h, fmt=fmt,
+                             matrix=self.args.yuv_matrix,
+                             rng=self.args.yuv_range,
+                             swap_uv=self.args.swap_uv,
+                             target=target)
+        return out
+
+    def _process(self, frame, p):
+        """几何变换 -> 缩放 -> 颜色处理。放到缩放之后做颜色, 省 CPU。"""
+        rot = int(p["rotate"])
+        if rot == 90:
+            frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
+            self._pre_scaled = False
+        elif rot == 180:
+            frame = cv2.rotate(frame, cv2.ROTATE_180)
+        elif rot == 270:
+            frame = cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
+            self._pre_scaled = False
+
+        if p["mirror"] and p["flipv"]:
+            frame = cv2.flip(frame, -1)
+        elif p["mirror"]:
+            frame = cv2.flip(frame, 1)
+        elif p["flipv"]:
+            frame = cv2.flip(frame, 0)
+
+        # 缩放: 以 --stream-width 为基准; _to_bgr 已经缩好的就跳过
+        if not getattr(self, "_pre_scaled", False):
+            scale = float(p["scale"])
+            tw = max(64, int(round(self.args.stream_width * scale / 2) * 2))
+            th = max(64, int(round(tw * frame.shape[0] / float(frame.shape[1]) / 2) * 2))
+            if tw != frame.shape[1]:
+                interp = cv2.INTER_AREA if tw < frame.shape[1] else cv2.INTER_LINEAR
+                frame = cv2.resize(frame, (tw, th), interpolation=interp)
+
+        # 饱和度 / 色相
+        sat, hue = float(p["saturation"]), float(p["hue"])
+        if abs(sat - 1.0) > 1e-3 or abs(hue) > 1e-3:
+            hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+            if abs(hue) > 1e-3:
+                # OpenCV H 通道 0..179 对应 0..358 度
+                shift = int(round(hue / 2.0))
+                hsv[:, :, 0] = (hsv[:, :, 0].astype(np.int16) + shift) % 180
+            if abs(sat - 1.0) > 1e-3:
+                hsv[:, :, 1] = np.clip(
+                    hsv[:, :, 1].astype(np.float32) * sat, 0, 255).astype(np.uint8)
+            frame = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
+
+        # 对比度 / 亮度
+        con, bri = float(p["contrast"]), float(p["brightness"])
+        if abs(con - 1.0) > 1e-3 or abs(bri) > 1e-3:
+            frame = cv2.convertScaleAbs(frame, alpha=con, beta=bri)
+
+        # 伽马
+        gam = float(p["gamma"])
+        if abs(gam - 1.0) > 1e-3:
+            frame = cv2.LUT(frame, self.params.gamma_lut(gam))
+
+        return frame
+
+    def _fallback_loop(self):
+        """cv2 不可用时: 发布一张“无信号”提示图, 保持服务可用。"""
+        while not self.stop_flag.is_set():
+            self.hub.publish(self._placeholder("OpenCV 不可用, 请用 --backend gst"))
+            time.sleep(1)
+
+    @staticmethod
+    def _placeholder(text):
+        if not HAVE_CV2:
+            return None
+        img = np.zeros((360, 640, 3), dtype=np.uint8)
+        cv2.putText(img, text, (20, 180), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.8, (0, 0, 255), 2, cv2.LINE_AA)
+        ok, buf = cv2.imencode(".jpg", img)
+        return buf.tobytes() if ok else None
+
+
+# ============================================================================
+#  采集后端 1c: cv2/PIL 内置测试图案 (最后兜底, 仅在没有 GStreamer 时用)
+# ============================================================================
+class PilTestCapture(OpenCVCapture):
+    name = "test"
+
+    def run(self):
+        w, h = self.args.width, self.args.height
+        self.hub.publish(None, {"backend": self.name, "device": "internal-test",
+                                "width": w, "height": h})
+        t0 = time.time()
+        while not self.stop_flag.is_set():
+            p = self.params.get()
+            t = time.time() - t0
+            jpeg = None
+            if HAVE_CV2:
+                frame = self._process(self._make_frame(w, h, t), p)
+                ok, buf = cv2.imencode(
+                    ".jpg", frame,
+                    [int(cv2.IMWRITE_JPEG_QUALITY), int(p["quality"])])
+                jpeg = buf.tobytes() if ok else None
+            else:
+                jpeg = _test_frame_pil(w, h, t, p["quality"])
+            if jpeg:
+                self.hub.publish(jpeg)
+            time.sleep(max(0.0, 1.0 / max(1.0, float(p["fps"])) - 0.004))
+
+    @staticmethod
+    def _make_frame(w, h, t):
+        """彩条 + 滚动亮条 + 时钟, 便于一眼看出是否卡帧/延迟。"""
+        bars = np.zeros((h, w, 3), dtype=np.uint8)
+        colors = [(255, 255, 255), (0, 255, 255), (255, 255, 0), (0, 255, 0),
+                  (255, 0, 255), (0, 0, 255), (255, 0, 0), (40, 40, 40)]
+        bw = max(1, w // len(colors))
+        for i, c in enumerate(colors):
+            bars[:, i * bw:(i + 1) * bw] = c
+        x = int((t * 200) % w)
+        if x > 0:
+            bars[:, max(0, x - 40):x] = 255
+        s1 = max(0.6, h / 900.0)
+        s2 = max(0.8, h / 700.0)
+        cv2.putText(bars, time.strftime("%Y-%m-%d %H:%M:%S") + "  t=%.1fs" % t,
+                    (20, h - 30), cv2.FONT_HERSHEY_SIMPLEX, s1,
+                    (0, 0, 0), 2, cv2.LINE_AA)
+        cv2.putText(bars, "FPGA-MIPI TEST PATTERN", (20, int(h * 0.12)),
+                    cv2.FONT_HERSHEY_SIMPLEX, s2, (0, 0, 0), 2, cv2.LINE_AA)
+        return bars
+
+
+# ============================================================================
+#  采集后端 1b: GStreamer 原生管线 (PyGObject) —— ★ 本板首选
+#
+#  与下面 "gst" 后端的区别:
+#    这里用 Gst.parse_launch 建管线, 画面参数直接改 GStreamer 元素的属性,
+#    改完立即生效, 不用重启推流、不断流。
+#      亮度/对比度/饱和度/色相 -> videobalance
+#      伽马                    -> gamma
+#      镜像/翻转/旋转          -> videoflip
+#      输出缩放                -> videoscale + capsfilter
+#      帧率上限                -> videorate + capsfilter
+#      JPEG 质量               -> jpegenc
+# ============================================================================
+class GstLiveCapture(threading.Thread):
+    name = "gstlive"
+
+    # GstVideo.VideoFlipMethod: 0=identity 1=90R 2=180 3=90L 4=水平镜像 5=垂直翻转
+    FLIP_IDENTITY, FLIP_90R, FLIP_180, FLIP_90L, FLIP_HORIZ, FLIP_VERT = 0, 1, 2, 3, 4, 5
+
+    def __init__(self, hub, params, args):
+        super().__init__(daemon=True)
+        self.hub = hub
+        self.params = params
+        self.args = args
+        self.stop_flag = threading.Event()
+        self._lock = threading.Lock()
+        self._pipe = None
+        self._applied = {}
+
+    # -------- 子类可覆盖: 数据源 --------
+    def source_desc(self):
+        return ("v4l2src device=%s ! video/x-raw,width=%d,height=%d"
+                % (self.args.device, self.args.width, self.args.height))
+
+    # -------- 管线 --------
+    def _scaled_size(self, scale):
+        w = max(64, int(round(self.args.stream_width * float(scale) / 2.0) * 2))
+        h = max(64, int(round(w * self.args.height / float(self.args.width) / 2.0) * 2))
+        return w, h
+
+    # 本工程 FPGA 链路固定输出 1080p60, 所以"上限 >= 60"实际就等于不限速。
+    SRC_FPS = 60
+
+    def _fps_caps(self, p):
+        """帧率上限对应的 caps。
+
+        注意 videorate 的语义是**重采样**而不是限速: 如果把 caps 设成比源更高的
+        帧率, 它会靠**复制帧**来凑数 —— 推流帧率看着翻倍了, 内容却一帧没多,
+        还白吃 CPU。所以 fps >= 源帧率时改成"只降不升":
+        用一个宽松的区间 caps + drop-only, 让 60fps 原样通过。
+        """
+        f = int(max(1, p["fps"]))
+        if f >= self.SRC_FPS:
+            return "video/x-raw,framerate=[0/1,%d/1]" % f
+        return "video/x-raw,framerate=%d/1" % f
+
+    def _desc(self, p):
+        sw, sh = self._scaled_size(p["scale"])
+        return (
+            "%s ! "
+            # queue 很关键: 让采集与后面的缩放/编码跑在不同线程,
+            # 管线吞吐从"串行相加"变成"并行取最大" (实测 29.3 -> 41.5 fps)
+            "queue max-size-buffers=4 leaky=downstream ! "
+            # drop-only=true: 只允许丢帧, 绝不允许复制帧 (见 _fps_caps 注释)
+            "videorate name=rate drop-only=true ! "
+            "capsfilter name=frate caps=%s ! "
+            "videoconvert ! videoscale ! "
+            "capsfilter name=scaler caps=video/x-raw,width=%d,height=%d ! "
+            "videoconvert ! "
+            "videobalance name=bal ! gamma name=gam ! "
+            "videoflip name=flip method=none ! "
+            "jpegenc name=enc quality=%d ! "
+            "appsink name=sink max-buffers=3 drop=true sync=false"
+            % (self.source_desc(), self._fps_caps(p), sw, sh, int(p["quality"]))
+        )
+
+    @staticmethod
+    def _flip_method(p):
+        rot = int(p["rotate"])
+        if rot == 90:
+            return GstLiveCapture.FLIP_90R
+        if rot == 180:
+            return GstLiveCapture.FLIP_180
+        if rot == 270:
+            return GstLiveCapture.FLIP_90L
+        m, v = bool(p["mirror"]), bool(p["flipv"])
+        if m and v:
+            return GstLiveCapture.FLIP_180      # 同 cv2.flip(-1)
+        if m:
+            return GstLiveCapture.FLIP_HORIZ
+        if v:
+            return GstLiveCapture.FLIP_VERT
+        return GstLiveCapture.FLIP_IDENTITY
+
+    # -------- 主循环 --------
+    def run(self):
+        if not HAVE_GST_PY:
+            print("[%s] 没有 GStreamer Python 绑定: %s" % (self.name, _GST_PY_ERR),
+                  file=sys.stderr)
+            return
+        while not self.stop_flag.is_set():
+            try:
+                self._run_once()
+            except Exception as e:
+                print("[%s] %s" % (self.name, e), file=sys.stderr)
+            time.sleep(1)
+
+    def _run_once(self):
+        p = self.params.get()
+        desc = self._desc(p)
+        print("[%s] %s" % (self.name, desc))
+        pipe = Gst.parse_launch(desc)
+        sink = pipe.get_by_name("sink")
+        sink.connect("new-sample", self._on_sample)
+
+        self.hub.publish(None, {"backend": self.name, "device": self.args.device,
+                                "width": self.args.width, "height": self.args.height})
+        with self._lock:
+            self._pipe = pipe
+            self._applied = {"scale": p["scale"], "fps": p["fps"]}
+
+        pipe.set_state(Gst.State.PLAYING)
+        bus = pipe.get_bus()
+        try:
+            while not self.stop_flag.is_set():
+                msg = bus.timed_pop_filtered(
+                    200 * Gst.MSECOND,
+                    Gst.MessageType.ERROR | Gst.MessageType.EOS)
+                if msg is None:
+                    continue
+                if msg.type == Gst.MessageType.ERROR:
+                    err, dbg = msg.parse_error()
+                    print("[%s] 管线错误: %s (%s)" % (self.name, err.message, dbg),
+                          file=sys.stderr)
+                break
+        finally:
+            pipe.set_state(Gst.State.NULL)
+            with self._lock:
+                self._pipe = None
+        time.sleep(0.3)
+
+    def _on_sample(self, sink):
+        sample = sink.emit("pull-sample")
+        if sample is None:
+            return Gst.FlowReturn.OK
+        buf = sample.get_buffer()
+        ok, mi = buf.map(Gst.MapFlags.READ)
+        if ok:
+            try:
+                self.hub.publish(bytes(mi.data))
+            finally:
+                buf.unmap(mi)
+        return Gst.FlowReturn.OK
+
+    # -------- 参数在线下发 --------
+    def apply(self):
+        if not HAVE_GST_PY:
+            return
+        with self._lock:
+            pipe = self._pipe
+            applied = dict(self._applied)
+        if pipe is None:
+            return
+        p = self.params.get()
+        try:
+            bal = pipe.get_by_name("bal")
+            if bal is not None:
+                self._set(bal, "brightness", float(p["brightness"]) / 100.0)
+                self._set(bal, "contrast", float(p["contrast"]))
+                self._set(bal, "saturation", float(p["saturation"]))
+                self._set(bal, "hue", float(p["hue"]) / 180.0)
+
+            gam = pipe.get_by_name("gam")
+            if gam is not None:
+                self._set(gam, "gamma", float(p["gamma"]))
+
+            fl = pipe.get_by_name("flip")
+            if fl is not None:
+                fl.set_property("method", self._flip_method(p))
+
+            enc = pipe.get_by_name("enc")
+            if enc is not None:
+                self._set(enc, "quality", int(p["quality"]))
+
+            # 缩放 / 帧率需要重新协商 caps
+            if applied.get("scale") != p["scale"]:
+                sw, sh = self._scaled_size(p["scale"])
+                sc = pipe.get_by_name("scaler")
+                if sc is not None:
+                    sc.set_property("caps", Gst.Caps.from_string(
+                        "video/x-raw,width=%d,height=%d" % (sw, sh)))
+                applied["scale"] = p["scale"]
+            if applied.get("fps") != p["fps"]:
+                fr = pipe.get_by_name("frate")
+                if fr is not None:
+                    fr.set_property("caps",
+                                    Gst.Caps.from_string(self._fps_caps(p)))
+                applied["fps"] = p["fps"]
+
+            with self._lock:
+                self._applied = applied
+        except Exception as e:
+            print("[%s] apply 失败: %s" % (self.name, e), file=sys.stderr)
+
+    @staticmethod
+    def _set(el, name, value):
+        """按元素自身取值范围裁剪后再设, 避免越界抛异常。"""
+        pspec = el.find_property(name)
+        if pspec is not None:
+            lo = getattr(pspec, "minimum", None)
+            hi = getattr(pspec, "maximum", None)
+            if lo is not None and value < lo:
+                value = lo
+            if hi is not None and value > hi:
+                value = hi
+        el.set_property(name, value)
+
+
+# ============================================================================
+#  采集后端 1d: --backend test  —— 不接摄像头也能验证整条推流链路
+#    优先用 GStreamer 的 videotestsrc, 没有 gi 时退化到 cv2/PIL 图案
+# ============================================================================
+class TestCapture(GstLiveCapture):
+    name = "test"
+
+    def source_desc(self):
+        return ("videotestsrc is-live=true pattern=smpte "
+                "! video/x-raw,width=%d,height=%d"
+                % (self.args.width, self.args.height))
+
+    def run(self):
+        if HAVE_GST_PY:
+            GstLiveCapture.run(self)
+            return
+        print("[test] 无 GStreamer Python 绑定, 退化到 cv2/PIL 测试图案", file=sys.stderr)
+        PilTestCapture(self.hub, self.params, self.args).run()
+
+
+# ============================================================================
+#  采集后端 2: gst-launch-1.0 子进程 (没有 gi 时的兜底, 参数走 V4L2 硬件)
+# ============================================================================
+class GstCapture(threading.Thread):
+    name = "gst"
+
+    def __init__(self, hub, params, args):
+        super().__init__(daemon=True)
+        self.hub = hub
+        self.params = params
+        self.args = args
+        self.stop_flag = threading.Event()
+        self.proc = None
+
+    def _build_cmd(self, quality):
+        # 用 multipartmux 生成标准 multipart/x-mixed-replace, 再逐个抠出 JPEG
+        return [
+            "gst-launch-1.0", "-q",
+            "v4l2src", "device=%s" % self.args.device,
+            "!", "video/x-raw,width=%d,height=%d" % (self.args.width, self.args.height),
+            # queue: 让采集与缩放/编码并行 (实测有明显收益)
+            "!", "queue", "max-size-buffers=4", "leaky=downstream",
+            "!", "videoconvert",
+            "!", "videoscale", "add-borders=false",
+            "!", "video/x-raw,width=%d" % self.args.stream_width,
+            "!", "jpegenc", "quality=%d" % int(quality),
+            "!", "multipartmux", "boundary=%s" % BOUNDARY,
+            "!", "fdsink", "fd=1",
+        ]
+
+    def run(self):
+        while not self.stop_flag.is_set():
+            q = int(self.params.get()["quality"])
+            cmd = self._build_cmd(q)
+            print("[gst] %s" % " ".join(cmd))
+            # 先把状态信息发布出去, 这样即使 gst 起不来, /api/status 也有内容可看
+            self.hub.publish(None, {"backend": self.name,
+                                    "device": self.args.device,
+                                    "width": self.args.width,
+                                    "height": self.args.height})
+            try:
+                self.proc = subprocess.Popen(
+                    cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    bufsize=0)
+            except Exception as e:
+                print("[gst] 启动失败: %s" % e, file=sys.stderr)
+                time.sleep(2)
+                continue
+
+            try:
+                self._parse_stream(self.proc.stdout)
+            except Exception as e:
+                print("[gst] 读取异常: %s" % e, file=sys.stderr)
+            finally:
+                try:
+                    self.proc.kill()
+                except Exception:
+                    pass
+            time.sleep(1)
+
+    def _parse_stream(self, fp):
+        """从 multipart 流里抠出 JPEG 帧。"""
+        buf = b""
+        head = b"--" + BOUNDARY.encode()
+        sep = b"\r\n\r\n"
+        while not self.stop_flag.is_set():
+            chunk = fp.read(65536)
+            if not chunk:
+                return
+            buf += chunk
+            while True:
+                i = buf.find(head)
+                if i < 0:
+                    if len(buf) > 8 << 20:      # 防止无限增长
+                        buf = buf[-1 << 20:]
+                    break
+                j = buf.find(head, i + len(head))
+                if j < 0:
+                    break
+                part = buf[i + len(head):j]
+                buf = buf[j:]
+                k = part.find(sep)
+                if k < 0:
+                    continue
+                img = part[k + len(sep):]
+                if img.endswith(b"\r\n"):
+                    img = img[:-2]
+                if len(img) > 128 and img[:2] == b"\xff\xd8":
+                    self.hub.publish(img)
+                    time.sleep(1.0 / max(1.0, float(self.params.get()["fps"])))
+
+    def stop(self):
+        self.stop_flag.set()
+        if self.proc:
+            try:
+                self.proc.kill()
+            except Exception:
+                pass
+
+
+# ============================================================================
+#  V4L2 硬件参数(ISP / 传感器)
+# ============================================================================
+CTRL_RE = re.compile(
+    r"^\s*(\S+)\s+(0x[0-9a-fA-F]+)\s+\((\w+)\)\s*:\s*(.*)$")
+
+
+def list_v4l2_controls(dev, v4l2ctl="v4l2-ctl"):
+    """解析 `v4l2-ctl --list-ctrls`, 返回可写控件列表。"""
+    try:
+        out = subprocess.run([v4l2ctl, "-d", dev, "--list-ctrls"],
+                             capture_output=True, text=True, timeout=5).stdout
+    except Exception:
+        return []
+    res = []
+    for line in out.splitlines():
+        m = CTRL_RE.match(line)
+        if not m:
+            continue
+        name, _id, typ, rest = m.groups()
+        if typ not in ("int", "int64", "bool", "menu", "bitmask"):
+            continue
+        item = {"name": name, "type": typ, "id": _id}
+        for kv in rest.split():
+            if "=" not in kv:
+                continue
+            k, v = kv.split("=", 1)
+            if k in ("min", "max", "step", "default"):
+                try:
+                    item[k] = int(v)
+                except ValueError:
+                    item[k] = v
+            elif k == "value":
+                try:
+                    item[k] = int(v)
+                except ValueError:
+                    item[k] = v
+            elif k == "flags":
+                item["flags"] = [v]
+        # 只留下能滑动的、可写的
+        if "min" in item and "max" in item and isinstance(item["min"], int):
+            if item.get("max") == item.get("min"):
+                continue
+            if "inactive" in str(item.get("flags", "")):
+                continue
+            res.append(item)
+    return res
+
+
+def set_v4l2_control(dev, name, value, v4l2ctl="v4l2-ctl"):
+    try:
+        p = subprocess.run([v4l2ctl, "-d", dev, "--set-ctrl",
+                            "%s=%d" % (name, int(value))],
+                           capture_output=True, text=True, timeout=5)
+        return p.returncode == 0, (p.stderr or p.stdout).strip()
+    except Exception as e:
+        return False, str(e)
+
+
+# ============================================================================
+#  HTTP 服务
+# ============================================================================
+class Handler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.0"
+    server_version = "MipiWebStream/1.0"
+
+    # ---- 由 Server 注入 ----
+    hub = None
+    params = None
+    args = None
+    capture = None
+
+    # ---------- 工具 ----------
+    def log_message(self, fmt, *a):
+        if self.args.verbose:
+            sys.stderr.write("[http] " + (fmt % a) + "\n")
+
+    def _cors(self):
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+
+    def _json(self, obj, code=200):
+        body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self._cors()
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _read_json(self):
+        try:
+            n = int(self.headers.get("Content-Length", 0) or 0)
+        except ValueError:
+            n = 0
+        raw = self.rfile.read(n) if n else b""
+        if not raw:
+            return {}
+        try:
+            return json.loads(raw.decode("utf-8"))
+        except Exception:
+            return {}
+
+    # ---------- 路由 ----------
+    def do_OPTIONS(self):
+        self.send_response(204)
+        self._cors()
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def do_GET(self):
+        path = self.path.split("?", 1)[0]
+        try:
+            if path in ("/", "/index.html", "/viewer"):
+                return self._serve_viewer()
+            if path == "/stream":
+                return self._serve_stream()
+            if path == "/api/params":
+                return self._json(self.params.get())
+            if path == "/api/status":
+                st = self.hub.status()
+                st["params"] = self.params.get()
+                st["device"] = self.args.device
+                st["port"] = self.args.port
+                st["python"] = sys.executable
+                st["backends"] = {
+                    "gi_gst": HAVE_GST_PY,
+                    "cv2": HAVE_CV2,
+                    "gst_launch": _have_cmd("gst-launch-1.0"),
+                }
+                return self._json(st)
+            if path == "/api/controls":
+                return self._json(list_v4l2_controls(self.args.device,
+                                                     self.args.v4l2ctl))
+            if path in ("/snapshot.jpg", "/snapshot"):
+                jpeg, _ = self.hub.snapshot()
+                if not jpeg:
+                    return self._json({"error": "no frame"}, 503)
+                self.send_response(200)
+                self.send_header("Content-Type", "image/jpeg")
+                self.send_header("Content-Length", str(len(jpeg)))
+                self._cors()
+                self.end_headers()
+                self.wfile.write(jpeg)
+                return
+            return self._json({"error": "not found", "path": path}, 404)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
+    def do_POST(self):
+        path = self.path.split("?", 1)[0]
+        try:
+            if path == "/api/params":
+                body = self._read_json()
+                if body.get("reset"):
+                    out = self.params.reset()
+                else:
+                    out = self.params.update(_clamp_params(body))
+                # 参数变化后立刻下发到采集管线 (GStreamer 后端无需重启推流)
+                cap = Handler.capture
+                if cap is not None and hasattr(cap, "apply"):
+                    cap.apply()
+                return self._json(out)
+            if path == "/api/ctrl":
+                body = self._read_json()
+                name = body.get("name")
+                if not name:
+                    return self._json({"error": "missing name"}, 400)
+                ok, msg = set_v4l2_control(self.args.device, name,
+                                           body.get("value", 0),
+                                           self.args.v4l2ctl)
+                return self._json({"ok": ok, "message": msg},
+                                  200 if ok else 500)
+            return self._json({"error": "not found", "path": path}, 404)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
+    # ---------- 具体响应 ----------
+    def _serve_viewer(self):
+        for p in (os.path.join(SCRIPT_DIR, "mipi_viewer.html"),
+                  "/root/mipi_viewer.html",
+                  "/home/rock/mipi_viewer.html"):
+            if os.path.isfile(p):
+                with open(p, "rb") as f:
+                    body = f.read()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Cache-Control", "no-store")
+                self._cors()
+                self.end_headers()
+                self.wfile.write(body)
+                return
+        body = FALLBACK_PAGE.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self._cors()
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _serve_stream(self):
+        self.send_response(200)
+        self.send_header("Content-Type",
+                         "multipart/x-mixed-replace; boundary=%s" % BOUNDARY)
+        self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
+        self.send_header("Pragma", "no-cache")
+        self.send_header("Connection", "close")
+        self._cors()
+        self.end_headers()
+
+        self.hub._clients += 1
+        last = -1
+        try:
+            while True:
+                jpeg, last = self.hub.wait_next(last, timeout=10.0)
+                if jpeg is None:
+                    continue
+                self.wfile.write(b"--" + BOUNDARY.encode() + b"\r\n")
+                self.wfile.write(b"Content-Type: image/jpeg\r\n")
+                self.wfile.write(b"Content-Length: %d\r\n\r\n" % len(jpeg))
+                self.wfile.write(jpeg)
+                self.wfile.write(b"\r\n")
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass
+        finally:
+            self.hub._clients -= 1
+
+
+FALLBACK_PAGE = """<!doctype html><html><head><meta charset="utf-8">
+<title>MIPI Stream</title></head>
+<body style="background:#111;color:#eee;font-family:sans-serif;text-align:center">
+<h2>FPGA MIPI 画面</h2>
+<img src="/stream" style="max-width:96vw;border:1px solid #333;border-radius:8px">
+<p>完整控制台页面 mipi_viewer.html 未找到，请把它放到程序同目录。</p>
+</body></html>"""
+
+
+# ============================================================================
+#  main
+# ============================================================================
+def main():
+    ap = argparse.ArgumentParser(
+        description="把 RK3576 MIPI 采集画面通过 HTTP MJPEG 推流并支持远程调参",
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--device", default="/dev/video22",
+                    help="V4L2 采集节点 (默认 /dev/video22)")
+    ap.add_argument("--host", default="0.0.0.0", help="监听地址 (默认 0.0.0.0)")
+    ap.add_argument("--port", type=int, default=9012, help="监听端口 (默认 9012)")
+    ap.add_argument("--backend", default="auto",
+                    choices=["auto", "opencv", "gst", "test"],
+                    help="采集后端: auto/opencv/gst/test (默认 auto; "
+                         "test=内置测试图案, 不接摄像头也能验证网页)")
+    ap.add_argument("--width", type=int, default=1920, help="采集宽度")
+    ap.add_argument("--height", type=int, default=1080, help="采集高度")
+    ap.add_argument("--fourcc", default="NV16",
+                    help="V4L2 像素格式 (默认 NV16=YUV422 全彩度; 也可试 NV12)")
+    ap.add_argument("--yuv-matrix", default="709", choices=["601", "709"],
+                    help="YUV->RGB 色彩矩阵 (默认 709, 与本工程 FPGA RTL 一致)")
+    ap.add_argument("--yuv-range", default="limited",
+                    choices=["limited", "full"],
+                    help="YUV 量程 (默认 limited 16-235, 与本工程 FPGA RTL 一致)")
+    ap.add_argument("--swap-uv", action="store_true",
+                    help="交换 U/V (颜色明显不对时试一下)")
+    ap.add_argument("--stream-width", type=int, default=1920,
+                    help="推流基准宽度 (默认 1920 = 原生 1080p)")
+    ap.add_argument("--conv-threads", type=int, default=4,
+                    help="色彩转换并行度, 按行切分同时调用 C 库 (默认 4)")
+    ap.add_argument("--enc-threads", type=int, default=3,
+                    help="JPEG 编码线程数 (默认 3)")
+    ap.add_argument("--cpu-affinity", default="auto",
+                    help="绑定 CPU: auto(默认, 自动挑大核) / none / 形如 4-7")
+    ap.add_argument("--v4l2ctl", default="v4l2-ctl", help="v4l2-ctl 可执行文件路径")
+    ap.add_argument("--verbose", action="store_true", help="打印每条 HTTP 日志")
+    args = ap.parse_args()
+
+    hub = FrameHub()
+    params = ParamStore()
+
+    # 本板是 8 核异构: cpu0-3 = Cortex-A53@1.92G, cpu4-7 = Cortex-A72@2.11G。
+    # 实测同一段 JPEG 编码在小核上 21.8fps、大核上 41.4fps, 差将近一倍,
+    # 所以默认就把进程绑到最快的那批核上。
+    aff = str(getattr(args, "cpu_affinity", "auto") or "").strip().lower()
+    if aff and aff != "none":
+        cpus = _pick_fast_cores() if aff == "auto" else _parse_cpu_list(aff)
+        if cpus:
+            try:
+                os.sched_setaffinity(0, cpus)
+                print("[cpu] 已绑定到大核 CPU %s" % sorted(cpus))
+            except Exception as _e:
+                print("[cpu] 绑定失败: %s" % _e, file=sys.stderr)
+
+    backend = args.backend
+    if backend == "auto":
+        # 优先级: GStreamer 原生管线(gi) > OpenCV(cv2) > gst-launch 子进程
+        if HAVE_GST_PY:
+            backend = "gstlive"
+        elif HAVE_CV2:
+            backend = "opencv"
+        else:
+            backend = "gst"
+
+    if backend == "gstlive":
+        cap = GstLiveCapture(hub, params, args)
+    elif backend == "opencv":
+        cap = OpenCVCapture(hub, params, args)
+    elif backend == "test":
+        cap = TestCapture(hub, params, args)
+    else:
+        cap = GstCapture(hub, params, args)
+    cap.start()
+
+    Handler.hub = hub
+    Handler.params = params
+    Handler.args = args
+    Handler.capture = cap
+
+    srv = ThreadingHTTPServer((args.host, args.port), Handler)
+    srv.daemon_threads = True
+
+    ip = _guess_ip()
+    print("=" * 66)
+    print(" MIPI Web 推流服务已启动")
+    print("   Python   : %s" % sys.executable)
+    print("   采集设备 : %s" % args.device)
+    print("   采集后端 : %s" % backend)
+    print("   颜色解析 : YUV %s / %s%s"
+          % (args.yuv_matrix.upper(), args.yuv_range,
+             "  (U/V 已交换)" if args.swap_uv else ""))
+    print("   可用后端 : gi/Gst=%s  cv2=%s  gst-launch=%s"
+          % ("是" if HAVE_GST_PY else "否",
+             "是" if HAVE_CV2 else "否",
+             "是" if _have_cmd("gst-launch-1.0") else "否"))
+    if not HAVE_CV2:
+        print("              (cv2 不可用: %s)" % _CV2_ERR)
+    if not HAVE_GST_PY:
+        print("              (gi 不可用: %s)" % _GST_PY_ERR)
+    print("   监听     : %s:%d" % (args.host, args.port))
+    print("   地址     :")
+    print("       http://%s:%d/          浏览器直接看画面" % (ip, args.port))
+    print("       http://%s:%d/stream    MJPEG 流" % (ip, args.port))
+    print("   本地 HTML 请在 PC 上打开 mipi_viewer.html,")
+    print("   把服务器地址填成  %s:%d" % (ip, args.port))
+    print("=" * 66)
+
+    try:
+        srv.serve_forever()
+    except KeyboardInterrupt:
+        print("\n退出中 ...")
+    finally:
+        srv.server_close()
+        if hasattr(cap, "stop"):
+            cap.stop()
+        cap.stop_flag.set()
+
+
+def _guess_ip():
+    """猜一下本机在局域网里的地址, 只是为了打印提示。"""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("8.8.8.8", 80))
+        return s.getsockname()[0]
+    except Exception:
+        return "192.168.137.100"
+    finally:
+        s.close()
+
+
+if __name__ == "__main__":
+    main()

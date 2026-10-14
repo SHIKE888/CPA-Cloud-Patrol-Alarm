@@ -1,0 +1,106 @@
+第一章MIPI-ISP-MIPI 链路测试
+1 简介
+本项目基于自研异构核心板，融合安路PH1A90SEG324FPGA 与瑞芯微
+RK3576 处理器，构建MIPI 采集+FPGA 预处理+MIPI 输出双链路高速互联
+的完整异构视频处理架构。系统支持通过FMC 扩展多路MIPI-CSI 接口，兼
+容主流工业相机，由FPGA 实现高吞吐量图像采集与实时ISP 预处理；FPGA
+与ARM 平台间基于MIPI 双链路的自定义高速传输协议，实现稳定、低延迟的
+数据交互；
+2 框图
+3 烧写FPGA 端程序
+先看提供文件夹给的readme.txt 完成镜像的烧录
+准备好本文档的附件，解压到纯英文路径后后找到fpga_prj.al，再使用TD
+打开开发板确保断电的情况下，接入jtag 再上电开机：
+左侧栏连接硬件：
+选择附件下名为fpga_prj_compress.bit 的文件
+选择mode
+点击run 然后等烧录完下方会出现succeeded
+在官网下载https://www.uisrc.com/t-6245.html 3576debian 镜像
+然后把提供的boot.img 烧录至boot 分区,开发板直接上电，烧录分区镜像不要
+按boot 键
+加跳线帽
+4 测试实验
+输入指令：gst-launch-1.0 v4l2src device=/dev/video22
+! kmssink
+第二章YOLO 识别添加
+1 文件拷贝到开发板
+把附件中提供的rock 文件夹拷贝放到开发板下，这里我以放到/home 下为例子
+验证：
+cd /home/rock/yolo
+ls
+cd /home/rock/whls
+ls
+2 开发板环境配置（离线安装）
+2.1 安装Python 依赖
+# 确认Python 版本是3.11
+python3 --version
+# 必须输出Python 3.11.x
+# 确认目标目录存在
+python3 -c "import site; print(site.getsitepackages())"
+# 通常包含/usr/local/lib/python3.11/dist-packages
+# 进入whl 所在目录
+cd /home/rock/whls
+# 按顺序逐个解压安装（复制以下全部内容一次性粘贴）
+unzip -o numpy-2.2.6-cp311-*.whl
+-d /usr/local/lib/python3.11/dist-packages/
+unzip -o ruamel_yaml_clib-0.2.15-cp311-*.whl
+-d /usr/local/lib/python3.11/dist-packages/
+unzip -o ruamel_yaml-0.19.1-*.whl
+-d /usr/local/lib/python3.11/dist-packages/
+unzip -o psutil-7.2.2-*.whl
+-d /usr/local/lib/python3.11/dist-packages/
+unzip -o rknn_toolkit_lite2-2.3.0-cp311-*.whl
+-d /usr/local/lib/python3.11/dist-packages/
+2.2 安装OpenCV
+开发板原先预装的是headless 版（无显示功能），必须替换为完整版：
+# 删除旧的headless 版
+rm -rf /usr/local/lib/python3.11/dist-packages/cv2
+rm -rf /usr/local/lib/python3.11/dist-packages/opencv_python_headless*
+# 安装完整版
+unzip -o opencv_python-5.0.0.93-cp37-abi3-manylinux2014_aarch64.manylinux_2_17_aarch64.whl \
+-d /usr/local/lib/python3.11/dist-packages/
+2.3 验证所有依赖
+python3 -c "import numpy; print('numpy:', numpy.__version__); import cv2; print('opencv:', cv2.__version__); print('imshow:',
+hasattr(cv2, 'imshow')); import psutil; print('psutil:', psutil.__version__); from rknnlite.api import RKNNLite; print('RKNNLite:
+OK'); print('ALL OK')"
+如果某一项报错，检查对应whl 是否解压正确。
+3 运行YOLOv5s-Relu 实时推理
+确认摄像头设备
+# 确保FPGA bit 已烧录
+# 确保摄像头排线已连接
+ls /dev/video*
+# 应该能看到/dev/video22（或类似编号）
+运行指令
+cd /home/rock/yolo
+export DISPLAY=:0
+python3 rk3576_yolov5s_relu.py
+第三章添加自启动
+1 文件
+/home/rock/yolo/rk3576_yolov5s_relu.py #识别主程序
+/home/rock/yolo/start_yolov5.sh #启动脚本
+/etc/rc.local
+#开机自启
+2 配套保护
+2.1 panic 自动重启（防永久卡死）
+内核崩溃（panic）后5 秒自动重启，不会一直卡住：
+echo "kernel.panic = 5" > /etc/sysctl.d/99-panic.conf
+sysctl -p /etc/sysctl.d/99-panic.conf
+sysctl kernel.panic
+最后一行输出kernel.panic = 5 即成功。
+2.2 启用rc-local 服务（开机执行rc.local）
+chmod +x /etc/rc.local
+systemctl enable rc-local
+systemctl status rc-local
+2.3 no_yolo 开关（一键禁用自启）
+touch /root/.no_yolo
+# 禁用自启（下次开机不跑YOLO）
+rm -f
+/root/.no_yolo
+# 恢复自启
+3 重启验证
+reboot 重启45 秒后自动弹全屏窗口
+rm -f /root/.no_yolo
+# 先确认开关已删
+reboot
+pkill -9 -f rk3576_yolov5s_relu.py
+#结束自动识别

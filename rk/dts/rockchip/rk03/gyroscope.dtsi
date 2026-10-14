@@ -1,0 +1,25 @@
+&i2c8 {
+	status = "okay";
+	pinctrl-0 = <&i2c8m1_xfer>;
+
+	icm20600_acc: icm_acc@68 {
+		status = "okay";
+		compatible = "icm2060x_acc";
+		reg = <0x68>;
+		irq-gpio = <&gpio1 RK_PC1 IRQ_TYPE_EDGE_RISING>;
+		irq_enable = <0>;
+		poll_delay_ms = <30>;
+		type = <SENSOR_TYPE_ACCEL>;
+		layout = <5>;
+	};
+
+	icm20600_gyro: icm_gyro@68 {
+		status = "okay";
+		compatible = "icm2060x_gyro";
+		reg = <0x68>;
+		poll_delay_ms = <30>;
+		type = <SENSOR_TYPE_GYROSCOPE>;
+		layout = <5>;
+	};
+
+};

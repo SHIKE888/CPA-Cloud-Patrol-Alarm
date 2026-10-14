@@ -1,0 +1,130 @@
+/ {
+	pcie0: pcie@2a200000 {
+		compatible = "rockchip,rk3576-pcie", "snps,dw-pcie";
+		#address-cells = <3>;
+		#size-cells = <2>;
+		bus-range = <0x0 0xf>;
+		clocks = <&cru ACLK_PCIE0_MST>, <&cru ACLK_PCIE0_SLV>,
+			 <&cru ACLK_PCIE0_DBI>, <&cru PCLK_PCIE0>,
+			 <&cru CLK_PCIE0_AUX>;
+
+		clock-names = "aclk_mst", "aclk_slv",
+			      "aclk_dbi", "pclk",
+			      "aux";
+		device_type = "pci";
+		interrupts = <GIC_SPI 283 IRQ_TYPE_LEVEL_HIGH>,
+			     <GIC_SPI 281 IRQ_TYPE_LEVEL_HIGH>,
+			     <GIC_SPI 282 IRQ_TYPE_LEVEL_HIGH>,
+			     <GIC_SPI 279 IRQ_TYPE_LEVEL_HIGH>,
+			     <GIC_SPI 280 IRQ_TYPE_LEVEL_HIGH>,
+			     <GIC_SPI 278 IRQ_TYPE_LEVEL_HIGH>;
+		interrupt-names = "msi", "sys", "pmc", "msg", "legacy", "err";
+		#interrupt-cells = <1>;
+		interrupt-map-mask = <0 0 0 7>;
+		interrupt-map = <0 0 0 1 &pcie0_intc 0>,
+				<0 0 0 2 &pcie0_intc 1>,
+				<0 0 0 3 &pcie0_intc 2>,
+				<0 0 0 4 &pcie0_intc 3>;
+		linux,pci-domain = <0>;
+		num-ib-windows = <8>;
+		num-viewport = <8>;
+		num-ob-windows = <2>;
+		max-link-speed = <2>;
+		num-lanes = <1>;
+		phys = <&combphy0_ps PHY_TYPE_PCIE>;
+		phy-names = "pcie-phy";
+		power-domains = <&power RK3576_PD_PHP>;
+		ranges = <0x00000800 0x0 0x20000000 0x0 0x20000000 0x0 0x00100000
+			  0x81000000 0x0 0x20100000 0x0 0x20100000 0x0 0x00100000
+			  0x82000000 0x0 0x20200000 0x0 0x20200000 0x0 0x00e00000
+			  0x83000000 0x9 0x00000000 0x9 0x00000000 0x0 0x80000000>;
+		reg = <0x0 0x2a200000 0x0 0x00010000>,
+		      <0x0 0x22000000 0x0 0x00400000>,
+		      <0x0 0x20000000 0x0 0x00100000>;
+		reg-names = "pcie-apb", "pcie-dbi", "config";
+		resets = <&cru SRST_PCIE0_POWER_UP>, <&cru SRST_P_PCIE0>;
+		reset-names = "pipe", "p_pcie0";
+		dma-coherent;
+		status = "disabled";
+
+		pcie0_intc: legacy-interrupt-controller {
+			interrupt-controller;
+			#address-cells = <0>;
+			#interrupt-cells = <1>;
+			interrupt-parent = <&gic>;
+			interrupts = <GIC_SPI 280 IRQ_TYPE_EDGE_RISING>;
+		};
+	};
+		vcc3v3_pcie0: vcc3v3-pcie0 {
+		compatible = "regulator-fixed";
+		regulator-name = "vcc3v3_pcie0";
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+		enable-active-high;
+		gpios = <&gpio3 RK_PD4 GPIO_ACTIVE_HIGH>;
+		startup-delay-us = <5000>;
+		vin-supply = <&vcc12v_dcin>;
+	};
+};
+
+&combphy0_ps {
+	status = "okay";
+};
+
+/* PCIe1 combo PHY (combphy1_psu) — 分配给 PCIe 模式，连接 FPGA EP */
+&combphy1_psu {
+	status = "okay";
+};
+
+&pcie0 {
+	reset-gpios = <&gpio2 RK_PB4 GPIO_ACTIVE_HIGH>;
+	vpcie3v3-supply = <&vcc3v3_pcie0>;
+	status = "okay";
+};
+
+/* PCIe1 — Anlogic FPGA Endpoint (FPC 连接) */
+&pcie1 {
+	reset-gpios = <&gpio1 RK_PC0 GPIO_ACTIVE_HIGH>;
+	vpcie3v3-supply = <&vcc3v3_pcie0>;
+	status = "okay";
+};
+
+&pinctrl {
+
+pcie0 {
+		/omit-if-no-ref/
+		pcie0m0_pins: pcie0m0-pins {
+			rockchip,pins =
+				/* pcie21_port0_clkreq_m0 */
+				<2 RK_PB2 11 &pcfg_pull_up>;
+		};
+
+		/omit-if-no-ref/
+		pcie0m1_pins: pcie0m1-pins {
+			rockchip,pins =
+				/* pcie0_clkreq_m1 */
+				<1 RK_PB6 12 &pcfg_pull_up>;
+		};
+
+		/omit-if-no-ref/
+		pcie0m2_pins: pcie0m2-pins {
+			rockchip,pins =
+				/* pcie0_clkreq_m2 */
+				<4 RK_PB5 12 &pcfg_pull_up>;
+		};
+
+		/omit-if-no-ref/
+		pcie0m3_pins: pcie0m3-pins {
+			rockchip,pins =
+				/* pcie0_clkreq_m3 */
+				<4 RK_PC6 9 &pcfg_pull_up>;
+		};
+
+		/omit-if-no-ref/
+		pcie0_buttonrst: pcie21-port0-buttonrst {
+			rockchip,pins =
+				/* pcie0_buttonrst */
+				<1 RK_PC4 12 &pcfg_pull_none>;
+		};
+	};
+};

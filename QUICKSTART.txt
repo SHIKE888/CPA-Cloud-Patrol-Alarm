@@ -1,0 +1,9 @@
+# 08_csi2rk_mipi_imx415
+
+FPGA(MIPI x4 采集) → MIPI x4 → RK3576 → HDMI 输出  测试工程
+
+- 总说明：见上级目录 `README.md`
+- 改动清单：见上级目录 `MODIFICATIONS.md`
+- RK 端部署：`rk/deploy/README.md`
+- FPGA 工程：`fpga/fpga_prj.al`（安路 TD 6.2 打开），bit 用 `fpga/fpga_prj_compress.bit`
+- RK 端镜像：`rk/boot.img`（刷到 boot 分区）

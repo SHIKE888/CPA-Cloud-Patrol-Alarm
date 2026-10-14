@@ -1,0 +1,17 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+/*
+ * Copyright (c) 2022 Rockchip Electronics Co., Ltd.
+ *
+ */
+
+/ {
+	gpio_buttons_leds {
+		compatible = "milianke,gpio-buttons-leds";
+		button-gpios = <&gpio1 RK_PB7 GPIO_ACTIVE_HIGH>,	// 按钮GPIO列表
+			<&gpio1 RK_PC0 GPIO_ACTIVE_HIGH>;
+
+		led-gpios = <&gpio0 RK_PC3 GPIO_ACTIVE_HIGH>,		// LED GPIO列表
+			<&gpio0 RK_PD0 GPIO_ACTIVE_HIGH>;
+		poll-interval-ms = <10>;				// 轮询间隔
+	};
+};

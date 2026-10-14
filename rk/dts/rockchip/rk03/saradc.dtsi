@@ -1,0 +1,4 @@
+&saradc {
+	status = "okay";
+	vref-supply = <&vcca_1v8_s0>;
+};

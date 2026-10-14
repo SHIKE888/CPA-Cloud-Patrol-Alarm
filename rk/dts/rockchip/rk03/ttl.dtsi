@@ -1,0 +1,62 @@
+&uart8 {
+	status = "okay";
+	pinctrl-name = "default";
+	pinctrl-0 = <&uart8m2_xfer>;
+};
+
+&pinctrl {
+	uart8 {
+		/omit-if-no-ref/
+		uart8m0_xfer: uart8m0-xfer {
+			rockchip,pins =
+				/* uart8_rx_m0 */
+				<3 RK_PC5 9 &pcfg_pull_up>,
+				/* uart8_tx_m0 */
+				<3 RK_PC6 9 &pcfg_pull_up>;
+		};
+
+		/omit-if-no-ref/
+		uart8m0_ctsn: uart8m0-ctsn {
+			rockchip,pins =
+				/* uart8m0_ctsn */
+				<3 RK_PD0 9 &pcfg_pull_none>;
+		};
+		/omit-if-no-ref/
+		uart8m0_rtsn: uart8m0-rtsn {
+			rockchip,pins =
+				/* uart8m0_rtsn */
+				<3 RK_PC7 9 &pcfg_pull_none>;
+		};
+
+		/omit-if-no-ref/
+		uart8m1_xfer: uart8m1-xfer {
+			rockchip,pins =
+				/* uart8_rx_m1 */
+				<2 RK_PA7 9 &pcfg_pull_up>,
+				/* uart8_tx_m1 */
+				<2 RK_PA6 9 &pcfg_pull_up>;
+		};
+
+		/omit-if-no-ref/
+		uart8m1_ctsn: uart8m1-ctsn {
+			rockchip,pins =
+				/* uart8m1_ctsn */
+				<2 RK_PB7 10 &pcfg_pull_none>;
+		};
+		/omit-if-no-ref/
+		uart8m1_rtsn: uart8m1-rtsn {
+			rockchip,pins =
+				/* uart8m1_rtsn */
+				<2 RK_PB6 10 &pcfg_pull_none>;
+		};
+
+		/omit-if-no-ref/
+		uart8m2_xfer: uart8m2-xfer {
+			rockchip,pins =
+				/* uart8_rx_m2 */
+				<0 RK_PC2 10 &pcfg_pull_up>,
+				/* uart8_tx_m2 */
+				<0 RK_PC1 10 &pcfg_pull_up>;
+		};
+	};
+};

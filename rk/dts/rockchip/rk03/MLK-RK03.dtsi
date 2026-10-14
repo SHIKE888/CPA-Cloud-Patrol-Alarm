@@ -1,0 +1,29 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+/*
+ * Copyright (c) 2024 Rockchip Electronics Co., Ltd.
+ *
+ */
+
+#include "485.dtsi"
+#include "adc_key.dtsi" 
+#include "can.dtsi" 
+#include "csi-imx415-0.dtsi" 
+#include "csi-imx415-1.dtsi" 
+#include "csi-imx415-2.dtsi" 
+#include "dpnew.dtsi"
+#include "es8388.dtsi"
+#include "eth.dtsi"
+#include "HDMI.dtsi"
+#include "ir_receiver.dtsi"
+#include "mmc.dtsi"
+#include "pcie.dtsi"
+#include "rk03-screen-10.dtsi"
+#include "rtc.dtsi"
+#include "saradc.dtsi"
+#include "spi1.dtsi"
+#include "ttl.dtsi"
+#include "uart.dtsi"
+#include "usb.dtsi"
+#include "gyroscope.dtsi"
+#include "gpio-buttons-leds.dtsi"
+
