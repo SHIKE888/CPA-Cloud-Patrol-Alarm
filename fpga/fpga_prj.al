@@ -474,6 +474,22 @@
                     <Attr Name="CompileOrder" Val="71"/>
                 </FileInfo>
             </File>
+            <File Path="uisrc/01_rtl/ctrl/cam_param.v">
+                <FileInfo>
+                    <Attr Name="UsedInSyn" Val="true"/>
+                    <Attr Name="UsedInP&R" Val="true"/>
+                    <Attr Name="BelongTo" Val="design_1"/>
+                    <Attr Name="CompileOrder" Val="72"/>
+                </FileInfo>
+            </File>
+            <File Path="uisrc/01_rtl/preproc/preproc_post.v">
+                <FileInfo>
+                    <Attr Name="UsedInSyn" Val="true"/>
+                    <Attr Name="UsedInP&R" Val="true"/>
+                    <Attr Name="BelongTo" Val="design_1"/>
+                    <Attr Name="CompileOrder" Val="73"/>
+                </FileInfo>
+            </File>
             <File Path="uisrc/03_ip/al_fifo/fifo_32b_async_2.v">
                 <FileInfo>
                     <Attr Name="UsedInSyn" Val="true"/>
