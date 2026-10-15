@@ -9,7 +9,15 @@
 module tb_i2c_slave;
 
 	localparam [6:0] DEV_ADDR = 7'h40;
-	localparam integer T = 8;            // SCL 半周期 = 8 个系统时钟
+	localparam integer T = 32;           // SCL 半周期 = 32 个系统时钟
+	// ⚠ 这里必须给够余量, 不能只图仿真快。
+	//   真实 I2C 100kHz -> SCL 半周期 = 5us = 125 个 25MHz 周期。
+	//   从机在 S_DR 里要等 tx_byte 更新 (cur_addr -> o_rd_addr -> i_rd_data
+	//   -> tx_byte 共 4 拍) 才驱动 bit7。T 太小时这 4 拍会跨过 SCL 上升沿,
+	//   导致从机在 SCL 高电平期间改变 SDA -> 被自己误判成 START。
+	//   之前 T=8 就是这个情况: 帧计数高字节 0x01 (bit7=0, 需要拉低 SDA)
+	//   一读就误判, 而低字节 0x13/0xD3 恰好躲过, 所以早期用
+	//   0xAA/0xBB/0xCC/0xDD (bit7 全为 1, 不需要拉低) 的用例完全测不出来。
 
 	reg clk = 1'b0;
 	always #5 clk = ~clk;                // 100 MHz
@@ -175,7 +183,7 @@ module tb_i2c_slave;
 				         $time, st_d, u_dut.st, u_dut.bc, u_dut.ack_ok, u_dut.nxt);
 				st_d <= u_dut.st;
 			end
-			if (u_dut.start_cond) trace_rd <= 1'b0;
+				if (u_dut.start_cond) trace_rd <= 1'b0;
 			if (u_dut.st == 3'd1 && u_dut.bc == 4'd7 && u_dut.rw_bit)
 				trace_rd <= 1'b1;                 // 识别到读地址 -> 开始详追
 			if (u_dut.start_cond)
@@ -184,10 +192,12 @@ module tb_i2c_slave;
 			if (u_dut.stop_cond)
 				$display("   [t=%0t] *** STOP  *** st=%0d scl=%b sda=%b scl_d1=%b sda_d1=%b sda_d2=%b drv=%b",
 				         $time, u_dut.st, scl, sda, u_dut.scl_d1, u_dut.sda_d1, u_dut.sda_d2, u_dut.sda_drive);
-			if (trace_rd && u_dut.scl_fall)
-				$display("     f: st=%0d bitpos=%0d tx=%02X drv=%b sda=%b addr=%02X rd=%02X",
-				         u_dut.st, u_dut.bitpos, u_dut.tx_byte, u_dut.sda_drive,
-				         sda, u_dut.cur_addr, rd_r);
+				// 这行只引用两边都有的信号 —— 早期版本引用过 u_dut.dr_wait,
+				// 结果没法拿同一份 TB 去跑修复前的 RTL 做 A/B 对比。
+				if (trace_rd && u_dut.scl_fall)
+					$display("     f: st=%0d bitpos=%0d tx=%02X drv=%b addr=%02X rd=%02X",
+					         u_dut.st, u_dut.bitpos, u_dut.tx_byte, u_dut.sda_drive,
+					         u_dut.cur_addr, rd_r);
 		end
 	end
 
@@ -206,7 +216,7 @@ module tb_i2c_slave;
 				$display("  OK   %0s = %02X", name, got);
 			end else begin
 				fail_cnt = fail_cnt + 1;
-				$display("  FAIL %0s 实测 %02X 期望 %02X", name, got, exp);
+				$display("  FAIL %0s  got=%02X  exp=%02X", name, got, exp);
 			end
 		end
 	endtask
@@ -231,19 +241,24 @@ module tb_i2c_slave;
 		i2c_read_reg(8'hB3, v);  check(v, 8'h4D, "read B3");
 
 		$display("[3] 突发写: 从 0x10 起连写 4 个字节");
+		// ⚠ 这组数据是故意挑的: 高位混合, 而且就是硬件上真实踩坑的那一组
+		//   (帧计数 0x0001D313)。burst 读时若 bit7 拿了上一个字节的值,
+		//   0x01 会被读成 0x81 (因为 0xD3 的 bit7 = 1)。
+		//   原先用 0xAA/0xBB/0xCC/0xDD —— 全组 bit7 都是 1, 所以区分不出来,
+		//   这个 bug 才逃过了仿真。
 		i2c_start;
 		i2c_wr_byte({DEV_ADDR, 1'b0}, v[0]);
 		i2c_wr_byte(8'h10, v[0]);
-		i2c_wr_byte(8'hAA, v[0]);
-		i2c_wr_byte(8'hBB, v[0]);
-		i2c_wr_byte(8'hCC, v[0]);
-		i2c_wr_byte(8'hDD, v[0]);
+		i2c_wr_byte(8'h13, v[0]);
+		i2c_wr_byte(8'hD3, v[0]);
+		i2c_wr_byte(8'h01, v[0]);
+		i2c_wr_byte(8'h00, v[0]);
 		i2c_stop;
 		repeat (20) @(posedge clk);
-		check(regs[8'h10], 8'hAA, "regs[10]");
-		check(regs[8'h11], 8'hBB, "regs[11]");
-		check(regs[8'h12], 8'hCC, "regs[12]");
-		check(regs[8'h13], 8'hDD, "regs[13]");
+		check(regs[8'h10], 8'h13, "regs[10]");
+		check(regs[8'h11], 8'hD3, "regs[11]");
+		check(regs[8'h12], 8'h01, "regs[12]");
+		check(regs[8'h13], 8'h00, "regs[13]");
 
 		$display("[4] 突发读: 从 0x10 连读 4 个字节 (指针自增)");
 		i2c_start;
@@ -252,10 +267,10 @@ module tb_i2c_slave;
 		i2c_stop;
 		i2c_start;
 		i2c_wr_byte({DEV_ADDR, 1'b1}, v[0]);
-		i2c_rd_byte(v, 1'b0);  check(v, 8'hAA, "burst[0]");
-		i2c_rd_byte(v, 1'b0);  check(v, 8'hBB, "burst[1]");
-		i2c_rd_byte(v, 1'b0);  check(v, 8'hCC, "burst[2]");
-		i2c_rd_byte(v, 1'b1);  check(v, 8'hDD, "burst[3]");
+		i2c_rd_byte(v, 1'b0);  check(v, 8'h13, "burst[0]");
+		i2c_rd_byte(v, 1'b0);  check(v, 8'hD3, "burst[1]");
+		i2c_rd_byte(v, 1'b0);  check(v, 8'h01, "burst[2] bit7=0 (was 0x81)");
+		i2c_rd_byte(v, 1'b1);  check(v, 8'h00, "burst[3]");
 		i2c_stop;
 
 		$display("[5] 地址不匹配 -> 必须不应答");
@@ -264,7 +279,7 @@ module tb_i2c_slave;
 		check({7'b0, ack_probe}, 8'h00, "addr 0x2A 不应答(ack=0)");
 		i2c_stop;
 		repeat (20) @(posedge clk);
-		check(regs[8'h10], 8'hAA, "误写没有污染 regs[10]");
+		check(regs[8'h10], 8'h13, "误写没有污染 regs[10]");
 
 		$display("=====================================================");
 		$display(" 通过 %0d, 失败 %0d", pass_cnt, fail_cnt);

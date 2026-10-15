@@ -103,6 +103,7 @@ module i2c_slave #(
 	reg [2:0]  st, nxt;
 	reg        ack_ok;      // 本次 ACK 是否真的拉低
 	reg        dr7;         // 本字节的 bit7 是否已送出
+	reg [2:0]  dr_wait;     // 等 tx_byte 更新到本字节的拍数 (见 S_DR 里的注释)
 	reg [3:0]  bc;          // 位计数 0..7
 	reg [2:0]  bitpos;      // 读方向已发出的位数
 	reg [7:0]  shreg;       // 移位寄存器 (收)
@@ -119,6 +120,7 @@ module i2c_slave #(
 	always @(posedge clk or negedge rst_n) begin
 		if (!rst_n) begin
 			st <= S_IDLE; nxt <= S_IDLE; ack_ok <= 1'b0; dr7 <= 1'b0;
+			dr_wait <= 3'd0;
 			bc <= 4'd0; bitpos <= 3'd0;
 			shreg <= 8'd0; tx_byte <= 8'd0; cur_addr <= 8'd0;
 			rw <= 1'b0; addr_hit <= 1'b0;
@@ -166,9 +168,10 @@ module i2c_slave #(
 				S_ACK2: if (scl_fall) begin
 					sda_drive <= 1'b0;
 					if (nxt == S_DR) begin
-						bitpos <= 3'd0;
-						dr7    <= 1'b0;      // 交给 S_DR 在 tx_byte 跟上后再驱动 bit7
-						st     <= S_DR;
+						bitpos  <= 3'd0;
+						dr7     <= 1'b0;     // 交给 S_DR 在 tx_byte 跟上后再驱动 bit7
+						dr_wait <= 3'd0;
+						st      <= S_DR;
 					end else begin
 						st <= nxt;
 					end
@@ -209,11 +212,26 @@ module i2c_slave #(
 				//------------------------------------------- 数据字节 (读)
 				S_DR: begin
 					if (!dr7) begin
-						// 本字节的 bit7。必须等 tx_byte 跟上再驱动: cur_addr 变化后
-						// o_rd_addr -> i_rd_data -> tx_byte 共需 2 拍, 立即驱动会
-						// 把**上一个字节**的最高位发出去。
-						sda_drive <= ~tx_byte[3'd7];
-						dr7       <= 1'b1;
+						// 本字节的 bit7。必须**真的等** tx_byte 跟上再驱动。
+						//
+						// cur_addr 变化后: o_rd_addr(1拍) -> i_rd_data(1拍) -> tx_byte(1拍),
+						// 一共 3 拍; 连同 S_MACK 那一拍, 要到第 4 拍 tx_byte 才是本字节。
+						// 这里数到 5 (= 等 6 拍) 留一拍余量。
+						//
+						// ⚠ 早期版本在进入 S_DR 的**第一拍**就采样 tx_byte[7],
+						//   拿到的是上一个字节的最高位 —— 现象是 burst 读时每个字节的
+						//   bit7 都错 (帧计数 0x0001D313 被读成 0x0081D313, 只有 bit7 错,
+						//   低两字节完全正确)。单字节读因为 cur_addr 早在 S_SUB 阶段就
+						//   设好、到 S_DR 之间隔了足够多拍, 所以看不出问题, 仿真也因此漏掉。
+						//
+						// 余量: 真实 SCL 100kHz -> 周期 10us = 250 个 25MHz 周期;
+						//       TB 里 T=8 -> SCL 周期 16 拍。等 6 拍两边都安全。
+						if (dr_wait != 3'd5) begin
+							dr_wait <= dr_wait + 3'd1;
+						end else begin
+							sda_drive <= ~tx_byte[3'd7];
+							dr7       <= 1'b1;
+						end
 					end
 					if (scl_fall) begin
 						if (bitpos == 3'd7) begin
@@ -235,6 +253,7 @@ module i2c_slave #(
 						o_dbg_rd_cnt <= o_dbg_rd_cnt + 16'd1;
 						bitpos       <= 3'd0;
 						dr7          <= 1'b0;       // 让 S_DR 重新驱动新字节的 bit7
+						dr_wait      <= 3'd0;
 						st           <= S_DR;
 					end else begin
 						st <= S_IDLE;                  // NACK -> 本次读结束

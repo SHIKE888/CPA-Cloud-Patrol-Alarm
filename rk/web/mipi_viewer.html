@@ -174,6 +174,47 @@
       <p class="hint">部分采集节点（如 rkcif mainpath）没有可调硬件参数，此时为空列表属正常现象，
         请使用上方软件参数。</p>
     </div>
+
+    <div class="card" style="margin-top:14px">
+      <h2>FPGA 硬件参数（预处理，I2C 实时生效）</h2>
+
+      <div class="grid2" style="margin-bottom:8px">
+        <button class="ghost" id="btnPpOff">关闭预处理</button>
+        <button id="btnPpRefresh">刷新</button>
+      </div>
+
+      <div class="grid4" style="margin-bottom:10px">
+        <button class="ghost" data-pp="0">原图</button>
+        <button class="ghost" data-pp="1">Sobel</button>
+        <button class="ghost" data-pp="2">阈值</button>
+        <button class="ghost" data-pp="3">形态学</button>
+      </div>
+
+      <div class="row"><label>二值阈值</label>
+        <input type="range" id="f_PP_THRESH" min="0" max="255" step="1" value="128">
+        <span class="val" id="fv_PP_THRESH">128</span></div>
+
+      <div class="row"><label>Sobel 位移</label>
+        <input type="range" id="f_PP_SOBEL_SH" min="0" max="8" step="1" value="3">
+        <span class="val" id="fv_PP_SOBEL_SH">3</span></div>
+
+      <div class="grid2" style="margin-top:6px">
+        <button class="ghost" id="btnMorph0">腐蚀 (&amp;)</button>
+        <button class="ghost" id="btnMorph1">膨胀 (|)</button>
+      </div>
+
+      <div class="sep"></div>
+      <div style="font-size:12px;color:var(--dim);line-height:1.8">
+        <div class="kv"><span>通信状态</span><b id="fsState">—</b></div>
+        <div class="kv"><span>帧计数</span><b id="fsFrames">—</b></div>
+        <div class="kv"><span>心跳</span><b id="fsBeat">—</b></div>
+        <div class="kv"><span>版本</span><b id="fsVer">—</b></div>
+      </div>
+      <p class="hint">这些参数直接写进 FPGA 寄存器堆（I2C 从机 @0x40），
+        改完立即在画面上生效，<b>不占用 RK 的 CPU</b>。
+        阈值只对「阈值/形态学」有效，Sobel 位移只对「Sobel」有效。
+        帧计数持续增长 = 链路在跑。</p>
+    </div>
   </div>
 </main>
 
@@ -218,7 +259,8 @@ function connect() {
   $("placeholder").style.display = "none";
 
   setDot(true, "连接中…");
-  getParams().then(loadHw);
+  getParams().then(loadHw).then(loadFpga);
+  fpgaPoll();
   poll();
 }
 
@@ -309,6 +351,95 @@ $("btnSnap").onclick = () => {
     }, "image/png");
   } catch (e) { toast("抓拍失败: " + e.message, true); }
 };
+
+/* ---------------- FPGA 硬件参数 (I2C @0x40) ---------------- */
+let fpgaRegs = {};
+let fpgaPushTimer = null;
+let fpgaTimer = null;
+
+function fpgaSyncUI() {
+  const th = $("f_PP_THRESH"), sh = $("f_PP_SOBEL_SH");
+  if (th && fpgaRegs.PP_THRESH  !== undefined) { th.value = fpgaRegs.PP_THRESH; }
+  if (sh && fpgaRegs.PP_SOBEL_SH !== undefined) { sh.value = fpgaRegs.PP_SOBEL_SH; }
+  if (th) $("fv_PP_THRESH").textContent = th.value;
+  if (sh) $("fv_PP_SOBEL_SH").textContent = sh.value;
+
+  // 模式按钮：只有 PP_EN=1 时才算“选中”
+  document.querySelectorAll("[data-pp]").forEach(b => {
+    b.classList.toggle("on", Number(fpgaRegs.PP_EN) === 1 &&
+                            Number(b.dataset.pp) === Number(fpgaRegs.PP_MODE));
+  });
+  $("btnMorph0").classList.toggle("on", Number(fpgaRegs.PP_MORPH) === 0 &&
+                                        Number(fpgaRegs.PP_EN) === 1);
+  $("btnMorph1").classList.toggle("on", Number(fpgaRegs.PP_MORPH) === 1 &&
+                                        Number(fpgaRegs.PP_EN) === 1);
+}
+
+function fpgaShowSt(d) {
+  const st = d.status || {};
+  $("fsState").textContent = d.ok ? "在线" : ("离线 — " + (d.error || "?"));
+  $("fsFrames").textContent = (st.FRAME_CNT !== undefined) ? st.FRAME_CNT : "—";
+  $("fsBeat").textContent   = (st.HEARTBEAT !== undefined) ? st.HEARTBEAT : "—";
+  $("fsVer").textContent    = (st.VER !== undefined)
+      ? "0x" + st.VER.toString(16).toUpperCase().padStart(4, "0") : "—";
+}
+
+async function loadFpga() {
+  try {
+    const d = await api("/api/fpga");
+    fpgaRegs = d.regs || {};
+    fpgaSyncUI();
+    fpgaShowSt(d);
+  } catch (e) {
+    $("fsState").textContent = "不可用（" + e.message + "）";
+  }
+}
+
+function scheduleFpgaPush(patch) {
+  Object.assign(fpgaRegs, patch);
+  fpgaSyncUI();
+  clearTimeout(fpgaPushTimer);
+  fpgaPushTimer = setTimeout(async () => {
+    try {
+      const d = await api("/api/fpga", { method: "POST", body: JSON.stringify(patch) });
+      fpgaRegs = d.regs || fpgaRegs;   // 以 FPGA 回读为准（它可能夹过值）
+      fpgaSyncUI();
+      fpgaShowSt(d);
+      if (d.write_ok === false) toast("FPGA 写入失败: " + (d.message || "?"), true);
+    } catch (e) { toast("FPGA 参数下发失败: " + e.message, true); }
+  }, 60);
+}
+
+document.querySelectorAll("[data-pp]").forEach(b => {
+  b.onclick = () => scheduleFpgaPush({ PP_EN: 1, PP_MODE: Number(b.dataset.pp) });
+});
+$("btnPpOff").onclick     = () => scheduleFpgaPush({ PP_EN: 0 });
+$("btnMorph0").onclick   = () => scheduleFpgaPush({ PP_MORPH: 0 });
+$("btnMorph1").onclick   = () => scheduleFpgaPush({ PP_MORPH: 1 });
+$("btnPpRefresh").onclick = async () => { await loadFpga(); toast("已刷新 FPGA 参数"); };
+
+["PP_THRESH", "PP_SOBEL_SH"].forEach(k => {
+  const el = $("f_" + k);
+  if (!el) return;
+  el.addEventListener("input", () => {
+    $("fv_" + k).textContent = el.value;
+    const patch = {}; patch[k] = parseInt(el.value, 10);
+    scheduleFpgaPush(patch);
+  });
+});
+
+/* 定期读心跳/帧计数 —— 证明 FPGA 在线且链路在跑 */
+function fpgaPoll() {
+  clearInterval(fpgaTimer);
+  fpgaTimer = setInterval(async () => {
+    if (!connected) return;
+    try {
+      const d = await api("/api/fpga");
+      fpgaRegs = d.regs || fpgaRegs;
+      fpgaShowSt(d);
+    } catch (e) { /* 静默, 不打扰用户 */ }
+  }, 3000);
+}
 
 /* ---------------- 硬件参数 ---------------- */
 async function loadHw() {

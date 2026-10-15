@@ -1303,6 +1303,175 @@ def set_v4l2_control(dev, name, value, v4l2ctl="v4l2-ctl"):
 
 
 # ============================================================================
+#  FPGA 硬件参数 (I2C 从机 @0x40)
+#
+#  寄存器映射与 fpga/uisrc/01_rtl/jpeg/jpeg_regfile.v 一一对应。
+#  接线: RK 的 I2C9 底板直连 FPGA 的 L18(SCL)/M18(SDA) —— **不需要飞线**。
+#  实测 `i2cdetect -y 9` 能看到 0x40 (0x1a 是内核 milianke_mipi 驱动占用的 UU)。
+#
+#  FPGA 侧是纯从机、不做时钟拉伸; 读寄存器要先写子地址再读 (smbus 约定),
+#  所以 /dev/i2c-N 必须用**读写**模式打开 —— 用 'rb' 会报 File not open for writing。
+# ============================================================================
+FPGA_I2C_SLAVE = 0x0703          # linux/i2c-dev.h 里的 I2C_SLAVE
+
+#  name, addr, min, max, 只读, 说明
+FPGA_REGS = [
+    ("PP_EN",       0xB0,   0,    1, False, "预处理总使能 (0=直通原图)"),
+    ("PP_MODE",     0xB1,   0,    3, False, "0=原图 1=Sobel 2=阈值分割 3=形态学"),
+    ("PP_SOBEL_SH", 0xB2,   0,    8, False, "Sobel 幅度右移 (3 -> 满量程)"),
+    ("PP_THRESH",   0xB3,   0,  255, False, "二值化阈值"),
+    ("PP_MORPH",    0xB4,   0,    1, False, "0=腐蚀(&) 1=膨胀(|)"),
+]
+#  name, addr, 字节数, 说明
+FPGA_STATUS = [
+    ("FRAME_CNT",   0xB8,   4, "已接收帧数 (32 位小端)"),
+    ("HEARTBEAT",   0xBC,   1, "心跳 (每 256 个 25MHz 周期 +1)"),
+    ("VER",         0xA9,   2, "版本号 (低字节在前)"),
+]
+
+FPGA_PRESETS = {
+    "off":    {"PP_EN": 0},
+    "orig":   {"PP_EN": 1, "PP_MODE": 0},
+    "sobel":  {"PP_EN": 1, "PP_MODE": 1},
+    "thresh": {"PP_EN": 1, "PP_MODE": 2},
+    "morph":  {"PP_EN": 1, "PP_MODE": 3},
+}
+
+
+class FpgaI2C(object):
+    """FPGA 寄存器堆的 I2C 访问。
+
+    每次读写都开关一次 fd —— I2C 才 100kHz, 这点开销可以忽略,
+    换来的是不会在推流长时间运行时持有陈旧 fd。
+    """
+
+    def __init__(self, bus=9, addr=0x40):
+        self.bus = int(bus)
+        self.addr = int(addr)
+        self.path = "/dev/i2c-%d" % self.bus
+
+    def available(self):
+        return os.path.exists(self.path)
+
+    def _open(self):
+        import fcntl
+        f = open(self.path, "r+b", buffering=0)
+        try:
+            fcntl.ioctl(f, FPGA_I2C_SLAVE, self.addr)
+        except Exception:
+            f.close()
+            raise
+        return f
+
+    def read(self, reg):
+        f = self._open()
+        try:
+            f.write(bytes([reg & 0xFF]))   # 先写子地址
+            d = f.read(1)
+            if not d:
+                raise IOError("读 0x%02X 无数据" % reg)
+            return d[0]
+        finally:
+            f.close()
+
+    def read_multi(self, reg, n):
+        """连读 n 字节 (FPGA 侧指针自动递增)。"""
+        f = self._open()
+        try:
+            f.write(bytes([reg & 0xFF]))
+            d = f.read(n)
+            if len(d) != n:
+                raise IOError("读 0x%02X x%d 只拿到 %d 字节" % (reg, n, len(d)))
+            return list(d)
+        finally:
+            f.close()
+
+    def write(self, reg, val):
+        f = self._open()
+        try:
+            f.write(bytes([reg & 0xFF, val & 0xFF]))
+        finally:
+            f.close()
+
+    def snapshot(self):
+        """读回全部可写寄存器 + 只读状态。返回 (ok, dict)。"""
+        out = {"bus": self.bus, "addr": self.addr, "regs": {}, "status": {}}
+        try:
+            for name, a, _lo, _hi, _ro, _d in FPGA_REGS:
+                out["regs"][name] = self.read(a)
+            for name, a, n, _d in FPGA_STATUS:
+                if n == 1:
+                    out["status"][name] = self.read(a)
+                else:
+                    out["status"][name] = int.from_bytes(
+                        bytes(self.read_multi(a, n)), "little")
+            out["ok"] = True
+        except Exception as e:
+            out["ok"] = False
+            out["error"] = "%s: %s" % (type(e).__name__, e)
+        return out["ok"], out
+
+    def apply(self, patch):
+        """写若干个寄存器; 键可以是寄存器名, 也可以是 'preset'。
+
+        越界的值直接夹到合法范围 (前端滑块应该已经限制了, 这里兜底)。
+        返回 (ok, message)。
+
+        ⚠ 先把 preset 展开成普通 {名: 值} 字典再统一处理 ——
+          早期版本直接 writes.extend(pre.items()), 结果混进了 2 元组
+          (而普通路径是 3 元组 (name, addr, value)), 解包时 ValueError
+          被 except 吞掉变成 HTTP 500。
+        """
+        flat = {}
+        for k, v in (patch or {}).items():
+            if k == "preset":
+                pre = FPGA_PRESETS.get(str(v))
+                if pre is None:
+                    return False, "未知预设: %s" % v
+                flat.update(pre)
+            else:
+                flat[str(k).strip()] = v
+
+        writes = []
+        for name, v in flat.items():
+            hit = None
+            for rn, ra, lo, hi, ro, _d in FPGA_REGS:
+                if name == rn or name.upper() in ("0X%02X" % ra, str(ra)):
+                    hit = (rn, ra, lo, hi, ro)
+                    break
+            if hit is None:
+                return False, "未知寄存器: %s" % name
+            rn, ra, lo, hi, ro = hit
+            if ro:
+                return False, "%s 是只读寄存器" % rn
+            try:
+                iv = int(round(float(v)))
+            except (TypeError, ValueError):
+                return False, "%s 值非法: %r" % (rn, v)
+            writes.append((rn, ra, min(max(iv, lo), hi)))
+
+        if not writes:
+            return True, "无变化"
+        try:
+            for _rn, ra, iv in writes:
+                self.write(ra, iv)
+        except Exception as e:
+            return False, "%s: %s" % (type(e).__name__, e)
+        return True, "已写入 %d 个寄存器" % len(writes)
+
+
+def fpga_meta():
+    """给前端用的寄存器元信息 (范围/描述/预设)。"""
+    return {
+        "writable": [{"name": n, "addr": a, "min": lo, "max": hi, "desc": d}
+                     for n, a, lo, hi, _ro, d in FPGA_REGS],
+        "readonly": [{"name": n, "addr": a, "bytes": c, "desc": d}
+                     for n, a, c, d in FPGA_STATUS],
+        "presets": FPGA_PRESETS,
+    }
+
+
+# ============================================================================
 #  HTTP 服务
 # ============================================================================
 class Handler(BaseHTTPRequestHandler):
@@ -1314,6 +1483,7 @@ class Handler(BaseHTTPRequestHandler):
     params = None
     args = None
     capture = None
+    fpga = None
 
     # ---------- 工具 ----------
     def log_message(self, fmt, *a):
@@ -1379,6 +1549,14 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/controls":
                 return self._json(list_v4l2_controls(self.args.device,
                                                      self.args.v4l2ctl))
+            if path == "/api/fpga":
+                if self.fpga is None:
+                    return self._json(
+                        {"ok": False, "error": "FPGA I2C 未启用 (--fpga-bus -1)"},
+                        503)
+                _ok, snap = self.fpga.snapshot()
+                snap["meta"] = fpga_meta()
+                return self._json(snap)
             if path in ("/snapshot.jpg", "/snapshot"):
                 jpeg, _ = self.hub.snapshot()
                 if not jpeg:
@@ -1418,6 +1596,19 @@ class Handler(BaseHTTPRequestHandler):
                                            self.args.v4l2ctl)
                 return self._json({"ok": ok, "message": msg},
                                   200 if ok else 500)
+            if path == "/api/fpga":
+                if self.fpga is None:
+                    return self._json(
+                        {"ok": False, "error": "FPGA I2C 未启用 (--fpga-bus -1)"},
+                        503)
+                body = self._read_json()
+                wok, msg = self.fpga.apply(body)
+                # 写完立刻回读 —— FPGA 侧可能把值夹过, 前端以回读为准
+                _ok, snap = self.fpga.snapshot()
+                snap["write_ok"] = wok
+                snap["message"] = msg
+                snap["meta"] = fpga_meta()
+                return self._json(snap, 200 if (wok and snap.get("ok")) else 500)
             return self._json({"error": "not found", "path": path}, 404)
         except (BrokenPipeError, ConnectionResetError):
             pass
@@ -1519,6 +1710,10 @@ def main():
     ap.add_argument("--cpu-affinity", default="auto",
                     help="绑定 CPU: auto(默认, 自动挑大核) / none / 形如 4-7")
     ap.add_argument("--v4l2ctl", default="v4l2-ctl", help="v4l2-ctl 可执行文件路径")
+    ap.add_argument("--fpga-bus", type=int, default=9,
+                    help="FPGA I2C 从机所在总线 (默认 9 = RK I2C9; 设 -1 关闭)")
+    ap.add_argument("--fpga-addr", type=lambda s: int(s, 0), default=0x40,
+                    help="FPGA I2C 从机地址 (默认 0x40)")
     ap.add_argument("--verbose", action="store_true", help="打印每条 HTTP 日志")
     args = ap.parse_args()
 
@@ -1563,6 +1758,10 @@ def main():
     Handler.args = args
     Handler.capture = cap
 
+    # FPGA 预处理参数走 I2C 从机 (RK I2C9 <-> FPGA L18/M18, 底板直连不用飞线)
+    if args.fpga_bus is not None and args.fpga_bus >= 0:
+        Handler.fpga = FpgaI2C(args.fpga_bus, args.fpga_addr)
+
     srv = ThreadingHTTPServer((args.host, args.port), Handler)
     srv.daemon_threads = True
 
@@ -1584,6 +1783,22 @@ def main():
     if not HAVE_GST_PY:
         print("              (gi 不可用: %s)" % _GST_PY_ERR)
     print("   监听     : %s:%d" % (args.host, args.port))
+    if Handler.fpga is not None:
+        _fp_ok, _fp = Handler.fpga.snapshot()
+        if _fp_ok:
+            print("   FPGA I2C : %s @0x%02X 在线 | %s"
+                  % (Handler.fpga.path, args.fpga_addr,
+                     " ".join("%s=%d" % (k, v)
+                              for k, v in _fp["regs"].items())))
+            print("              状态: %s"
+                  % " ".join("%s=%d" % (k, v)
+                             for k, v in _fp["status"].items()))
+        else:
+            print("   FPGA I2C : %s @0x%02X 不可用 (%s)"
+                  % (Handler.fpga.path, args.fpga_addr,
+                     _fp.get("error", "?")))
+    else:
+        print("   FPGA I2C : 已关闭")
     print("   地址     :")
     print("       http://%s:%d/          浏览器直接看画面" % (ip, args.port))
     print("       http://%s:%d/stream    MJPEG 流" % (ip, args.port))

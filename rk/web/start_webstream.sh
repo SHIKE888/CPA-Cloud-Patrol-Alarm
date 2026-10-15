@@ -65,4 +65,6 @@ echo "   加速   : C 色彩转换 $ACCEL"
 echo "   流水线 : 采集1线程 / 转换4线程 / 编码3线程, 默认绑大核"
 echo "=============================================================="
 
-exec "$PYTHON" "$DIR/mipi_webstream.py" --device "$DEV" --port "$PORT" "$@"
+# -u: 关掉 python 的 stdout 块缓冲。重定向到日志文件时 stdout 不是 tty,
+#     不关缓冲的话启动横幅(含 FPGA I2C 探测结果)会迟迟不落盘, 不好排查。
+exec "$PYTHON" -u "$DIR/mipi_webstream.py" --device "$DEV" --port "$PORT" "$@"
