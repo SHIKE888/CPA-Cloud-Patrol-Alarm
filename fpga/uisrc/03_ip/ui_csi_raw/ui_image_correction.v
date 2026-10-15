@@ -37,6 +37,8 @@ module ui_image_correction #(
 )(
     input                          		I_clk   			,
     input                          		I_rst_n 			,
+    input    [12:0]                    	I_img_width 		,   // V21: 运行时图像宽度
+    input    [12:0]                    	I_img_height		,   // V21: 运行时图像高度
 
     input    [DATA_WIDTH - 1:0]       	I_raw_data			,       
     input                             	I_raw_valid 		,     
@@ -57,14 +59,18 @@ module ui_image_correction #(
     wire                       V_valid,H_valid;
     wire                       tuser;
 	
-	assign H_valid 		= (h_cnt < 481) && (h_cnt > 0);
+// V21: 运行时宽高 (4 像素/时钟)
+    wire [14:0] img_width_4x  = (I_img_width >> 2);
+    wire [14:0] img_height_rt = I_img_height;
+
+    assign H_valid 		= (h_cnt <= img_width_4x) && (h_cnt > 0);
     
     assign tuser 		= (h_cnt == 1) && (v_cnt == 1) && I_raw_tvalid_d;
     
     assign O_raw_tdata  = V_valid && H_valid? I_raw_tdata_r:0;
     assign I_raw_tready = O_raw_tready;
     assign O_raw_tvalid = H_valid && V_valid && I_raw_tvalid_d;
-    assign O_raw_tlast  = V_valid && (h_cnt == 480) && I_raw_tvalid_d;
+    assign O_raw_tlast  = V_valid && (h_cnt == img_width_4x) && I_raw_tvalid_d;
     assign O_raw_tuser  = tuser;
 
     always @(posedge I_clk or negedge I_rst_n) begin
@@ -99,7 +105,7 @@ module ui_image_correction #(
             v_cnt  <=  v_cnt + 1;
     end
 
-    assign V_valid = (v_cnt > 0) && (v_cnt < 1081);
+    assign V_valid = (v_cnt > 0) && (v_cnt <= img_height_rt);
 
     // 计算每行像素个数
     always @(posedge I_clk or negedge I_rst_n) begin

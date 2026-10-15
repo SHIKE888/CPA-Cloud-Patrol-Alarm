@@ -8,6 +8,8 @@
 module ui_isp_top (
     input           I_clk,
     input           I_rst_n,
+    input  [12:0]   I_img_width ,   // V21: 运行时图像宽度 (替代硬编码 1920)
+    input  [12:0]   I_img_height,   // V21: 运行时图像高度 (替代硬编码 1080)
     input           I_tlast,
     input           I_tuser,
     input  [39:0]   I_tdata,
@@ -114,13 +116,13 @@ ui_BLC #(
 
 // ------------------ demosaic ------------------
 ui_top_demosaic #(
-    .IMG_HEIGHT          (1080),
-    .IMG_WIDTH           (1920),
     .data_complete_delay (50),
     .BAYER_MODE          ("RGGB")
 ) X_ui_top_demosaic (
     .I_clk        (I_clk),
     .I_rst_n      (I_rst_n),
+    .I_img_width  (I_img_width ),     // V21: 运行时
+    .I_img_height (I_img_height),     // V21: 运行时
     .I_axi4s_tdata(BLC_O_tdata),
     .I_axi4s_tdest(BLC_O_tdest),
     .I_axi4s_tlast(BLC_O_tlast),
@@ -147,8 +149,8 @@ ui_awb #(
 ) X_ui_awb (
     .I_clk  (I_clk),
     .I_rst_n(I_rst_n),
-    .I_img_width (13'd1920),
-    .I_img_height(13'd1080),
+    .I_img_width (I_img_width ),      // V21: 运行时 (原 13'd1920)
+    .I_img_height(I_img_height),      // V21: 运行时 (原 13'd1080)
     .I_tlast(m_aixs_tlast),
     .I_tuser(m_aixs_tuser),
     .I_tdata(m_aixs_tdata_96),
@@ -163,8 +165,6 @@ ui_awb #(
 
 // ------------------ image cut ------------------
 ui_image_cut #(
-    .IMG_WIDTH   (1920),
-    .IMG_HEIGHT  (1080),
     .DATA_WIDTH  (96),
     .SKIP_ROWS_top  (0),
     .SKIP_ROWS_bottom(0),
@@ -173,6 +173,8 @@ ui_image_cut #(
 ) X_ui_image_cut (
     .I_clk  (I_clk),
     .I_rst_n(I_rst_n),
+    .I_img_width (I_img_width ),      // V21: 运行时
+    .I_img_height(I_img_height),      // V21: 运行时
     .I_tlast(awb_O_tlast),
     .I_tuser(awb_O_tuser),
     .I_tdata(awb_O_tdata),

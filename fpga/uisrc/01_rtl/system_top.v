@@ -154,6 +154,22 @@ parameter CS_WIDTH        = 1
 	// 1080P60 标准时序 (像素时钟 148.5MHz 下的行/场参数)
 	localparam integer H_SA = 44, H_BP = 148, H_FP = 88;
 	localparam integer V_SA = 5 , V_BP = 36 , V_FP = 4 ;
+
+	// ==== V21: 运行时分辨率参数 ======================================
+	//  Phase A: 仍由上面的 localparam 驱动 (综合结果与改动前完全一致);
+	//  Phase B: 把下面这些 wire 换成来自 cfg 寄存器组的信号, 即可运行时切换分辨率。
+	wire [12:0] S_h_active     = H_ACTIVE[12:0];                      // 有效像素/行
+	wire [11:0] S_v_active     = V_ACTIVE[11:0];                      // 有效行数
+	wire [15:0] S_w_beats      = W_BEATS_PER_LINE[15:0];              // 写侧 beat/行
+	wire [15:0] S_r_beats      = R_BEATS_PER_LINE[15:0];              // 读侧 beat/行
+	// 注: Verilog 不允许对括号表达式做位选 ((a+b)[12:0] 是语法错误),
+	//     这里直接靠 wire 位宽截断。
+	wire [12:0] S_h_sync_start = H_ACTIVE + H_FP;
+	wire [12:0] S_h_sync_end   = H_ACTIVE + H_FP + H_SA;
+	wire [12:0] S_h_frame_size = H_ACTIVE + H_FP + H_SA + H_BP;
+	wire [11:0] S_v_sync_start = V_ACTIVE + V_FP;
+	wire [11:0] S_v_sync_end   = V_ACTIVE + V_FP + V_SA;
+	wire [11:0] S_v_frame_size = V_ACTIVE + V_FP + V_SA + V_BP;
 	//===============================================================
                                       
 
@@ -534,6 +550,9 @@ ui_image_correction #(
 (
     .I_clk            (S_hs_rx_clk		  ),
     .I_rst_n          (S_pll_lock		  ),
+    // V21: 运行时宽高
+    .I_img_width      (S_h_active		  ),
+    .I_img_height     (S_v_active		  ),
 	
     .I_raw_data       (S_raw10_data       ),       
     .I_raw_valid      (S_raw10_valid      ),     
@@ -553,6 +572,8 @@ ui_image_correction #(
 ui_isp_top X_ui_isp_top (
 	.I_clk		     (S_hs_rx_clk		),
 	.I_rst_n         (S_pll_lock		),
+	.I_img_width     (S_h_active		),
+	.I_img_height    (S_v_active		),
 	.I_tlast         (S_axis_tlast 		),
 	.I_tuser         (S_axis_tuser 		),
 	.I_tdata         (S_axis_tdata 		),
@@ -612,12 +633,12 @@ preproc_top #(
 //  所以做成「中心裁剪 + 填黑边」, 输出仍是 1920x1080, RK 侧完全不用动。
 //=============================================================================
 preproc_post #(
-	.H_ACTIVE   (H_ACTIVE),
-	.V_ACTIVE   (V_ACTIVE),
 	.PX_PER_CLK (4)
 ) u_preproc_post (
 	.clk        (S_hs_rx_clk),
 	.rst_n      (S_pll_lock),
+	.i_h_active (S_h_active[11:0]),
+	.i_v_active (S_v_active[11:0]),
 	.i_tvalid   (S_pp_tvalid),
 	.i_tuser    (S_pp_tuser),
 	.i_tlast    (S_pp_tlast),
@@ -695,9 +716,6 @@ ui_dbuf# (
 	.W_DATAWIDTH	(64					),//V21: YUV422×4 = 16bpp×4 = 64b (pre-DDR RGB→YUV 后)
 	.W_BASEADDR		(0					),//写通道设置内存起始地址
 	.W_DSIZEBITS	(25					),//写通道设置缓存数据的增量地址大小，用于FDMA DBUF 计算帧缓存起始地址
-	.W_XSIZE		(W_BEATS_PER_LINE	),//写通道设置X方向的数据大小，代表了每次FDMA 传输的数据长度 (64bit/beat = 4px YUV422)
-	.W_XSTRIDE		(W_BEATS_PER_LINE	),//写通道设置X方向的Stride值，主要用于图形缓存应用
-	.W_YSIZE		(V_ACTIVE			),//写通道设置Y方向值，代表了进行了多少次XSIZE传输
 	.W_XDIV			(2					),//写通道对X方向数据拆分为XDIV次传输，减少FIFO的使用
 	.W_BUFSIZE		(3					),//写通道设置帧缓存大小，目前最大支持128帧，可以修改参数支持更缓存数
 		
@@ -705,9 +723,6 @@ ui_dbuf# (
 	.R_DATAWIDTH	(32					),//V21: 32b/cyc = 2 像素 YUV422 (YUYV pair)
 	.R_BASEADDR		(0					),//读通道设置内存起始地址
 	.R_DSIZEBITS	(25					),//读通道设置缓存数据的增量地址大小，用于FDMA DBUF 计算帧缓存起始地址
-	.R_XSIZE		(R_BEATS_PER_LINE	),//读通道: 32bit/beat = 2 像素 YUV422 -> H_ACTIVE/2 beat/行
-	.R_XSTRIDE		(R_BEATS_PER_LINE	),//读通道: 同上
-	.R_YSIZE		(V_ACTIVE			),//读通道设置Y方向值，代表了进行了多少次XSIZE传输
 	.R_XDIV			(2					),//读通道对X方向数据拆分为XDIV次传输，减少FIFO的使用
 	.R_BUFSIZE		(3					) //读通道设置帧缓存大小，目前最大支持128帧，可以修改参数支持更缓存数
 )
@@ -715,6 +730,13 @@ X_ui_dbuf
 (
 	.I_ui_clk		(S_dfi_clk			),
 	.I_ui_rstn		(S_ddr_init_cal_done),
+	// ==== V21: 运行时尺寸 (帧内保持稳定) ====
+	.I_W_XSIZE		(S_w_beats			),
+	.I_W_XSTRIDE	(S_w_beats			),
+	.I_W_YSIZE		(S_v_active			),
+	.I_R_XSIZE		(S_r_beats			),
+	.I_R_XSTRIDE	(S_r_beats			),
+	.I_R_YSIZE		(S_v_active			),
 		
 	.I_W_en      	(1					),
 	.I_W_wclk    	(S_ud_wclk			),
@@ -976,19 +998,16 @@ ui_ddr X_ui_ddr (
     .uart_txd          (				)
 );
 
-ui_vtc #(
-	.H_ActiveSize      (H_ACTIVE						), //视频时间参数,行视频信号，一行有效(需要显示的部分)像素所占的时钟数，一个时钟对应一个有效像素
-	.H_SyncStart       (H_ACTIVE+H_FP					), //视频时间参数,行同步开始，即多少时钟数后开始产生行同步信号 
-	.H_SyncEnd         (H_ACTIVE+H_FP+H_SA				), //视频时间参数,行同步结束，即多少时钟数后停止产生行同步信号，之后就是行有效数据部分
-	.H_FrameSize       (H_ACTIVE+H_FP+H_SA+H_BP			), //视频时间参数,行视频信号，一行视频信号总计占用的时钟数
+ui_vtc X_ui_vtc (
+	.I_H_ActiveSize    (S_h_active						), //视频时间参数,行视频信号，一行有效(需要显示的部分)像素所占的时钟数，一个时钟对应一个有效像素
+	.I_H_SyncStart      (S_h_sync_start					), //视频时间参数,行同步开始，即多少时钟数后开始产生行同步信号 
+	.I_H_SyncEnd        (S_h_sync_end				), //视频时间参数,行同步结束，即多少时钟数后停止产生行同步信号，之后就是行有效数据部分
+	.I_H_FrameSize      (S_h_frame_size			), //视频时间参数,行视频信号，一行视频信号总计占用的时钟数
 	
-	.V_ActiveSize      (V_ACTIVE						), //视频时间参数,场视频信号，一帧图像所占用的有效(需要显示的部分)行数量，通常说的视频分辨率即H_ActiveSize*V_ActiveSize
-	.V_SyncStart       (V_ACTIVE+V_FP					), //视频时间参数,场同步开始，即多少行数后开始产生场同步信号 
-	.V_SyncEnd         (V_ACTIVE+V_FP+V_SA				), //视频时间参数,场同步结束，多少行后停止产生长同步信号  
-	.V_FrameSize       (V_ACTIVE+V_FP+V_SA+V_BP			)  //视频时间参数,场视频信号，一帧视频信号总计占用的行数量        
-) 
-X_ui_vtc
-(
+	.I_V_ActiveSize    (S_v_active						), //视频时间参数,场视频信号，一帧图像所占用的有效(需要显示的部分)行数量，通常说的视频分辨率即H_ActiveSize*V_ActiveSize
+	.I_V_SyncStart      (S_v_sync_start					), //视频时间参数,场同步开始，即多少行数后开始产生场同步信号 
+	.I_V_SyncEnd        (S_v_sync_end				), //视频时间参数,场同步结束，多少行后停止产生长同步信号  
+	.I_V_FrameSize      (S_v_frame_size			), //视频时间参数,场视频信号，一帧视频信号总计占用的行数量        
     .I_vtc_rstn		   (~S_R_vrst		), //系统复位
     .I_vtc_clk		   (S_pclkx1		), //系统时钟
     .O_vtc_vs		   (S_vtc_vs		), //场同步输出
@@ -1027,10 +1046,10 @@ wire [31:0] S_pack_tdata;
 wire        S_pack_tsof;
 wire        S_pack_tlast;
 
-csi2_pack_yuv422_stream #(
-	.H_ACTIVE	(H_ACTIVE),
-	.V_ACTIVE	(V_ACTIVE)
-) u_csi2_pack (
+csi2_pack_yuv422_stream u_csi2_pack (
+	// V21: 运行时尺寸
+	.I_h_active		(S_h_active			),
+	.I_v_active		(S_v_active			),
 	// source: ui_dbuf.R (S_pclkx1 域)
 	.src_clk		(S_pclkx1			),
 	.src_rst_n		(S_pll_lock			),
@@ -1103,8 +1122,6 @@ wire        S_tx_tlast  = JPEG_TEST_SRC ? S_test_tlast  : S_pack_tlast;
 csi2_frame_tx #(
 	.DT			(6'h1E),	// YUV422-8bit  (必须与 RK 驱动 MEDIA_BUS_FMT_YUYV8_2X8 一致)
 	.VC			(2'd0 ),
-	.H_ACTIVE	(H_ACTIVE ),
-	.V_ACTIVE	(V_ACTIVE ),
 	.BPP_NUM	(2    ),
 	.BPP_DEN	(1    ),
 	.GAP_LINE	(32'd200 ),
@@ -1113,6 +1130,8 @@ csi2_frame_tx #(
 	.clk			(S_dsi_byte_clk	),
 	.rst_n			(S_dphy_rst_n	),
 	.enable			(S_dsi_en_int	),
+	.I_h_active		(S_h_active		),
+	.I_v_active		(S_v_active		),
 	.s_tvalid		(S_tx_tvalid	),
 	.s_tready		(S_pack_tready	),
 	.s_tdata		(S_tx_tdata		),

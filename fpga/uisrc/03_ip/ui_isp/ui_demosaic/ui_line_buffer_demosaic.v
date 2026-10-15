@@ -38,13 +38,14 @@ module ui_line_buffer_demosaic #(
     input           I_rst_n	,    // 输入复位信号，低电平有效
     input           I_tuser	,    // 输入tuser信号，帧起始标志 
     input           I_valid	,    // 输入数据有效信号          
+    input   [12:0]  I_img_width,  // V21: 运行时图像宽度 (替代编译期 IMG_WIDTH)
     input   [32:0]  I_data	,    // 输入数据总线，宽度为33位  
     output          O_valid	,    // 输出数据有效信号          
     output  [32:0]  O_data       // 输出数据总线，宽度为33位  
 );
 
-    // 定义局部参数，计算图像宽度的四分之一，用于地址计数
-    localparam IMG_WIDTH_4x = (IMG_WIDTH >> 2);
+    // V21: 运行时宽度, 4 像素/时钟 => 每行地址数 = 宽度/4
+    wire [12:0] img_width_4x = (I_img_width >> 2);
 
     // 定义读使能信号
     wire        rd_en;  // synthesis keep 
@@ -83,7 +84,7 @@ module ui_line_buffer_demosaic #(
             addra <= 0;    // 复位或者I_tuser有效时，将addra清零
         end else if (valid_d0) begin
             // 当valid_d0有效时，更新addra
-            addra <= (addra == IMG_WIDTH_4x - 1) ? 0 : addra + 1'b1;
+            addra <= (addra == img_width_4x - 1) ? 0 : addra + 1'b1;
             // 如果addra达到最大值（IMG_WIDTH_4x - 1），则清零，否则加1
         end
     end
@@ -93,7 +94,7 @@ module ui_line_buffer_demosaic #(
     always @(posedge I_clk or negedge I_rst_n) begin
         if (!I_rst_n || I_tuser) begin
             tlast_lock_d0 <= 1'b0;  // 复位或者I_tuser有效时，将tlast_lock_d0清零
-        end else if ((tlast_lock_d0 == 1'b0) & (addra == IMG_WIDTH_4x - 1)) begin
+        end else if ((tlast_lock_d0 == 1'b0) & (addra == img_width_4x - 1)) begin
             tlast_lock_d0 <= 1'b1;  // 当第一次addra达到最大值时，置位tlast_lock_d0
         end
     end
@@ -104,7 +105,7 @@ module ui_line_buffer_demosaic #(
             addrb <= 0;    // 复位或者I_tuser有效时，将addrb清零
         end else begin
             // 当rd_en有效时，更新addrb
-            addrb <= rd_en ? ((addrb == IMG_WIDTH_4x - 1) ? 0 : addrb + 1'b1) : addrb;
+            addrb <= rd_en ? ((addrb == img_width_4x - 1) ? 0 : addrb + 1'b1) : addrb;
             // 如果addrb达到最大值（IMG_WIDTH_4x - 1），则清零，否则加1
             // 如果rd_en无效，addrb保持不变
         end

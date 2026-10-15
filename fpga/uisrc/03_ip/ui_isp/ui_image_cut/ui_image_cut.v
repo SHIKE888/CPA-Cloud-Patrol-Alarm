@@ -43,6 +43,8 @@ module ui_image_cut  #(
 (
     input                       I_clk  ,
     input                       I_rst_n,
+    input  [12:0]               I_img_width ,   // V21: 运行时图像宽度
+    input  [12:0]               I_img_height,   // V21: 运行时图像高度
 
     input                       I_tlast  ,
     input                       I_tuser  ,
@@ -62,9 +64,10 @@ reg  [DATA_WIDTH-1:0] I_tdata_r;
 reg                   I_tlast_r0 ,I_tuser_r0,I_tvalid_r0;
 reg                   I_tlast_r1 ,I_tuser_r1,I_tvalid_r1;
 
-localparam IMG_WIDTH_4x = (IMG_WIDTH >> 2);
+// V21: 运行时宽度 (4 像素/时钟)
+wire [12:0] img_width_4x = (I_img_width >> 2);
 
-wire  w_skip = (v_cnt < SKIP_ROWS_top) ||(h_cnt < SKIP_COLS_left) || (v_cnt >= IMG_HEIGHT - SKIP_ROWS_bottom) || (h_cnt >= IMG_WIDTH_4x - SKIP_COLS_right); 
+wire  w_skip = (v_cnt < SKIP_ROWS_top) ||(h_cnt < SKIP_COLS_left) || (v_cnt >= I_img_height - SKIP_ROWS_bottom) || (h_cnt >= img_width_4x - SKIP_COLS_right); 
 
     always @(posedge I_clk or negedge I_rst_n) begin
         if (!I_rst_n ) begin

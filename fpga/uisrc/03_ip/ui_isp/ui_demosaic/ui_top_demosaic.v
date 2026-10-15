@@ -42,6 +42,8 @@ module ui_top_demosaic #(
 (
     input           I_clk   		,  // 时钟信号
     input           I_rst_n 		,  // 复位信号，低有效
+    input  [12:0]   I_img_width     ,  // V21: 运行时图像宽度
+    input  [12:0]   I_img_height    ,  // V21: 运行时图像高度
 
     input [39:0]    I_axi4s_tdata 	,  // AXI4-Stream视频数据
     input [9:0]     I_axi4s_tdest 	,
@@ -69,13 +71,13 @@ wire [95:0] matrix_cur_line ;
 wire [95:0] matrix_next_line;
 
 ui_raw_matrix_3x3_buffer #(
-    .IMG_HEIGHT         (IMG_HEIGHT         )	,  // 图像高度
-    .IMG_WIDTH          (IMG_WIDTH          )	,  // 图像宽度
     .data_complete_delay(data_complete_delay)
 )X_ui_raw_matrix_3x3_buffer 
 (
    .I_clk    				(I_clk   )				,  // 时钟信号
    .I_rst_n  				(I_rst_n )				,  // 复位信号，低有效
+   .I_img_width (I_img_width )			,  // V21: 运行时宽度
+   .I_img_height(I_img_height)			,  // V21: 运行时高度
 
    .I_axi4s_video_tdata 	(I_axi4s_tdata )	,  // AXI4-Stream视频数据
    .I_axi4s_video_tdest 	(I_axi4s_tdest )	,

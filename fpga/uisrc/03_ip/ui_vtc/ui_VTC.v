@@ -68,20 +68,25 @@
 
 `timescale 1ns / 1ns  //仿真时间刻度/精度
 
-module ui_vtc #(
-    parameter integer H_ActiveSize  =   1920,               //视频时间参数,行视频信号，一行有效(需要显示的部分)像素所占的时钟数，一个时钟对应一个有效像素
-    parameter integer H_FrameSize   =   1920+88+44+148,     //视频时间参数,行视频信号，一行视频信号总计占用的时钟数
-    parameter integer H_SyncStart   =   1920+88,            //视频时间参数,行同步开始，即多少时钟数后开始产生行同步信号 
-    parameter integer H_SyncEnd     =   1920+88+44,         //视频时间参数,行同步结束，即多少时钟数后停止产生行同步信号，之后就是行有效数据部分
-
-    parameter integer V_ActiveSize  =   1080,               //视频时间参数,场视频信号，一帧图像所占用的有效(需要显示的部分)行数量，通常说的视频分辨率即H_ActiveSize*V_ActiveSize
-    parameter integer V_FrameSize   =   1080+4+5+36,        //视频时间参数,场视频信号，一帧视频信号总计占用的行数量
-    parameter integer V_SyncStart   =   1080+4,             //视频时间参数,场同步开始，即多少行数后开始产生场同步信号 
-    parameter integer V_SyncEnd     =   1080+4+5            //视频时间参数,场同步结束，即多少场数后停止产生场同步信号，之后就是场有效数据部分
-) (
-    input  I_vtc_rstn,      //系统复位
-    input  I_vtc_clk,       //系统时钟
-    output O_vtc_vs,        //场同步输出
+// ---------------------------------------------------------------------------
+// V21: 时序参数由编译期 #() 参数改为【运行时输入端口】, 以支持分辨率动态切换
+//      H_* 用 13 位 (4K 行周期 3840+280=4120 > 4095, 12 位溢出)
+//      V_* 用 12 位 (4K 2160+45 = 2205 < 4095, 够) 行 缺
+//      切换分辨率时建议由上层脉冲 I_vtc_rstn 复位本模块计数器
+// ---------------------------------------------------------------------------
+module ui_vtc (
+    input  wire        I_vtc_rstn,          //系统复位
+    input  wire        I_vtc_clk,           //系统时钟
+    // ==== 运行时视频时序参数 (由 system_top 分辨率寄存器提供) ====
+    input  wire [12:0] I_H_ActiveSize,      //一行有效像素时钟数
+    input  wire [12:0] I_H_FrameSize,       //一行视频信号总计占用的时钟数
+    input  wire [12:0] I_H_SyncStart,       //行同步开始
+    input  wire [12:0] I_H_SyncEnd,         //行同步结束
+    input  wire [11:0] I_V_ActiveSize,      //一帧有效行数
+    input  wire [11:0] I_V_FrameSize,       //一帧视频信号总计占用的行数量
+    input  wire [11:0] I_V_SyncStart,       //场同步开始
+    input  wire [11:0] I_V_SyncEnd,         //场同步结束
+    output wire        O_vtc_vs,        //场同步输出
     output O_vtc_hs,        //行同步输出
     output O_vtc_de_valid,  //视频数据有效	
     output O_vtc_user,      //满足stream时序产生 user 信号,用于帧同步
@@ -91,7 +96,7 @@ module ui_vtc #(
 
 
 
-  reg [11:0] hcnt = 12'd0;  //视频水平方向，列计数器，寄存器
+  reg [12:0] hcnt = 13'd0;  //视频水平方向，列计数器 (13位: 4K 行周期 4120 > 4095)
   reg [11:0] vcnt = 12'd0;  //视频垂直方向，行计数器，寄存器   
   reg [2 : 0] rst_cnt = 3'd0;  //复位计数器，寄存器
   wire rst_sync = rst_cnt[2];  //同步复位
@@ -105,24 +110,24 @@ module ui_vtc #(
   //视频水平方向，列计数器
   always @(posedge I_vtc_clk) begin
     if (rst_sync == 1'b0)  //复位
-      hcnt <= 12'd0;
-    else if (hcnt < (H_FrameSize - 1'b1))  //计数范围从0 ~ H_FrameSize-1
+      hcnt <= 13'd0;
+    else if (hcnt < (I_H_FrameSize - 1'b1))  //计数范围从0 ~ H_FrameSize-1
       hcnt <= hcnt + 1'b1;
-    else hcnt <= 12'd0;
+    else hcnt <= 13'd0;
   end
 
   //视频垂直方向，行计数器，用于计数已经完成的行视频信号
   always @(posedge I_vtc_clk) begin
     if (rst_sync == 1'b0) vcnt <= 12'd0;
-    else if (hcnt == (H_ActiveSize - 1'b1)) begin  //视频水平方向，是否一行结束
-      vcnt <= (vcnt == (V_FrameSize - 1'b1)) ? 12'd0 : vcnt + 1'b1;//视频垂直方向，行计数器加1，计数范围0~V_FrameSize - 1
+    else if (hcnt == (I_H_ActiveSize - 1'b1)) begin  //视频水平方向，是否一行结束
+      vcnt <= (vcnt == (I_V_FrameSize - 1'b1)) ? 12'd0 : vcnt + 1'b1;//视频垂直方向，行计数器加1，计数范围0~V_FrameSize - 1
     end
   end
 
-  wire hs_valid = hcnt < H_ActiveSize;  //行信号有效像素部分
-  wire vs_valid = vcnt < V_ActiveSize;  //场信号有效像素部分
-  wire vtc_hs = (hcnt >= H_SyncStart && hcnt < H_SyncEnd);  //产生hs，行同步信号
-  wire vtc_vs = (vcnt > V_SyncStart && vcnt <= V_SyncEnd);  //产生vs，场同步信号      
+  wire hs_valid = hcnt < I_H_ActiveSize;  //行信号有效像素部分
+  wire vs_valid = vcnt < I_V_ActiveSize;  //场信号有效像素部分
+  wire vtc_hs = (hcnt >= I_H_SyncStart && hcnt < I_H_SyncEnd);  //产生hs，行同步信号
+  wire vtc_vs = (vcnt > I_V_SyncStart && vcnt <= I_V_SyncEnd);  //产生vs，场同步信号      
   wire vtc_de    =  hs_valid && vs_valid;//只有当视频水平方向，列有效和视频垂直方向，行同时有效，视频数据部分才是有效
 
   //**********************  video stream video rgb  ***************************

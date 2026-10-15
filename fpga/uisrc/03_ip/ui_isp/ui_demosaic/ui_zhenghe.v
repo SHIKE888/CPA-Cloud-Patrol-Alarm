@@ -41,6 +41,8 @@ module ui_zhenghe#(
 (
     input                   I_clk  ,
     input                   I_rst_n,
+    input           [12:0]  I_img_width  ,   // V21: 运行时图像宽度
+    input           [12:0]  I_img_height ,   // V21: 运行时图像高度
 
     input                   I_tlast  ,
     input                   I_tuser  ,
@@ -53,7 +55,8 @@ module ui_zhenghe#(
     output reg              O_tvalid 
 );
 
-    localparam   IMG_WIDTH_4x = (IMG_WIDTH>>2);
+    // V21: 运行时宽度
+    wire [12:0]  img_width_4x = (I_img_width>>2);
 
     reg  [10:0]             addra			 ;
     reg  [10:0]             addrb			 ;
@@ -125,8 +128,8 @@ module ui_zhenghe#(
     
     always @(posedge I_clk or negedge I_rst_n) begin
         if(!I_rst_n ) 
-            valid_width <= IMG_WIDTH_4x;
-        else if(I_tuser && (cnt_first > IMG_WIDTH_4x))
+            valid_width <= img_width_4x;
+        else if(I_tuser && (cnt_first > img_width_4x))
             valid_width <= cnt_first;
     end
 
@@ -159,7 +162,7 @@ module ui_zhenghe#(
     end
 
     assign flag_valid        = flag_valid_d0 || flag_valid_d1 ;
-    assign rd_valid_width_d0 = valid_width - IMG_WIDTH_4x + data_complete_delay;
+    assign rd_valid_width_d0 = valid_width - img_width_4x + data_complete_delay;
     assign rd_valid_width_d1 = valid_width + data_complete_delay + 1;
     
     always @(posedge I_clk or negedge I_rst_n) begin
@@ -179,7 +182,7 @@ module ui_zhenghe#(
             addra <= 0;
         end 
         else if(valid_r0)begin
-            addra <= (addra == IMG_WIDTH_4x -1) ? 'b0 : addra + 1'b1;
+            addra <= (addra == img_width_4x -1) ? 'b0 : addra + 1'b1;
         end
     end
 
@@ -189,7 +192,7 @@ module ui_zhenghe#(
             addrb <= 0;
         end 
         else if(rd_valid)begin
-            addrb <= (addrb == IMG_WIDTH_4x -1) ? 'b0 : addrb + 1'b1;
+            addrb <= (addrb == img_width_4x -1) ? 'b0 : addrb + 1'b1;
         end
     end
     ui_ram_zhenghe X_ui_ram_zhenghe (

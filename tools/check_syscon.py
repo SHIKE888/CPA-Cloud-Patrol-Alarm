@@ -51,7 +51,13 @@ EXTRA_DECL = """
 	localparam integer V_ACTIVE   = 1080;
 	localparam integer W_BEATS_PER_LINE = H_ACTIVE / 4;
 	localparam integer R_BEATS_PER_LINE = H_ACTIVE / 2;
+	// V21: system_top 新增的运行时分辨率 wire (端口连接会用到, 需按真实位宽声明)
+	wire [12:0] S_h_active;
+	wire [11:0] S_v_active;
 """
+
+# V21: 这些信号已在上面的 EXTRA_DECL 里按真实位宽声明, 不要自动重复生成
+_EXTRA_SIG_NAMES = ('H_ACTIVE', 'V_ACTIVE', 'S_h_active', 'S_v_active')
 
 
 def extract_inst(text, mod, inst):
@@ -370,7 +376,8 @@ def main():
     sigs = set()
     for b in blocks:
         sigs |= collect_signals(b)
-    sigs = {s for s in sigs if s not in ('H_ACTIVE', 'V_ACTIVE')}
+    sigs = {s for s in sigs
+            if not any(s == n or s.startswith(n + '[') for n in _EXTRA_SIG_NAMES)}
 
     # 汇总端口位宽
     width = {}

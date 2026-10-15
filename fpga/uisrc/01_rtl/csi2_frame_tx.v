@@ -11,8 +11,7 @@
 module csi2_frame_tx #(
     parameter [5:0]   DT         = 6'h1E,        // Data Type (YUV422=0x1E,RGB888=0x24,RAW10=0x2B,...)
     parameter [1:0]   VC         = 2'd0,         // Virtual Channel
-    parameter integer H_ACTIVE   = 1920,
-    parameter integer V_ACTIVE   = 1080,
+    // V21: H_ACTIVE / V_ACTIVE 改为运行时端口 (见 I_h_active / I_v_active)
     parameter integer BPP_NUM    = 2,            // bytes-per-pixel numerator
     parameter integer BPP_DEN    = 1,            // bytes-per-pixel denominator
                                                  //   YUV422→2/1, RGB888→3/1, RAW10→5/4
@@ -22,6 +21,9 @@ module csi2_frame_tx #(
     input  wire        clk,
     input  wire        rst_n,
     input  wire        enable,
+    // V21: 运行时图像尺寸 (每帧保持稳定)
+    input  wire [12:0] I_h_active,   // 有效像素/行
+    input  wire [11:0] I_v_active,   // 有效行数
 
     // --- AXI-Stream slave (from Layer-2 packer) ---
     input  wire        s_tvalid,
@@ -40,10 +42,10 @@ module csi2_frame_tx #(
     output reg  [31:0] packet_cnt
 );
 
-    // ---- Derived constants ------------------------------------------------
-    localparam integer WC_INT         = (H_ACTIVE * BPP_NUM) / BPP_DEN;
-    localparam [15:0]  WC             = WC_INT[15:0];
-    localparam integer WORDS_PAYLOAD  = WC_INT / 4;
+    // ---- Derived (V21: 运行时) -------------------------------------------
+    wire [31:0] WC_INT        = (I_h_active * BPP_NUM) / BPP_DEN;
+    wire [15:0] WC            = WC_INT[15:0];
+    wire [31:0] WORDS_PAYLOAD = WC_INT >> 2;
     localparam [5:0]   DT_FS          = 6'h00;
     localparam [5:0]   DT_FE          = 6'h01;
 
@@ -295,7 +297,7 @@ module csi2_frame_tx #(
                     gap_cnt         <= 32'd0;
                     gap_target      <= GAP_LINE;
                     state           <= S_GAP;
-                    if (line_cnt == (V_ACTIVE[15:0] - 16'd1))
+                    if (line_cnt == (I_v_active[15:0] - 16'd1))
                         state_after_gap <= S_FE;
                     else
                         state_after_gap <= S_LP_HDR_N;

@@ -40,8 +40,8 @@ module ui_raw_matrix_3x3_buffer #(
 )
 (
     input           	I_clk   			,  // 时钟信号
-    input           	I_rst_n 			,  // 复位信号，低有效
-
+    input           	I_rst_n 			,  // 复位信号，低有效    input           [12:0] I_img_width      ,  // V21: 运行时图像宽度
+    input           [12:0] I_img_height     ,  // V21: 运行时图像高度
     input [39:0]  		I_axi4s_video_tdata ,  // AXI4-Stream视频数据
     input [9:0]   		I_axi4s_video_tdest ,
     input         		I_axi4s_video_tlast ,  // 行结束信号
@@ -82,7 +82,8 @@ localparam N = 3;  // 矩阵大小为3x3
 
 localparam DATA_WIDTH   = 32;  // 数据位宽
 
-localparam IMG_WIDTH_4x = (IMG_WIDTH >> 2);  // 图像宽度除以4，得到每个数据块的数量
+// V21: 运行时宽度/高度 (原为编译期 IMG_WIDTH/IMG_HEIGHT, 保留参数仅作默认值参考)
+wire [12:0] img_width_4x = (I_img_width >> 2);  // 图像宽度除以4，得到每个数据块的数量
 
 /*********************************************************
 ******************3.信号声明*******************************
@@ -166,14 +167,14 @@ ui_mipi_to_raw_converter X_ui_mipi_to_raw_converter(
 
 // 实例化“zhenghe”模块，将数据进行合并处理
 ui_zhenghe#(
-    .IMG_WIDTH ( IMG_WIDTH ),
-    .IMG_HEIGHT( IMG_HEIGHT),
     .DATA_WIDTH( 32),
     .data_complete_delay (data_complete_delay)
 ) 
 X_ui_zhenghe(
     .I_clk    (I_clk   ),               // 时钟信号
     .I_rst_n  (I_rst_n ),               // 复位信号，低有效
+    .I_img_width (I_img_width ),        // V21: 运行时宽度
+    .I_img_height(I_img_height),        // V21: 运行时高度
 
     .I_tlast  (O_raw_tlast_d0 ),        // 输入行结束信号
     .I_tuser  (O_raw_tuser_d0 ),        // 输入帧开始信号
@@ -191,14 +192,12 @@ genvar i;
 generate
     for(i=1; i<3; i=i+1)
     begin: two_line_buffer  // 模块命名为two_line_buffer
-        ui_line_buffer_demosaic #(
-            .IMG_HEIGHT (IMG_HEIGHT),
-            .IMG_WIDTH  (IMG_WIDTH )
-        ) X_ui_line_buffer_demosaic (
+        ui_line_buffer_demosaic X_ui_line_buffer_demosaic (
             .I_clk     ( I_clk      ),    // 时钟信号
             .I_rst_n   ( I_rst_n    ),    // 复位信号，低有效
             .I_tuser   ( data[i-1][32] & valid[i-1]), // 输入帧开始信号
             .I_valid   ( valid[i-1] ),    // 输入有效信号
+            .I_img_width ( I_img_width ), // V21: 运行时宽度
             .I_data    ( data[i-1]  ),    // 输入数据
             .O_valid   ( valid[i]   ),    // 输出有效信号
             .O_data    ( data[i]    )     // 输出数据
@@ -240,7 +239,7 @@ always @(posedge I_clk or negedge I_rst_n) begin
                 matrix_last_line_buffer <= {{24{1'b0}}, data_d0[31:24], data_d0[31:0], data_d0[31:0]} ;
                 matrix_cur_line_buffer  <= {{24{1'b0}}, data_d0[31:24], data_d0[31:0], data_d0[31:0]} ;
                 matrix_next_line_buffer <= {{24{1'b0}}, data_d0[31:24], data_d0[31:0], data_d0[31:0]} ;
-            end else if(h_cnt == (IMG_WIDTH_4x - 1)) begin  // 第一行的最后一个像素
+            end else if(h_cnt == (img_width_4x - 1)) begin  // 第一行的最后一个像素
                 matrix_last_line_buffer <= {matrix_next_line_buffer [63:0], matrix_next_line_buffer[7:0], {24{1'b0}}} ;
                 matrix_cur_line_buffer  <= {matrix_next_line_buffer [63:0], matrix_next_line_buffer[7:0], {24{1'b0}}} ;
                 matrix_next_line_buffer <= {matrix_next_line_buffer [63:0], matrix_next_line_buffer[7:0], {24{1'b0}}} ;
@@ -255,7 +254,7 @@ always @(posedge I_clk or negedge I_rst_n) begin
                 matrix_last_line_buffer <= {{24{1'b0}}, data_d1[31:24], data_d1[31:0], data_d1[31:0]} ;
                 matrix_cur_line_buffer  <= {{24{1'b0}}, data_d1[31:24], data_d1[31:0], data_d1[31:0]} ;
                 matrix_next_line_buffer <= {{24{1'b0}}, data_d0[31:24], data_d0[31:0], data_d0[31:0]} ;
-            end else if(h_cnt == (IMG_WIDTH_4x - 1)) begin  // 第二行的最后一个像素
+            end else if(h_cnt == (img_width_4x - 1)) begin  // 第二行的最后一个像素
                 matrix_last_line_buffer <= {matrix_cur_line_buffer [63:0], matrix_cur_line_buffer[7:0], {24{1'b0}}} ;
                 matrix_cur_line_buffer  <= {matrix_cur_line_buffer [63:0], matrix_cur_line_buffer[7:0], {24{1'b0}}} ;
                 matrix_next_line_buffer <= {matrix_next_line_buffer [63:0], matrix_next_line_buffer[7:0], {24{1'b0}}} ;
@@ -270,7 +269,7 @@ always @(posedge I_clk or negedge I_rst_n) begin
                 matrix_last_line_buffer <= {{24{1'b0}}, data_d2[31:24], data_d2[31:0], data_d2[31:0]} ;
                 matrix_cur_line_buffer  <= {{24{1'b0}}, data_d1[31:24], data_d1[31:0], data_d1[31:0]} ;
                 matrix_next_line_buffer <= {{24{1'b0}}, data_d0[31:24], data_d0[31:0], data_d0[31:0]} ;
-            end else if(h_cnt == (IMG_WIDTH_4x - 1)) begin  // 最后一个像素
+            end else if(h_cnt == (img_width_4x - 1)) begin  // 最后一个像素
                 matrix_last_line_buffer <= {matrix_last_line_buffer[63:0], matrix_last_line_buffer[7:0], {24{1'b0}}} ;
                 matrix_cur_line_buffer  <= {matrix_cur_line_buffer [63:0], matrix_cur_line_buffer [7:0], {24{1'b0}}} ;
                 matrix_next_line_buffer <= {matrix_next_line_buffer[63:0], matrix_next_line_buffer[7:0], {24{1'b0}}} ;
@@ -294,8 +293,8 @@ always @(posedge I_clk or negedge I_rst_n) begin
         h_cnt <= 0;
         v_cnt <= 0;
     end else begin
-        h_cnt    <= valid_d1 ? ((h_cnt == IMG_WIDTH_4x - 1) ? 0 : h_cnt + 1) : h_cnt;
-        v_cnt    <= valid_d1 && (h_cnt == IMG_WIDTH_4x - 1) ? ((v_cnt == IMG_HEIGHT - 1) ? 0 : v_cnt + 1) : v_cnt;
+        h_cnt    <= valid_d1 ? ((h_cnt == img_width_4x - 1) ? 0 : h_cnt + 1) : h_cnt;
+        v_cnt    <= valid_d1 && (h_cnt == img_width_4x - 1) ? ((v_cnt == I_img_height - 1) ? 0 : v_cnt + 1) : v_cnt;
     end
 end
 

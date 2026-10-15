@@ -54,9 +54,7 @@ parameter  integer                      W_BUFDEPTH     = 2048	, //写通道AXI�
 parameter  integer                      W_DATAWIDTH    = 32		, //写通道AXI设置数据位宽大小
 parameter  [AXI_ADDR_WIDTH -1'b1: 0]    W_BASEADDR     = 0		, //写通道设置内存起始地址
 parameter  integer                      W_DSIZEBITS    = 24		, //写通道设置缓存数据的增量地址大小，用于FDMA DBUF 计算帧缓存起始地址
-parameter  integer                      W_XSIZE        = 1920	, //写通道设置X方向的数据大小，代表了每次FDMA 传输的数据长度
-parameter  integer                      W_XSTRIDE      = 1920	, //写通道设置X方向的Stride值，主要用于图形缓存应用
-parameter  integer                      W_YSIZE        = 1080	, //写通道设置Y方向值，代表了进行了多少次XSIZE传输
+// V21: W_XSIZE / W_XSTRIDE / W_YSIZE 已改为运行时输入端口 (见 I_W_XSIZE 等)
 parameter  integer                      W_XDIV         = 2		, //写通道对X方向数据拆分为XDIV次传输，减少FIFO的使用
 parameter  integer                      W_BUFSIZE      = 3		, //写通道设置帧缓存大小，目前最大支持128帧，可以修改参数支持更缓存数
 
@@ -64,15 +62,20 @@ parameter  integer                      R_BUFDEPTH     = 2048	, //读通道AXI�
 parameter  integer                      R_DATAWIDTH    = 32		, //读通道AXI设置数据位宽大小
 parameter  [AXI_ADDR_WIDTH -1'b1: 0]    R_BASEADDR     = 0		, //读通道设置内存起始地址
 parameter  integer                      R_DSIZEBITS    = 24		, //读通道设置缓存数据的增量地址大小，用于FDMA DBUF 计算帧缓存起始地址
-parameter  integer                      R_XSIZE        = 1920	, //读通道设置X方向的数据大小，代表了每次FDMA 传输的数据长度
-parameter  integer                      R_XSTRIDE      = 1920	, //读通道设置X方向的Stride值，主要用于图形缓存应用
-parameter  integer                      R_YSIZE        = 1080	, //读通道设置Y方向值，代表了进行了多少次XSIZE传输
+// V21: R_XSIZE / R_XSTRIDE / R_YSIZE 已改为运行时输入端口 (见 I_R_XSIZE 等)
 parameter  integer                      R_XDIV         = 2		, //读通道对X方向数据拆分为XDIV次传输，减少FIFO的使用
 parameter  integer                      R_BUFSIZE      = 3 		  //读通道设置帧缓存大小，目前最大支持128帧，可以修改参数支持更缓存数
 ) 
 (
 input   wire                            I_ui_clk		,//和FDMA AXI总线时钟一致
 input   wire                            I_ui_rstn		,//和FDMA AXI复位一致
+// ==== V21: 运行时分辨率参数 (由 system_top 分辨率寄存器提供, 帧内保持稳定) ====
+input   wire [15:0]                     I_W_XSIZE		,//写通道 X 方向数据大小 (beat 数, = H_ACTIVE/4)
+input   wire [15:0]                     I_W_XSTRIDE		,//写通道 X 方向 Stride
+input   wire [15:0]                     I_W_YSIZE		,//写通道 Y 方向行数 (= V_ACTIVE)
+input   wire [15:0]                     I_R_XSIZE		,//读通道 X 方向数据大小 (beat 数, = H_ACTIVE/2)
+input   wire [15:0]                     I_R_XSTRIDE		,//读通道 X 方向 Stride
+input   wire [15:0]                     I_R_YSIZE		,//读通道 Y 方向行数 (= V_ACTIVE)
 //sensor input -W_FIFO--------------	
 input   wire                            I_W_en			,
 input   wire                            I_W_wclk		, 
@@ -141,10 +144,13 @@ localparam    W_RD_DATA_COUNT_WIDTH = clog2(
 );  //clog2(WFIFO_DEPTH/(AXI_DATA_WIDTH/W_DATAWIDTH))+1;
 
 localparam    WYBUF_SIZE = (W_BUFSIZE - 1'b1);  //写通道需要完成多少次XSIZE操作
-localparam    WY_BURST_TIMES       = (W_YSIZE*W_XDIV);//写通道需要完成的FDMA burst 操作次数，XDIV用于把XSIZE分解多次传输
-localparam    FDMA_WX_BURST        = (W_XSIZE*W_DATAWIDTH/AXI_DATA_WIDTH)/W_XDIV; //FDMA BURST 一次的大小
-localparam    WX_BURST_ADDR_INC    = (W_XSIZE*(W_DATAWIDTH/8))/W_XDIV; //FDMA每次burst之后的地址增加
-localparam    WX_LAST_ADDR_INC     = (W_XSTRIDE-W_XSIZE)*(W_DATAWIDTH/8) + WX_BURST_ADDR_INC; //根据stride值计算出来最后一次地址
+// V21: 以下 4 项改为运行时 wire。系数为常数(W_DATAWIDTH=64, AXI_DATA_WIDTH=128, W_XDIV=2), 化简后为纯移位:
+//   FDMA_WX_BURST     = (W_XSIZE*64/128)/2 = XSIZE>>2
+//   WX_BURST_ADDR_INC = (W_XSIZE*8)/2      = XSIZE<<2
+wire   [31:0] WY_BURST_TIMES       = I_W_YSIZE   << 1;                             // = YSIZE*W_XDIV
+wire   [31:0] FDMA_WX_BURST        = I_W_XSIZE   >> 2;                             // FDMA BURST 一次的大小
+wire   [31:0] WX_BURST_ADDR_INC    = I_W_XSIZE   << 2;                             // FDMA每次burst之后的地址增加
+wire   [31:0] WX_LAST_ADDR_INC     = ((I_W_XSTRIDE - I_W_XSIZE) << 3) + WX_BURST_ADDR_INC; //根据stride计算最后一次地址增量
 
 
 
@@ -373,10 +379,13 @@ sfifo #(
 
 //generate  if(ENABLE_READ == 1)begin : FDMA_READ// 通过设置通道使能，可以优化代码的利用率
 localparam RYBUF_SIZE = (R_BUFSIZE - 1'b1);  //读通道需要完成多少次XSIZE操作
-localparam RY_BURST_TIMES             = (R_YSIZE*R_XDIV); //读通道需要完成的FDMA burst 操作次数，XDIV用于把XSIZE分解多次传输
-localparam FDMA_RX_BURST              = (R_XSIZE*R_DATAWIDTH/AXI_DATA_WIDTH)/R_XDIV; //FDMA BURST 一次的大小
-localparam RX_BURST_ADDR_INC          = (R_XSIZE*(R_DATAWIDTH/8))/R_XDIV; //FDMA每次burst之后的地址增加
-localparam RX_LAST_ADDR_INC           = (R_XSTRIDE-R_XSIZE)*(R_DATAWIDTH/8) + RX_BURST_ADDR_INC; //根据stride值计算出来最后一次地址
+// V21: 以下 4 项改为运行时 wire (R_DATAWIDTH=32, AXI_DATA_WIDTH=128, R_XDIV=2 => 纯移位):
+//   FDMA_RX_BURST     = (R_XSIZE*32/128)/2 = R_XSIZE>>3
+//   RX_BURST_ADDR_INC = (R_XSIZE*4)/2      = R_XSIZE<<1
+wire   [31:0] RY_BURST_TIMES          = I_R_YSIZE   << 1;                          // = R_YSIZE*R_XDIV
+wire   [31:0] FDMA_RX_BURST           = I_R_XSIZE   >> 3;                          // FDMA BURST 一次的大小
+wire   [31:0] RX_BURST_ADDR_INC       = I_R_XSIZE   << 1;                          // FDMA每次burst之后的地址增加
+wire   [31:0] RX_LAST_ADDR_INC        = ((I_R_XSTRIDE - I_R_XSIZE) << 2) + RX_BURST_ADDR_INC; //根据stride计算最后一次地址增量
 
 localparam RFIFO_DEPTH                = R_BUFDEPTH*R_DATAWIDTH/AXI_DATA_WIDTH;//R_BUFDEPTH/(AXI_DATA_WIDTH/R_DATAWIDTH);
 localparam R_WR_DATA_COUNT_WIDTH      = clog2(RFIFO_DEPTH);  //读通道FIFO 输入部分深度
@@ -507,13 +516,13 @@ reg           fram_end;  //synthesis keep
 reg [15:0]    r_ycnt;  //synthesis keep
 
 assign        O_R_tuser = r_tuser_lock & O_R_tvalid;
-assign        O_R_tlast = (r_xcnt == R_XSIZE - 1) & O_R_tvalid;
+assign        O_R_tlast = (r_xcnt == I_R_XSIZE - 1) & O_R_tvalid;
 
 always @(posedge I_R_rclk or negedge I_ui_rstn) begin
   if (~I_ui_rstn) 
               r_xcnt          <= 0;
   else if (O_R_tvalid) begin
-    if (r_xcnt == R_XSIZE - 1) 
+    if (r_xcnt == I_R_XSIZE - 1) 
               r_xcnt          <= 0;
     else      
               r_xcnt          <= r_xcnt + 1'b1;
@@ -526,7 +535,7 @@ always @(posedge I_R_rclk or negedge I_ui_rstn) begin
               r_ycnt          <= 0;
   end else begin
     if (O_R_tlast) begin
-      if (r_ycnt == R_YSIZE - 1) begin
+      if (r_ycnt == I_R_YSIZE - 1) begin
               r_tuser_lock    <= 1'b1;
               r_ycnt          <= 0;
       end 

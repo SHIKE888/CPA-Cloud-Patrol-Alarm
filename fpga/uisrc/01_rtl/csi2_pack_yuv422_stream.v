@@ -6,12 +6,11 @@
  *============================================================================*/
 `timescale 1ns/1ps
 
-module csi2_pack_yuv422_stream #(
-    parameter integer H_ACTIVE = 1920,
-    parameter integer V_ACTIVE = 1080
-)(
+module csi2_pack_yuv422_stream (
     input  wire        src_clk,
     input  wire        src_rst_n,
+    input  wire [12:0] I_h_active,   // V21: 运行时有效像素/行
+    input  wire [11:0] I_v_active,   // V21: 运行时有效行数
     input  wire        s_tvalid,
     output wire        s_tready,
     input  wire [31:0] s_tdata,
@@ -28,7 +27,7 @@ module csi2_pack_yuv422_stream #(
     output wire        m_tlast
 );
 
-    localparam integer WORDS_PAYLOAD = H_ACTIVE / 2;
+    wire [31:0] WORDS_PAYLOAD = I_h_active >> 1;   // V21: 运行时 (每行 32bit word 数)
     wire _unused_stlast = s_tlast;
 
     // --- Stage-A: async FIFO 33b×2048 ---
@@ -121,10 +120,9 @@ module csi2_pack_yuv422_stream #(
     reg        frame_start_pending;
     reg [15:0] word_col;
 
-    // V14.2: frame-window gate (declarations moved up; see logic below)
-    localparam integer FRAME_WORDS = V_ACTIVE * WORDS_PAYLOAD;
+    // V21: 用行/列两级计数替代 V_ACTIVE*WORDS_PAYLOAD 乘法 (避免 125MHz 下的乘法器时序问题)
     reg        frame_window_open;
-    reg [31:0] frame_word_cnt;
+    reg [15:0] frame_row_cnt;
 
     wire yuv_valid_sig = yuv_valid;  // alias for readability
     wire yuv_sof  = yuv_valid_sig & frame_start_pending;
@@ -151,21 +149,23 @@ module csi2_pack_yuv422_stream #(
     end
 
   
+    // V21: 本行最后一个 word 且已是最后一行 -> 关闭帧窗口
+    wire frame_last_word = frame_window_open & yuv_last &
+                           (frame_row_cnt == (I_v_active - 12'd1));
+
     always @(posedge dst_clk or negedge dst_rst_n) begin
         if (!dst_rst_n) begin
             frame_window_open <= 1'b0;
-            frame_word_cnt    <= 32'd0;
+            frame_row_cnt     <= 16'd0;
         end else if (yuv_sof) begin
             // Force-open on every sof (resets a stuck window if any).
             frame_window_open <= 1'b1;
-            frame_word_cnt    <= 32'd1;
-        end else if (frame_window_open & yuv_valid) begin
-            if (frame_word_cnt == FRAME_WORDS[31:0]-1) begin
-                frame_window_open <= 1'b0;
-                frame_word_cnt    <= 32'd0;
-            end else begin
-                frame_word_cnt    <= frame_word_cnt + 32'd1;
-            end
+            frame_row_cnt     <= 16'd0;
+        end else if (frame_last_word) begin
+            frame_window_open <= 1'b0;
+            frame_row_cnt     <= 16'd0;
+        end else if (frame_window_open & yuv_valid & yuv_last) begin
+            frame_row_cnt     <= frame_row_cnt + 16'd1;
         end
     end
 

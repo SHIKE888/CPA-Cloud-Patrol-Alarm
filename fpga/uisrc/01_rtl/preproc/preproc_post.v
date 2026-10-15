@@ -27,12 +27,14 @@
 //  RGB(0,0,0) -> Y=16/U=V=128, 正是标准的"视频黑", 不会发灰。
 //==============================================================================
 module preproc_post #(
-	parameter integer H_ACTIVE   = 1920,
-	parameter integer V_ACTIVE   = 1080,
 	parameter integer PX_PER_CLK = 4
 )(
 	input  wire         clk,
 	input  wire         rst_n,
+
+	// V21: 运行时图像尺寸 (原为编译期 H_ACTIVE/V_ACTIVE 参数)
+	input  wire [11:0]  i_h_active,
+	input  wire [11:0]  i_v_active,
 
 	input  wire         i_tvalid,
 	input  wire         i_tuser,
@@ -59,8 +61,8 @@ module preproc_post #(
 	                                            3'd5;    // 12.5%
 
 	// 全部用移位/加减, 无除法器
-	wire [11:0] pw = H_ACTIVE[11:0];
-	wire [11:0] ph = V_ACTIVE[11:0];
+	wire [11:0] pw = i_h_active;
+	wire [11:0] ph = i_v_active;
 	wire [11:0] roi_w = (roi_sel == 3'd0) ? pw :                          // 1
 	                    (roi_sel == 3'd1) ? (pw - (pw >> 2)) :            // 3/4
 	                    (roi_sel == 3'd2) ? (pw >> 1) :                   // 1/2
