@@ -603,11 +603,11 @@ ui_isp_top X_ui_isp_top (
 //=============================================================================
 
 preproc_top #(
-	.H_ACTIVE   (H_ACTIVE),
 	.PX_PER_CLK (4)
 ) u_preproc (
 	.clk            (S_hs_rx_clk),
 	.rst_n          (S_pll_lock),
+	.i_h_active     (S_h_active),
 	.i_tvalid       (S_ISP_O_tvalid),
 	.i_tuser        (S_ISP_O_tuser),
 	.i_tlast        (S_ISP_O_tlast),

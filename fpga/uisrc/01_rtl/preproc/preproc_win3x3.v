@@ -33,11 +33,14 @@
 `timescale 1ns / 1ps
 
 module preproc_win3x3 #(
-	parameter integer H_ACTIVE   = 1920,     // 有效宽度
 	parameter integer PX_PER_CLK = 4         // 每时钟像素数
 )(
 	input  wire         clk,
 	input  wire         rst_n,
+	// V21: 运行时每行字数 (= I_h_active / PX_PER_CLK).
+	//  行缓冲数组按 4K 上限固定分配, 运行时用 I_nw 做地址回绕比较,
+	//  这样 1080p 与 4K 共用同一套 buffer, 不用重新生成 IP。
+	input  wire [15:0]  I_nw,
 
 	// ---- 视频输入 (RGB888x4, 每 lane {8'h00,R,G,B}) ----
 	input  wire         i_tvalid,
@@ -58,8 +61,10 @@ module preproc_win3x3 #(
 	output reg  [127:0] o_rgb
 );
 
-	localparam integer NW = H_ACTIVE / PX_PER_CLK;   // 480 字/行
-	localparam integer AW = 9;                       // NW=480 需要 9 位
+	// V21: 数组按 4K 上限固定分配 (3840/4 = 960 字/行), 运行时由 I_nw 限制实际行宽。
+	//      1080p => I_nw = 480; 4K => I_nw = 960。
+	localparam integer NW = 960;                     // 最大字数/行
+	localparam integer AW = 10;                      // NW=960 需要 10 位
 
 	//-------------------------------------------------------------------------
 	// 1. RGB -> 亮度 (BT.601 整数: (77R + 150G + 29B) >> 8, 系数和=256)
@@ -88,7 +93,7 @@ module preproc_win3x3 #(
 	reg [31:0] r1_raw, r2_raw;
 	reg [11:0] lcnt, lcnt_d1, lcnt_d2, lcnt_d3;      // 行计数(地址回绕一次 +1)
 
-	wire addr_last = (addr == NW[AW-1:0] - 1'b1);
+	wire addr_last = (addr == I_nw[AW-1:0] - 1'b1);
 
 	always @(posedge clk or negedge rst_n) begin
 		if (!rst_n) begin

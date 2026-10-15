@@ -297,7 +297,7 @@ module csi2_frame_tx #(
                     gap_cnt         <= 32'd0;
                     gap_target      <= GAP_LINE;
                     state           <= S_GAP;
-                    if (line_cnt == (I_v_active[15:0] - 16'd1))
+                    if (line_cnt == (I_v_active - 16'd1))
                         state_after_gap <= S_FE;
                     else
                         state_after_gap <= S_LP_HDR_N;

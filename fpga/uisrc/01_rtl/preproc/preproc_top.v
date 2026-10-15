@@ -11,11 +11,12 @@
 `timescale 1ns / 1ps
 
 module preproc_top #(
-	parameter integer H_ACTIVE   = 1920,
 	parameter integer PX_PER_CLK = 4
 )(
 	input  wire         clk,
 	input  wire         rst_n,
+	// V21: 运行时有效宽度 (行缓冲地址回绕用)
+	input  wire [12:0]  i_h_active,
 
 	// ---- 视频输入 ----
 	input  wire         i_tvalid,
@@ -42,11 +43,11 @@ module preproc_top #(
 	wire [127:0] w_rgb;
 
 	preproc_win3x3 #(
-		.H_ACTIVE   (H_ACTIVE),
 		.PX_PER_CLK (PX_PER_CLK)
 	) u_win (
 		.clk       (clk),
 		.rst_n     (rst_n),
+		.I_nw      (i_h_active >> 2),   // V21: 每行字数 = 宽度/4
 		.i_tvalid  (i_tvalid),
 		.i_tuser   (i_tuser),
 		.i_tlast   (i_tlast),

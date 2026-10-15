@@ -84,8 +84,8 @@ wire  w_skip = (v_cnt < SKIP_ROWS_top) ||(h_cnt < SKIP_COLS_left) || (v_cnt >= I
             v_cnt <= 0;
         end
         else begin
-            h_cnt <= I_tvalid_r0 ? ((h_cnt == IMG_WIDTH_4x-1) ? 0 : h_cnt + 1) : h_cnt;
-            v_cnt <= I_tvalid_r0 &&(h_cnt == IMG_WIDTH_4x-1) ? ((v_cnt == IMG_HEIGHT - 1) ? 0 : v_cnt + 1) : v_cnt;
+            h_cnt <= I_tvalid_r0 ? ((h_cnt == img_width_4x-1) ? 0 : h_cnt + 1) : h_cnt;
+            v_cnt <= I_tvalid_r0 &&(h_cnt == img_width_4x-1) ? ((v_cnt == I_img_height - 1) ? 0 : v_cnt + 1) : v_cnt;
         end
     end
 
