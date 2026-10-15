@@ -51,3 +51,6 @@ tools/_*.txt
 Thumbs.db
 desktop.ini
 .DS_Store
+
+# TD ±ÀÀ£×ª´¢
+fpga/*.dmp
