@@ -51,21 +51,60 @@ struct rkmodule_hdr_cfg
 #define RKMODULE_SET_QUICK_STREAM _IOW('W', 0x0d, __u32)
 #endif
 
-#define DUMMY_WIDTH 1920
-#define DUMMY_HEIGHT 1080
-#define DUMMY_FPS_NUM 1
-#define DUMMY_FPS_DEN 60
+/*
+ * ==== 分辨率模式表 (Phase C) ====
+ *
+ * 每个条目必须与 FPGA 端 system_top.v 里的 S_res_mode 模式表一一对应:
+ *     S_res_mode = 0  ->  milianke_modes[0]
+ *     S_res_mode = 1  ->  milianke_modes[1]
+ * FPGA 侧的切换由 I2C 写 regfile 0xE0 (RES_MODE) 完成;
+ * 本驱动侧由用户态走 VIDIOC_SUBDEV_S_FMT
+ * (v4l2-ctl -d /dev/videoXX --set-fmt-video=width=..,height=..)
+ * 选中对应尺寸, 或开机时用 milianke_mipi.default_mode=N 指定。
+ * **两侧必须保持一致**, 否则 rkcif 会按错误的尺寸解析数据流。
+ *
+ * link_freq : MIPI D-PHY 的 DDR 时钟 (Hz) = lane_rate / 2 = 4 x byte_clk。
+ *             DTS 里没有写任何速率属性, rkcif 直接拿这个值去配 D-PHY,
+ *             所以 FPGA 侧 PLL 一改, 这里所有条目都要跟着改。
+ *             当前 FPGA: PLL VCO 1200MHz -> byte_clk 150MHz -> 1200Mbps/lane
+ *                        => link_freq = 150MHz x 4 = 600000000
+ *             (旧版本 VCO 1000MHz / byte_clk 125MHz 时该值是 500000000)
+ * pixel_rate: FPGA VTC 的像素时钟 (Hz) = htotal x vtotal x fps
+ * vblank    : vtotal - vactive
+ */
+struct milianke_mode {
+    u32 width;
+    u32 height;
+    u32 fps_num;
+    u32 fps_den;
+    u64 link_freq;
+    u64 pixel_rate;
+    u32 vblank;
+    const char *name;
+};
 
-#define DUMMY_LINK_FREQ 500000000
-/* 100 MHz × 2 × 4 lane / 16 bpp = 50,000,000 pixels/s */
-#define DUMMY_PIXEL_RATE 148500000
+static const struct milianke_mode milianke_modes[] = {
+    /* FPGA VTC 2200x1125 @147.5MHz -> 147.5e6/(2200*1125) = 59.6fps */
+    {1920, 1080, 1, 60, 600000000ULL, 148500000ULL, 45, "1920x1080@60"},
+    /* FPGA VTC 2060x2387 @147.5MHz -> 147.5e6/(2060*2387) = 30.0fps */
+    {3840, 2160, 1, 30, 600000000ULL, 147500000ULL, 227, "3840x2160@30"},
+};
+
+#define MILIANKE_NUM_MODES ARRAY_SIZE(milianke_modes)
 
 static bool always_on = true;
 module_param(always_on, bool, 0644);
 MODULE_PARM_DESC(always_on,
                  "Assert mipi-en GPIO at probe so FPGA starts HS before DPHY (default: true)");
 
-static const s64 link_freq_menu[] = {DUMMY_LINK_FREQ};
+/* 开机默认模式索引; 0 = 1920x1080@60 (对应 FPGA S_res_mode=0) */
+static uint default_mode = 0;
+module_param(default_mode, uint, 0644);
+MODULE_PARM_DESC(default_mode,
+                 "Default mode index into milianke_modes[] (0=1920x1080@60, 1=3840x2160@30)");
+
+/* 所有模式共用同一个 D-PHY 速率 (FPGA PLL 与分辨率无关), 所以菜单只有一项 */
+static const s64 link_freq_menu[] = {600000000};
 
 struct milianke_mipi
 {
@@ -82,6 +121,8 @@ struct milianke_mipi
     const char *lens_name;
     const char *module_facing;
     u32 module_index;
+    /* 当前选中的模式索引 (对应 FPGA S_res_mode), 由 set_fmt 更新 */
+    u32 mode_index;
 };
 
 static int milianke_g_volatile_ctrl(struct v4l2_ctrl *ctrl)
@@ -91,9 +132,17 @@ static int milianke_g_volatile_ctrl(struct v4l2_ctrl *ctrl)
     case V4L2_CID_LINK_FREQ:
         ctrl->val = 0;
         break;
-    case V4L2_CID_PIXEL_RATE:
-        ctrl->val = DUMMY_PIXEL_RATE;
+    case V4L2_CID_PIXEL_RATE: {
+        struct milianke_mipi *sensor =
+            container_of(ctrl->handler, struct milianke_mipi,
+                         ctrl_handler);
+        u32 idx = sensor->mode_index;
+
+        if (idx >= MILIANKE_NUM_MODES)
+            idx = 0;
+        ctrl->val = (s32)milianke_modes[idx].pixel_rate;
         break;
+    }
     default:
         return -EINVAL;
     }
@@ -121,23 +170,27 @@ static int milianke_enum_frame_size(struct v4l2_subdev *sd,
                                     struct v4l2_subdev_state *state,
                                     struct v4l2_subdev_frame_size_enum *fse)
 {
-    if (fse->index > 0)
+    if (fse->index >= MILIANKE_NUM_MODES)
         return -EINVAL;
 
-    fse->min_width = DUMMY_WIDTH;
-    fse->max_width = DUMMY_WIDTH;
-    fse->min_height = DUMMY_HEIGHT;
-    fse->max_height = DUMMY_HEIGHT;
+    fse->min_width = milianke_modes[fse->index].width;
+    fse->max_width = milianke_modes[fse->index].width;
+    fse->min_height = milianke_modes[fse->index].height;
+    fse->max_height = milianke_modes[fse->index].height;
 
     return 0;
 }
 
-static int milianke_get_fmt(struct v4l2_subdev *sd,
-                            struct v4l2_subdev_state *state,
-                            struct v4l2_subdev_format *fmt)
+/*
+ * 把模式表里的一个条目填进 V4L2 格式结构体。
+ * 色彩空间见下面那段注释: FPGA 输出 = BT.709 + limited range(16~235),
+ * 绝不能声明成 sRGB(full range), 否则画面发灰发绿。
+ */
+static void milianke_fill_fmt(struct v4l2_subdev_format *fmt,
+                              const struct milianke_mode *mode)
 {
-    fmt->format.width = DUMMY_WIDTH;
-    fmt->format.height = DUMMY_HEIGHT;
+    fmt->format.width = mode->width;
+    fmt->format.height = mode->height;
     fmt->format.code = MEDIA_BUS_FMT_YUYV8_2X8;
     fmt->format.field = V4L2_FIELD_NONE;
     /*
@@ -161,38 +214,101 @@ static int milianke_get_fmt(struct v4l2_subdev *sd,
     fmt->format.ycbcr_enc = V4L2_YCBCR_ENC_709;
     fmt->format.quantization = V4L2_QUANTIZATION_LIM_RANGE;
     fmt->format.xfer_func = V4L2_XFER_FUNC_709;
+}
+
+static int milianke_get_fmt(struct v4l2_subdev *sd,
+                            struct v4l2_subdev_state *state,
+                            struct v4l2_subdev_format *fmt)
+{
+    struct milianke_mipi *sensor =
+        container_of(sd, struct milianke_mipi, subdev);
+    u32 idx = sensor->mode_index;
+
+    if (idx >= MILIANKE_NUM_MODES)
+        idx = 0;
+
+    milianke_fill_fmt(fmt, &milianke_modes[idx]);
 
     return 0;
 }
 
+/*
+ * 选择模式: 精确匹配宽高优先, 否则取像素数最接近的那个。
+ * 只有 ACTIVE 格式才真正改变状态; TRY 格式只回报结果。
+ */
 static int milianke_set_fmt(struct v4l2_subdev *sd,
                             struct v4l2_subdev_state *state,
                             struct v4l2_subdev_format *fmt)
 {
-    return milianke_get_fmt(sd, state, fmt);
+    struct milianke_mipi *sensor =
+        container_of(sd, struct milianke_mipi, subdev);
+    u32 want_w = fmt->format.width;
+    u32 want_h = fmt->format.height;
+    u64 want = (u64)want_w * want_h;
+    u64 best_diff = ~0ULL;
+    u32 i, best = 0;
+
+    for (i = 0; i < MILIANKE_NUM_MODES; i++) {
+        u64 have = (u64)milianke_modes[i].width *
+                   milianke_modes[i].height;
+        u64 diff;
+
+        if (milianke_modes[i].width == want_w &&
+            milianke_modes[i].height == want_h) {
+            best = i;
+            goto done;
+        }
+        diff = (have > want) ? (have - want) : (want - have);
+        if (diff < best_diff) {
+            best_diff = diff;
+            best = i;
+        }
+    }
+
+done:
+    if (fmt->which == V4L2_SUBDEV_FORMAT_ACTIVE)
+        sensor->mode_index = best;
+
+    milianke_fill_fmt(fmt, &milianke_modes[best]);
+
+    return 0;
 }
 
 static int milianke_enum_frame_interval(struct v4l2_subdev *sd,
                                         struct v4l2_subdev_state *state,
                                         struct v4l2_subdev_frame_interval_enum *fie)
 {
-    if (fie->index > 0)
-        return -EINVAL;
+    u32 i, idx = 0;
 
-    fie->width = DUMMY_WIDTH;
-    fie->height = DUMMY_HEIGHT;
-    fie->code = MEDIA_BUS_FMT_YUYV8_2X8;
-    fie->interval.numerator = DUMMY_FPS_NUM;
-    fie->interval.denominator = DUMMY_FPS_DEN;
+    /* 只枚举与请求宽高匹配的那些模式的帧率 */
+    for (i = 0; i < MILIANKE_NUM_MODES; i++) {
+        if (fie->width != milianke_modes[i].width ||
+            fie->height != milianke_modes[i].height)
+            continue;
+        if (idx == fie->index) {
+            fie->code = MEDIA_BUS_FMT_YUYV8_2X8;
+            fie->interval.numerator = milianke_modes[i].fps_num;
+            fie->interval.denominator = milianke_modes[i].fps_den;
+            return 0;
+        }
+        idx++;
+    }
 
-    return 0;
+    return -EINVAL;
 }
 
 static int milianke_g_frame_interval(struct v4l2_subdev *sd,
                                      struct v4l2_subdev_frame_interval *fi)
 {
-    fi->interval.numerator = DUMMY_FPS_NUM;
-    fi->interval.denominator = DUMMY_FPS_DEN;
+    struct milianke_mipi *sensor =
+        container_of(sd, struct milianke_mipi, subdev);
+    u32 idx = sensor->mode_index;
+
+    if (idx >= MILIANKE_NUM_MODES)
+        idx = 0;
+
+    fi->interval.numerator = milianke_modes[idx].fps_num;
+    fi->interval.denominator = milianke_modes[idx].fps_den;
 
     return 0;
 }
@@ -397,6 +513,15 @@ static int milianke_probe(struct i2c_client *client,
                                 &sensor->lens_name);
     }
 
+    /* 模式表默认值 (可用 milianke_mipi.default_mode=N 覆盖) */
+    if (default_mode >= MILIANKE_NUM_MODES) {
+        dev_warn(&client->dev,
+                 "default_mode=%u out of range, fallback to 0 (%s)\n",
+                 default_mode, milianke_modes[0].name);
+        default_mode = 0;
+    }
+    sensor->mode_index = default_mode;
+
     mutex_init(&sensor->mutex);
 
     sd = &sensor->subdev;
@@ -423,15 +548,31 @@ static int milianke_probe(struct i2c_client *client,
                                                0, 0, link_freq_menu);
     if (sensor->link_freq)
         sensor->link_freq->flags |= V4L2_CTRL_FLAG_READ_ONLY;
-    sensor->pixel_rate = v4l2_ctrl_new_std(&sensor->ctrl_handler,
-                                           &milianke_ctrl_ops,
-                                           V4L2_CID_PIXEL_RATE,
-                                           0, DUMMY_PIXEL_RATE, 1,
-                                           DUMMY_PIXEL_RATE);
-    if (sensor->pixel_rate)
-        sensor->pixel_rate->flags |= V4L2_CTRL_FLAG_READ_ONLY;
-    sensor->vblank = v4l2_ctrl_new_std(&sensor->ctrl_handler, NULL,
-                                       V4L2_CID_VBLANK, 45, 45, 1, 45);
+    {
+        u32 pr_max = 0;
+        u32 vb_min = milianke_modes[0].vblank;
+        u32 vb_max = milianke_modes[0].vblank;
+        u32 i;
+
+        for (i = 0; i < MILIANKE_NUM_MODES; i++) {
+            if (milianke_modes[i].pixel_rate > pr_max)
+                pr_max = (u32)milianke_modes[i].pixel_rate;
+            if (milianke_modes[i].vblank < vb_min)
+                vb_min = milianke_modes[i].vblank;
+            if (milianke_modes[i].vblank > vb_max)
+                vb_max = milianke_modes[i].vblank;
+        }
+
+        sensor->pixel_rate = v4l2_ctrl_new_std(
+            &sensor->ctrl_handler, &milianke_ctrl_ops,
+            V4L2_CID_PIXEL_RATE, 0, pr_max, 1,
+            (s32)milianke_modes[sensor->mode_index].pixel_rate);
+        if (sensor->pixel_rate)
+            sensor->pixel_rate->flags |= V4L2_CTRL_FLAG_READ_ONLY;
+        sensor->vblank = v4l2_ctrl_new_std(
+            &sensor->ctrl_handler, NULL, V4L2_CID_VBLANK, vb_min, vb_max,
+            1, milianke_modes[sensor->mode_index].vblank);
+    }
     if (sensor->ctrl_handler.error)
     {
         ret = sensor->ctrl_handler.error;
@@ -471,9 +612,10 @@ static int milianke_probe(struct i2c_client *client,
         goto err_ctrl;
 
     dev_info(&client->dev,
-             "milianke MIPI sensor registered: %s (FPGA CSI-2, %ux%u@%ufps, link-freq=%lld, mipi-en=%s)\n",
-             sd->name, DUMMY_WIDTH, DUMMY_HEIGHT, DUMMY_FPS_DEN,
-             (long long)DUMMY_LINK_FREQ,
+             "milianke MIPI sensor registered: %s (FPGA CSI-2, mode[%u]=%s, max-4k, link-freq=%lld, mipi-en=%s)\n",
+             sd->name, sensor->mode_index,
+             milianke_modes[sensor->mode_index].name,
+             (long long)milianke_modes[sensor->mode_index].link_freq,
              sensor->mipi_en_gpio ? "yes" : "none");
 
     return 0;
