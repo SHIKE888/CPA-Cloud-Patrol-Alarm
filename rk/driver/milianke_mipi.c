@@ -66,9 +66,12 @@ struct rkmodule_hdr_cfg
  * link_freq : MIPI D-PHY 的 DDR 时钟 (Hz) = lane_rate / 2 = 4 x byte_clk。
  *             DTS 里没有写任何速率属性, rkcif 直接拿这个值去配 D-PHY,
  *             所以 FPGA 侧 PLL 一改, 这里所有条目都要跟着改。
- *             当前 FPGA: PLL VCO 1200MHz -> byte_clk 150MHz -> 1200Mbps/lane
- *                        => link_freq = 150MHz x 4 = 600000000
- *             (旧版本 VCO 1000MHz / byte_clk 125MHz 时该值是 500000000)
+ *             当前 FPGA (V22, 已回退 PLL):
+ *                 VCO 1000MHz -> byte_clk 125MHz -> lane 1000Mbps
+ *                 => link_freq = 125MHz x 4 = 500000000
+ *             (V21 曾试过 VCO 1200MHz -> byte 150MHz -> 600000000,
+ *              但 1200Mbps 下 FPGA 内部 600MHz 时序收敛不了, 画面花屏,
+ *              已回退; 想重上 1200Mbps 必须先做时序收敛。)
  * pixel_rate: FPGA VTC 的像素时钟 (Hz) = htotal x vtotal x fps
  * vblank    : vtotal - vactive
  */
@@ -85,9 +88,9 @@ struct milianke_mode {
 
 static const struct milianke_mode milianke_modes[] = {
     /* FPGA VTC 2200x1125 @147.5MHz -> 147.5e6/(2200*1125) = 59.6fps */
-    {1920, 1080, 1, 60, 600000000ULL, 148500000ULL, 45, "1920x1080@60"},
+    {1920, 1080, 1, 60, 500000000ULL, 148500000ULL, 45, "1920x1080@60"},
     /* FPGA VTC 2060x2387 @147.5MHz -> 147.5e6/(2060*2387) = 30.0fps */
-    {3840, 2160, 1, 30, 600000000ULL, 147500000ULL, 227, "3840x2160@30"},
+    {3840, 2160, 1, 30, 500000000ULL, 147500000ULL, 227, "3840x2160@30"},
 };
 
 #define MILIANKE_NUM_MODES ARRAY_SIZE(milianke_modes)
@@ -104,7 +107,7 @@ MODULE_PARM_DESC(default_mode,
                  "Default mode index into milianke_modes[] (0=1920x1080@60, 1=3840x2160@30)");
 
 /* 所有模式共用同一个 D-PHY 速率 (FPGA PLL 与分辨率无关), 所以菜单只有一项 */
-static const s64 link_freq_menu[] = {600000000};
+static const s64 link_freq_menu[] = {500000000};
 
 struct milianke_mipi
 {
