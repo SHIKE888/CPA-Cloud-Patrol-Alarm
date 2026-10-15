@@ -75,7 +75,8 @@ struct rkmodule_hdr_cfg
  * pixel_rate: FPGA VTC 的像素时钟 (Hz) = htotal x vtotal x fps
  * vblank    : vtotal - vactive
  */
-struct milianke_mode {
+struct milianke_mode
+{
     u32 width;
     u32 height;
     u32 fps_num;
@@ -135,7 +136,8 @@ static int milianke_g_volatile_ctrl(struct v4l2_ctrl *ctrl)
     case V4L2_CID_LINK_FREQ:
         ctrl->val = 0;
         break;
-    case V4L2_CID_PIXEL_RATE: {
+    case V4L2_CID_PIXEL_RATE:
+    {
         struct milianke_mipi *sensor =
             container_of(ctrl->handler, struct milianke_mipi,
                          ctrl_handler);
@@ -251,18 +253,21 @@ static int milianke_set_fmt(struct v4l2_subdev *sd,
     u64 best_diff = ~0ULL;
     u32 i, best = 0;
 
-    for (i = 0; i < MILIANKE_NUM_MODES; i++) {
+    for (i = 0; i < MILIANKE_NUM_MODES; i++)
+    {
         u64 have = (u64)milianke_modes[i].width *
                    milianke_modes[i].height;
         u64 diff;
 
         if (milianke_modes[i].width == want_w &&
-            milianke_modes[i].height == want_h) {
+            milianke_modes[i].height == want_h)
+        {
             best = i;
             goto done;
         }
         diff = (have > want) ? (have - want) : (want - have);
-        if (diff < best_diff) {
+        if (diff < best_diff)
+        {
             best_diff = diff;
             best = i;
         }
@@ -284,11 +289,13 @@ static int milianke_enum_frame_interval(struct v4l2_subdev *sd,
     u32 i, idx = 0;
 
     /* 只枚举与请求宽高匹配的那些模式的帧率 */
-    for (i = 0; i < MILIANKE_NUM_MODES; i++) {
+    for (i = 0; i < MILIANKE_NUM_MODES; i++)
+    {
         if (fie->width != milianke_modes[i].width ||
             fie->height != milianke_modes[i].height)
             continue;
-        if (idx == fie->index) {
+        if (idx == fie->index)
+        {
             fie->code = MEDIA_BUS_FMT_YUYV8_2X8;
             fie->interval.numerator = milianke_modes[i].fps_num;
             fie->interval.denominator = milianke_modes[i].fps_den;
@@ -517,7 +524,8 @@ static int milianke_probe(struct i2c_client *client,
     }
 
     /* 模式表默认值 (可用 milianke_mipi.default_mode=N 覆盖) */
-    if (default_mode >= MILIANKE_NUM_MODES) {
+    if (default_mode >= MILIANKE_NUM_MODES)
+    {
         dev_warn(&client->dev,
                  "default_mode=%u out of range, fallback to 0 (%s)\n",
                  default_mode, milianke_modes[0].name);
@@ -557,7 +565,8 @@ static int milianke_probe(struct i2c_client *client,
         u32 vb_max = milianke_modes[0].vblank;
         u32 i;
 
-        for (i = 0; i < MILIANKE_NUM_MODES; i++) {
+        for (i = 0; i < MILIANKE_NUM_MODES; i++)
+        {
             if (milianke_modes[i].pixel_rate > pr_max)
                 pr_max = (u32)milianke_modes[i].pixel_rate;
             if (milianke_modes[i].vblank < vb_min)
