@@ -4,7 +4,15 @@
 > 编写时间：2026-10-15
 > 触发原因：`milianke_mipi.c` 的颜色空间修正（SRGB → REC709/limited）必须**重编内核**才生效（该驱动是内置 `=y`）
 >
-> **状态：本文件只是说明 + 规程，尚未对内核做任何改动。**
+> **状态（2026-10-15 更新）：改动 1（颜色空间）+ 改动 2（多分辨率模式表）均已实施。**
+>
+> | 位置 | 内容 |
+> |---|---|
+> | VM 备份目录 | `/home/uisrc/kernel-backup/20261015-202815/` |
+> | 板上分区 dump | `/root/boot.dump-20261015.img`（本仓库 `rk/backup/boot.dump-20261015.img`，md5 `92ec9ec5…`）|
+> | 原版驱动 | `…/files/milianke_mipi.c.orig`，md5 `15931acbe1f7f12332101a33ed9b2d20` |
+> | 新驱动 | kernel-6.1 内，md5 `9b722db90aa6df9504a36a97cdf6ac72` |
+> | 差异存档 | `…/milianke_mipi.c.patch` / `…patch.normalized` |
 
 ---
 
@@ -281,20 +289,62 @@ md5sum "$K/boot.img"        # 必须 ≠ 0deb3ac7…（否则说明根本没重�
 2. 确认无误后：`cp` 覆盖内核树里的文件。
 3. 立刻执行 §3.5 的 `diff -u` 存档。
 
-### 改动 2（后续 Phase C，本次不做，仅登记）
+### 改动 2（Phase C —— **已实施**）：单一分辨率 → 模式表
 
-为了多分辨率模式（1080p/720p/4K），驱动里这些硬编码要改成模式表：
+硬编码的 `DUMMY_WIDTH/HEIGHT/FPS_NUM/FPS_DEN/LINK_FREQ/PIXEL_RATE` 已全部删除，
+换成与 FPGA `S_res_mode` 一一对应的模式表：
 
-| 行 | 内容 |
+```c
+struct milianke_mode {
+    u32 width, height, fps_num, fps_den;
+    u64 link_freq;   /* D-PHY DDR 时钟 = lane_rate/2 = 4 x byte_clk */
+    u64 pixel_rate;  /* VTC 像素时钟 = htotal x vtotal x fps */
+    u32 vblank;      /* vtotal - vactive */
+    const char *name;
+};
+
+static const struct milianke_mode milianke_modes[] = {
+    {1920, 1080, 1, 60, 600000000ULL, 148500000ULL,  45, "1920x1080@60"},
+    {3840, 2160, 1, 30, 600000000ULL, 147500000ULL, 227, "3840x2160@30"},
+};
+```
+
+改动点速查：
+
+| 函数 | 改动 |
 |---|---|
-| 52–53 | `#define DUMMY_WIDTH 1920` / `DUMMY_HEIGHT 1080` |
-| 54–55 | `DUMMY_FPS_NUM 1` / `DUMMY_FPS_DEN 60` |
-| 57 | `DUMMY_LINK_FREQ 500000000` |
-| 67 | `static const s64 link_freq_menu[] = { DUMMY_LINK_FREQ };` |
-| 124–127 | `fse->min_width/max_width/min_height/max_height = DUMMY_*`（**min==max**，V4L2 会拒绝协商其它尺寸） |
-| 390–395 | `v4l2_ctrl_new_int_menu(...)` 建 link_freq 控件 |
+| `enum_frame_size` | `index >= MILIANKE_NUM_MODES` 则 `-EINVAL`，否则按 `fse->index` 报该模式的 min==max |
+| `enum_frame_interval` | 只枚举与请求宽高匹配的模式的帧率 |
+| `get_fmt` | 拆出 `milianke_fill_fmt()`；返回**当前选中**模式 |
+| `set_fmt` | 精确匹配宽高优先，否则取像素数最接近的；仅 `ACTIVE` 才改 `sensor->mode_index` |
+| `g_frame_interval` | 返回当前模式的帧率 |
+| `g_volatile_ctrl` | `PIXEL_RATE` 返回当前模式的值 |
+| `probe` | 新增模块参数 `default_mode`；`vblank`/`pixel_rate` 控件范围改为跨模式取 min/max |
+| `milianke_mipi` | 新增字段 `u32 mode_index` |
 
-> 4K 还要注意：`DUMMY_LINK_FREQ` 与 FPGA 侧 PLL（VCO 1000 → 1200 MHz，clk1 125 → 150 MHz）必须同步改，否则 RK 侧 D-PHY 速率与 FPGA 发送不匹配。
+**模式切换的两条路径**
+
+```bash
+# ① 标准 V4L2 路径（推荐）: 用户态选定尺寸, rkcif 会把它推给 sensor subdev
+v4l2-ctl -d /dev/video22 --set-fmt-video=width=3840,height=2160,pixelformat=YUYV
+# ② 开机默认值（驱动内置, 走内核 cmdline）
+milianke_mipi.default_mode=1
+```
+
+切换分辨率时 **FPGA 侧和驱动侧必须一起改**：FPGA 由 I2C 写 regfile `0xE0`（`RES_MODE`）完成，
+驱动由上面 ①/② 完成，否则 rkcif 会按错误的尺寸解析数据流。
+
+> **`link_freq` 是功能性参数，不是装饰！**
+> DTS 里没有任何 D-PHY 速率属性（已核对 `rk/dts/rockchip/rk03/csi-imx415-2.dtsi`），
+> rkcif 直接取 sensor 的 `V4L2_CID_LINK_FREQ` 去配 D-PHY。
+> 换算关系：`link_freq = lane_rate / 2 = 4 x byte_clk`。
+>
+> | FPGA PLL | byte_clk | lane rate | `link_freq` |
+> |---|---|---|---|
+> | VCO 1000 MHz（旧） | 125 MHz | 1000 Mbps | `500000000` |
+> | VCO 1200 MHz（V21） | 150 MHz | 1200 Mbps | `600000000` |
+>
+> FPGA 侧改了 PLL，这里所有模式的 `link_freq` 都要跟着改，否则 D-PHY 速率与 FPGA 发送不匹配。
 
 ---
 
@@ -381,7 +431,7 @@ dd if=/root/boot.before-rec709.img of=/dev/disk/by-partlabel/boot conv=fsync && 
 |---|---|---|
 | 1 | 新 `boot.img` md5 | **≠** `0deb3ac7…`（若相同说明没编进去） |
 | 2 | 板上 `cat /proc/version` | `#N` 编号与编译时间变化（原来是 `#4 SMP Fri Oct 9 16:26:24 CST 2026`） |
-| 3 | 板上 `dmesg \| grep milianke` | 出现 `milianke MIPI sensor registered: … (FPGA CSI-2, 1920x1080@60fps, link-freq=500000000, mipi-en=yes)` |
+| 3 | 板上 `dmesg \| grep milianke` | 出现 `milianke MIPI sensor registered: … (FPGA CSI-2, mode[0]=1920x1080@60, max-4k, link-freq=600000000, mipi-en=yes)` |
 | 4 | 颜色 | 画面不再发灰发绿；抓帧 Y 范围仍应是 16~235 的 limited（数据没变，变的是 RK 的解释方式） |
 | 5 | 过曝 | 若仍过曝，属 IMX415 曝光/增益偏高，去改 FPGA 侧 `ui_imx415_reg.v` / `ui_ae_set`，**不是**内核问题 |
 | 6 | 回滚演练 | 用 §6.3 刷回 `boot.before-rec709.img`，`/proc/version` 恢复 `#4 …` |
