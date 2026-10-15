@@ -316,6 +316,21 @@ assign S_ud_wtlast 				= S_yuv_last	;
 assign S_ud_wtdata 				= S_yuv_data	;
 
 
+//=============================================================================
+//  预处理流水线输出 (P4/P5/P6 -> rgb_to_yuv422_quad)
+//  ⚠ 必须声明在这里 —— 即在 u_rgb2yuv_quad 之前。Verilog 里信号若在
+//    使用点之后才声明, 会被隐式推断成 1 bit wire, S_pp_tdata 会从 128 bit
+//    塌成 1 bit (TD: HDL-7225 already implicitly declared)。
+//=============================================================================
+wire         S_pp_tvalid;
+wire         S_pp_tuser;
+wire         S_pp_tlast;
+wire [127:0] S_pp_tdata;
+wire [2:0]   S_pp_mode;
+wire [3:0]   S_pp_sobel_sh;
+wire [7:0]   S_pp_thresh;
+wire         S_pp_morph_sel;
+
 rgb_to_yuv422_quad u_rgb2yuv_quad (
 	.clk        (S_hs_rx_clk    ),
 	.rst_n      (S_pll_lock     ),
@@ -481,14 +496,11 @@ ui_isp_top X_ui_isp_top (
 //  ⚠ 不改变行结构 (1080 行进 1080 行出) —— 帧首两行纵向邻域无效时用当前行
 //    顶替, 而不是丢行。丢行会让下游色度平面整体错位。
 //=============================================================================
-wire         S_pp_tvalid;
-wire         S_pp_tuser;
-wire         S_pp_tlast;
-wire [127:0] S_pp_tdata;
-wire [2:0]   S_pp_mode;
-wire [3:0]   S_pp_sobel_sh;
-wire [7:0]   S_pp_thresh;
-wire         S_pp_morph_sel;
+//  ⚠ S_pp_* 的声明已上移到文件前部 (rgb_to_yuv422_quad 之前)。
+//    Verilog 要求先声明后使用; 若声明点晚于使用点, 信号会被隐式声明成
+//    1 bit wire (S_pp_tdata 本该 128 bit), TD 报 HDL-7225。
+//    本次编译踩过此坑, 勿再下移。
+//=============================================================================
 
 preproc_top #(
 	.H_ACTIVE   (H_ACTIVE),

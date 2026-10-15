@@ -135,6 +135,10 @@ module jpeg_regfile #(
             s_busy        <= 1'b0;
             s_done        <= 1'b0;
             s_ovf         <= 1'b0;
+            s_frame_cnt   <= 32'd0;
+            // r_heartbeat 只在本块里复位/递增 —— 写在两个 always 块会报
+            // HDL-8007 'constantly driven from multiple places'
+            r_heartbeat   <= 8'd0;
         end else begin
             s_frame_bytes <= I_st_frame_bytes;
             s_total_bytes <= I_st_total_bytes;
@@ -166,7 +170,7 @@ module jpeg_regfile #(
             r_pp_sobel_sh<= 4'd3;      // 幅度右移 3 -> 满 0..255
             r_pp_thresh  <= 8'd128;
             r_pp_morph_sel <= 1'b1;    // 默认膨胀
-            r_heartbeat  <= 8'd0;
+            // 注: r_heartbeat 不在这里复位, 它由上面那个自由运行计数块统一驱动
         end else begin
             r_soft_rst <= 1'b0;        // 自清, 只保持一拍
 

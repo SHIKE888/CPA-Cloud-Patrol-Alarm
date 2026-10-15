@@ -31,6 +31,10 @@ TARGETS = [
     ('cfg_ctrl_top', 'u_cfg_ctrl'),
 ]
 
+# 新增的 RTL 源文件 (浅层文件名, 脚本会递归找)
+SRC_NAMES = ['preproc_top.v', 'preproc_win3x3.v', 'preproc_edge.v',
+             'cfg_ctrl_top.v', 'i2c_slave.v', 'jpeg_regfile.v']
+
 # 这些是 system_top 里的 localparam, 检查模块里要补上
 EXTRA_DECL = """
 	localparam integer H_ACTIVE   = 1920;
@@ -121,6 +125,194 @@ def collect_port_pairs(block):
     return pairs
 
 
+# ==============================================================================
+#  静态检查 (纯文本分析, 必须跑在**真实文件**上)
+#
+#  ⚠ 教训 (2026-10-15): 本脚本原先只把例化块抠出来、自己补上 wire 声明去编译,
+#    结果永远看不到「信号使用早于声明」。实际那次 TD 编译报了 4 条 HDL-7225,
+#    .i_data(S_pp_tdata) 在 322 行用, wire [127:0] S_pp_tdata 在 484 行才声明,
+#    于是 128 bit 数据线被隐式推断成 1 bit。工具骗了自己一次, 不要再骗第二次。
+# ==============================================================================
+VERILOG_KW = {
+    'module', 'endmodule', 'input', 'output', 'inout', 'wire', 'reg', 'logic',
+    'assign', 'always', 'begin', 'end', 'if', 'else', 'case', 'casex', 'casez',
+    'endcase', 'posedge', 'negedge', 'or', 'and', 'not', 'parameter',
+    'localparam', 'integer', 'genvar', 'generate', 'endgenerate', 'for',
+    'default', 'signed', 'unsigned', 'initial', 'function', 'endfunction',
+    'task', 'endtask', 'while', 'repeat', 'forever', 'defparam',
+}
+
+_DECL_KW = ('input', 'output', 'inout', 'wire', 'reg', 'logic')
+DECL_LINE_RE = re.compile(r'^\s*(?:' + '|'.join(_DECL_KW) + r')\b')
+_RE_BEGIN = re.compile(r'begin\b')
+_RE_END = re.compile(r'end\b')
+
+
+def read_text(path):
+    with open(path, 'r', encoding='utf-8', errors='replace') as f:
+        return f.read()
+
+
+def strip_comments_line(line):
+    line = re.sub(r'//.*$', '', line)
+    line = re.sub(r'/\*.*?\*/', ' ', line)
+    return line
+
+
+def strip_comments(src):
+    src = re.sub(r'/\*.*?\*/', ' ', src, flags=re.S)
+    return re.sub(r'//[^\n]*', '', src)
+
+
+def strip_comments_keeplines(src):
+    """去注释但**保留换行** —— 行号仍然对得上, 才能准确报行号。
+
+    ⚠ 块注释 /* ... */ 经常跨行。只按行去注释会漏掉跨行块的中间行,
+      把注释里的文字当成代码 —— 曾因此把注释里的 I_dsi_en 误报成
+      “使用早于声明”。
+    """
+    def _blank(m):
+        return re.sub(r'[^\n]', ' ', m.group(0))
+    src = re.sub(r'/\*.*?\*/', _blank, src, flags=re.S)
+    return re.sub(r'//[^\n]*', '', src)
+
+
+def parse_decl_names(line):
+    """从一行声明里取出被声明的信号名。
+
+    处理: 'wire [31:0] a, b;' / 'input wire [127:0] x' / 'output reg [7:0] y,'
+    """
+    s = strip_comments_line(line)
+    s = re.sub(r'\[[^\]]*\]', ' ', s)                 # 去位宽
+    s = s.split('=')[0]                               # 去初始化值
+    s = re.sub(r'^\s*[A-Za-z_]\w*', ' ', s, count=1)  # 去首个关键字
+    names = []
+    for tok in s.split(','):
+        m = re.search(r'([A-Za-z_]\w*)\s*[;)]?\s*$', tok.strip())
+        if m and m.group(1).lower() not in VERILOG_KW:
+            names.append(m.group(1))
+    return names
+
+
+def check_decl_order(path):
+    """检测「信号在声明之前被使用」—— TD 报 HDL-7225 already implicitly declared。
+
+    Verilog 里未声明的标识符会被隐式推断成 1 bit wire, 所以:
+        rgb_to_yuv422_quad u_x ( .i_data (S_pp_tdata) );   // 322 行
+        wire [127:0] S_pp_tdata;                           // 484 行
+    会让 128 bit 数据线塌成 1 bit。本函数把这类问题抓出来。
+    """
+    fn = os.path.basename(path)
+    first_decl, first_use = {}, {}
+    src = strip_comments_keeplines(read_text(path))
+    for i, raw in enumerate(src.splitlines(), 1):
+        if DECL_LINE_RE.match(raw):
+            for n in parse_decl_names(raw):
+                first_decl.setdefault(n, i)
+        else:
+            for m in re.finditer(r'[A-Za-z_]\w*', raw):
+                n = m.group(0)
+                if n.lower() not in VERILOG_KW:
+                    first_use.setdefault(n, i)
+
+    bad = [(n, u, first_decl[n]) for n, u in first_use.items()
+           if n in first_decl and u < first_decl[n]]
+    if not bad:
+        return 0
+
+    print("  ✗ [声明顺序] %s: %d 个信号在声明前被使用" % (fn, len(bad)))
+    for n, u, d in sorted(bad, key=lambda t: t[1]):
+        print("      %-20s 第 %d 行使用, 第 %d 行才声明" % (n, u, d))
+    print("      -> 会被隐式声明成 1 bit wire, 多 bit 总线会塌掉")
+    return len(bad)
+
+
+def split_always_blocks(src):
+    """把源码切成各个 always 块的文本 (按 begin/end 配对)
+
+    ⚠ 必须先跳过敏感列表 @(...)。否则 `always @(posedge clk ...) begin`
+      会被当成"无 begin 的单语句 always", 一路 find(';') 切到块内第一个分号,
+      整块切碎 —— 多驱动检查就完全失效了 (曾因此漏掉 r_heartbeat)。
+    """
+    out = []
+    for m in re.finditer(r'\balways\b', src):
+        i = m.end()
+        while i < len(src) and src[i] in ' \t\r\n':
+            i += 1
+        # 跳过 @(...) 敏感列表
+        if src.startswith('@', i):
+            i += 1
+            while i < len(src) and src[i] in ' \t\r\n':
+                i += 1
+            if src[i:i + 1] == '(':
+                depth = 0
+                while i < len(src):
+                    if src[i] == '(':
+                        depth += 1
+                    elif src[i] == ')':
+                        depth -= 1
+                        if depth == 0:
+                            i += 1
+                            break
+                    i += 1
+            while i < len(src) and src[i] in ' \t\r\n':
+                i += 1
+        if _RE_BEGIN.match(src, i):
+            depth, j = 0, i
+            while j < len(src):
+                if _RE_BEGIN.match(src, j):
+                    depth += 1
+                    j += 5
+                elif _RE_END.match(src, j):
+                    depth -= 1
+                    j += 3
+                    if depth == 0:
+                        break
+                else:
+                    j += 1
+            out.append(src[i:j])
+        else:
+            j = src.find(';', i)
+            if j > 0:
+                out.append(src[i:j + 1])
+    return out
+
+
+def check_multi_driver(path):
+    """检测同一寄存器在**多个 always 块**里被赋值
+
+    TD 报: HDL-8007 net 'X' is constantly driven from multiple places。
+    只统计确实是 reg 的信号, 免除 'if (a <= b)' 这类比较的误报。
+    """
+    src = strip_comments(read_text(path))
+    block_text = split_always_blocks(src)
+    if len(block_text) < 2:
+        return 0
+
+    regs = set()
+    for line in src.splitlines():
+        if DECL_LINE_RE.match(line) and re.search(r'\breg\b', line):
+            regs.update(parse_decl_names(line))
+
+    drv = {}
+    for bi, blk in enumerate(block_text):
+        for m in re.finditer(r'([A-Za-z_]\w*)\s*(?:\[[^\]]*\])?\s*<=', blk):
+            if m.group(1) in regs:
+                drv.setdefault(m.group(1), set()).add(bi)
+
+    bad = {n: bs for n, bs in drv.items() if len(bs) > 1}
+    if not bad:
+        return 0
+
+    print("  ✗ [多驱动] %s: %d 个寄存器在多个 always 块里赋值"
+          % (os.path.basename(path), len(bad)))
+    for n, bs in sorted(bad.items()):
+        print("      %-20s 出现在块 #%s"
+              % (n, ', '.join(str(b) for b in sorted(bs))))
+    print("      -> TD HDL-8007 constantly driven from multiple places")
+    return len(bad)
+
+
 def main():
     with open(SYS_TOP, 'r', encoding='utf-8', errors='replace') as f:
         text = f.read()
@@ -129,6 +321,31 @@ def main():
     print("=" * 70)
     print(" 集成预检: 抽取 system_top 里的例化原文单独编译")
     print("=" * 70)
+
+    # 先把源文件路径解析出来 (既用于编译, 也用于解析端口位宽 / 静态检查)
+    paths = []
+    for s in SRC_NAMES:
+        found = None
+        for dirpath, _, files in os.walk(RTL):
+            if s in files:
+                found = os.path.join(dirpath, s)
+                break
+        if not found:
+            print("  ✗ 找不到源文件 %s" % s)
+            return 1
+        paths.append(found)
+
+    # ---------------- 静态检查 (必须在真实文件上做) ----------------
+    print("\n[静态检查]")
+    nerr = check_decl_order(SYS_TOP)
+    for p in [SYS_TOP] + paths:
+        nerr += check_multi_driver(p)
+    if nerr:
+        print("\n" + "=" * 70)
+        print(" ✗ 静态检查不通过 (%d 处), 修完再编译" % nerr)
+        print("=" * 70)
+        return 1
+    print("  ✓ 声明顺序 / 多驱动 均正常")
 
     for mod, inst in TARGETS:
         blk, err = extract_inst(text, mod, inst)
@@ -144,21 +361,6 @@ def main():
     for b in blocks:
         sigs |= collect_signals(b)
     sigs = {s for s in sigs if s not in ('H_ACTIVE', 'V_ACTIVE')}
-
-    # 先把源文件路径解析出来 (既用于编译, 也用于解析端口位宽)
-    srcs = ['preproc_top.v', 'preproc_win3x3.v', 'preproc_edge.v',
-            'cfg_ctrl_top.v', 'i2c_slave.v', 'jpeg_regfile.v']
-    paths = []
-    for s in srcs:
-        found = None
-        for dirpath, _, files in os.walk(RTL):
-            if s in files:
-                found = os.path.join(dirpath, s)
-                break
-        if not found:
-            print("  ✗ 找不到源文件 %s" % s)
-            return 1
-        paths.append(found)
 
     # 汇总端口位宽
     width = {}
