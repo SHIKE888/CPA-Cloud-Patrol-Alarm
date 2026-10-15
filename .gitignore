@@ -42,6 +42,11 @@ rk/boot.img
 __pycache__/
 *.pyc
 
+# ---- 调试产物 (可随时重新生成) ----
+tools/*.png
+tools/_*.txt
+/tmp_*
+
 # ---- 系统垃圾 ----
 Thumbs.db
 desktop.ini
