@@ -2,9 +2,10 @@
 # -*- coding: utf-8 -*-
 """fpga_cfg.py —— 通过 I2C 配置 FPGA 参数 (反向传参链路, RK 端工具)
 
-硬件连线 (需自行飞线, 见 docs):
-    RK3576 I2C9 (SCL=L18/SDA=M18, 底板 CON1C A11/A12)
-        --> FMC_HPC_IIC (FPGA P14/P15)
+硬件连线 (底板已连好, **不需要飞线**):
+    RK3576 I2C9  <--->  FPGA L18 (SCL) / M18 (SDA)
+    实测 i2cdetect -y 9 能看到 0x40。
+    (早先误以为是走 FMC_HPC_IIC / FPGA P14/P15 —— 那样才需要飞线, 已纠正)
     FPGA 侧是 I2C 从机, 地址 0x40。
 
 为什么不能走 I_dsi_en
@@ -70,7 +71,9 @@ def open_bus(bus):
     if not os.path.exists(path):
         print("找不到 %s —— 确认 I2C%d 已在设备树里使能" % (path, bus))
         sys.exit(2)
-    f = open(path, 'rb', buffering=0)
+    # ⚠ 必须 r+b: 读寄存器要先 write 子地址再 read, 用 'rb' 会报
+    #   "File not open for writing"。
+    f = open(path, 'r+b', buffering=0)
     return f, fcntl
 
 
@@ -173,6 +176,7 @@ def cmd_demo(f, fcntl, bus, dwell=3.0):
 
 
 def main():
+    global ADDR          # 必须在任何 ADDR 使用之前声明, 否则 SyntaxError
     ap = argparse.ArgumentParser()
     ap.add_argument('--bus', type=int, default=BUS_DEFAULT)
     ap.add_argument('--addr', type=lambda s: int(s, 0), default=ADDR)
@@ -193,7 +197,6 @@ def main():
     p.add_argument('--dwell', type=float, default=3.0)
 
     a = ap.parse_args()
-    global ADDR
     ADDR = a.addr
 
     f, fcntl = open_bus(a.bus)
