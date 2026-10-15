@@ -156,20 +156,41 @@ parameter CS_WIDTH        = 1
 	localparam integer V_SA = 5 , V_BP = 36 , V_FP = 4 ;
 
 	// ==== V21: 运行时分辨率参数 ======================================
-	//  Phase A: 仍由上面的 localparam 驱动 (综合结果与改动前完全一致);
-	//  Phase B: 把下面这些 wire 换成来自 cfg 寄存器组的信号, 即可运行时切换分辨率。
-	wire [12:0] S_h_active     = H_ACTIVE[12:0];                      // 有效像素/行
-	wire [11:0] S_v_active     = V_ACTIVE[11:0];                      // 有效行数
-	wire [15:0] S_w_beats      = W_BEATS_PER_LINE[15:0];              // 写侧 beat/行
-	wire [15:0] S_r_beats      = R_BEATS_PER_LINE[15:0];              // 读侧 beat/行
-	// 注: Verilog 不允许对括号表达式做位选 ((a+b)[12:0] 是语法错误),
-	//     这里直接靠 wire 位宽截断。
-	wire [12:0] S_h_sync_start = H_ACTIVE + H_FP;
-	wire [12:0] S_h_sync_end   = H_ACTIVE + H_FP + H_SA;
-	wire [12:0] S_h_frame_size = H_ACTIVE + H_FP + H_SA + H_BP;
-	wire [11:0] S_v_sync_start = V_ACTIVE + V_FP;
-	wire [11:0] S_v_sync_end   = V_ACTIVE + V_FP + V_SA;
-	wire [11:0] S_v_frame_size = V_ACTIVE + V_FP + V_SA + V_BP;
+	//  由 cfg_ctrl_top 的 RES_MODE 寄存器 (0xE0) 选择:
+	//     2'd0 = 1920x1080@60  (默认, 与改动前完全一致)
+	//     2'd1 = 3840x2160@30
+	//  ★ 必须区分两类尺寸:
+	//     S_h_active / S_v_active = "图像宽高" —— 给 ui_image_correction 的裁剪边界、
+	//        ISP 行缓冲、preproc 行宽、csi2_pack/Frame_tx 用。
+	//     S_vtc_*                 = "VTC 读取时序" —— 只控制 dbuf 读侧每秒放多少数据。
+	//  1080p 下两者恰好都是 1920; 4K 下图像是 3840, 但 VTC 的 de 窗口只需
+	//  >= R_BEATS(1920) 个字节时钟 —— 所以仍取 1920。这就是两者必须分开的原因。
+	wire [1:0]  S_res_mode;                          // 由 cfg_ctrl_top 驱动
+	wire        S_res_chg;                           // 模式写入脉冲 (25MHz 域)
+	wire        S_res_rstn;                          // 模式切换复位窗 (S_pclkx1 域)
+	wire [15:0] S_line_groups;                       // V21 诊断: 每行像素组数
+
+	// ---- 图像宽高 ----
+	wire [12:0] S_h_active     = (S_res_mode == 2'd1) ? 13'd3840 : H_ACTIVE[12:0];
+	wire [11:0] S_v_active     = (S_res_mode == 2'd1) ? 12'd2160 : V_ACTIVE[11:0];
+	wire [15:0] S_w_beats      = (S_res_mode == 2'd1) ? 16'd960  : 16'd480;
+	wire [15:0] S_r_beats      = (S_res_mode == 2'd1) ? 16'd1920 : 16'd960;
+
+	// ---- VTC 读取时序 (S_pclkx1 = 147.5MHz) ----
+	//  帧率 = 147.5e6 / (H_FrameSize * V_FrameSize)
+	//    1080p60: 2200 * 1125 = 2.475e6 -> 59.6 fps  (实测 59.4)
+	//    4K30   : 2060 * 2387 = 4.917e6 -> 30.0 fps
+	//  H_ActiveSize/SyncStart/SyncEnd 两种模式相同, 帧长只靠 H_FrameSize 调。
+	//  注: Verilog 不允许对括号表达式做位选 ((a+b)[12:0] 是语法错误), 靠 wire 位宽截断。
+	wire [12:0] S_vtc_h_active = H_ACTIVE[12:0];                            // 1920
+	wire [12:0] S_vtc_h_start  = H_ACTIVE + H_FP;                           // 2008
+	wire [12:0] S_vtc_h_end    = H_ACTIVE + H_FP + H_SA;                    // 2052
+	wire [12:0] S_vtc_h_frame  = (S_res_mode == 2'd1) ? 13'd2060
+	                                                  : (H_ACTIVE+H_FP+H_SA+H_BP);   // 4K:2060 FHD:2200
+	wire [11:0] S_vtc_v_active = (S_res_mode == 2'd1) ? 12'd2160 : V_ACTIVE[11:0];
+	wire [11:0] S_vtc_v_start  = (S_res_mode == 2'd1) ? 12'd2164 : (V_ACTIVE+V_FP);
+	wire [11:0] S_vtc_v_end    = (S_res_mode == 2'd1) ? 12'd2169 : (V_ACTIVE+V_FP+V_SA);
+	wire [11:0] S_vtc_v_frame  = (S_res_mode == 2'd1) ? 12'd2387 : (V_ACTIVE+V_FP+V_SA+V_BP);
 	//===============================================================
                                       
 
@@ -548,6 +569,7 @@ ui_image_correction #(
     .TDEST_WIDTH (10)
 )X_ui_image_correction
 (
+    .O_line_groups    (S_line_groups     ),  // V21 诊断: 每行像素组数
     .I_clk            (S_hs_rx_clk		  ),
     .I_rst_n          (S_pll_lock		  ),
     // V21: 运行时宽高
@@ -688,10 +710,13 @@ cfg_ctrl_top #(
 	.o_cam_trig   (S_cam_trig),
 	.i_cam_wr_cnt (S_cam_wr_cnt),
 	.i_cam_busy   (S_cam_busy),
+	.i_line_groups(S_line_groups),
 	.o_wb_r       (S_wb_r),
 	.o_wb_b       (S_wb_b),
 	.o_roi_pct    (S_roi_pct),
-	.o_fps_div    (S_fps_div)
+	.o_fps_div    (S_fps_div),
+	.o_res_mode   (S_res_mode),     // V21
+	.o_res_chg    (S_res_chg)      // V21
 );
 
 
@@ -998,17 +1023,40 @@ ui_ddr X_ui_ddr (
     .uart_txd          (				)
 );
 
+//=============================================================================
+//  V21: 分辨率模式切换时的复位窗
+//  写 RES_MODE (0xE0) 会产生一拍 25MHz 域脉冲 S_res_chg, 这里:
+//    1) 同步到 dbuf 读侧时钟 S_pclkx1 (2 级 + 边沿检测)
+//    2) 拉长成约 0.44ms (65535 个 147.5MHz 周期) 的复位窗
+//  VTC 在窗口内保持复位 => 行/场计数器从 0 干净重起。
+//  为何需要: 切换时 H_FrameSize 从 2200 变成 2060, 若 hcnt 已超过新帧长,
+//  比较会提前回绕, 导致 dbuf 读侧的 vs/de 节奏错乱、甚至卡住。
+//=============================================================================
+reg  [2:0]  S_res_chg_sr;
+reg  [15:0] S_res_hold;
+always @(posedge S_pclkx1 or negedge S_pll_lock) begin
+	if (!S_pll_lock) begin
+		S_res_chg_sr <= 3'd0;
+		S_res_hold   <= 16'd0;
+	end else begin
+		S_res_chg_sr <= {S_res_chg_sr[1:0], S_res_chg};
+		if (S_res_chg_sr[2:1] == 2'b10)    S_res_hold <= 16'hFFFF;
+		else if (S_res_hold != 16'd0)      S_res_hold <= S_res_hold - 16'd1;
+	end
+end
+assign S_res_rstn = (S_res_hold == 16'd0);
+
 ui_vtc X_ui_vtc (
-	.I_H_ActiveSize    (S_h_active						), //视频时间参数,行视频信号，一行有效(需要显示的部分)像素所占的时钟数，一个时钟对应一个有效像素
-	.I_H_SyncStart      (S_h_sync_start					), //视频时间参数,行同步开始，即多少时钟数后开始产生行同步信号 
-	.I_H_SyncEnd        (S_h_sync_end				), //视频时间参数,行同步结束，即多少时钟数后停止产生行同步信号，之后就是行有效数据部分
-	.I_H_FrameSize      (S_h_frame_size			), //视频时间参数,行视频信号，一行视频信号总计占用的时钟数
+	.I_H_ActiveSize    (S_vtc_h_active						), //视频时间参数,行视频信号，一行有效(需要显示的部分)像素所占的时钟数，一个时钟对应一个有效像素
+	.I_H_SyncStart      (S_vtc_h_start					), //视频时间参数,行同步开始，即多少时钟数后开始产生行同步信号 
+	.I_H_SyncEnd        (S_vtc_h_end				), //视频时间参数,行同步结束，即多少时钟数后停止产生行同步信号，之后就是行有效数据部分
+	.I_H_FrameSize      (S_vtc_h_frame			), //视频时间参数,行视频信号，一行视频信号总计占用的时钟数
 	
-	.I_V_ActiveSize    (S_v_active						), //视频时间参数,场视频信号，一帧图像所占用的有效(需要显示的部分)行数量，通常说的视频分辨率即H_ActiveSize*V_ActiveSize
-	.I_V_SyncStart      (S_v_sync_start					), //视频时间参数,场同步开始，即多少行数后开始产生场同步信号 
-	.I_V_SyncEnd        (S_v_sync_end				), //视频时间参数,场同步结束，多少行后停止产生长同步信号  
-	.I_V_FrameSize      (S_v_frame_size			), //视频时间参数,场视频信号，一帧视频信号总计占用的行数量        
-    .I_vtc_rstn		   (~S_R_vrst		), //系统复位
+	.I_V_ActiveSize    (S_vtc_v_active						), //视频时间参数,场视频信号，一帧图像所占用的有效(需要显示的部分)行数量，通常说的视频分辨率即H_ActiveSize*V_ActiveSize
+	.I_V_SyncStart      (S_vtc_v_start					), //视频时间参数,场同步开始，即多少行数后开始产生场同步信号 
+	.I_V_SyncEnd        (S_vtc_v_end				), //视频时间参数,场同步结束，多少行后停止产生长同步信号  
+	.I_V_FrameSize      (S_vtc_v_frame			), //视频时间参数,场视频信号，一帧视频信号总计占用的行数量        
+    .I_vtc_rstn		   (~S_R_vrst & S_res_rstn		), //系统复位
     .I_vtc_clk		   (S_pclkx1		), //系统时钟
     .O_vtc_vs		   (S_vtc_vs		), //场同步输出
     .O_vtc_hs		   (S_vtc_hs		), //行同步输出
@@ -1019,7 +1067,9 @@ ui_vtc X_ui_vtc (
 
 
 
-//---- DSI 专用 PLL (25MHz 输入 -> 25/75/150/300/300@90/10MHz) ----
+//---- DSI 专用 PLL (25MHz 输入 -> 25/150/300/600/600@90/10MHz) ----
+//  V21: VCO 从 1000MHz 提到 1200MHz; byte_clk(clk1) 125->150MHz,
+//       lane 速率 = 8 x byte_clk = 1200 Mbps (改前 1000) => 4lane 600MB/s
 pll_dsi u_ui_pll_dsi (
 	.refclk		(I_sysclk_25m		),
 	.reset		(1'b0				),

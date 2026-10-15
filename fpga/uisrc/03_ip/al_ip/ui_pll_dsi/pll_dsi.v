@@ -24,6 +24,26 @@
 ///////////////////////////////////////////////////////////////////////////////
 `timescale 1 ns / 100 fs
 
+//=============================================================================
+// V21 (2026-10-15): VCO 1000MHz -> 1200MHz, 为 4K30 / 1080p120 提高 MIPI 发送带宽
+//   改前: VCO = 25MHz * CLKC0_DIV(40) = 1000MHz
+//         clk1=125MHz(byte)  clk2=250  clk3=500  clk4=500@90  clk5=10MHz
+//         => 4 lane x 125MHz = 500 MB/s
+//   改后: VCO = 25MHz * CLKC0_DIV(48) = 1200MHz
+//         clk1=150MHz(byte)  clk2=300  clk3=600  clk4=600@90  clk5=10MHz
+//         => 4 lane x 150MHz = 600 MB/s
+//   为什么需要: 4K30 与 1080p120 的有效像素载荷都是 497.66 MB/s,
+//               占 500MB/s 的 99.5%, 物理上跑不动(每行之间要留间隙)。
+//               lane 速率 = 8 x byte_clk = 8 x 150 = 1200 Mbps ✓ (改前 1000)
+//   只改了 CLKC0_* (决定 VCO) 和 CLKC5_* (保持 10MHz);
+//   clk1~4 的 DIV 不变, 频率随 VCO 等比上升。
+//   环路滤波 GMC_GAIN/ICP_CUR/LPF_CAP/LPF_RES 四参数在 ui_pll(VCO=1475MHz)
+//   与本 IP(VCO=1000MHz) 下完全相同, 说明与 VCO 无关, 故保持不变。
+//   CLKC4 的 90 度相移用 FPHASE=4 (=4/8 VCO 周期 = 0.5 VCO),
+//   与 VCO 无关(VCO 变则绝对时间等比变), 也保持不变。
+//   ⚠ 下面 IP Generator 自动生成的注释里的频率是改前的旧值, 已过时。
+//=============================================================================
+
 module pll_dsi (
   refclk,
   reset,
@@ -69,11 +89,11 @@ module pll_dsi (
     .REFCLK_DIV(1),
     .FBCLK_DIV(1),
     .CLKC0_ENABLE("ENABLE"),
-    .CLKC0_DIV(40),
-    .CLKC0_CPHASE(39),
+    .CLKC0_DIV(48),
+    .CLKC0_CPHASE(47),
     .CLKC0_FPHASE(0),
     .CLKC0_FPHASE_RSTSEL(0),
-    .CLKC0_DUTY_INT(20),
+    .CLKC0_DUTY_INT(24),
     .CLKC0_DUTY50("ENABLE"),
     .CLKC1_ENABLE("ENABLE"),
     .CLKC1_DIV(8),
@@ -104,11 +124,11 @@ module pll_dsi (
     .CLKC4_DUTY_INT(1),
     .CLKC4_DUTY50("ENABLE"),
     .CLKC5_ENABLE("ENABLE"),
-    .CLKC5_DIV(100),
-    .CLKC5_CPHASE(99),
+    .CLKC5_DIV(120),
+    .CLKC5_CPHASE(119),
     .CLKC5_FPHASE(0),
     .CLKC5_FPHASE_RSTSEL(0),
-    .CLKC5_DUTY_INT(50),
+    .CLKC5_DUTY_INT(60),
     .CLKC5_DUTY50("ENABLE"),
     .INTPI(0),
     .HIGH_SPEED_EN("DISABLE"),

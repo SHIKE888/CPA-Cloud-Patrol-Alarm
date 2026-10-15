@@ -107,9 +107,14 @@ module jpeg_regfile #(
     output wire [2:0]   O_cfg_fps_div,      // 帧率分频 1..8 (1 = 原速)
     output wire [6:0]   O_cfg_roi_pct,      // ROI 百分比 25..100 (100 = 全画幅)
     output wire [7:0]   O_cfg_cam_trig,     // 写任意值 -> 触发一次摄像头参数下发
+    // V21: 分辨率模式 0=1080p60 (默认) 1=4K30; o_res_chg 在写入时给一拍脉冲
+    output wire [1:0]   O_cfg_res_mode,
+    output wire         O_res_chg,
 
     // ---------------- 摄像头通道状态回读 ----------------
     input  wire [15:0]  I_st_cam_wr_cnt,    // 摄像头寄存器写成功次数
+    // V21 诊断: 一行的像素组数 (只读, 历史最大值)
+    input  wire [15:0]  I_st_line_groups,
     input  wire         I_st_cam_busy
 );
 
@@ -143,6 +148,8 @@ module jpeg_regfile #(
     reg [2:0]  r_fps_div;
     reg [6:0]  r_roi_pct;
     reg [7:0]  r_cam_trig;
+    reg [1:0]  r_res_mode;     // V21: 0=1080p60, 1=4K30
+    reg        res_chg;        // V21: 模式寄存器写入脉冲 (自清)
     reg [15:0] s_cam_wr_cnt;
     reg        s_cam_busy;
 
@@ -207,9 +214,12 @@ module jpeg_regfile #(
             r_fps_div    <= 3'd1;      // 原速
             r_roi_pct    <= 7'd100;    // 全画幅
             r_cam_trig   <= 8'd0;
+            r_res_mode   <= 2'd0;      // V21: 默认 1080p60
+            res_chg      <= 1'b0;
             // 注: r_heartbeat 不在这里复位, 它由上面那个自由运行计数块统一驱动
         end else begin
             r_soft_rst <= 1'b0;        // 自清, 只保持一拍
+            res_chg    <= 1'b0;        // V21: 自清
 
             if (I_wr_en) begin
                 case (I_wr_addr)
@@ -250,6 +260,11 @@ module jpeg_regfile #(
                                          : ((I_wr_data[6:0] > 7'd100) ? 7'd100
                                                                       : I_wr_data[6:0]);
                     8'hC9: r_cam_trig   <= I_wr_data;
+                    // ---- V21: 分辨率模式 ----
+                    8'hE0: begin
+                        r_res_mode <= I_wr_data[1:0];
+                        res_chg    <= 1'b1;
+                    end
                     default: ;         // 0x50~ 状态区写入忽略; 0x10~0x4F 由 qtable RAM 处理
                 endcase
             end
@@ -313,6 +328,7 @@ module jpeg_regfile #(
                 8'hC7: O_rd_data <= {5'b0, r_fps_div};
                 8'hC8: O_rd_data <= {1'b0, r_roi_pct};
                 8'hC9: O_rd_data <= r_cam_trig;
+                8'hE0: O_rd_data <= {6'b0, r_res_mode};
                 8'hD0: O_rd_data <= s_cam_wr_cnt[ 7:0];
                 8'hD1: O_rd_data <= s_cam_wr_cnt[15:8];
                 8'hD2: O_rd_data <= {7'b0, s_cam_busy};
@@ -320,6 +336,9 @@ module jpeg_regfile #(
                 // 0xC0~0xC9 这组寄存器 —— 没有的话读回来全是 0, 而 0
                 // 对 EV/WB 来说恰好是“合法值”, 单看值分不出来。
                 8'hD3: O_rd_data <= 8'hA5;
+                // V21 诊断: 每行像素组数 (历史最大值, 小端)
+                8'hD4: O_rd_data <= I_st_line_groups[ 7:0];
+                8'hD5: O_rd_data <= I_st_line_groups[15:8];
 
                 default: O_rd_data <= 8'h00;
             endcase
@@ -359,5 +378,7 @@ module jpeg_regfile #(
     assign O_cfg_fps_div   = r_fps_div;
     assign O_cfg_roi_pct   = r_roi_pct;
     assign O_cfg_cam_trig  = r_cam_trig;
+    assign O_cfg_res_mode  = r_res_mode;   // V21
+    assign O_res_chg       = res_chg;      // V21
 
 endmodule

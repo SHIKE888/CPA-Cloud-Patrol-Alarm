@@ -44,6 +44,10 @@ module ui_image_correction #(
     input                             	I_raw_valid 		,     
     input                             	I_raw_frame_start	,
     input                             	I_raw_frame_end  	,
+    // V21 诊断: 一行最后一个像素组编号 (用 0xD4/0xD5 回读)
+    //   用来判断传感器每行实际输出多少组: 全像素 3864 宽 => ~966 组;
+    //   2x2 相加(合并)到 ~1932 宽 => ~483 组。
+    output reg [15:0]                 	O_line_groups      	,
     // 输出RAW10数据	
     output     [DATA_WIDTH - 1:0]     	O_raw_tdata 		,
     output                            	O_raw_tlast 		,
@@ -129,4 +133,15 @@ module ui_image_correction #(
 //  .probe6  (O_raw_tdata ),
 //  .clk(I_clk)
 //  );
+    //--------------------------------------------------------------------------
+    // V21 诊断: 锁存一行的像素组数
+    //   本模块按 4 像素/组计数, 行内的组间隔(cnt==10)产生 last, 此刻 h_cnt 即该行
+    //   最后一个组的编号 = 该行组数。注意下游只能看到 h_cnt<=480 的组(被本模块裁掉),
+    //   所以在下游量不到真实行宽, 必须在这里量。
+    //--------------------------------------------------------------------------
+    always @(posedge I_clk or negedge I_rst_n) begin
+        if (!I_rst_n)      O_line_groups <= 16'd0;
+        else if (last)     O_line_groups <= h_cnt;
+    end
+
 endmodule

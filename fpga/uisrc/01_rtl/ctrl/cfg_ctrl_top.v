@@ -36,6 +36,8 @@ module cfg_ctrl_top #(
 	input  wire        i_pix_clk,
 	input  wire        i_pix_rst_n,
 	input  wire        i_frame_tuser,      // 帧首脉冲, 用于帧计数
+	// V21 诊断: 一行的像素组数 (来自 i_pix_clk 域)
+	input  wire [15:0] i_line_groups,
 
 	// ---- 同步到像素域的配置输出 ----
 	output wire [2:0]  o_pp_mode,
@@ -55,7 +57,10 @@ module cfg_ctrl_top #(
 	output wire [7:0]  o_wb_r,
 	output wire [7:0]  o_wb_b,
 	output wire [6:0]  o_roi_pct,
-	output wire [2:0]  o_fps_div
+	output wire [2:0]  o_fps_div,
+	// V21: 分辨率模式 (0=1080p60 默认, 1=4K30) + 变更脉冲
+	output wire [1:0]  o_res_mode,
+	output wire        o_res_chg
 );
 
 	//-------------------------------------------------------------------------
@@ -95,6 +100,10 @@ module cfg_ctrl_top #(
 	wire [7:0]  cfg_wb_r, cfg_wb_b;
 	wire [6:0]  cfg_roi_pct;
 	wire [2:0]  cfg_fps_div;
+	reg  [15:0] lg_s1, lg_s2;   // V21 诊断同步器
+	reg  [15:0] lg_max;         // V21 诊断: 历史最大行组数
+	wire [1:0]  cfg_res_mode;   // V21
+	wire        cfg_res_chg;    // V21
 
 	// 帧计数 (像素域), 同步回系统域供回读
 	reg [31:0] cnt_pix;
@@ -140,8 +149,11 @@ module cfg_ctrl_top #(
 		.O_cfg_fps_div   (cfg_fps_div),
 		.O_cfg_roi_pct   (cfg_roi_pct),
 		.O_cfg_cam_trig  (cfg_cam_trig),
+		.O_cfg_res_mode  (cfg_res_mode),   // V21
+		.O_res_chg       (cfg_res_chg),    // V21
 		.I_st_cam_wr_cnt (i_cam_wr_cnt),
-		.I_st_cam_busy   (i_cam_busy)
+		.I_st_cam_busy   (i_cam_busy),
+		.I_st_line_groups(lg_max)
 	);
 
 	//-------------------------------------------------------------------------
@@ -225,8 +237,23 @@ module cfg_ctrl_top #(
 
 	assign o_wb_r    = wbr_s2;
 	assign o_wb_b    = wbb_s2;
+	// V21 诊断: i_line_groups 来自 S_hs_rx_clk 域, 2 级同步到 i_sys_clk 后取历史最大值。
+	// 取最大值可自动滤掉跨时钟采样时可能出现的瞬时撕裂值, 读数稳定。
+	always @(posedge i_sys_clk or negedge sys_rst_n) begin
+		if (!sys_rst_n) begin
+			lg_s1 <= 16'd0; lg_s2 <= 16'd0; lg_max <= 16'd0;
+		end else begin
+			lg_s1 <= i_line_groups;
+			lg_s2 <= lg_s1;
+			if (lg_s2 > lg_max) lg_max <= lg_s2;
+		end
+	end
+
 	assign o_roi_pct = roi_s2;
 	assign o_fps_div = fps_s2;
+	// V21: RES_MODE 属静态配置, 直接透传; 顶层在 o_res_chg 时拉长一个复位窗
+	assign o_res_mode = cfg_res_mode;
+	assign o_res_chg  = cfg_res_chg;
 
 	// 摄像头参数仍在 25MHz 域 (cam_param 也挂这个域), 不用同步
 	assign o_cam_exp  = cfg_cam_exp;
