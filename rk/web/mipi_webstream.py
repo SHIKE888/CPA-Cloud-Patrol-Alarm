@@ -1360,7 +1360,7 @@ FPGA_REGS = [
     #   配套 FPGA system_top.v 的 S_res_mode 模式表。写下去 FPGA 会把
     #   ui_image_correction 的裁剪边界从 480 组放到 960 组、VTC 几何切到 4K,
     #   并产生一个复位窗口重新对齐 ==> RK 侧必须同时改采集格式 (用 /api/mode)。
-    ("RES_MODE",    0xE0,   0,    1, False, "分辨率模式 (0=1920x1080 1=3840x2160)"),
+    ("RES_MODE",    0xE0,   0,    2, False, "分辨率模式 (0=1080p60 1=4K30 2=4K25)"),
 ]
 #  name, addr, 字节数, 说明
 FPGA_STATUS = [
@@ -1422,6 +1422,7 @@ MODES = [
     _mk_mode("1080p60", 1920, 1080, 60, 0, 1),
     _mk_mode("1080p30", 1920, 1080, 30, 0, 2),
     _mk_mode("1080p15", 1920, 1080, 15, 0, 4),
+    _mk_mode("4k25",    3840, 2160, 25, 2, 1),
     _mk_mode("4k15",    3840, 2160, 15, 1, 2),
     _mk_mode("4k10",    3840, 2160, 10, 1, 3),
     _mk_mode("4k30",    3840, 2160, 30, 1, 1),
@@ -1456,9 +1457,10 @@ def current_mode(regs):
 def mode_base_fps(regs):
     """当前分辨率模式的基准帧率 (给 cam_phys 换算用)。"""
     try:
-        return 30.0 if int(regs.get("RES_MODE", 0)) else 60.0
+        rm = int(regs.get("RES_MODE", 0))
     except Exception:
         return 60.0
+    return {0: 60.0, 1: 30.0, 2: 25.0}.get(rm, 60.0)
 
 
 def v4l2_set_fmt(device, w, h, fourcc="NV16", v4l2ctl="v4l2-ctl"):
@@ -1675,7 +1677,7 @@ class FpgaI2C(object):
                 flat["ROI_PCT"] = max(25, min(int(round(float(v))), 100))
                 continue
             if kl in ("res_mode", "resolution_mode"):
-                flat["RES_MODE"] = max(0, min(int(round(float(v))), 1))
+                flat["RES_MODE"] = max(0, min(int(round(float(v))), 2))
                 continue
             if kl == "wb_r_pct":
                 flat["WB_R"] = max(0, min(int(round(float(v) * 1.28)), 255))

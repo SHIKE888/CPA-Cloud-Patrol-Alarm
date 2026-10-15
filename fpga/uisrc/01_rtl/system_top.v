@@ -158,7 +158,8 @@ parameter CS_WIDTH        = 1
 	// ==== V21: 运行时分辨率参数 ======================================
 	//  由 cfg_ctrl_top 的 RES_MODE 寄存器 (0xE0) 选择:
 	//     2'd0 = 1920x1080@60  (默认, 与改动前完全一致)
-	//     2'd1 = 3840x2160@30
+	//     2'd1 = 3840x2160@30   (497.7 MB/s = 99.5% 带宽, 物理上跑不动, 仅保留)
+	//     2'd2 = 3840x2160@25   (414.7 MB/s = 82.9%, **4K 实际可用档**)
 	//  ★ 必须区分两类尺寸:
 	//     S_h_active / S_v_active = "图像宽高" —— 给 ui_image_correction 的裁剪边界、
 	//        ISP 行缓冲、preproc 行宽、csi2_pack/Frame_tx 用。
@@ -170,27 +171,34 @@ parameter CS_WIDTH        = 1
 	wire        S_res_rstn;                          // 模式切换复位窗 (S_pclkx1 域)
 	wire [15:0] S_line_groups;                       // V21 诊断: 每行像素组数
 
+	// 4K 模式 (2'd1/@30 与 2'd2/@25) 的图像尺寸完全相同, 只有 VTC 场周期不同
+	wire        S_is_4k        = (S_res_mode != 2'd0);
+
 	// ---- 图像宽高 ----
-	wire [12:0] S_h_active     = (S_res_mode == 2'd1) ? 13'd3840 : H_ACTIVE[12:0];
-	wire [11:0] S_v_active     = (S_res_mode == 2'd1) ? 12'd2160 : V_ACTIVE[11:0];
-	wire [15:0] S_w_beats      = (S_res_mode == 2'd1) ? 16'd960  : 16'd480;
-	wire [15:0] S_r_beats      = (S_res_mode == 2'd1) ? 16'd1920 : 16'd960;
+	wire [12:0] S_h_active     = S_is_4k ? 13'd3840 : H_ACTIVE[12:0];
+	wire [11:0] S_v_active     = S_is_4k ? 12'd2160 : V_ACTIVE[11:0];
+	wire [15:0] S_w_beats      = S_is_4k ? 16'd960  : 16'd480;
+	wire [15:0] S_r_beats      = S_is_4k ? 16'd1920 : 16'd960;
 
 	// ---- VTC 读取时序 (S_pclkx1 = 147.5MHz) ----
 	//  帧率 = 147.5e6 / (H_FrameSize * V_FrameSize)
 	//    1080p60: 2200 * 1125 = 2.475e6 -> 59.6 fps  (实测 59.4)
-	//    4K30   : 2060 * 2387 = 4.917e6 -> 30.0 fps
+	//    4K30   : 2060 * 2387 = 4.917e6 -> 30.0 fps  (99.5% 带宽, 跑不动)
+	//    4K25   : 2060 * 2864 = 5.900e6 -> 25.0 fps  (82.9% 带宽, 可用)
 	//  H_ActiveSize/SyncStart/SyncEnd 两种模式相同, 帧长只靠 H_FrameSize 调。
 	//  注: Verilog 不允许对括号表达式做位选 ((a+b)[12:0] 是语法错误), 靠 wire 位宽截断。
 	wire [12:0] S_vtc_h_active = H_ACTIVE[12:0];                            // 1920
 	wire [12:0] S_vtc_h_start  = H_ACTIVE + H_FP;                           // 2008
 	wire [12:0] S_vtc_h_end    = H_ACTIVE + H_FP + H_SA;                    // 2052
-	wire [12:0] S_vtc_h_frame  = (S_res_mode == 2'd1) ? 13'd2060
-	                                                  : (H_ACTIVE+H_FP+H_SA+H_BP);   // 4K:2060 FHD:2200
-	wire [11:0] S_vtc_v_active = (S_res_mode == 2'd1) ? 12'd2160 : V_ACTIVE[11:0];
-	wire [11:0] S_vtc_v_start  = (S_res_mode == 2'd1) ? 12'd2164 : (V_ACTIVE+V_FP);
-	wire [11:0] S_vtc_v_end    = (S_res_mode == 2'd1) ? 12'd2169 : (V_ACTIVE+V_FP+V_SA);
-	wire [11:0] S_vtc_v_frame  = (S_res_mode == 2'd1) ? 12'd2387 : (V_ACTIVE+V_FP+V_SA+V_BP);
+	wire [12:0] S_vtc_h_frame  = S_is_4k ? 13'd2060
+	                                     : (H_ACTIVE+H_FP+H_SA+H_BP);   // 4K:2060 FHD:2200
+	wire [11:0] S_vtc_v_active = S_is_4k ? 12'd2160 : V_ACTIVE[11:0];
+	wire [11:0] S_vtc_v_start  = S_is_4k ? 12'd2164 : (V_ACTIVE+V_FP);
+	wire [11:0] S_vtc_v_end    = S_is_4k ? 12'd2169 : (V_ACTIVE+V_FP+V_SA);
+	// 4K 两个档只差场周期: 2387 -> 30fps(99.5% 跑不动), 2864 -> 25fps(82.9% 可用)
+	wire [11:0] S_vtc_v_frame  = (S_res_mode == 2'd2) ? 12'd2864
+	                           : (S_res_mode == 2'd1) ? 12'd2387
+	                                                  : (V_ACTIVE+V_FP+V_SA+V_BP);
 	//===============================================================
                                       
 
