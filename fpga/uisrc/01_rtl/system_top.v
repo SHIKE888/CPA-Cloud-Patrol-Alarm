@@ -1102,7 +1102,9 @@ csi2_pack_yuv422_stream u_csi2_pack (
 	.I_v_active		(S_v_active			),
 	// source: ui_dbuf.R (S_pclkx1 域)
 	.src_clk		(S_pclkx1			),
-	.src_rst_n		(S_pll_lock			),
+	// V22: 模式切换复位窗也要给打包器 —— 否则它的字节计数/行状态机
+	// 会跟新的行/帧边界错位而卡死(实测只复位 VTC 时 TX 彻底不出帧)
+	.src_rst_n		(S_pll_lock & S_res_rstn),
 	.s_tvalid		(S_dsi_R_tvalid		),
 	.s_tready		(S_dsi_pack_tready	),
 	.s_tdata		(S_dsi_R_tdata32	),
@@ -1110,7 +1112,7 @@ csi2_pack_yuv422_stream u_csi2_pack (
 	.s_tlast		(S_dsi_R_tlast		),
 	// sink: byte_clk 域 YUV422 AXIS
 	.dst_clk		(S_dsi_byte_clk		),
-	.dst_rst_n		(S_dphy_rst_n		),
+	.dst_rst_n		(S_dphy_rst_n & S_res_rstn),
 	.enable			(S_dsi_en_int		),
 	.m_tvalid		(S_pack_tvalid		),
 	.m_tready		(S_pack_tready		),
@@ -1178,7 +1180,9 @@ csi2_frame_tx #(
 	.GAP_FRAME	(32'd4000)
 ) u_csi2_frame_tx (
 	.clk			(S_dsi_byte_clk	),
-	.rst_n			(S_dphy_rst_n	),
+	// V22: 同 csi2_pack —— 包/帧状态机必须在模式切换时一起复位,
+	// 否则它与新的行/帧边界错位后会卡死(实测: RX 计数在涨但 TX 不出帧)
+	.rst_n			(S_dphy_rst_n & S_res_rstn),
 	.enable			(S_dsi_en_int	),
 	.I_h_active		(S_h_active		),
 	.I_v_active		(S_v_active		),
