@@ -596,15 +596,38 @@ class OpenCVCapture(threading.Thread):
             except queue.Full:
                 continue
 
+    def request_reopen(self):
+        """请求采集线程释放并重开 V4L2 设备 (切换分辨率/帧率后用)。"""
+        ev = getattr(self, "need_reopen", None)
+        if ev is None:
+            ev = threading.Event()
+            self.need_reopen = ev
+        ev.set()
+
     def _capture_loop(self, dev):
-        w, h = self.args.width, self.args.height
         cap = None
         seq = 0
         while not self.stop_flag.is_set():
             t_start = time.time()
+            # 模式切换: 先丢掉旧句柄, 下面用新的 args 重新打开
+            _ev = getattr(self, "need_reopen", None)
+            if _ev is not None and _ev.is_set():
+                _ev.clear()
+                if cap is not None:
+                    cap.release()
+                    cap = None
+                print("[opencv] 检测到分辨率/帧率切换, 重新打开采集")
+            # 每轮重读 —— 改分辨率后必须拿新尺寸重开
+            w, h = self.args.width, self.args.height
             if cap is None or not cap.isOpened():
                 if cap is not None:
                     cap.release()
+                # 设备此刻空闲, 先按目标尺寸设好节点格式 —— rkcif 会顺着 pipeline
+                # 把 sensor subdev 也改掉 (驱动侧的模式表)。
+                # ⚠ 这一步必须在设备空闲时做: 被占用时 VIDIOC_S_FMT 返回 EBUSY。
+                _okf, _msgf = v4l2_set_fmt(dev, w, h, self.args.fourcc,
+                                           self.args.v4l2ctl)
+                print("[opencv] v4l2-ctl set-fmt %dx%d -> %s" % (w, h, _msgf))
                 print("[opencv] 打开 %s ..." % dev)
                 cap = cv2.VideoCapture(dev, cv2.CAP_V4L2)
                 if self.args.fourcc:
@@ -1333,6 +1356,11 @@ FPGA_REGS = [
     ("FPS_DIV",     0xC7,   1,    8, False, "帧率分频 (1=原速)"),
     ("ROI_PCT",     0xC8,  25,  100, False, "ROI 百分比 (100=全画幅)"),
     ("CAM_TRIG",    0xC9,   0,  255, False, "写任意值 -> 触发一次参数下发"),
+    # ---- 分辨率模式 (V21 新增, 地址 0xE0) ----
+    #   配套 FPGA system_top.v 的 S_res_mode 模式表。写下去 FPGA 会把
+    #   ui_image_correction 的裁剪边界从 480 组放到 960 组、VTC 几何切到 4K,
+    #   并产生一个复位窗口重新对齐 ==> RK 侧必须同时改采集格式 (用 /api/mode)。
+    ("RES_MODE",    0xE0,   0,    1, False, "分辨率模式 (0=1920x1080 1=3840x2160)"),
 ]
 #  name, addr, 字节数, 说明
 FPGA_STATUS = [
@@ -1343,6 +1371,112 @@ FPGA_STATUS = [
     ("CAM_BUSY",    0xD2,   1, "摄像头参数正在下发"),
     ("CAM_ID",      0xD3,   1, "参数区存在标志 (0xA5)"),
 ]
+
+# ============================================================================
+#  分辨率 / 帧率 模式表  —— 网页两个下拉框的单一事实来源
+#
+#  限制关系有三处, 缺一不可:
+#
+#  1) FPGA 的 S_res_mode 模式表 (system_top.v, V21):
+#         0 -> 1920x1080, VTC 2200x1125 => 59.6 fps
+#         1 -> 3840x2160, VTC 2060x2387 => 30.0 fps
+#     切模式 = 写 regfile 0xE0 (RES_MODE)。写下去 FPGA 会同时改裁剪边界与
+#     VTC 几何并产生一个复位窗口, 所以 **RK 侧的采集格式必须一起改**。
+#
+#  2) 帧率 = 模式基准帧率 / FPS_DIV (0xC7, 1..8)。基准 60 (1080p) 或 30 (4K)。
+#     注意 "/api/fpga 的 fps 物理量" 是按 60 基换算的, 4K 下不要用它, 用 /api/mode。
+#
+#  3) 链路带宽: V22 的 byte_clk=125MHz -> lane 1000Mbps -> 4 lane = 500 MB/s。
+#     YUV422 每像素 2 字节, 有效载荷 = 宽 x 高 x 帧率 x 2:
+#         1080p60 = 248.8 MB/s (49.8%)  OK
+#         4K30    = 497.7 MB/s (99.5%)  跑不动 (每行还要留消隐间隙)
+#     想跑真 4K30 必须先把 FPGA 提到 1200Mbps (需要先做时序收敛, 见 V22 注释)。
+# ============================================================================
+LINK_BYTES_PER_SEC = 4 * 1000e6 / 8.0      # 4 lane x 1000 Mbps / 8 bit = 500 MB/s
+LINK_USABLE_RATIO  = 0.85                  # 超过这个比例就判为"超带宽"
+
+# ⚠ FPS_DIV (0xC7) 目前是**死寄存器**: jpeg_regfile -> cfg_ctrl_top -> system_top.v
+#   的 S_fps_div 一路都送出来了, 但**没有任何模块消费它**。实测 FPS_DIV=2 之后
+#   帧率仍然是 59.6 fps ⇒ 跳帧降帧率在当前 RTL 里不生效。
+#   要把降帧档变真, 必须先补 RTL (在 VTC 读侧按 fps_div 丢帧), 再把这里改成 True。
+FPS_DIV_IMPLEMENTED = False
+
+
+def _mk_mode(mid, w, h, fps, res_mode, fps_div):
+    load = w * h * fps * 2.0
+    return {
+        "id": mid,
+        "label": "%dx%d @ %g fps" % (w, h, fps),
+        "w": w, "h": h, "fps": fps,
+        "res_mode": res_mode, "fps_div": fps_div,
+        "load_mb_s": round(load / 1e6, 1),
+        "load_pct": round(100.0 * load / LINK_BYTES_PER_SEC, 1),
+        "ok": (load / LINK_BYTES_PER_SEC) <= LINK_USABLE_RATIO,
+        # impl = FPGA 当前 RTL 是否真能做出这个帧率
+        "impl": FPS_DIV_IMPLEMENTED or (fps_div == 1),
+    }
+
+
+# 当前 V22 bit 实际支持的全部组合 (改 FPGA 模式表后在这里同步)
+MODES = [
+    _mk_mode("1080p60", 1920, 1080, 60, 0, 1),
+    _mk_mode("1080p30", 1920, 1080, 30, 0, 2),
+    _mk_mode("1080p15", 1920, 1080, 15, 0, 4),
+    _mk_mode("4k15",    3840, 2160, 15, 1, 2),
+    _mk_mode("4k10",    3840, 2160, 10, 1, 3),
+    _mk_mode("4k30",    3840, 2160, 30, 1, 1),
+]
+MODES_BY_ID = {m["id"]: m for m in MODES}
+
+
+def mode_resolutions():
+    """按分辨率分组 —— 前端"选分辨率 -> 只留该分辨率的帧率"就是靠它。"""
+    out = {}
+    for m in MODES:
+        key = "%dx%d" % (m["w"], m["h"])
+        if key not in out:
+            out[key] = {"key": key, "w": m["w"], "h": m["h"], "modes": []}
+        out[key]["modes"].append(m)
+    return list(out.values())
+
+
+def current_mode(regs):
+    """从回读的寄存器推当前模式; 找不到就返回 None。"""
+    try:
+        rm = int(regs.get("RES_MODE", 0))
+        fd = int(regs.get("FPS_DIV", 1))
+    except Exception:
+        return None
+    for m in MODES:
+        if m["res_mode"] == rm and m["fps_div"] == fd:
+            return m
+    return None
+
+
+def mode_base_fps(regs):
+    """当前分辨率模式的基准帧率 (给 cam_phys 换算用)。"""
+    try:
+        return 30.0 if int(regs.get("RES_MODE", 0)) else 60.0
+    except Exception:
+        return 60.0
+
+
+def v4l2_set_fmt(device, w, h, fourcc="NV16", v4l2ctl="v4l2-ctl"):
+    """用 v4l2-ctl 设采集节点格式。
+
+    切分辨率时必须做 —— 否则 rkcif 还按旧尺寸协商, 画面会被当成另一张图解析。
+    返回 (ok, 消息)。
+    """
+    try:
+        p = subprocess.run(
+            [v4l2ctl, "-d", device,
+             "--set-fmt-video=width=%d,height=%d,pixelformat=%s" % (w, h, fourcc)],
+            capture_output=True, text=True, timeout=10)
+        out = (p.stdout or p.stderr or "").strip().replace("\n", " ")
+        return p.returncode == 0, "%dx%d %s: %s" % (w, h, fourcc, out or "ok")
+    except Exception as e:
+        return False, "v4l2-ctl 失败: %s: %s" % (type(e).__name__, e)
+
 
 # ============================================================================
 #  IMX415 曝光/增益换算 (给网页用物理量, 而不是裸寄存器值)
@@ -1410,7 +1544,9 @@ def cam_phys(regs, status=None):
             "cam_exp_ms":  round(ms, 2),
             "cam_gain_db": round(gain_db, 1),
             "ev":          pick("EV_BIAS", 0, 15, 8) - 8,
-            "fps":         round(60.0 / pick("FPS_DIV", 1, 8, 1), 1),
+            # 基准帧率跟分辨率模式走: 1080p=60, 4K=30 (V21 模式表)
+            "fps":         round(mode_base_fps(regs) / pick("FPS_DIV", 1, 8, 1), 1),
+            "res_mode":    pick("RES_MODE", 0, 1, 0),
             "wb_r_pct":    round(pick("WB_R", 1, 255, 128) / 1.28, 0),
             "wb_b_pct":    round(pick("WB_B", 1, 255, 128) / 1.28, 0),
             "roi_pct":     pick("ROI_PCT", 25, 100, 100),
@@ -1531,6 +1667,15 @@ class FpgaI2C(object):
             if kl == "fps":
                 n = int(round(60.0 / max(1.0, float(v))))
                 flat["FPS_DIV"] = max(1, min(n, 8))
+                continue
+            # ⚠ 早期漏掉了 roi_pct —— 网页"有效画面"滑块 POST 的就是它,
+            #    结果 apply() 在写任何寄存器之前就 return False("未知寄存器"),
+            #    整批参数一起被拒。补上。
+            if kl == "roi_pct":
+                flat["ROI_PCT"] = max(25, min(int(round(float(v))), 100))
+                continue
+            if kl in ("res_mode", "resolution_mode"):
+                flat["RES_MODE"] = max(0, min(int(round(float(v))), 1))
                 continue
             if kl == "wb_r_pct":
                 flat["WB_R"] = max(0, min(int(round(float(v) * 1.28)), 255))
@@ -1672,6 +1817,26 @@ class Handler(BaseHTTPRequestHandler):
                 _ok, snap = self.fpga.snapshot()
                 snap["meta"] = fpga_meta()
                 return self._json(snap)
+            if path == "/api/modes":
+                regs = {}
+                if self.fpga is not None:
+                    try:
+                        _ok, snap = self.fpga.snapshot()
+                        regs = snap.get("regs", {}) or {}
+                    except Exception:
+                        regs = {}
+                return self._json({
+                    "ok": True,
+                    "link_mb_s": round(LINK_BYTES_PER_SEC / 1e6, 1),
+                    "link_note": "4 lane x 1000 Mbps (V22 byte_clk 125MHz)",
+                    "usable_ratio": LINK_USABLE_RATIO,
+                    "resolutions": mode_resolutions(),
+                    "current": current_mode(regs),
+                    "regs": {"RES_MODE": regs.get("RES_MODE"),
+                             "FPS_DIV": regs.get("FPS_DIV")},
+                    "capture": {"width": self.args.width,
+                                "height": self.args.height},
+                })
             if path in ("/snapshot.jpg", "/snapshot"):
                 jpeg, _ = self.hub.snapshot()
                 if not jpeg:
@@ -1724,9 +1889,71 @@ class Handler(BaseHTTPRequestHandler):
                 snap["message"] = msg
                 snap["meta"] = fpga_meta()
                 return self._json(snap, 200 if (wok and snap.get("ok")) else 500)
+            if path == "/api/mode":
+                body = self._read_json()
+                mid = body.get("id") or body.get("mode")
+                if mid is None and body.get("width"):
+                    for _m in MODES:
+                        if (_m["w"] == int(body["width"]) and
+                                _m["h"] == int(body.get("height", 0))):
+                            mid = _m["id"]
+                            break
+                m = MODES_BY_ID.get(str(mid))
+                if m is None:
+                    return self._json({"ok": False,
+                                       "error": "未知模式: %r (可选: %s)"
+                                                % (mid, ", ".join(MODES_BY_ID))},
+                                      400)
+                res = self._apply_mode(m, force=bool(body.get("force")))
+                return self._json(res, 200 if res.get("ok") else 500)
             return self._json({"error": "not found", "path": path}, 404)
         except (BrokenPipeError, ConnectionResetError):
             pass
+
+    # ---------- 分辨率/帧率切换 ----------
+    def _apply_mode(self, mode, force=False):
+        """切模式: FPGA 寄存器 -> RK 侧 V4L2 格式 -> 采集线程重开。
+
+        顺序是先改源头 (FPGA) 再改消化端 (RK), 中间会有一瞬不匹配, 可接受。
+        """
+        log = []
+        if not mode["impl"] and not force:
+            return {"ok": False, "log": log,
+                    "error": "%s 需要跳帧(FPS_DIV=%d), 但当前 FPGA RTL 里 FPS_DIV 是"
+                             "死寄存器(无模块消费), 降帧不生效。先补 RTL, "
+                             "或带 \"force\": true 只切分辨率(帧率不会变)。"
+                             % (mode["label"], mode["fps_div"])}
+        if not mode["ok"] and not force:
+            return {"ok": False, "log": log,
+                    "error": "%s 需要 %.1f MB/s, 占链路 %.1f%% (>%.0f%% 判为跑不动); "
+                             "确实要试请带 \"force\": true"
+                             % (mode["label"], mode["load_mb_s"], mode["load_pct"],
+                                LINK_USABLE_RATIO * 100)}
+        if self.fpga is None:
+            return {"ok": False, "error": "FPGA I2C 未启用 (--fpga-bus -1)", "log": log}
+        try:
+            # FPS_DIV 先写; RES_MODE 后写 —— 写它会产生 VTC 复位窗口,
+            # 让它作为最后一步, 免得复位后帧率又被改一次。
+            self.fpga.write(0xC7, int(mode["fps_div"]))
+            self.fpga.write(0xE0, int(mode["res_mode"]))
+            log.append("FPGA: FPS_DIV=%d RES_MODE=%d" % (mode["fps_div"], mode["res_mode"]))
+        except Exception as e:
+            return {"ok": False, "log": log,
+                    "error": "FPGA 写入失败: %s: %s" % (type(e).__name__, e)}
+        # ⚠ 这里不做 v4l2-ctl: 设备被采集线程占着时 VIDIOC_S_FMT 会被 EBUSY 拒绝。
+        #    采集线程重开前(设备空闲)会自己跑一遍, 见 _capture_loop。
+        self.args.width = int(mode["w"])
+        self.args.height = int(mode["h"])
+        cap = Handler.capture
+        reopened = False
+        if cap is not None and hasattr(cap, "request_reopen"):
+            cap.request_reopen()
+            reopened = True
+            log.append("已请求采集线程按 %dx%d 重开" % (mode["w"], mode["h"]))
+        else:
+            log.append("警告: 未找到采集对象, 可能要手动重启服务")
+        return {"ok": reopened, "mode": mode, "log": log,
+                "note": "画面会在 1~2 秒内按新模式重建"}
 
     # ---------- 具体响应 ----------
     def _serve_viewer(self):

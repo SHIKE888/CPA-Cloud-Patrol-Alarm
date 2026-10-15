@@ -161,9 +161,16 @@
 
         <div class="sep"></div>
 
-        <div class="row"><label>输出帧率</label>
-          <input type="range" id="f_fps" min="5" max="60" step="1" value="60">
-          <span class="val" id="fv_fps">60 fps</span></div>
+        <div class="row"><label>分辨率 / 帧率</label>
+          <select id="sel_res" style="flex:0 0 126px;padding:4px 6px"></select>
+          <select id="sel_fps" style="flex:1;padding:4px 6px"></select></div>
+
+        <div class="grid2" style="margin-top:6px">
+          <button id="btnApplyMode">应用分辨率 / 帧率</button>
+          <button class="ghost" id="btnReloadMode">刷新模式表</button>
+        </div>
+
+        <p class="hint" id="modeHint">连接后自动读取模式表。</p>
 
         <div class="row"><label>有效画面</label>
           <input type="range" id="f_roi" min="25" max="100" step="1" value="100">
@@ -173,8 +180,10 @@
           曝光/增益由 FPGA 通过 I2C 直接写 IMX415 寄存器（曝光 = (2283−SHR0)×7.3µs）。<br>
           白平衡是 FPGA 里的数字 R/B 增益 —— IMX415 是 RAW sensor 没有白平衡寄存器，
           本工程的 ISP AWB 又是全自动的，手动白平衡只能在这一级做。<br>
-          帧率用<b>跳帧</b>、有效画面用<b>中心裁剪+黑边</b>：VTC 的时序参数是编译期常量，
-          运行时改不了真实输出尺寸（改了 RK 侧驱动也得跟着改）。
+          分辨率/帧率由上面的下拉框统一切换：会同时写 FPGA 的 RES_MODE(0xE0) 与
+          FPS_DIV(0xC7)，再把 RK 侧采集格式改掉并重开采集。有效画面用<b>中心裁剪+黑边</b>。<br>
+          ⚠ 4K 在 1000 Mbps 链路上只能跑到 15 fps（带宽 49.8%）；4K30 需要 99.5%，
+          物理上跑不动 —— 要上真 4K30 得先把 FPGA 提到 1200 Mbps（需先做时序收敛）。
         </p>
       </div>
 
@@ -326,7 +335,7 @@ function connect() {
   $("placeholder").style.display = "none";
 
   setDot(true, "连接中…");
-  getParams().then(loadHw).then(loadFpga);
+  getParams().then(loadHw).then(loadFpga).then(() => loadModes());
   fpgaPoll();
   poll();
 }
@@ -501,6 +510,88 @@ $("btnPpRefresh").onclick = async () => { await loadFpga(); toast("已刷新 FPG
 });
 
 /* 定期读心跳/帧计数 —— 证明 FPGA 在线且链路在跑 */
+/* ---------------- 分辨率 / 帧率 下拉 (帧率按分辨率过滤) ---------------- */
+let modeTable = null;
+let curModeId = null;
+
+async function loadModes(keep) {
+  try {
+    modeTable = await api("/api/modes");
+  } catch (e) { toast("读取模式表失败: " + e.message, true); return; }
+  const res = $("sel_res");
+  const old = keep ? res.value : null;
+  res.innerHTML = "";
+  (modeTable.resolutions || []).forEach(r => {
+    const o = document.createElement("option");
+    o.value = r.key; o.textContent = r.w + " × " + r.h;
+    res.appendChild(o);
+  });
+  if (modeTable.current) {
+    curModeId = modeTable.current.id;
+    const k = modeTable.current.w + "x" + modeTable.current.h;
+    if ([...res.options].some(o => o.value === k)) res.value = k;
+  }
+  if (old && [...res.options].some(o => o.value === old)) res.value = old;
+  fillFps();
+}
+
+/* 换分辨率 -> 帧率下拉只留该分辨率的项; 超带宽的标出来 */
+function fillFps() {
+  const r = (modeTable.resolutions || []).find(x => x.key === $("sel_res").value);
+  const sel = $("sel_fps");
+  sel.innerHTML = "";
+  if (!r) return;
+  r.modes.forEach(m => {
+    const o = document.createElement("option");
+    o.value = m.id;
+    o.textContent = m.fps + " fps"
+                  + (m.ok   ? "" : "  ⚠ 超带宽 " + m.load_pct + "%")
+                  + (m.impl ? "" : "  ⚠ 未实现");
+    if (!m.ok || !m.impl) o.style.color = "#f88";
+    sel.appendChild(o);
+  });
+  if (curModeId && r.modes.some(m => m.id === curModeId)) sel.value = curModeId;
+  modeHint();
+}
+
+function curModeObj() {
+  const id = $("sel_fps").value;
+  let hit = null;
+  (modeTable.resolutions || []).forEach(r =>
+    r.modes.forEach(m => { if (m.id === id) hit = m; }));
+  return hit;
+}
+
+function modeHint() {
+  const m = curModeObj(), h = $("modeHint");
+  if (!m || !modeTable) { h.textContent = "—"; return; }
+  let s = "<b>" + m.label + "</b> · 载荷 " + m.load_mb_s + " MB/s / 链路 " +
+          modeTable.link_mb_s + " MB/s = <b>" + m.load_pct + "%</b>";
+  if (m.load_pct > 85) s += " · <b style='color:#f88'>超过 85%，跑不动</b>";
+  if (!m.impl) s += " · <b style='color:#f88'>此帧率需跳帧，当前 RTL 未实现</b>";
+  if (modeTable.current && modeTable.current.id === m.id) s += " · 当前已是该模式";
+  else s += " · 点右边按钮切换（画面会中断 1~2 秒）";
+  h.innerHTML = s;
+}
+
+$("sel_res").addEventListener("change", () => { fillFps(); modeHint(); });
+$("sel_fps").addEventListener("change", modeHint);
+$("btnReloadMode").onclick = () => loadModes(true);
+
+$("btnApplyMode").onclick = async () => {
+  const m = curModeObj();
+  if (!m) return;
+  if (!confirm("切换到 " + m.label + " ?\n\n画面会中断 1~2 秒；" +
+               "采集格式会一起改成 " + m.w + "x" + m.h + "。")) return;
+  toast("正在切换到 " + m.id + " …");
+  try {
+    const r = await api("/api/mode",
+                        { method: "POST", body: JSON.stringify({ id: m.id }) });
+    toast((r.log || []).join("  |  ") || "已切换", !r.ok);
+  } catch (e) { toast("切换失败: " + e.message, true); }
+  setTimeout(async () => { await loadModes(true); await poll(); }, 2500);
+};
+
 function fpgaPoll() {
   clearInterval(fpgaTimer);
   fpgaTimer = setInterval(async () => {
@@ -534,7 +625,6 @@ const CAM_CTRL = [
   { id: "f_cam_ev",   key: "ev",          fmt: v => v.toFixed(0) + " EV"  },
   { id: "f_wb_r",     key: "wb_r_pct",    fmt: v => v.toFixed(0) + " %"   },
   { id: "f_wb_b",     key: "wb_b_pct",    fmt: v => v.toFixed(0) + " %"   },
-  { id: "f_fps",      key: "fps",         fmt: v => v.toFixed(0) + " fps" },
   { id: "f_roi",      key: "roi_pct",     fmt: v => v.toFixed(0) + " %"   },
 ];
 let camPushTimer = null;
