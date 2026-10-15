@@ -25,23 +25,29 @@
 `timescale 1 ns / 100 fs
 
 //=============================================================================
-// V21 (2026-10-15): VCO 1000MHz -> 1200MHz, 为 4K30 / 1080p120 提高 MIPI 发送带宽
-//   改前: VCO = 25MHz * CLKC0_DIV(40) = 1000MHz
-//         clk1=125MHz(byte)  clk2=250  clk3=500  clk4=500@90  clk5=10MHz
-//         => 4 lane x 125MHz = 500 MB/s
-//   改后: VCO = 25MHz * CLKC0_DIV(48) = 1200MHz
-//         clk1=150MHz(byte)  clk2=300  clk3=600  clk4=600@90  clk5=10MHz
-//         => 4 lane x 150MHz = 600 MB/s
-//   为什么需要: 4K30 与 1080p120 的有效像素载荷都是 497.66 MB/s,
-//               占 500MB/s 的 99.5%, 物理上跑不动(每行之间要留间隙)。
-//               lane 速率 = 8 x byte_clk = 8 x 150 = 1200 Mbps ✓ (改前 1000)
-//   只改了 CLKC0_* (决定 VCO) 和 CLKC5_* (保持 10MHz);
-//   clk1~4 的 DIV 不变, 频率随 VCO 等比上升。
-//   环路滤波 GMC_GAIN/ICP_CUR/LPF_CAP/LPF_RES 四参数在 ui_pll(VCO=1475MHz)
-//   与本 IP(VCO=1000MHz) 下完全相同, 说明与 VCO 无关, 故保持不变。
-//   CLKC4 的 90 度相移用 FPHASE=4 (=4/8 VCO 周期 = 0.5 VCO),
-//   与 VCO 无关(VCO 变则绝对时间等比变), 也保持不变。
-//   ⚠ 下面 IP Generator 自动生成的注释里的频率是改前的旧值, 已过时。
+// V22 (2026-10-15 晚): **回退 V21 的 PLL 提频**, 恢复 VCO 1000MHz
+//
+//  为什么回退: V21 把 VCO 1000 -> 1200MHz 后, 板上画面变成水平条纹状花屏
+//  (mipi_webstream 日志同时报 "连续读帧失败, 重连")。判别过程:
+//    - 把内核回滚到改动前版本 -> 花屏依旧 => 与内核无关, 是 FPGA bit 的问题
+//    - 改动前的 bit + 同一内核 -> 画面正常 => 确认是 V21 引入
+//  根因推断: clk1~4 的 DIV 都没变(8/4/2/2), 所以 VCO 一升, 所有输出等比 x1.2:
+//        clk1 125->150   clk2 250->300   clk3 500->600   clk4 500->600@90
+//    其中 **clk3/clk4 = 600MHz** 对 PH1A90-2 过于激进: 本设计本来就有
+//    setup WNS -5.584ns(未收敛) + 时钟偏斜 2567ps, 再提 20% 直接跑挂。
+//    600MHz 是 MIPI 发送的 DDR 串行时钟(lane_rate/2), 它不是"可选加速",
+//    而是 1200Mbps 的必然结果 => 想跑 1200Mbps 必须先把时序收敛做上去。
+//
+//  当前状态: VCO = 25MHz * CLKC0_DIV(40) = 1000MHz
+//        clk1=125MHz(byte)  clk2=250  clk3=500  clk4=500@90  clk5=10MHz
+//        => lane 速率 = 8 x 125 = 1000 Mbps, 4 lane 合计 500 MB/s
+//  V21 的其余成果(RES_MODE 模式表 / 行宽诊断)与 PLL 无关, 已保留。
+//
+//  4K30 的带宽账 (待办): 4K30 与 1080p120 的有效载荷都是 497.66 MB/s,
+//  占 500MB/s 的 99.5%, 物理上跑不动。要上 4K30 必须先解决时序收敛再提 VCO;
+//  候选手段见 fpga_prj_Runs/phy_1/*_qor_suggestion.tcl
+//  (set_param route post_route_opt high / place effort high 等)。
+//  (环路滤波 GMC_GAIN/ICP_CUR/LPF_CAP/LPF_RES 与 VCO 无关, 未改动。)
 //=============================================================================
 
 module pll_dsi (
@@ -89,11 +95,11 @@ module pll_dsi (
     .REFCLK_DIV(1),
     .FBCLK_DIV(1),
     .CLKC0_ENABLE("ENABLE"),
-    .CLKC0_DIV(48),
-    .CLKC0_CPHASE(47),
+    .CLKC0_DIV(40),
+    .CLKC0_CPHASE(39),
     .CLKC0_FPHASE(0),
     .CLKC0_FPHASE_RSTSEL(0),
-    .CLKC0_DUTY_INT(24),
+    .CLKC0_DUTY_INT(20),
     .CLKC0_DUTY50("ENABLE"),
     .CLKC1_ENABLE("ENABLE"),
     .CLKC1_DIV(8),
@@ -124,11 +130,11 @@ module pll_dsi (
     .CLKC4_DUTY_INT(1),
     .CLKC4_DUTY50("ENABLE"),
     .CLKC5_ENABLE("ENABLE"),
-    .CLKC5_DIV(120),
-    .CLKC5_CPHASE(119),
+    .CLKC5_DIV(100),
+    .CLKC5_CPHASE(99),
     .CLKC5_FPHASE(0),
     .CLKC5_FPHASE_RSTSEL(0),
-    .CLKC5_DUTY_INT(60),
+    .CLKC5_DUTY_INT(50),
     .CLKC5_DUTY50("ENABLE"),
     .INTPI(0),
     .HIGH_SPEED_EN("DISABLE"),
