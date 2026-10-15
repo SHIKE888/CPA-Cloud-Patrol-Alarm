@@ -115,10 +115,12 @@ parameter CS_WIDTH        = 1
     output wire 					O_cam_scl	,   //I2C总线，SCL时钟
     inout  wire 					IO_cam_sda	,   //I2C总线，SDA数据
 	//参数通道 I2C (FPGA 从机, 地址 0x40)
-	//按竞赛方案由 RK I2C9 飞线至 FMC_HPC_IIC (FPGA P14/P15); 当前 fpga_pin.adc
-	//里这两个脚未被占用。从机不做时钟拉伸, 所以 SCL 只读不驱动。
-	inout  wire 					IO_cfg_scl	,   //参数通道 SCL
-	inout  wire 					IO_cfg_sda	,   //参数通道 SDA
+	//引脚 = L18/M18: 手册 CON1C 表显示它们与 RK 的 I2C9 (B27/A28) 同网,
+	//厂商设备树 AFH03/csi-imx415-2.dtsi 里也把 FPGA 定义成 i2c9 上的从机,
+	//所以**不需要飞线**。地址避开厂商 DTS 里的 0x1a (已被内核驱动占用)。
+	//从机不做时钟拉伸, 所以 SCL 只读不驱动。
+	inout  wire 					IO_cfg_scl	,   //参数通道 SCL (L18)
+	inout  wire 					IO_cfg_sda	,   //参数通道 SDA (M18)
 	// I_button 口已删除: U17/V17 LVDS 对被 DSI HS data lane[1] 占用, 本工程不再外提按键
 	
 	//MIPI_RX

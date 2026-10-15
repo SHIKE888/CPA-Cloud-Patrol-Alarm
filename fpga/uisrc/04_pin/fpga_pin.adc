@@ -36,13 +36,31 @@ set_pin_assignment	{ I_dsi_en }				{ LOCATION = L13; IOSTANDARD = LVCMOS18; PULL
 
 # =============================================================
 # 反向传参链路: 参数通道 I2C 从机 (地址 0x40)
-# 按竞赛方案, RK I2C9 (SCL=L18/SDA=M18, 底板 CON1C A11/A12) 需飞线到
-# FMC_HPC_IIC (FPGA P14/P15)。当前约束文件里这两个脚原本未被占用。
-# 从机不做时钟拉伸, SCL 只读。
-# ⚠ 若实际未接线: 这两根线靠上拉保持高, 从机收不到任何传输, 不影响视频通路。
+#
+# 引脚选定依据 (2026-10-15 查手册 + 上板实测确认):
+#   手册 CON1C 板对板连接器表 (核心板<->底板):
+#       A11 | 核心板网表 B12_L20P | 底板网表 I2C9_SCL_M1_MIPI_CSI3_1 | FPGA L18
+#       A12 | 核心板网表 B12_L20N | 底板网表 I2C9_SDA_M1_MIPI_CSI3_1 | FPGA M18
+#   ==> FPGA 的 L18/M18 直接挂在 RK 的 I2C9 上, **不需要飞线**
+#
+#   佐证:
+#     1) 手册 CSI 连接器表: I2C9_SCL_M1_MIPI_CSI3 -> RK B27 ; SDA -> RK A28
+#     2) 厂商设备树 AFH03/csi-imx415-2.dtsi 里:
+#          &i2c9 { status="okay"; pinctrl-0=<&i2c9m1_xfer>;
+#                  fpga@1a { compatible="milianke,fpga-virtual"; reg=<0x1a>; ... }; };
+#        —— 厂商本来就把 FPGA 当作 I2C9 上的从机
+#     3) 上板实测: /dev/i2c-9 存在, i2cdetect -y 9 在 0x1a 显示 UU
+#        (被内核 fpga@1a 驱动占用)
+#
+#   ⚠ 从机地址用 0x40 而不是厂商 DTS 里的 0x1a:
+#    0x1a 已被内核驱动 claim (i2cdetect 显示 UU), 用户态访问不到。
+#    0x40 空闲, 用户态可直接 i2cget/i2cset。
+#   ⚠ 从机不做时钟拉伸, 所以 SCL 只读不驱动。
+#   ⚠ 曾误选 P14/P15 (FMC_HPC_IIC) —— 那是 FMC 子卡侧的 IIC, 通向子卡摄像头
+#    SCCB, 要从 RK 引过去必须飞线。已改为 L18/M18。
 # =============================================================
-set_pin_assignment	{ IO_cfg_scl }			{ LOCATION = P14; IOSTANDARD = LVCMOS18; DRIVESTRENGTH = 4; PULLTYPE = PULLUP; }
-set_pin_assignment	{ IO_cfg_sda }			{ LOCATION = P15; IOSTANDARD = LVCMOS18; DRIVESTRENGTH = 4; PULLTYPE = PULLUP; }
+set_pin_assignment	{ IO_cfg_scl }			{ LOCATION = L18; IOSTANDARD = LVCMOS18; DRIVESTRENGTH = 4; PULLTYPE = PULLUP; }
+set_pin_assignment	{ IO_cfg_sda }			{ LOCATION = M18; IOSTANDARD = LVCMOS18; DRIVESTRENGTH = 4; PULLTYPE = PULLUP; }
 
 set_pin_assignment	{ O_mipi_dsi_hs_clk_p }		{ LOCATION = T15; IOSTANDARD = LVDS18; PRE_EMP = ON; VOCM = L2; VOD = 300M; }
 set_pin_assignment	{ O_mipi_dsi_hs_data_p[0] }	{ LOCATION = P13; IOSTANDARD = LVDS18; PRE_EMP = ON; VOCM = L2; VOD = 300M; }
