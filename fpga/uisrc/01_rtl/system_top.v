@@ -114,6 +114,11 @@ parameter CS_WIDTH        = 1
 	output wire 					O_clk_rst	,	//摄像头复位信号,默认上拉
     output wire 					O_cam_scl	,   //I2C总线，SCL时钟
     inout  wire 					IO_cam_sda	,   //I2C总线，SDA数据
+	//参数通道 I2C (FPGA 从机, 地址 0x40)
+	//按竞赛方案由 RK I2C9 飞线至 FMC_HPC_IIC (FPGA P14/P15); 当前 fpga_pin.adc
+	//里这两个脚未被占用。从机不做时钟拉伸, 所以 SCL 只读不驱动。
+	inout  wire 					IO_cfg_scl	,   //参数通道 SCL
+	inout  wire 					IO_cfg_sda	,   //参数通道 SDA
 	// I_button 口已删除: U17/V17 LVDS 对被 DSI HS data lane[1] 占用, 本工程不再外提按键
 	
 	//MIPI_RX
@@ -312,10 +317,10 @@ assign S_ud_wtdata 				= S_yuv_data	;
 rgb_to_yuv422_quad u_rgb2yuv_quad (
 	.clk        (S_hs_rx_clk    ),
 	.rst_n      (S_pll_lock     ),
-	.i_de       (S_ISP_O_tvalid ),
-	.i_user_sof (S_ISP_O_tuser  ),
-	.i_last     (S_ISP_O_tlast  ),
-	.i_data     (S_ISP_O_tdata  ),
+	.i_de       (S_pp_tvalid    ),   // 改接预处理输出 (原 S_ISP_O_tvalid)
+	.i_user_sof (S_pp_tuser     ),
+	.i_last     (S_pp_tlast     ),
+	.i_data     (S_pp_tdata     ),
 	.o_de       (S_yuv_de       ),
 	.o_user_sof (S_yuv_sof      ),
 	.o_last     (S_yuv_last     ),
@@ -464,6 +469,76 @@ ui_isp_top X_ui_isp_top (
 	.O_tvalid        (S_ISP_O_tvalid	),
 	.I_tready        (					)
   );
+
+
+//=============================================================================
+//  预处理流水线 P4/P5/P6 (Sobel / 阈值分割 / 形态学)
+//
+//  插入位置: ui_isp_top 输出 (RGB888x4) 与 rgb_to_yuv422_quad 之间。
+//  配置由反向传参链路 (cfg_ctrl_top) 给出, 经 2 级同步进入本时钟域。
+//  ⚠ 不改变行结构 (1080 行进 1080 行出) —— 帧首两行纵向邻域无效时用当前行
+//    顶替, 而不是丢行。丢行会让下游色度平面整体错位。
+//=============================================================================
+wire         S_pp_tvalid;
+wire         S_pp_tuser;
+wire         S_pp_tlast;
+wire [127:0] S_pp_tdata;
+wire [2:0]   S_pp_mode;
+wire [3:0]   S_pp_sobel_sh;
+wire [7:0]   S_pp_thresh;
+wire         S_pp_morph_sel;
+
+preproc_top #(
+	.H_ACTIVE   (H_ACTIVE),
+	.PX_PER_CLK (4)
+) u_preproc (
+	.clk            (S_hs_rx_clk),
+	.rst_n          (S_pll_lock),
+	.i_tvalid       (S_ISP_O_tvalid),
+	.i_tuser        (S_ISP_O_tuser),
+	.i_tlast        (S_ISP_O_tlast),
+	.i_rgb          (S_ISP_O_tdata),
+	.i_mode         (S_pp_mode),
+	.i_sobel_shift  (S_pp_sobel_sh),
+	.i_thresh       (S_pp_thresh),
+	.i_morph_sel    (S_pp_morph_sel),
+	.o_tvalid       (S_pp_tvalid),
+	.o_tuser        (S_pp_tuser),
+	.o_tlast        (S_pp_tlast),
+	.o_rgb          (S_pp_tdata)
+);
+
+
+//=============================================================================
+//  反向传参链路: I2C 从机 @0x40 + 参数字符堆 (cfg_ctrl_top 内部包含)
+//
+//  用常开的 25MHz 时钟而不是像素时钟 —— 链路没起来时也能配置。
+//  配置信号在 cfg_ctrl_top 内部做 2 级同步后送到像素域。
+//=============================================================================
+wire S_cfg_scl_i, S_cfg_sda_i, S_cfg_sda_drv;
+
+assign IO_cfg_scl = 1'bz;                        // 从机不做时钟拉伸
+assign S_cfg_scl_i = IO_cfg_scl;
+assign IO_cfg_sda = S_cfg_sda_drv ? 1'b0 : 1'bz; // 开漏: 1 = 拉低
+assign S_cfg_sda_i = IO_cfg_sda;
+
+cfg_ctrl_top #(
+	.DEV_ADDR (7'h40),
+	.CFG_VER  (16'h0101)
+) u_cfg_ctrl (
+	.i_sys_clk    (I_sysclk_25m),
+	.i_sys_rst_n  (1'b1),
+	.i_scl        (S_cfg_scl_i),
+	.i_sda        (S_cfg_sda_i),
+	.o_sda_drive  (S_cfg_sda_drv),
+	.i_pix_clk    (S_hs_rx_clk),
+	.i_pix_rst_n  (S_pll_lock),
+	.i_frame_tuser(S_ISP_O_tuser),
+	.o_pp_mode    (S_pp_mode),
+	.o_pp_sobel_shift (S_pp_sobel_sh),
+	.o_pp_thresh  (S_pp_thresh),
+	.o_pp_morph_sel (S_pp_morph_sel)
+);
 
 
 //设置3帧缓存，读延迟写1帧
@@ -853,8 +928,10 @@ csi2_pack_yuv422_stream #(
 //
 //  测完把 JPEG_TEST_SRC 置回 0 即可恢复正式通路; 它是常量, 综合时
 //  没用到的那一路会被直接优化掉, 不占资源。
+//
+//  2026-10-15: 链路验证已通过 (3 帧 12,441,600 字节 零误差), 置 0 恢复正式通路。
 //=============================================================================
-localparam JPEG_TEST_SRC = 1'b1;
+localparam JPEG_TEST_SRC = 1'b0;
 
 wire        S_test_tvalid;
 wire [31:0] S_test_tdata;

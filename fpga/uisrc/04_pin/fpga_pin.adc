@@ -34,6 +34,16 @@ set_pin_assignment	{ I_data_lp_p[3] }	{ LOCATION = F15; IOSTANDARD = LVCMOS18; P
 # =============================================================
 set_pin_assignment	{ I_dsi_en }				{ LOCATION = L13; IOSTANDARD = LVCMOS18; PULLTYPE = PULLDOWN; }
 
+# =============================================================
+# 反向传参链路: 参数通道 I2C 从机 (地址 0x40)
+# 按竞赛方案, RK I2C9 (SCL=L18/SDA=M18, 底板 CON1C A11/A12) 需飞线到
+# FMC_HPC_IIC (FPGA P14/P15)。当前约束文件里这两个脚原本未被占用。
+# 从机不做时钟拉伸, SCL 只读。
+# ⚠ 若实际未接线: 这两根线靠上拉保持高, 从机收不到任何传输, 不影响视频通路。
+# =============================================================
+set_pin_assignment	{ IO_cfg_scl }			{ LOCATION = P14; IOSTANDARD = LVCMOS18; DRIVESTRENGTH = 4; PULLTYPE = PULLUP; }
+set_pin_assignment	{ IO_cfg_sda }			{ LOCATION = P15; IOSTANDARD = LVCMOS18; DRIVESTRENGTH = 4; PULLTYPE = PULLUP; }
+
 set_pin_assignment	{ O_mipi_dsi_hs_clk_p }		{ LOCATION = T15; IOSTANDARD = LVDS18; PRE_EMP = ON; VOCM = L2; VOD = 300M; }
 set_pin_assignment	{ O_mipi_dsi_hs_data_p[0] }	{ LOCATION = P13; IOSTANDARD = LVDS18; PRE_EMP = ON; VOCM = L2; VOD = 300M; }
 set_pin_assignment	{ O_mipi_dsi_hs_data_p[1] }	{ LOCATION = V17; IOSTANDARD = LVDS18; PRE_EMP = ON; VOCM = L2; VOD = 300M; }
