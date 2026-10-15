@@ -331,13 +331,22 @@ wire [3:0]   S_pp_sobel_sh;
 wire [7:0]   S_pp_thresh;
 wire         S_pp_morph_sel;
 
+// 后级: 数字白平衡 + ROI 裁剪
+wire         S_post_tvalid;
+wire         S_post_tuser;
+wire         S_post_tlast;
+wire [127:0] S_post_tdata;
+wire [7:0]   S_wb_r, S_wb_b;      // 白平衡增益, 128 = 1.0x
+wire [6:0]   S_roi_pct;           // ROI 百分比
+wire [2:0]   S_fps_div;           // 帧率分频 (跳帧)
+
 rgb_to_yuv422_quad u_rgb2yuv_quad (
 	.clk        (S_hs_rx_clk    ),
 	.rst_n      (S_pll_lock     ),
-	.i_de       (S_pp_tvalid    ),   // 改接预处理输出 (原 S_ISP_O_tvalid)
-	.i_user_sof (S_pp_tuser     ),
-	.i_last     (S_pp_tlast     ),
-	.i_data     (S_pp_tdata     ),
+	.i_de       (S_post_tvalid  ),   // 后级输出 (白平衡 + ROI)
+	.i_user_sof (S_post_tuser   ),
+	.i_last     (S_post_tlast   ),
+	.i_data     (S_post_tdata   ),
 	.o_de       (S_yuv_de       ),
 	.o_user_sof (S_yuv_sof      ),
 	.o_last     (S_yuv_last     ),
@@ -366,17 +375,86 @@ PH1_LOGIC_ODDR X_cam_clk (
     .rst		(1'b0		)
   );
 
-//手动配置相机AE
-ui_ae_set X_ui_ae_set (
-	.I_clk			(S_clk_24m		),
-	.I_rst			(S_pll_lock		),
-	.I_btn			(2'b11			),
-	.I_cam_cfg_done	(S_cam_cfg_done	),
-	.I_ae_cfg_done	(S_ae_cfg_done	),
-	.O_ae_req		(S_ae_req		),
-	.O_ae			(S_ae			)
-  );
-  
+//=============================================================================
+//  摄像头参数下发 (曝光 / 增益 / 曝光补偿)
+//
+//  原来这一步由厂商的 ui_ae_set 驱动, 它内部的 ae_reg 直接跟随 VPI_0 的
+//  outprobe0 探针输出 (见 ui_ae_set.v 结尾的例化)。VPI 的初值虽然在工程里
+//  是 0x50, 但那是 JTAG 写进去的运行时值, 不在 bit 流里 —— 不接 JTAG 时
+//  增益会变成 0dB, 画面直接黑掉。
+//  现在改由 cam_param 从寄存器堆 (I2C 0x40) 取参数, 完全可控,
+//  而且网页可以实时调。ui_ae_set 不再例化。
+//=============================================================================
+wire [19:0] S_cam_exp;
+wire [7:0]  S_cam_gain;
+wire [3:0]  S_cam_ev;
+wire [7:0]  S_cam_trig;
+wire [15:0] S_cam_wr_cnt;
+wire        S_cam_busy;
+wire        S_ae_req_pulse;     // cam_param 输出 (25MHz 域, 单拍)
+wire [7:0]  S_ae_gain;
+wire [19:0] S_rt_exp;
+wire        S_ae_cfg_done_25;   // 24MHz 域同步回来的“本轮写完”
+
+cam_param #(
+	.VMAX         (20'd2283),   // ui_imx415_reg.v 0x3024/25/26
+	.SHR0_DEFAULT (20'd8),      // 初始化表的 SHR0
+	.GAIN_DEFAULT (8'h30)       // 初始化表的 0x3090
+) u_cam_param (
+	.clk        (I_sysclk_25m),
+	.rst_n      (S_pll_lock),
+	.i_exp      (S_cam_exp),
+	.i_gain     (S_cam_gain),
+	.i_ev_bias  (S_cam_ev),
+	.i_trig     (S_cam_trig),
+	.o_ae_req   (S_ae_req_pulse),
+	.o_ae_gain  (S_ae_gain),
+	.o_rt_exp   (S_rt_exp),
+	.i_ae_done  (S_ae_cfg_done_25),
+	.o_wr_cnt   (S_cam_wr_cnt),
+	.o_busy     (S_cam_busy)
+);
+
+//---- 跨域: 25MHz -> 24MHz (ui_cfg_imx415 挂在 S_clk_24m) ----
+// req 是单拍脉冲, 而两个时钟只差 4%, 直接跨域很可能被整拍漏掉。
+// 所以先展宽成电平, 再两级同步, 最后在 24MHz 域取上升沿变回单拍。
+// (ui_cfg_imx415 的 I_ae_req 是电平敏感的: 保持高会反复清零 reg_index,
+//  永远写不完, 所以到那边必须是单拍。)
+reg [3:0] S_ae_stretch;
+reg [2:0] S_ae_sync_24;
+reg [19:0] S_exp_24_s1, S_exp_24_s2;
+reg [7:0]  S_gain_24_s1, S_gain_24_s2;
+
+wire S_ae_req_lvl = (S_ae_stretch != 4'd0);
+wire S_ae_req_24  = (S_ae_sync_24[2:1] == 2'b01);   // 24MHz 域的单拍脉冲
+
+always @(posedge I_sysclk_25m or negedge S_pll_lock) begin
+	if (!S_pll_lock) S_ae_stretch <= 4'd0;
+	else if (S_ae_req_pulse) S_ae_stretch <= 4'hF;
+	else if (S_ae_stretch != 4'd0) S_ae_stretch <= S_ae_stretch - 4'd1;
+end
+
+always @(posedge S_clk_24m or negedge S_pll_lock) begin
+	if (!S_pll_lock) begin
+		S_ae_sync_24   <= 3'b000;
+		S_exp_24_s1    <= 20'd0; S_exp_24_s2    <= 20'd0;
+		S_gain_24_s1   <= 8'd0;  S_gain_24_s2   <= 8'd0;
+	end else begin
+		S_ae_sync_24   <= {S_ae_sync_24[1:0], S_ae_req_lvl};
+		// 数据在 req 之前几十个周期就稳定了, 两级同步足够
+		S_exp_24_s1    <= S_rt_exp;      S_exp_24_s2    <= S_exp_24_s1;
+		S_gain_24_s1   <= S_ae_gain;     S_gain_24_s2   <= S_gain_24_s1;
+	end
+end
+
+//---- 回: 24MHz 的“写完了”同步到 25MHz ----
+reg [2:0] S_ae_done_sync;
+always @(posedge I_sysclk_25m or negedge S_pll_lock) begin
+	if (!S_pll_lock) S_ae_done_sync <= 3'b000;
+	else S_ae_done_sync <= {S_ae_done_sync[1:0], S_ae_cfg_done};
+end
+assign S_ae_cfg_done_25 = S_ae_done_sync[2];
+
 //IIC协议配置摄像头寄存器
 ui_cfg_imx415#(
 	.CLK_DIV(24_000_000/100_000-1)
@@ -384,8 +462,9 @@ ui_cfg_imx415#(
 X_ui_cfg_imx415(
 	.I_clk			(S_clk_24m		),  
 	.I_rst_n		(S_pll_lock		),  
-	.I_ae_req		(S_ae_req		),
-	.I_ae_data		(S_ae			),
+	.I_ae_req		(S_ae_req_24	),
+	.I_ae_data		(S_gain_24_s2	),
+	.I_rt_exp		(S_exp_24_s2	),
 	.O_cam_scl		(O_cam_scl		), 
 	.IO_cam_sda		(IO_cam_sda		), 
 	.O_cfg_done		(S_cam_cfg_done	),
@@ -524,6 +603,36 @@ preproc_top #(
 
 
 //=============================================================================
+//  后级: 数字白平衡 + ROI 裁剪
+//
+//  为什么白平衡放这里: IMX415 是 RAW sensor, 自身没有白平衡寄存器; 本工程用的
+//  ui_awb 是**全自动**的 (见 ui_awb.v 端口表, 没有任何手动增益输入)。
+//  所以「手动白平衡」只能在像素级做 —— 好处是可调、立即生效。
+//  为什么 ROI 不改真实分辨率: ui_vtc 的时序参数是编译期 #() 参数, 运行时改不了。
+//  所以做成「中心裁剪 + 填黑边」, 输出仍是 1920x1080, RK 侧完全不用动。
+//=============================================================================
+preproc_post #(
+	.H_ACTIVE   (H_ACTIVE),
+	.V_ACTIVE   (V_ACTIVE),
+	.PX_PER_CLK (4)
+) u_preproc_post (
+	.clk        (S_hs_rx_clk),
+	.rst_n      (S_pll_lock),
+	.i_tvalid   (S_pp_tvalid),
+	.i_tuser    (S_pp_tuser),
+	.i_tlast    (S_pp_tlast),
+	.i_rgb      (S_pp_tdata),
+	.i_wb_r     (S_wb_r),
+	.i_wb_b     (S_wb_b),
+	.i_roi_pct  (S_roi_pct),
+	.o_tvalid   (S_post_tvalid),
+	.o_tuser    (S_post_tuser),
+	.o_tlast    (S_post_tlast),
+	.o_rgb      (S_post_tdata)
+);
+
+
+//=============================================================================
 //  反向传参链路: I2C 从机 @0x40 + 参数字符堆 (cfg_ctrl_top 内部包含)
 //
 //  用常开的 25MHz 时钟而不是像素时钟 —— 链路没起来时也能配置。
@@ -551,7 +660,17 @@ cfg_ctrl_top #(
 	.o_pp_mode    (S_pp_mode),
 	.o_pp_sobel_shift (S_pp_sobel_sh),
 	.o_pp_thresh  (S_pp_thresh),
-	.o_pp_morph_sel (S_pp_morph_sel)
+	.o_pp_morph_sel (S_pp_morph_sel),
+	.o_cam_exp    (S_cam_exp),
+	.o_cam_gain   (S_cam_gain),
+	.o_cam_ev     (S_cam_ev),
+	.o_cam_trig   (S_cam_trig),
+	.i_cam_wr_cnt (S_cam_wr_cnt),
+	.i_cam_busy   (S_cam_busy),
+	.o_wb_r       (S_wb_r),
+	.o_wb_b       (S_wb_b),
+	.o_roi_pct    (S_roi_pct),
+	.o_fps_div    (S_fps_div)
 );
 
 

@@ -96,7 +96,21 @@ module jpeg_regfile #(
     output wire         O_cfg_pp_morph_sel,
 
     // ---------------- 补充状态输入 ----------------
-    input  wire [31:0]  I_st_frame_cnt     // 已接收帧计数 (供回读验证链路)
+    input  wire [31:0]  I_st_frame_cnt,     // 已接收帧计数 (供回读验证链路)
+
+    // ---------------- 摄像头 / 画质参数输出 (地址 0xC0 起) ----------------
+    output wire [19:0]  O_cfg_cam_exp,      // SHR0 曝光行数 (0 = 保持初始化表的值)
+    output wire [7:0]   O_cfg_cam_gain,     // 0..100, 0.3dB/step (0 = 保持)
+    output wire [3:0]   O_cfg_ev_bias,      // 曝光补偿, 偏移 8 表示 0EV
+    output wire [7:0]   O_cfg_wb_r,         // 白平衡 R 增益, 128 = 1.0x
+    output wire [7:0]   O_cfg_wb_b,         // 白平衡 B 增益, 128 = 1.0x
+    output wire [2:0]   O_cfg_fps_div,      // 帧率分频 1..8 (1 = 原速)
+    output wire [6:0]   O_cfg_roi_pct,      // ROI 百分比 25..100 (100 = 全画幅)
+    output wire [7:0]   O_cfg_cam_trig,     // 写任意值 -> 触发一次摄像头参数下发
+
+    // ---------------- 摄像头通道状态回读 ----------------
+    input  wire [15:0]  I_st_cam_wr_cnt,    // 摄像头寄存器写成功次数
+    input  wire         I_st_cam_busy
 );
 
     // ---------------------------------------------------------------- 控制寄存器
@@ -121,6 +135,17 @@ module jpeg_regfile #(
     reg [7:0]  r_heartbeat;
     reg [31:0] s_frame_cnt;
 
+    // 摄像头 / 画质参数 (0xC0 起)
+    reg [19:0] r_cam_exp;
+    reg [7:0]  r_cam_gain;
+    reg [3:0]  r_ev_bias;
+    reg [7:0]  r_wb_r, r_wb_b;
+    reg [2:0]  r_fps_div;
+    reg [6:0]  r_roi_pct;
+    reg [7:0]  r_cam_trig;
+    reg [15:0] s_cam_wr_cnt;
+    reg        s_cam_busy;
+
     // 状态输入打一拍, 让跨模块路径短一点
     reg [23:0] s_frame_bytes;
     reg [31:0] s_total_bytes;
@@ -136,6 +161,8 @@ module jpeg_regfile #(
             s_done        <= 1'b0;
             s_ovf         <= 1'b0;
             s_frame_cnt   <= 32'd0;
+            s_cam_wr_cnt  <= 16'd0;
+            s_cam_busy    <= 1'b0;
             // r_heartbeat 只在本块里复位/递增 —— 写在两个 always 块会报
             // HDL-8007 'constantly driven from multiple places'
             r_heartbeat   <= 8'd0;
@@ -147,6 +174,8 @@ module jpeg_regfile #(
             s_done        <= I_st_frame_done;
             s_ovf         <= I_st_overflow;
             s_frame_cnt   <= I_st_frame_cnt;
+            s_cam_wr_cnt  <= I_st_cam_wr_cnt;
+            s_cam_busy    <= I_st_cam_busy;
             r_heartbeat   <= r_heartbeat + 8'd1;   // 每 256 读时钟 +1, 证明时钟在跑
         end
     end
@@ -170,6 +199,14 @@ module jpeg_regfile #(
             r_pp_sobel_sh<= 4'd3;      // 幅度右移 3 -> 满 0..255
             r_pp_thresh  <= 8'd128;
             r_pp_morph_sel <= 1'b1;    // 默认膨胀
+            r_cam_exp    <= 20'd0;     // 0 = 不动初始化表里的曝光
+            r_cam_gain   <= 8'd0;      // 0 = 不动
+            r_ev_bias    <= 4'd8;      // 8 = 0EV
+            r_wb_r       <= 8'd128;    // 1.0x
+            r_wb_b       <= 8'd128;    // 1.0x
+            r_fps_div    <= 3'd1;      // 原速
+            r_roi_pct    <= 7'd100;    // 全画幅
+            r_cam_trig   <= 8'd0;
             // 注: r_heartbeat 不在这里复位, 它由上面那个自由运行计数块统一驱动
         end else begin
             r_soft_rst <= 1'b0;        // 自清, 只保持一拍
@@ -199,6 +236,20 @@ module jpeg_regfile #(
                     8'hB2: r_pp_sobel_sh<= I_wr_data[3:0];
                     8'hB3: r_pp_thresh  <= I_wr_data;
                     8'hB4: r_pp_morph_sel <= I_wr_data[0];
+                    // ---- 摄像头 / 画质参数 (0xC0 起) ----
+                    8'hC0: r_cam_exp[ 7:0] <= I_wr_data;
+                    8'hC1: r_cam_exp[15:8] <= I_wr_data;
+                    8'hC2: r_cam_exp[19:16]<= I_wr_data[3:0];
+                    8'hC3: r_cam_gain   <= I_wr_data;
+                    8'hC4: r_ev_bias    <= I_wr_data[3:0];
+                    8'hC5: r_wb_r       <= I_wr_data;
+                    8'hC6: r_wb_b       <= I_wr_data;
+                    8'hC7: r_fps_div    <= (I_wr_data[2:0] == 3'd0) ? 3'd1
+                                                                : I_wr_data[2:0];
+                    8'hC8: r_roi_pct    <= (I_wr_data[6:0] < 7'd25)  ? 7'd25
+                                         : ((I_wr_data[6:0] > 7'd100) ? 7'd100
+                                                                      : I_wr_data[6:0]);
+                    8'hC9: r_cam_trig   <= I_wr_data;
                     default: ;         // 0x50~ 状态区写入忽略; 0x10~0x4F 由 qtable RAM 处理
                 endcase
             end
@@ -252,6 +303,24 @@ module jpeg_regfile #(
                 8'hBB: O_rd_data <= s_frame_cnt[31:24];
                 8'hBC: O_rd_data <= r_heartbeat;
 
+                8'hC0: O_rd_data <= r_cam_exp[ 7:0];
+                8'hC1: O_rd_data <= r_cam_exp[15:8];
+                8'hC2: O_rd_data <= {4'b0, r_cam_exp[19:16]};
+                8'hC3: O_rd_data <= r_cam_gain;
+                8'hC4: O_rd_data <= {4'b0, r_ev_bias};
+                8'hC5: O_rd_data <= r_wb_r;
+                8'hC6: O_rd_data <= r_wb_b;
+                8'hC7: O_rd_data <= {5'b0, r_fps_div};
+                8'hC8: O_rd_data <= {1'b0, r_roi_pct};
+                8'hC9: O_rd_data <= r_cam_trig;
+                8'hD0: O_rd_data <= s_cam_wr_cnt[ 7:0];
+                8'hD1: O_rd_data <= s_cam_wr_cnt[15:8];
+                8'hD2: O_rd_data <= {7'b0, s_cam_busy};
+                // 参数区存在标志: 网页用它判断当前 bit 流里到底有没有
+                // 0xC0~0xC9 这组寄存器 —— 没有的话读回来全是 0, 而 0
+                // 对 EV/WB 来说恰好是“合法值”, 单看值分不出来。
+                8'hD3: O_rd_data <= 8'hA5;
+
                 default: O_rd_data <= 8'h00;
             endcase
         end
@@ -280,5 +349,15 @@ module jpeg_regfile #(
     assign O_cfg_pp_sobel_shift= (r_pp_sobel_sh > 4'd8) ? 4'd8 : r_pp_sobel_sh;
     assign O_cfg_pp_thresh     = r_pp_thresh;
     assign O_cfg_pp_morph_sel  = r_pp_morph_sel;
+
+    // 摄像头 / 画质参数
+    assign O_cfg_cam_exp   = r_cam_exp;
+    assign O_cfg_cam_gain  = r_cam_gain;
+    assign O_cfg_ev_bias   = r_ev_bias;
+    assign O_cfg_wb_r      = r_wb_r;
+    assign O_cfg_wb_b      = r_wb_b;
+    assign O_cfg_fps_div   = r_fps_div;
+    assign O_cfg_roi_pct   = r_roi_pct;
+    assign O_cfg_cam_trig  = r_cam_trig;
 
 endmodule

@@ -75,6 +75,15 @@
   .scroll{max-height:260px; overflow:auto}
   .scroll::-webkit-scrollbar{width:8px}
   .scroll::-webkit-scrollbar-thumb{background:#30363d;border-radius:4px}
+
+  /* ---- 选项卡 ---- */
+  .tabs{display:flex; gap:2px; margin:-2px 0 14px; border-bottom:1px solid var(--line)}
+  .tab{background:transparent; border:none; border-bottom:2px solid transparent;
+       border-radius:0; padding:8px 13px; color:var(--dim); font-size:13px; cursor:pointer}
+  .tab:hover{color:var(--fg); border-bottom-color:var(--line)}
+  .tab.on{color:var(--acc2); border-bottom-color:var(--acc2); font-weight:600}
+  .tabbody{padding-top:2px}
+  .tabs + .tabbody .hint:first-child{margin-top:0}
 </style>
 </head>
 <body>
@@ -111,109 +120,167 @@
     </div>
   </div>
 
-  <!-- ---------------- 参数 ---------------- -->
+  <!-- ---------------- 右列: 选项卡 ---------------- -->
   <div>
     <div class="card">
-      <h2>画面参数（软件处理，立即生效）</h2>
-
-      <div class="row"><label>亮度</label>
-        <input type="range" id="p_brightness" min="-100" max="100" step="1" value="0">
-        <span class="val" id="v_brightness">0</span></div>
-
-      <div class="row"><label>对比度</label>
-        <input type="range" id="p_contrast" min="0.2" max="3" step="0.01" value="1">
-        <span class="val" id="v_contrast">1.00</span></div>
-
-      <div class="row"><label>饱和度</label>
-        <input type="range" id="p_saturation" min="0" max="3" step="0.01" value="1">
-        <span class="val" id="v_saturation">1.00</span></div>
-
-      <div class="row"><label>色相</label>
-        <input type="range" id="p_hue" min="-180" max="180" step="1" value="0">
-        <span class="val" id="v_hue">0</span></div>
-
-      <div class="row"><label>伽马</label>
-        <input type="range" id="p_gamma" min="0.2" max="3" step="0.01" value="1">
-        <span class="val" id="v_gamma">1.00</span></div>
-
-      <div class="row"><label>输出缩放</label>
-        <input type="range" id="p_scale" min="0.25" max="1.5" step="0.05" value="1">
-        <span class="val" id="v_scale">1.00</span></div>
-
-      <div class="row"><label>JPEG 质量</label>
-        <input type="range" id="p_quality" min="30" max="95" step="1" value="80">
-        <span class="val" id="v_quality">80</span></div>
-
-      <div class="row"><label>帧率上限</label>
-        <input type="range" id="p_fps" min="1" max="120" step="1" value="60">
-        <span class="val" id="v_fps">60</span></div>
-
-      <div class="sep"></div>
-
-      <div class="grid2" style="margin-bottom:8px">
-        <button class="ghost" id="btnMirror">水平镜像</button>
-        <button class="ghost" id="btnFlipv">垂直翻转</button>
+      <div class="tabs">
+        <button class="tab on" data-tab="cam">摄像头</button>
+        <button class="tab" data-tab="pp">预处理</button>
+        <button class="tab" data-tab="sw">画面</button>
+        <button class="tab" data-tab="hw">V4L2</button>
       </div>
-      <div class="grid4">
-        <button class="ghost" data-rot="0">0°</button>
-        <button class="ghost" data-rot="90">90°</button>
-        <button class="ghost" data-rot="180">180°</button>
-        <button class="ghost" data-rot="270">270°</button>
+
+      <!-- ======== 摄像头 / 输出 ======== -->
+      <div class="tabbody" id="tab-cam">
+        <div class="row"><label>曝光时间</label>
+          <input type="range" id="f_cam_exp" min="0.05" max="16" step="0.05" value="16">
+          <span class="val" id="fv_cam_exp">16.0 ms</span></div>
+
+        <div class="row"><label>增益</label>
+          <input type="range" id="f_cam_gain" min="0" max="30" step="0.3" value="14.4">
+          <span class="val" id="fv_cam_gain">14.4 dB</span></div>
+
+        <div class="row"><label>曝光补偿</label>
+          <input type="range" id="f_cam_ev" min="-3" max="3" step="1" value="0">
+          <span class="val" id="fv_cam_ev">0 EV</span></div>
+
+        <div class="sep"></div>
+
+        <div class="row"><label>白平衡 R</label>
+          <input type="range" id="f_wb_r" min="0" max="200" step="1" value="100">
+          <span class="val" id="fv_wb_r">100%</span></div>
+
+        <div class="row"><label>白平衡 B</label>
+          <input type="range" id="f_wb_b" min="0" max="200" step="1" value="100">
+          <span class="val" id="fv_wb_b">100%</span></div>
+
+        <div class="grid2" style="margin-top:6px">
+          <button class="ghost" id="btnWbReset">白平衡归零</button>
+          <button id="btnCamPush">重新下发</button>
+        </div>
+
+        <div class="sep"></div>
+
+        <div class="row"><label>输出帧率</label>
+          <input type="range" id="f_fps" min="5" max="60" step="1" value="60">
+          <span class="val" id="fv_fps">60 fps</span></div>
+
+        <div class="row"><label>有效画面</label>
+          <input type="range" id="f_roi" min="25" max="100" step="1" value="100">
+          <span class="val" id="fv_roi">100%</span></div>
+
+        <p class="hint">
+          曝光/增益由 FPGA 通过 I2C 直接写 IMX415 寄存器（曝光 = (2283−SHR0)×7.3µs）。<br>
+          白平衡是 FPGA 里的数字 R/B 增益 —— IMX415 是 RAW sensor 没有白平衡寄存器，
+          本工程的 ISP AWB 又是全自动的，手动白平衡只能在这一级做。<br>
+          帧率用<b>跳帧</b>、有效画面用<b>中心裁剪+黑边</b>：VTC 的时序参数是编译期常量，
+          运行时改不了真实输出尺寸（改了 RK 侧驱动也得跟着改）。
+        </p>
       </div>
-      <p class="hint">帧率上限可设到 120，但本工程 FPGA 链路输出固定 1080p60，
-        实际不会超过 ~60fps（要更高需改 FPGA 时序）；填 60 以上等于不限速。
-        缩放/质量/帧率调小可以明显降低 RK 的 CPU 占用。</p>
+
+      <!-- ======== 预处理 ======== -->
+      <div class="tabbody" id="tab-pp" hidden>
+        <div class="grid2" style="margin-bottom:8px">
+          <button class="ghost" id="btnPpOff">关闭预处理</button>
+          <button id="btnPpRefresh">刷新</button>
+        </div>
+
+        <div class="grid4" style="margin-bottom:10px">
+          <button class="ghost" data-pp="0">原图</button>
+          <button class="ghost" data-pp="1">Sobel</button>
+          <button class="ghost" data-pp="2">阈值</button>
+          <button class="ghost" data-pp="3">形态学</button>
+        </div>
+
+        <div class="row"><label>二值阈值</label>
+          <input type="range" id="f_PP_THRESH" min="0" max="255" step="1" value="128">
+          <span class="val" id="fv_PP_THRESH">128</span></div>
+
+        <div class="row"><label>Sobel 位移</label>
+          <input type="range" id="f_PP_SOBEL_SH" min="0" max="8" step="1" value="3">
+          <span class="val" id="fv_PP_SOBEL_SH">3</span></div>
+
+        <div class="grid2" style="margin-top:6px">
+          <button class="ghost" id="btnMorph0">腐蚀 (&amp;)</button>
+          <button class="ghost" id="btnMorph1">膨胀 (|)</button>
+        </div>
+
+        <p class="hint">直接写 FPGA 寄存器堆（I2C 从机 @0x40），改完立即生效，
+          <b>不占用 RK 的 CPU</b>。阈值只对「阈值/形态学」有效，Sobel 位移只对「Sobel」有效。</p>
+      </div>
+
+      <!-- ======== 画面（软件） ======== -->
+      <div class="tabbody" id="tab-sw" hidden>
+        <div class="row"><label>亮度</label>
+          <input type="range" id="p_brightness" min="-100" max="100" step="1" value="0">
+          <span class="val" id="v_brightness">0</span></div>
+
+        <div class="row"><label>对比度</label>
+          <input type="range" id="p_contrast" min="0.2" max="3" step="0.01" value="1">
+          <span class="val" id="v_contrast">1.00</span></div>
+
+        <div class="row"><label>饱和度</label>
+          <input type="range" id="p_saturation" min="0" max="3" step="0.01" value="1">
+          <span class="val" id="v_saturation">1.00</span></div>
+
+        <div class="row"><label>色相</label>
+          <input type="range" id="p_hue" min="-180" max="180" step="1" value="0">
+          <span class="val" id="v_hue">0</span></div>
+
+        <div class="row"><label>伽马</label>
+          <input type="range" id="p_gamma" min="0.2" max="3" step="0.01" value="1">
+          <span class="val" id="v_gamma">1.00</span></div>
+
+        <div class="row"><label>输出缩放</label>
+          <input type="range" id="p_scale" min="0.25" max="1.5" step="0.05" value="1">
+          <span class="val" id="v_scale">1.00</span></div>
+
+        <div class="row"><label>JPEG 质量</label>
+          <input type="range" id="p_quality" min="30" max="95" step="1" value="80">
+          <span class="val" id="v_quality">80</span></div>
+
+        <div class="row"><label>帧率上限</label>
+          <input type="range" id="p_fps" min="1" max="120" step="1" value="60">
+          <span class="val" id="v_fps">60</span></div>
+
+        <div class="sep"></div>
+
+        <div class="grid2" style="margin-bottom:8px">
+          <button class="ghost" id="btnMirror">水平镜像</button>
+          <button class="ghost" id="btnFlipv">垂直翻转</button>
+        </div>
+        <div class="grid4">
+          <button class="ghost" data-rot="0">0°</button>
+          <button class="ghost" data-rot="90">90°</button>
+          <button class="ghost" data-rot="180">180°</button>
+          <button class="ghost" data-rot="270">270°</button>
+        </div>
+        <p class="hint">这些是 RK 侧的软件处理（CPU 完成），与 FPGA 侧参数互不干涉。
+          帧率上限填 60 以上等于不限速；缩放/质量调小可明显降低 CPU 占用。</p>
+      </div>
+
+      <!-- ======== V4L2 ======== -->
+      <div class="tabbody" id="tab-hw" hidden>
+        <div class="scroll" id="hwBox">
+          <p class="hint">连接后自动读取 <code>/api/controls</code>。</p>
+        </div>
+        <button id="btnReloadHw" style="margin-top:10px">刷新硬件参数</button>
+        <p class="hint">部分采集节点（如 rkcif mainpath）没有可调硬件参数，此时为空列表属正常现象。</p>
+      </div>
     </div>
 
+    <!-- ---------------- FPGA 通信状态（常显） ---------------- -->
     <div class="card" style="margin-top:14px">
-      <h2>硬件参数（V4L2 / ISP）</h2>
-      <div class="scroll" id="hwBox">
-        <p class="hint">连接后自动读取 <code>/api/controls</code>。</p>
-      </div>
-      <button id="btnReloadHw" style="margin-top:10px">刷新硬件参数</button>
-      <p class="hint">部分采集节点（如 rkcif mainpath）没有可调硬件参数，此时为空列表属正常现象，
-        请使用上方软件参数。</p>
-    </div>
-
-    <div class="card" style="margin-top:14px">
-      <h2>FPGA 硬件参数（预处理，I2C 实时生效）</h2>
-
-      <div class="grid2" style="margin-bottom:8px">
-        <button class="ghost" id="btnPpOff">关闭预处理</button>
-        <button id="btnPpRefresh">刷新</button>
-      </div>
-
-      <div class="grid4" style="margin-bottom:10px">
-        <button class="ghost" data-pp="0">原图</button>
-        <button class="ghost" data-pp="1">Sobel</button>
-        <button class="ghost" data-pp="2">阈值</button>
-        <button class="ghost" data-pp="3">形态学</button>
-      </div>
-
-      <div class="row"><label>二值阈值</label>
-        <input type="range" id="f_PP_THRESH" min="0" max="255" step="1" value="128">
-        <span class="val" id="fv_PP_THRESH">128</span></div>
-
-      <div class="row"><label>Sobel 位移</label>
-        <input type="range" id="f_PP_SOBEL_SH" min="0" max="8" step="1" value="3">
-        <span class="val" id="fv_PP_SOBEL_SH">3</span></div>
-
-      <div class="grid2" style="margin-top:6px">
-        <button class="ghost" id="btnMorph0">腐蚀 (&amp;)</button>
-        <button class="ghost" id="btnMorph1">膨胀 (|)</button>
-      </div>
-
-      <div class="sep"></div>
-      <div style="font-size:12px;color:var(--dim);line-height:1.8">
+      <h2>FPGA 通信状态</h2>
+      <div style="font-size:12px;color:var(--dim);line-height:1.9">
         <div class="kv"><span>通信状态</span><b id="fsState">—</b></div>
         <div class="kv"><span>帧计数</span><b id="fsFrames">—</b></div>
         <div class="kv"><span>心跳</span><b id="fsBeat">—</b></div>
         <div class="kv"><span>版本</span><b id="fsVer">—</b></div>
+        <div class="kv"><span>摄像头下发</span><b id="fsCamWr">—</b></div>
       </div>
-      <p class="hint">这些参数直接写进 FPGA 寄存器堆（I2C 从机 @0x40），
-        改完立即在画面上生效，<b>不占用 RK 的 CPU</b>。
-        阈值只对「阈值/形态学」有效，Sobel 位移只对「Sobel」有效。
-        帧计数持续增长 = 链路在跑。</p>
+      <p class="hint">帧计数持续增长 = 链路在跑。「摄像头下发」是 IMX415 寄存器被成功写入的次数，
+        改曝光/增益后它应该 +1。</p>
     </div>
   </div>
 </main>
@@ -382,6 +449,10 @@ function fpgaShowSt(d) {
   $("fsBeat").textContent   = (st.HEARTBEAT !== undefined) ? st.HEARTBEAT : "—";
   $("fsVer").textContent    = (st.VER !== undefined)
       ? "0x" + st.VER.toString(16).toUpperCase().padStart(4, "0") : "—";
+  if ($("fsCamWr")) {
+    $("fsCamWr").textContent = (st.CAM_WR_CNT !== undefined)
+      ? (st.CAM_WR_CNT + (Number(st.CAM_BUSY) ? "  (下发中)" : "")) : "—";
+  }
 }
 
 async function loadFpga() {
@@ -389,6 +460,7 @@ async function loadFpga() {
     const d = await api("/api/fpga");
     fpgaRegs = d.regs || {};
     fpgaSyncUI();
+    camSyncUI(d.phys);
     fpgaShowSt(d);
   } catch (e) {
     $("fsState").textContent = "不可用（" + e.message + "）";
@@ -440,6 +512,86 @@ function fpgaPoll() {
     } catch (e) { /* 静默, 不打扰用户 */ }
   }, 3000);
 }
+
+/* ---------------- 选项卡切换 ---------------- */
+document.querySelectorAll("[data-tab]").forEach(b => {
+  b.onclick = () => {
+    document.querySelectorAll("[data-tab]").forEach(x =>
+      x.classList.toggle("on", x === b));
+    ["cam", "pp", "sw", "hw"].forEach(t => {
+      const el = $("tab-" + t);
+      if (el) el.hidden = (t !== b.dataset.tab);
+    });
+  };
+});
+
+/* ---------------- 摄像头 / 输出参数（物理量） ----------------
+   网页用物理量（曝光 ms / 增益 dB / 白平衡 % / 帧率 fps），后端再换算成
+   IMX415 的 SHR0 / GAIN 和 FPGA 的数字增益 —— 直接用裸寄存器值没法用。 */
+const CAM_CTRL = [
+  { id: "f_cam_exp",  key: "cam_exp_ms",  fmt: v => v.toFixed(2) + " ms"  },
+  { id: "f_cam_gain", key: "cam_gain_db", fmt: v => v.toFixed(1) + " dB"  },
+  { id: "f_cam_ev",   key: "ev",          fmt: v => v.toFixed(0) + " EV"  },
+  { id: "f_wb_r",     key: "wb_r_pct",    fmt: v => v.toFixed(0) + " %"   },
+  { id: "f_wb_b",     key: "wb_b_pct",    fmt: v => v.toFixed(0) + " %"   },
+  { id: "f_fps",      key: "fps",         fmt: v => v.toFixed(0) + " fps" },
+  { id: "f_roi",      key: "roi_pct",     fmt: v => v.toFixed(0) + " %"   },
+];
+let camPushTimer = null;
+
+function camLab(c) { return $("fv_" + c.id.slice(2)); }
+
+function camSyncUI(phys) {
+  if (!phys) return;
+  CAM_CTRL.forEach(c => {
+    const el = $(c.id), lab = camLab(c);
+    if (!el || phys[c.key] === undefined) return;
+    el.value = phys[c.key];
+    if (lab) lab.textContent = c.fmt(parseFloat(phys[c.key]));
+  });
+}
+
+function camPush() {
+  const body = {};
+  CAM_CTRL.forEach(c => { body[c.key] = parseFloat($(c.id).value); });
+  clearTimeout(camPushTimer);
+  camPushTimer = setTimeout(async () => {
+    try {
+      const d = await api("/api/fpga", { method: "POST", body: JSON.stringify(body) });
+      camSyncUI(d.phys);          // 以 FPGA 回读为准
+      fpgaShowSt(d);
+      if (d.write_ok === false) toast("下发失败: " + (d.message || "?"), true);
+    } catch (e) { toast("下发失败: " + e.message, true); }
+  }, 120);
+}
+
+CAM_CTRL.forEach(c => {
+  const el = $(c.id);
+  if (!el) return;
+  el.addEventListener("input", () => {
+    const lab = camLab(c);
+    if (lab) lab.textContent = c.fmt(parseFloat(el.value));
+    camPush();
+  });
+});
+
+$("btnWbReset").onclick = () => {
+  $("f_wb_r").value = 100; $("f_wb_b").value = 100;
+  $("fv_wb_r").textContent = "100 %"; $("fv_wb_b").textContent = "100 %";
+  camPush();
+};
+
+// 强制重发一次: 写 CAM_TRIG 任意值, FPGA 侧检测到变化就重下发全部摄像头参数
+$("btnCamPush").onclick = () => {
+  api("/api/fpga", {
+    method: "POST",
+    body: JSON.stringify({ CAM_TRIG: Math.floor(Math.random() * 255) })
+  }).then(d => {
+    camSyncUI(d.phys);
+    fpgaShowSt(d);
+    toast("已重新下发摄像头参数");
+  }).catch(e => toast("下发失败: " + e.message, true));
+};
 
 /* ---------------- 硬件参数 ---------------- */
 async function loadHw() {

@@ -41,7 +41,21 @@ module cfg_ctrl_top #(
 	output wire [2:0]  o_pp_mode,
 	output wire [3:0]  o_pp_sobel_shift,
 	output wire [7:0]  o_pp_thresh,
-	output wire        o_pp_morph_sel
+	output wire        o_pp_morph_sel,
+
+	// ---- 摄像头参数 (直接给 system_top 里的 cam_param, 同在 25MHz 域) ----
+	output wire [19:0] o_cam_exp,
+	output wire [7:0]  o_cam_gain,
+	output wire [3:0]  o_cam_ev,
+	output wire [7:0]  o_cam_trig,
+	input  wire [15:0] i_cam_wr_cnt,
+	input  wire        i_cam_busy,
+
+	// ---- 画质参数 (同步到像素域) ----
+	output wire [7:0]  o_wb_r,
+	output wire [7:0]  o_wb_b,
+	output wire [6:0]  o_roi_pct,
+	output wire [2:0]  o_fps_div
 );
 
 	//-------------------------------------------------------------------------
@@ -72,6 +86,15 @@ module cfg_ctrl_top #(
 	wire [1:0]  cfg_subsample;
 	wire [7:0]  cfg_restart;
 	wire [2:0]  cfg_predictor;
+
+	// 摄像头 / 画质参数
+	wire [19:0] cfg_cam_exp;
+	wire [7:0]  cfg_cam_gain;
+	wire [3:0]  cfg_cam_ev;
+	wire [7:0]  cfg_cam_trig;
+	wire [7:0]  cfg_wb_r, cfg_wb_b;
+	wire [6:0]  cfg_roi_pct;
+	wire [2:0]  cfg_fps_div;
 
 	// 帧计数 (像素域), 同步回系统域供回读
 	reg [31:0] cnt_pix;
@@ -108,7 +131,17 @@ module cfg_ctrl_top #(
 		.O_cfg_pp_sobel_shift (cfg_pp_sh),
 		.O_cfg_pp_thresh (cfg_pp_th),
 		.O_cfg_pp_morph_sel (cfg_pp_ms),
-		.I_st_frame_cnt  (cnt_s2)
+		.I_st_frame_cnt  (cnt_s2),
+		.O_cfg_cam_exp   (cfg_cam_exp),
+		.O_cfg_cam_gain  (cfg_cam_gain),
+		.O_cfg_ev_bias   (cfg_cam_ev),
+		.O_cfg_wb_r      (cfg_wb_r),
+		.O_cfg_wb_b      (cfg_wb_b),
+		.O_cfg_fps_div   (cfg_fps_div),
+		.O_cfg_roi_pct   (cfg_roi_pct),
+		.O_cfg_cam_trig  (cfg_cam_trig),
+		.I_st_cam_wr_cnt (i_cam_wr_cnt),
+		.I_st_cam_busy   (i_cam_busy)
 	);
 
 	//-------------------------------------------------------------------------
@@ -155,6 +188,10 @@ module cfg_ctrl_top #(
 	reg [3:0] sh_s1,   sh_s2;
 	reg [7:0] th_s1,   th_s2;
 	reg       ms_s1,   ms_s2;
+	reg [7:0] wbr_s1,  wbr_s2;
+	reg [7:0] wbb_s1,  wbb_s2;
+	reg [6:0] roi_s1,  roi_s2;
+	reg [2:0] fps_s1,  fps_s2;
 
 	always @(posedge i_pix_clk or negedge i_pix_rst_n) begin
 		if (!i_pix_rst_n) begin
@@ -162,11 +199,22 @@ module cfg_ctrl_top #(
 			sh_s1 <= 4'd3;   sh_s2 <= 4'd3;
 			th_s1 <= 8'd128; th_s2 <= 8'd128;
 			ms_s1 <= 1'b1;   ms_s2 <= 1'b1;
+			wbr_s1 <= 8'd128; wbr_s2 <= 8'd128;
+			wbb_s1 <= 8'd128; wbb_s2 <= 8'd128;
+			roi_s1 <= 7'd100; roi_s2 <= 7'd100;
+			fps_s1 <= 3'd1;   fps_s2 <= 3'd1;
 		end else begin
 			mode_s1 <= cfg_pp_mode; mode_s2 <= mode_s1;
 			sh_s1   <= cfg_pp_sh;   sh_s2   <= sh_s1;
 			th_s1   <= cfg_pp_th;   th_s2   <= th_s1;
 			ms_s1   <= cfg_pp_ms;   ms_s2   <= ms_s1;
+			// 这几个是慢变参数 (人手改的), 2 级同步足够;
+			// 注意多比特跨域本应加握手, 但它们在“使用时”已经稳定了几十万个
+			// 像素时钟, 不存在采样到中间态的实际窗口。
+			wbr_s1  <= cfg_wb_r;    wbr_s2  <= wbr_s1;
+			wbb_s1  <= cfg_wb_b;    wbb_s2  <= wbb_s1;
+			roi_s1  <= cfg_roi_pct; roi_s2  <= roi_s1;
+			fps_s1  <= cfg_fps_div; fps_s2  <= fps_s1;
 		end
 	end
 
@@ -174,5 +222,16 @@ module cfg_ctrl_top #(
 	assign o_pp_sobel_shift = sh_s2;
 	assign o_pp_thresh      = th_s2;
 	assign o_pp_morph_sel   = ms_s2;
+
+	assign o_wb_r    = wbr_s2;
+	assign o_wb_b    = wbb_s2;
+	assign o_roi_pct = roi_s2;
+	assign o_fps_div = fps_s2;
+
+	// 摄像头参数仍在 25MHz 域 (cam_param 也挂这个域), 不用同步
+	assign o_cam_exp  = cfg_cam_exp;
+	assign o_cam_gain = cfg_cam_gain;
+	assign o_cam_ev   = cfg_cam_ev;
+	assign o_cam_trig = cfg_cam_trig;
 
 endmodule

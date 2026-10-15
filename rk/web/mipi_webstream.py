@@ -1321,13 +1321,102 @@ FPGA_REGS = [
     ("PP_SOBEL_SH", 0xB2,   0,    8, False, "Sobel 幅度右移 (3 -> 满量程)"),
     ("PP_THRESH",   0xB3,   0,  255, False, "二值化阈值"),
     ("PP_MORPH",    0xB4,   0,    1, False, "0=腐蚀(&) 1=膨胀(|)"),
+    # ---- 摄像头 / 画质 (0xC0 起) ----
+    # 曝光是 20 位, 拆 3 字节; UI 不直接用它们, 而是用 CAM_EXP_MS 物理量
+    ("CAM_EXP_L",   0xC0,   0,  255, False, "曝光 SHR0[7:0]"),
+    ("CAM_EXP_M",   0xC1,   0,  255, False, "曝光 SHR0[15:8]"),
+    ("CAM_EXP_H",   0xC2,   0,   15, False, "曝光 SHR0[19:16]"),
+    ("CAM_GAIN",    0xC3,   0,  100, False, "增益 0..100 (0.3dB/step)"),
+    ("EV_BIAS",     0xC4,   0,   15, False, "曝光补偿, 8 = 0EV"),
+    ("WB_R",        0xC5,   0,  255, False, "白平衡 R 增益 (128=1.0x)"),
+    ("WB_B",        0xC6,   0,  255, False, "白平衡 B 增益 (128=1.0x)"),
+    ("FPS_DIV",     0xC7,   1,    8, False, "帧率分频 (1=原速)"),
+    ("ROI_PCT",     0xC8,  25,  100, False, "ROI 百分比 (100=全画幅)"),
+    ("CAM_TRIG",    0xC9,   0,  255, False, "写任意值 -> 触发一次参数下发"),
 ]
 #  name, addr, 字节数, 说明
 FPGA_STATUS = [
     ("FRAME_CNT",   0xB8,   4, "已接收帧数 (32 位小端)"),
     ("HEARTBEAT",   0xBC,   1, "心跳 (每 256 个 25MHz 周期 +1)"),
     ("VER",         0xA9,   2, "版本号 (低字节在前)"),
+    ("CAM_WR_CNT",  0xD0,   2, "摄像头寄存器写成功次数"),
+    ("CAM_BUSY",    0xD2,   1, "摄像头参数正在下发"),
+    ("CAM_ID",      0xD3,   1, "参数区存在标志 (0xA5)"),
 ]
+
+# ============================================================================
+#  IMX415 曝光/增益换算 (给网页用物理量, 而不是裸寄存器值)
+#
+#  曝光行数 = VMAX - SHR0
+#  VMAX    = 0x0008EB = 2283  行  (ui_imx415_reg.v 的 0x3024/25/26)
+#  行周期  = HMAX / 像素时钟 = 542 / 74.25MHz = 7.3us
+#  => 曝光时间 = (VMAX - SHR0) * 7.3us
+#     SHR0 = 8    -> 16.6ms (初始化表默认, 最亮)
+#     SHR0 = 2275 -> 0.058ms (最短)
+#  SHR0 越大曝光越短, 别搞反。
+#
+#  增益: 0x3090 取值 0..100, 每步 0.3dB (0x64=100 -> 30dB)
+# ============================================================================
+CAM_VMAX     = 2283
+CAM_T_LINE_US = 7.3
+
+
+def cam_shr0_from_ms(ms):
+    """曝光时间(ms) -> SHR0 寄存器值"""
+    rows = int(round(float(ms) * 1000.0 / CAM_T_LINE_US))
+    rows = max(1, min(rows, CAM_VMAX - 1))
+    return CAM_VMAX - rows
+
+
+def cam_ms_from_shr0(shr0):
+    """SHR0 -> 曝光时间(ms)"""
+    rows = max(1, CAM_VMAX - int(shr0))
+    return rows * CAM_T_LINE_US / 1000.0
+
+
+def cam_phys(regs, status=None):
+    """把寄存器值换算成给 UI 用的物理量
+
+    ⚠ 先看 CAM_ID (0xD3) 是不是 0xA5: 烧的 bit 流里没有参数区时, 0xC0~0xC9
+      读回来全是 0, 而 0 对 EV_BIAS/WB_R 恰好是“合法值”, 单看值分不出来
+      (之前就出现过 UI 把 EV 显示成 -8 的情况)。没有参数区就全部用默认值。
+    """
+    status = status or {}
+    has_area = (status.get("CAM_ID") == 0xA5)
+
+    def pick(name, lo, hi, dflt):
+        if not has_area:
+            return dflt
+        try:
+            v = int(regs.get(name, dflt))
+        except Exception:
+            return dflt
+        return v if lo <= v <= hi else dflt
+
+    try:
+        shr0 = (pick("CAM_EXP_L", 0, 255, 0) |
+                (pick("CAM_EXP_M", 0, 255, 0) << 8) |
+                (pick("CAM_EXP_H", 0, 15, 0) << 16))
+        # SHR0 = 0 表示“保持初始化表的值”, 按默认 8 报
+        if not (1 <= shr0 <= CAM_VMAX - 1):
+            shr0 = 8
+        ms = cam_ms_from_shr0(shr0)
+
+        # CAM_GAIN = 0 表示“保持初始化表的值” (0x30 -> 14.4dB)
+        gain = pick("CAM_GAIN", 1, 100, 0)
+        gain_db = (gain * 0.3) if gain else 14.4
+
+        return {
+            "cam_exp_ms":  round(ms, 2),
+            "cam_gain_db": round(gain_db, 1),
+            "ev":          pick("EV_BIAS", 0, 15, 8) - 8,
+            "fps":         round(60.0 / pick("FPS_DIV", 1, 8, 1), 1),
+            "wb_r_pct":    round(pick("WB_R", 1, 255, 128) / 1.28, 0),
+            "wb_b_pct":    round(pick("WB_B", 1, 255, 128) / 1.28, 0),
+            "roi_pct":     pick("ROI_PCT", 25, 100, 100),
+        }
+    except Exception:
+        return {}
 
 FPGA_PRESETS = {
     "off":    {"PP_EN": 0},
@@ -1405,6 +1494,7 @@ class FpgaI2C(object):
                 else:
                     out["status"][name] = int.from_bytes(
                         bytes(self.read_multi(a, n)), "little")
+            out["phys"] = cam_phys(out["regs"], out["status"])
             out["ok"] = True
         except Exception as e:
             out["ok"] = False
@@ -1424,6 +1514,31 @@ class FpgaI2C(object):
         """
         flat = {}
         for k, v in (patch or {}).items():
+            kl = str(k).strip().lower()
+            # ---- 物理量 -> 寄存器 (网页用的是物理量, 更好懂) ----
+            if kl in ("cam_exp_ms", "exp_ms"):
+                s = cam_shr0_from_ms(v)
+                flat["CAM_EXP_L"] = s & 0xFF
+                flat["CAM_EXP_M"] = (s >> 8) & 0xFF
+                flat["CAM_EXP_H"] = (s >> 16) & 0x0F
+                continue
+            if kl in ("cam_gain_db", "gain_db"):
+                flat["CAM_GAIN"] = max(0, min(int(round(float(v) / 0.3)), 100))
+                continue
+            if kl == "ev":
+                flat["EV_BIAS"] = max(0, min(int(round(float(v))) + 8, 15))
+                continue
+            if kl == "fps":
+                n = int(round(60.0 / max(1.0, float(v))))
+                flat["FPS_DIV"] = max(1, min(n, 8))
+                continue
+            if kl == "wb_r_pct":
+                flat["WB_R"] = max(0, min(int(round(float(v) * 1.28)), 255))
+                continue
+            if kl == "wb_b_pct":
+                flat["WB_B"] = max(0, min(int(round(float(v) * 1.28)), 255))
+                continue
+            # ---- 寄存器名 / 预设 ----
             if k == "preset":
                 pre = FPGA_PRESETS.get(str(v))
                 if pre is None:

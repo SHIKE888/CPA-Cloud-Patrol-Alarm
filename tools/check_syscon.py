@@ -21,19 +21,29 @@ except Exception:
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 SYS_TOP = os.path.join(ROOT, 'fpga', 'uisrc', '01_rtl', 'system_top.v')
-RTL = os.path.join(ROOT, 'fpga', 'uisrc', '01_rtl')
+# 搜整个 uisrc: 新模块在 01_rtl 下, 而 ui_cfg_imx415 那些在 03_ip 下
+RTL = os.path.join(ROOT, 'fpga', 'uisrc')
 
 SUITE = os.path.join(os.environ['USERPROFILE'], 'oss-cad-suite')
 
 # 需要检查的例化: 模块名 -> 实例名
+#
+# ⚠ 不要把厂商 IP (ui_cfg_imx415 / ui_isp_top 这些) 放进来: 它们的代码风格
+#   不被 iverilog 接受 —— ui_cfg_imx415.v 里 iic_busy 是隐式声明 (用在声明之前),
+#   而且 ui_imx415reg 的 REG_INDEX/REG_DATA 端口是 9/32 位、实际连的是 8/24 位。
+#   TD 容忍这些, iverilog 直接报错, 加了反而把真正的报错淹没掉。
+#   这类厂商 IP 的端口改动只能人工核对。
 TARGETS = [
     ('preproc_top', 'u_preproc'),
+    ('preproc_post', 'u_preproc_post'),
+    ('cam_param', 'u_cam_param'),
     ('cfg_ctrl_top', 'u_cfg_ctrl'),
 ]
 
 # 新增的 RTL 源文件 (浅层文件名, 脚本会递归找)
 SRC_NAMES = ['preproc_top.v', 'preproc_win3x3.v', 'preproc_edge.v',
-             'cfg_ctrl_top.v', 'i2c_slave.v', 'jpeg_regfile.v']
+             'preproc_post.v', 'cfg_ctrl_top.v', 'i2c_slave.v',
+             'jpeg_regfile.v', 'cam_param.v']
 
 # 这些是 system_top 里的 localparam, 检查模块里要补上
 EXTRA_DECL = """

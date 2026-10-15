@@ -38,8 +38,9 @@ parameter	 CLK_DIV  = 16'd999
 (
 input  wire             I_clk,  //系统时钟输入
 input  wire             I_rst_n,  //系统复位输入
-input  wire             I_ae_req,//摄像头AE控制
-input  wire	 [7:0] 		I_ae_data,
+input  wire             I_ae_req,//摄像头参数下发请求 (一拍脉冲)
+input  wire	 [7:0] 		I_ae_data,//4 个增益通道的值
+input  wire [19:0]      I_rt_exp,//SHR0 曝光行数 (20 bit)
 output wire             O_cam_scl, //I2C总线，SCL时钟
 inout  wire             IO_cam_sda, //I2C总线，SDA数据
 output reg              O_cfg_done, //配置完成
@@ -55,7 +56,7 @@ wire [23:0] REG_DATA_REG	; 	//寄存器数据
 wire [7 :0] REG_SIZE_REG	;	//寄存器数量
 
 wire [1 :0] REG_SIZE_ST = 2'd2; //待机寄存器数量
-wire [2 :0] REG_SIZE_AE = 3'd4; //AE寄存器数量
+wire [2 :0] REG_SIZE_AE = 3'd7; //参数寄存器数量: 4 个增益通道 + 3 字节 SHR0 曝光
 
 
 reg  		O_cfg_done_r;	//待机模式寄存器配置完成信号
@@ -216,6 +217,9 @@ always@(*)
 		1:		REG_DATA_AE = {16'h3092, I_ae_data}; 
 		2:		REG_DATA_AE = {16'h3094, I_ae_data}; 
 		3:		REG_DATA_AE = {16'h3096, I_ae_data}; 
+		4:		REG_DATA_AE = {16'h3050, I_rt_exp[ 7:0]}; 
+		5:		REG_DATA_AE = {16'h3051, I_rt_exp[15:8]}; 
+		6:		REG_DATA_AE = {16'h3052, I_rt_exp[19:16]}; 
 		default:REG_DATA_AE = {16'h0000, 8'h00};
    endcase
 
