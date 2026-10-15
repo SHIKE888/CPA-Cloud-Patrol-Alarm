@@ -40,7 +40,9 @@ module ui_raw_matrix_3x3_buffer #(
 )
 (
     input           	I_clk   			,  // 时钟信号
-    input           	I_rst_n 			,  // 复位信号，低有效    input           [12:0] I_img_width      ,  // V21: 运行时图像宽度
+    input           	I_rst_n 			,  // 复位信号，低有效
+    input           [12:0] I_img_width      ,  // V21: 运行时图像宽度
+    input           [12:0] I_img_height     ,  // V21: 运行时图像高度
     input           [12:0] I_img_height     ,  // V21: 运行时图像高度
     input [39:0]  		I_axi4s_video_tdata ,  // AXI4-Stream视频数据
     input [9:0]   		I_axi4s_video_tdest ,
