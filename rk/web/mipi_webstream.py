@@ -1401,6 +1401,14 @@ LINK_USABLE_RATIO  = 0.85                  # 超过这个比例就判为"超带�
 #   要把降帧档变真, 必须先补 RTL (在 VTC 读侧按 fps_div 丢帧), 再把这里改成 True。
 FPS_DIV_IMPLEMENTED = False
 
+# ⚠ 切换分辨率目前判定为**不安全**, 因为整条视频通路的协同复位还没做:
+#   实测把 RES_MODE 写过去再写回来之后, 画面会撕裂/错位(读写指针与新的帧边界对不上),
+#   接着会把 RX/TX 都拖死 —— 只能重新烧 bit 才能恢复。
+#   RTL 里已经给 VTC/csi2_pack/csi2_frame_tx 加了复位(H0fff53e), 硬死锁没了,
+#   但 RX 写侧 / dbuf 读写指针还没纳入, 所以还不够。
+#   做好之后把这里改成 True。
+MODE_SWITCH_SAFE = False
+
 
 def _mk_mode(mid, w, h, fps, res_mode, fps_div):
     load = w * h * fps * 2.0
@@ -1829,6 +1837,8 @@ class Handler(BaseHTTPRequestHandler):
                         regs = {}
                 return self._json({
                     "ok": True,
+                    "switch_safe": MODE_SWITCH_SAFE,
+                    "fps_div_impl": FPS_DIV_IMPLEMENTED,
                     "link_mb_s": round(LINK_BYTES_PER_SEC / 1e6, 1),
                     "link_note": "4 lane x 1000 Mbps (V22 byte_clk 125MHz)",
                     "usable_ratio": LINK_USABLE_RATIO,
@@ -1919,6 +1929,11 @@ class Handler(BaseHTTPRequestHandler):
         顺序是先改源头 (FPGA) 再改消化端 (RK), 中间会有一瞬不匹配, 可接受。
         """
         log = []
+        if not MODE_SWITCH_SAFE and not force:
+            return {"ok": False, "log": log,
+                    "error": "分辨率切换目前标为不安全: 整条视频通路的协同复位尚未实现, "
+                             "切完画面会撕裂并可能把 RX/TX 拖死(需重烧 bit)。"
+                             "确实要试请带 \"force\": true。"}
         if not mode["impl"] and not force:
             return {"ok": False, "log": log,
                     "error": "%s 需要跳帧(FPS_DIV=%d), 但当前 FPGA RTL 里 FPS_DIV 是"

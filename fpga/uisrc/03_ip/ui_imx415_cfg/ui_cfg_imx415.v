@@ -133,13 +133,27 @@ always@(posedge I_clk ) begin
     end
     else begin
         case(TS_S)
-        0:if(reg_index == REG_SIZE && O_cfg_done == 1'b0) begin//如果配置完成
+        0:if(I_ae_req && O_cfg_done == 1'b1 && O_cfg_done_r == 1'b1)begin
+            // ★★ 2026-10-15 修复: AE 阶段收到新请求必须**最优先**处理。
+            //   原代码里下面 "reg_index==REG_SIZE && O_cfg_done && O_cfg_done_r"
+            //   那一支会先命中并把请求吞掉 (AE 写完后 reg_index 就恒等于 REG_SIZE),
+            //   于是 O_ae_cfg_done 不再翻转 -> cam_param 永远等不到 ae_done
+            //   -> 卡在 busy 不动: CAM_BUSY 恒为 1, CAM_WR_CNT 不再增长,
+            //   表现为网页上改曝光/增益/EV 完全没反应。
+            //   实测 CAM_WR_CNT 停在 2 (前两次碰巧赶上周期刷新把 reg_index 清零,
+            //   请求才被接受), 之后 0.5ms/16.6ms 曝光切换帧平均亮度只差噪声级 ±2。
+            O_ae_cfg_done <= 1'b0;
+            reg_index   <= 9'd0;
+        end
+        else if(reg_index == REG_SIZE && O_cfg_done == 1'b0) begin//如果配置完成
             O_cfg_done <= 1'b1;       //设置 cfg_done标准
         end 
         else if(reg_index == REG_SIZE && O_cfg_done == 1'b1 && O_cfg_done_r == 1'b0) begin//如果配置完成
             O_cfg_done_r <= 1'b1;       //设置 cfg_done标准
         end 
-        else if(cnt== 1000_000)begin
+        else if(cnt== 1000_000 && O_ae_cfg_done == 1'b1)begin
+            // 周期刷新要等一轮 AE 写完 —— 否则会把正在进行的 AE 序列打断,
+            // reg_index 被清零后发起方(cam_param)再也等不到 ae_done。
             O_cfg_done_r <= 0;
             reg_index   <= 0;
         end
