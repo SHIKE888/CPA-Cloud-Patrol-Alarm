@@ -33,6 +33,14 @@
 //    0xA7 ST_SCALE    当前量化缩放 (随码率控制变化)
 //    0xA8 ST_STATUS   [0]忙 [1]上一帧结束 [2]溢出 [3]无损模式回读
 //    0xA9~0xAA ST_VER 版本号 (默认 0x0100)
+//    ---- 预处理 P4/P5/P6 (Sobel / 阈值分割 / 形态学) ----
+//    0xB0 PP_EN       总使能 [0]  (0 -> 强制直通原图)
+//    0xB1 PP_MODE     [2:0] 0=原图 1=Sobel 2=阈值分割 3=形态学
+//    0xB2 PP_SOBEL_SH 幅度右移 0..8 (默认 3, 使幅度满 0..255)
+//    0xB3 PP_THRESH   二值化阈值 0..255 (默认 128)
+//    0xB4 PP_MORPH    [0] 0=腐蚀(&) 1=膨胀(|)  (默认 1)
+//    0xB8~0xBB ST_FRAME_CNT  已接收帧计数 (只读, RISC 可读回验证链路)
+//    0xBC ST_HEARTBEAT       心跳计数 (只读, 每 256 读时钟 +1, 证明 FPGA 活着)
 //
 //  说明: 状态只读 —— 0x90 以下未定义的地址写入会被忽略。
 //        单线命令通道是**单向**的, 回读要靠把这些状态塞进 JPEG 的 COM 段
@@ -78,7 +86,17 @@ module jpeg_regfile #(
     // ---------------- 量化表回读 (来自 jpeg_qtable_ram 的读口) ----------------
     // 地址 0x10~0x4F 对应 qtable 下标 0~63。因为范围是 0x10..0x4F,
     // 在 6 位宽下做 (addr[5:0] - 6'h10) 正好回绕得到 0..63, 不会越界。
-    input  wire [7:0]   I_qtable_rd_data
+    input  wire [7:0]   I_qtable_rd_data,
+
+    // ---------------- 预处理 P4/P5/P6 配置输出 ----------------
+    output wire         O_cfg_pp_en,
+    output wire [2:0]   O_cfg_pp_mode,
+    output wire [3:0]   O_cfg_pp_sobel_shift,
+    output wire [7:0]   O_cfg_pp_thresh,
+    output wire         O_cfg_pp_morph_sel,
+
+    // ---------------- 补充状态输入 ----------------
+    input  wire [31:0]  I_st_frame_cnt     // 已接收帧计数 (供回读验证链路)
 );
 
     // ---------------------------------------------------------------- 控制寄存器
@@ -93,6 +111,15 @@ module jpeg_regfile #(
     reg [7:0]  r_restart;
     reg [2:0]  r_predictor;
     reg        r_soft_rst;
+
+    // 预处理寄存器
+    reg        r_pp_en;
+    reg [2:0]  r_pp_mode;
+    reg [3:0]  r_pp_sobel_sh;
+    reg [7:0]  r_pp_thresh;
+    reg        r_pp_morph_sel;
+    reg [7:0]  r_heartbeat;
+    reg [31:0] s_frame_cnt;
 
     // 状态输入打一拍, 让跨模块路径短一点
     reg [23:0] s_frame_bytes;
@@ -115,6 +142,8 @@ module jpeg_regfile #(
             s_busy        <= I_st_busy;
             s_done        <= I_st_frame_done;
             s_ovf         <= I_st_overflow;
+            s_frame_cnt   <= I_st_frame_cnt;
+            r_heartbeat   <= r_heartbeat + 8'd1;   // 每 256 读时钟 +1, 证明时钟在跑
         end
     end
 
@@ -132,6 +161,12 @@ module jpeg_regfile #(
             r_restart    <= 8'd0;
             r_predictor  <= 3'd0;      // 0 = MED
             r_soft_rst   <= 1'b0;
+            r_pp_en      <= 1'b0;
+            r_pp_mode    <= 3'd0;      // 默认直通原图
+            r_pp_sobel_sh<= 4'd3;      // 幅度右移 3 -> 满 0..255
+            r_pp_thresh  <= 8'd128;
+            r_pp_morph_sel <= 1'b1;    // 默认膨胀
+            r_heartbeat  <= 8'd0;
         end else begin
             r_soft_rst <= 1'b0;        // 自清, 只保持一拍
 
@@ -154,6 +189,12 @@ module jpeg_regfile #(
                     8'h08: r_restart   <= I_wr_data;
                     8'h09: r_predictor <= I_wr_data[2:0];
                     8'h0A: r_soft_rst  <= I_wr_data[0];
+                    // ---- 预处理 P4/P5/P6 ----
+                    8'hB0: r_pp_en      <= I_wr_data[0];
+                    8'hB1: r_pp_mode    <= I_wr_data[2:0];
+                    8'hB2: r_pp_sobel_sh<= I_wr_data[3:0];
+                    8'hB3: r_pp_thresh  <= I_wr_data;
+                    8'hB4: r_pp_morph_sel <= I_wr_data[0];
                     default: ;         // 0x50~ 状态区写入忽略; 0x10~0x4F 由 qtable RAM 处理
                 endcase
             end
@@ -196,6 +237,17 @@ module jpeg_regfile #(
                 8'hA9: O_rd_data <= JPEG_VER[ 7:0];
                 8'hAA: O_rd_data <= JPEG_VER[15:8];
 
+                8'hB0: O_rd_data <= {7'b0, r_pp_en};
+                8'hB1: O_rd_data <= {5'b0, r_pp_mode};
+                8'hB2: O_rd_data <= {4'b0, r_pp_sobel_sh};
+                8'hB3: O_rd_data <= r_pp_thresh;
+                8'hB4: O_rd_data <= {7'b0, r_pp_morph_sel};
+                8'hB8: O_rd_data <= s_frame_cnt[ 7:0];
+                8'hB9: O_rd_data <= s_frame_cnt[15:8];
+                8'hBA: O_rd_data <= s_frame_cnt[23:16];
+                8'hBB: O_rd_data <= s_frame_cnt[31:24];
+                8'hBC: O_rd_data <= r_heartbeat;
+
                 default: O_rd_data <= 8'h00;
             endcase
         end
@@ -217,5 +269,12 @@ module jpeg_regfile #(
     assign O_cfg_restart_int = r_restart;
     assign O_cfg_predictor   = r_predictor;
     assign O_soft_rst        = r_soft_rst;
+
+    // 预处理: PP_EN=0 时强制直通原图
+    assign O_cfg_pp_en         = r_pp_en;
+    assign O_cfg_pp_mode       = r_pp_en ? r_pp_mode : 3'd0;
+    assign O_cfg_pp_sobel_shift= (r_pp_sobel_sh > 4'd8) ? 4'd8 : r_pp_sobel_sh;
+    assign O_cfg_pp_thresh     = r_pp_thresh;
+    assign O_cfg_pp_morph_sel  = r_pp_morph_sel;
 
 endmodule
