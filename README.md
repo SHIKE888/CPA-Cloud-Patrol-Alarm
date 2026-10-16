@@ -7,6 +7,10 @@
 > 本工程以米联客官方 `AFC03_IMX415_MIPI_RK(0531)` 例程为基础整理、参数化并补充部署脚本。
 > 参考原件保留在 `fpga_reference_src.zip`，改动清单见 [`MODIFICATIONS.md`](MODIFICATIONS.md)。
 
+> 🚀 **只想尽快跑起来？直接看 [`QUICKSTART.md`](QUICKSTART.md)**
+> —— 当前已实现功能清单 + 全部启动/操作指令（链路自检、HDMI、网页推流、摄像头参数、
+> 模式切换、FPGA 预处理、AI 检测、云台、诊断脚本、HTTP API）。
+
 ---
 
 ## 1. 系统框图
@@ -65,6 +69,7 @@ flowchart LR
 │   └── deploy/                    ★ 一键自检 / HDMI 出图脚本（详见 rk/deploy/README.md）
 ├── docs/                          官方教程与硬件手册
 ├── fpga_reference_src.zip         官方原始例程（backup）
+├── QUICKSTART.md                  ★ 快速开始指令集（功能清单 + 全部命令）
 ├── MODIFICATIONS.md               相对官方例程的改动清单
 └── README.md                      本文件
 ```
@@ -202,6 +207,7 @@ ssh afc03 "cd /root/rk/web && chmod +x *.sh && ./start_webstream.sh"
 
 ## 9. 参考文档
 
+- [`QUICKSTART.md`](QUICKSTART.md) —— **快速开始指令集**（功能清单 + 全部启动/操作命令）
 - `docs/米联客2026版异构AFC03教程-MIPI篇.pdf` —— 官方 MIPI 篇教程（含 YOLO 与自启动）
 - `docs/MLK-AFH03-AFC03硬件使用手册.txt` —— 硬件手册（含 MIPI/PCIE 内部互联管脚表）
 - `rk/deploy/README.md` —— RK 端详细部署与排错
