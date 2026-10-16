@@ -350,13 +350,8 @@ class AiOverlay(object):
             return frame
 
         if self.skeleton_only:
-            # 纯骨骼模式：先把整帧涂黑（推理用的是原来的帧，不受影响），
-            # 下面只画关节点/骨架线，不画人体框、分数、动作标签。
-            try:
-                frame[:] = 0
-            except Exception:                                   # noqa: BLE001
-                pass
-        elif not res:
+            return self._draw_skeleton_only(frame, res, draw_pose)
+        if not res:
             return frame
 
         for d in res:
@@ -367,12 +362,6 @@ class AiOverlay(object):
                 color, thick = (0, 165, 255), 3
             else:
                 color, thick = (0, 255, 0), 2
-            if self.skeleton_only:
-                # 黑底上只留骨架：点画大一点、线稍粗，远程看也一眼能认出姿势
-                if self.show_skeleton and d.get("kps") is not None:
-                    draw_pose(frame, d["kps"], color=color, thickness=max(2, thick),
-                              radius=5)
-                continue
             label = ""
             acts = d.get("actions") or []
             if self.show_label and acts:
@@ -395,6 +384,36 @@ class AiOverlay(object):
         if self.show_hud:
             self._draw_hud(frame, res)
         return frame
+
+    def _draw_skeleton_only(self, frame, res, draw_pose):
+        """纯骨骼（黑底）：新建一张黑图只画骨架，**不动原始帧**。
+
+        ⚠ 这里必须新建，不能就地 `frame[:] = 0`：
+          推理线程默认直接读同一块内存（`copy_frame=False`，见 submit()），
+          一旦把原帧涂黑，AI 下一帧拿到的就是全黑画面 →
+          检测不到人 → 反而一根骨头都画不出来（这就是“黑底有人却没骨架”的原因）。
+        颜色仍按风险级给（绿/橙/红），点画大一圈，远处也看得清。
+        """
+        try:
+            import numpy as np
+            out = np.zeros_like(frame)
+        except Exception:                                       # noqa: BLE001
+            return frame
+        for d in res:
+            kps = d.get("kps")
+            if kps is None:
+                continue
+            level = d.get("risk", 0)
+            if level >= 2:
+                color, thick = (0, 0, 255), 3
+            elif level >= 1:
+                color, thick = (0, 165, 255), 3
+            else:
+                color, thick = (0, 255, 0), 2
+            draw_pose(out, kps, color=color, thickness=max(2, thick), radius=5)
+        if self.show_hud:
+            self._draw_hud(out, res)
+        return out
 
     def _draw_hud(self, frame, res):
         """左下角信息条：YOLO 帧率 / 两级耗时 / 人数。
