@@ -95,6 +95,14 @@
   <button class="primary" id="btnConn">连接</button>
   <button id="btnSnap">抓拍</button>
   <button id="btnReset">重置参数</button>
+  <span style="display:flex;gap:4px;align-items:center;margin-left:6px">
+    <span style="color:var(--dim);font-size:12px">画面源</span>
+    <button class="ghost srcbtn on" data-src="raw"
+            title="原始画面（不做 AI 叠加，零额外开销）">原图</button>
+    <button class="ghost srcbtn" data-src="ai"
+            title="叠加人体框 / 姿态骨架 / 危险动作标签">AI 标注</button>
+    <span class="dot" id="aiDot" title="AI 状态"></span>
+  </span>
   <span style="margin-left:auto">
     <span class="dot" id="dot"></span><span id="connTxt">未连接</span>
   </span>
@@ -115,7 +123,9 @@
         <div class="kv"><span>状态</span><b id="sState">—</b></div>
         <div class="kv"><span>后端 / 设备</span><b id="sBackend">—</b></div>
         <div class="kv"><span>分辨率</span><b id="sSize">—</b></div>
-        <div class="kv"><span>当前帧率</span><b id="sFps">—</b></div>
+        <div class="kv"><span>视频帧率</span><b id="sFps">—</b></div>
+        <div class="kv"><span>YOLO 帧率</span><b id="sAiFps">—</b></div>
+        <div class="kv"><span>检测结果</span><b id="sAiRes">—</b></div>
       </div>
     </div>
   </div>
@@ -128,6 +138,7 @@
         <button class="tab" data-tab="pp">预处理</button>
         <button class="tab" data-tab="sw">画面</button>
         <button class="tab" data-tab="hw">V4L2</button>
+        <button class="tab" data-tab="ai">AI 标注</button>
       </div>
 
       <!-- ======== 摄像头 / 输出 ======== -->
@@ -276,6 +287,103 @@
         <button id="btnReloadHw" style="margin-top:10px">刷新硬件参数</button>
         <p class="hint">部分采集节点（如 rkcif mainpath）没有可调硬件参数，此时为空列表属正常现象。</p>
       </div>
+
+      <!-- ======== AI 标注（人体检测 / 姿态骨架 / 危险动作） ======== -->
+      <div class="tabbody" id="tab-ai" hidden>
+        <div class="row"><label>画面源</label>
+          <div style="flex:1;display:flex;gap:8px">
+            <button class="ghost srcbtn on" data-src="raw" style="flex:1">原图</button>
+            <button class="ghost srcbtn" data-src="ai" style="flex:1">AI 标注</button>
+          </div></div>
+
+        <div class="grid2" style="margin:8px 0">
+          <button class="ghost on" id="btnAiEnable">AI 已启用</button>
+          <button class="ghost" id="btnAiRefresh">刷新状态</button>
+        </div>
+
+        <div class="row"><label title="两档都是同一套 640 模型（精度最高）；区别是“跑一级检测的那一帧要不要同时跑姿态”。实测降小模型会漏检/丢关节，所以不建议">模型档位</label>
+          <div id="aiPresets" style="flex:1;display:flex;gap:6px"></div></div>
+        <p class="hint" id="aiPresetNote" style="margin:-2px 0 6px">—</p>
+
+        <div class="row"><label>AI 帧率</label>
+          <input type="range" id="a_fps" min="1" max="30" step="1" value="30">
+          <span class="val" id="av_fps">30 fps</span></div>
+
+        <div class="row"><label title="一级人体检测每 N 帧才跑一次；调大能明显提帧，中间帧靠姿态关节框跟随人体">检测间隔</label>
+          <input type="range" id="a_det_interval" min="1" max="6" step="1" value="2">
+          <span class="val" id="av_det_interval">2 帧</span></div>
+
+        <div class="row"><label>检测阈值</label>
+          <input type="range" id="a_det_conf" min="0.1" max="0.9" step="0.01" value="0.35">
+          <span class="val" id="av_det_conf">0.35</span></div>
+
+        <div class="row"><label title="关节只保留在一级人体框附近这个范围内；调小可抑制远处的误识别关节">关节范围</label>
+          <input type="range" id="a_kpt_margin" min="0.05" max="1" step="0.05" value="0.15">
+          <span class="val" id="av_kpt_margin">0.15</span></div>
+
+        <div class="row"><label title="关节到人体框中心的距离上限（相对框对角/2）；调小可抑制飘到远处的鬼点">距框中心</label>
+          <input type="range" id="a_kpt_scale_max" min="0.5" max="2.5" step="0.05" value="1.2">
+          <span class="val" id="av_kpt_scale_max">1.20</span></div>
+
+        <div class="row"><label title="二级姿态只在这个外扩倍数的 ROI 里找关节">ROI 外扩</label>
+          <input type="range" id="a_roi_expand" min="1" max="1.6" step="0.05" value="1.15">
+          <span class="val" id="av_roi_expand">1.15</span></div>
+
+        <div class="row"><label>跌倒灵敏度</label>
+          <input type="range" id="a_fall" min="0.3" max="1" step="0.05" value="1">
+          <span class="val" id="av_fall">1.00</span></div>
+
+        <div class="row"><label>奔跑灵敏度</label>
+          <input type="range" id="a_run" min="0.5" max="2.5" step="0.05" value="1">
+          <span class="val" id="av_run">1.00</span></div>
+
+        <div class="sep"></div>
+
+        <div class="grid4">
+          <button class="ghost on" id="btnAiSk">骨架</button>
+          <button class="ghost on" id="btnAiScore">置信度</button>
+          <button class="ghost on" id="btnAiLabel">动作标签</button>
+          <button class="ghost" id="btnAiHud">角标</button>
+        </div>
+
+        <div class="sep"></div>
+
+        <div style="font-size:12px;color:var(--dim);line-height:1.9">
+          <div class="kv"><span>模型</span><b id="aiState">—</b></div>
+          <div class="kv"><span>YOLO 帧率</span><b id="aiFps">—</b></div>
+          <div class="kv"><span>一级检测帧率</span><b id="aiDetFps">—</b></div>
+          <div class="kv"><span>视频帧率</span><b id="aiVFps">—</b></div>
+          <div class="kv"><span>耗时 检测/姿态</span><b id="aiMs">—</b></div>
+          <div class="kv"><span>当前人数</span><b id="aiPersons">—</b></div>
+        </div>
+
+        <div class="sep"></div>
+        <div style="font-weight:600;font-size:12px;margin-bottom:6px">
+          检测结果 <span id="aiDetT" style="font-weight:400;color:var(--dim)"></span></div>
+        <div class="scroll" id="aiDets" style="max-height:160px;font-size:12px">
+          <p class="hint">暂无（切到「AI 标注」并启用 AI 后显示）</p>
+        </div>
+
+        <div class="sep"></div>
+        <div style="font-weight:600;font-size:12px;margin-bottom:6px">报警事件</div>
+        <div class="scroll" id="aiEvents" style="max-height:140px;font-size:12px">
+          <p class="hint">暂无</p>
+        </div>
+
+        <p class="hint">AI 与视频帧率互相独立：这里调的是 <b>AI 推理帧率</b>，
+          画面仍按原始帧率推流（上方「YOLO 帧率」= 实际推理帧率，
+          「一级检测帧率」是跳帧后检测真正执行的频率）。切回「原图」会立即停掉推理与绘制，CPU 占用回到与以前一样；
+          标注是<b>直接叠在推流帧上</b>的，不需要第二路 MJPEG，也没有二次编解码。</p>
+        <p class="hint">标注里的动作名用<b>英文</b>（如 Fall / Climb）—— opencv 的字体画不了中文，
+          传中文进去只会渲染成一串 “???”，所以画面上一律只用英文，网页列表里才带中文对照。
+          一级人体框会约束后面两级：<b>关节范围</b>以外的关节直接当看不见
+          （不画、也不参与动作判定），<b>ROI 外扩</b>越小姿态越只盯着人看；
+          两者都能很好地滤掉远处的误识别骨架与误报。</p>
+        <p class="hint">参数会<b>自动保存</b>（服务端 <code>state.json</code>）：刷新页面、换浏览器、
+          甚至重启服务后，上次用过的画面参数与 AI 设置都会自动恢复。
+          切到「AI 标注」时 FPGA 预处理（Sobel/阈值/形态学）会<b>自动关闭</b> ——
+          那种画面给人看可以，AI 拿去做检测只会瞎猜。</p>
+      </div>
     </div>
 
     <!-- ---------------- FPGA 通信状态（常显） ---------------- -->
@@ -336,6 +444,7 @@ function connect() {
 
   setDot(true, "连接中…");
   getParams().then(loadHw).then(loadFpga).then(() => loadModes());
+  aiLoad(true);
   fpgaPoll();
   poll();
 }
@@ -492,7 +601,11 @@ function scheduleFpgaPush(patch) {
 }
 
 document.querySelectorAll("[data-pp]").forEach(b => {
-  b.onclick = () => scheduleFpgaPush({ PP_EN: 1, PP_MODE: Number(b.dataset.pp) });
+  b.onclick = () => {
+    // 预处理是给眼睛看的（Sobel/阈值/形态学），AI 拿那种画面只会瞎猜 —— 提醒一下
+    if (ai && ai.active) toast("AI 标注进行中：预处理只在「原图」下有意义，切回 AI 时已自动关闭");
+    scheduleFpgaPush({ PP_EN: 1, PP_MODE: Number(b.dataset.pp) });
+  };
 });
 $("btnPpOff").onclick     = () => scheduleFpgaPush({ PP_EN: 0 });
 $("btnMorph0").onclick   = () => scheduleFpgaPush({ PP_MORPH: 0 });
@@ -609,7 +722,7 @@ document.querySelectorAll("[data-tab]").forEach(b => {
   b.onclick = () => {
     document.querySelectorAll("[data-tab]").forEach(x =>
       x.classList.toggle("on", x === b));
-    ["cam", "pp", "sw", "hw"].forEach(t => {
+    ["cam", "pp", "sw", "hw", "ai"].forEach(t => {
       const el = $("tab-" + t);
       if (el) el.hidden = (t !== b.dataset.tab);
     });
@@ -720,6 +833,205 @@ async function loadHw() {
 }
 $("btnReloadHw").onclick = loadHw;
 
+/* ---------------- AI 标注（人体框 / 骨架 / 危险动作） --------------
+   画面源切换是“服务端换内容”：hub 只推一路 JPEG，切到 AI 后编码线程
+   才把标注画上去 —— 所以不占额外带宽，也不用重连流。 */
+let ai = null;
+let aiPushTimer = null;
+
+function aiDotState() {
+  const d = $("aiDot");
+  if (!d) return;
+  if (!ai || !ai.ok) d.className = "dot bad";
+  else d.className = "dot" + (ai.active ? " ok" : "");
+}
+
+/* 检测结果：逐个人列出来（ID / 置信度 / 框 / 有效关节数 / 动作） */
+function renderDets(ai) {
+  const de = ai.detections || [];
+  const age = (ai.age_ms == null) ? null : Math.round(ai.age_ms);
+  $("aiDetT").textContent = (ai.active && age != null) ? "（" + age + " ms 前）" : "";
+  if (!ai.active) {
+    $("aiDets").innerHTML = '<p class="hint">AI 未运行（画面源为「原图」或已停用）</p>';
+    return;
+  }
+  if (!de.length) {
+    $("aiDets").innerHTML = '<p class="hint">本帧未检出人体</p>';
+    return;
+  }
+  $("aiDets").innerHTML = de.map(d => {
+    const col = d.risk >= 2 ? "#f66" : (d.risk >= 1 ? "#fa3" : "#8f8");
+    const kp  = (d.n_kpt == null) ? "" : " · 关节" + d.n_kpt + "/17";
+    const en  = d.labels_en || d.labels || [];
+    const cn  = d.labels || [];
+    const act = en.length ? " · " + en.map((w, i) => w + (cn[i] ? " " + cn[i] : "")).join("/") : "";
+    return '<div style="color:' + col + ';white-space:nowrap">ID' + (d.tid ?? "-") +
+           "  " + Math.round(d.score * 100) + "%  框(" + (d.box || []).join(",") + ")" +
+           kp + act + "</div>";
+  }).join("");
+}
+
+function aiTopSync() {
+  const on = !!(ai && ai.active);
+  const n  = (ai && ai.detections ? ai.detections.length : 0);
+  $("sAiFps").textContent = on ? (ai.fps + " fps（检测 " + (ai.fps_det ?? 0) + "）")
+                              : (ai && ai.ok ? "未运行（原图）" : "—");
+  $("sAiRes").textContent = on ? (n ? n + " 人" : "无人") : "—";
+}
+
+function setSlider(id, labId, v, suffix, digits) {
+  const el = $(id);
+  if (!el || el === document.activeElement) return;
+  el.value = v;
+  const lab = $(labId);
+  if (lab) lab.textContent = digits ? Number(v).toFixed(digits) : (v + (suffix || ""));
+}
+
+/* 模型档位：精确 / 平衡 / 极速 / 极速+ —— 每个档位是一整套（det + pose），点一下热切换 */
+function aiPresets(ai) {
+  const box = $("aiPresets");
+  const list = (ai && ai.presets) || [];
+  const have = list.filter(p => p.exists);
+  if (!have.length) {
+    box.innerHTML = '<span class="hint" style="margin:0">无可用模型</span>';
+    $("aiPresetNote").textContent = "—";
+    return;
+  }
+  box.innerHTML = have.map(p =>
+    '<button class="ghost' + (p.active ? " on" : "") + '" data-preset="' + p.id +
+    '" title="' + (p.note || "") + '" style="flex:1">' + p.name + '</button>').join("");
+  box.querySelectorAll("[data-preset]").forEach(b => {
+    b.onclick = () => aiPush({ preset: b.dataset.preset });
+  });
+  const cur = have.find(p => p.active);
+  const m = (ai && ai.models) || {};
+  $("aiPresetNote").textContent = cur
+    ? (cur.note || "") + (m.det_size ? "　|　当前 det " + m.det_size + " / pose " + m.pose_size : "")
+    : "切换中…";
+}
+
+function aiSyncUI() {
+  if (!ai) return;
+  document.querySelectorAll(".srcbtn").forEach(b =>
+    b.classList.toggle("on", (b.dataset.src === "ai") === (ai.source === "ai")));
+  $("btnAiEnable").classList.toggle("on", !!ai.enabled);
+  $("btnAiEnable").textContent = ai.enabled ? "AI 已启用" : "AI 已停用";
+
+  setSlider("a_fps", "av_fps", ai.fps_target, " fps");
+  setSlider("a_det_interval", "av_det_interval", ai.det_interval ?? 2, " 帧");
+  setSlider("a_det_conf", "av_det_conf", ai.det_conf, null, 2);
+  setSlider("a_kpt_margin", "av_kpt_margin", ai.kpt_margin ?? 0.15, null, 2);
+  setSlider("a_kpt_scale_max", "av_kpt_scale_max", ai.kpt_scale_max ?? 1.2, null, 2);
+  setSlider("a_roi_expand", "av_roi_expand", ai.roi_expand ?? 1.15, null, 2);
+  if (ai.tune) {
+    setSlider("a_fall", "av_fall", ai.tune.fall ?? 1, null, 2);
+    setSlider("a_run", "av_run", ai.tune.run ?? 1, null, 2);
+  }
+  $("btnAiSk").classList.toggle("on", !!ai.show_skeleton);
+  $("btnAiScore").classList.toggle("on", !!ai.show_score);
+  $("btnAiLabel").classList.toggle("on", !!ai.show_label);
+  $("btnAiHud").classList.toggle("on", !!ai.show_hud);
+
+  $("aiState").textContent = ai.ok ? (ai.err ? "已加载 · " + ai.err : "已加载")
+                                   : (ai.err || "未加载");
+  $("aiFps").textContent = ai.active
+      ? ai.fps + " fps（目标 " + ai.fps_target + "）"
+      : "已停止";
+  $("aiDetFps").textContent = ai.active ? (ai.fps_det ?? 0) + " fps" : "—";
+  $("aiMs").textContent = ai.det_ms + " / " + ai.pose_ms + " ms";
+  $("aiPersons").textContent = ai.persons;
+
+  renderDets(ai);
+  aiPresets(ai);
+
+  const ev = (ai.events || []).slice().reverse();
+  $("aiEvents").innerHTML = ev.length
+    ? ev.map(e => '<div style="color:#f88">' + new Date(e.t * 1000).toLocaleTimeString() +
+        '  ID' + e.tid + '  ' + (e.en || e.label || e.cn) + (e.cn ? " " + e.cn : "") + '  ' +
+        Math.round(e.score * 100) + '%</div>').join("")
+    : '<p class="hint">暂无</p>';
+  aiDotState();
+  aiTopSync();
+}
+
+async function aiLoad(first) {
+  try {
+    ai = await api("/api/ai");
+    aiSyncUI();
+  } catch (e) {
+    ai = null;
+    if (first) {
+      $("aiState").textContent = "不可用（" + e.message + "）";
+      $("aiDot").className = "dot bad";
+    }
+  }
+}
+
+function aiPush(patch) {
+  clearTimeout(aiPushTimer);
+  aiPushTimer = setTimeout(async () => {
+    try {
+      const r = await api("/api/ai", { method: "POST", body: JSON.stringify(patch) });
+      ai = r.ai || ai;
+      aiSyncUI();
+      // 切到「AI 标注」时服务端会顺手关掉 FPGA 预处理，重新拉一次寄存器状态，
+      // 免得页面上的「预处理」按钮还亮着
+      if (ai && ai.active && ("source" in patch || "enabled" in patch)) {
+        loadFpga();
+        if (ai.pp_off) toast("已自动关闭 FPGA 预处理（" + ai.pp_off + "）");
+      }
+      // 换模型要重新 load_rknn，几百 ms 内帧率会归零一下，给个提示
+      if ("preset" in patch && ai) {
+        const nm = (ai.presets || []).find(p => p.id === ai.preset);
+        toast("已切换到「" + (nm ? nm.name : ai.preset) + "」");
+      }
+    } catch (e) { toast("AI 设置失败: " + e.message, true); }
+  }, 60);
+}
+
+document.querySelectorAll(".srcbtn").forEach(b => {
+  b.onclick = () => aiPush({ source: b.dataset.src });
+});
+$("btnAiEnable").onclick  = () => aiPush({ enabled: !(ai && ai.enabled) });
+$("btnAiRefresh").onclick = async () => { await aiLoad(true); toast("已刷新 AI 状态"); };
+$("btnAiSk").onclick    = () => aiPush({ show_skeleton: !(ai && ai.show_skeleton) });
+$("btnAiScore").onclick = () => aiPush({ show_score: !(ai && ai.show_score) });
+$("btnAiLabel").onclick = () => aiPush({ show_label: !(ai && ai.show_label) });
+$("btnAiHud").onclick   = () => aiPush({ show_hud: !(ai && ai.show_hud) });
+
+$("a_fps").addEventListener("input", e => {
+  $("av_fps").textContent = e.target.value + " fps";
+  aiPush({ ai_fps: Number(e.target.value) });
+});
+$("a_det_conf").addEventListener("input", e => {
+  $("av_det_conf").textContent = Number(e.target.value).toFixed(2);
+  aiPush({ det_conf: Number(e.target.value) });
+});
+$("a_det_interval").addEventListener("input", e => {
+  $("av_det_interval").textContent = e.target.value + " 帧";
+  aiPush({ det_interval: Number(e.target.value) });
+});
+$("a_kpt_margin").addEventListener("input", e => {
+  $("av_kpt_margin").textContent = Number(e.target.value).toFixed(2);
+  aiPush({ kpt_margin: Number(e.target.value) });
+});
+$("a_kpt_scale_max").addEventListener("input", e => {
+  $("av_kpt_scale_max").textContent = Number(e.target.value).toFixed(2);
+  aiPush({ kpt_scale_max: Number(e.target.value) });
+});
+$("a_roi_expand").addEventListener("input", e => {
+  $("av_roi_expand").textContent = Number(e.target.value).toFixed(2);
+  aiPush({ roi_expand: Number(e.target.value) });
+});
+$("a_fall").addEventListener("input", e => {
+  $("av_fall").textContent = Number(e.target.value).toFixed(2);
+  aiPush({ tune: { fall: Number(e.target.value) } });
+});
+$("a_run").addEventListener("input", e => {
+  $("av_run").textContent = Number(e.target.value).toFixed(2);
+  aiPush({ tune: { run: Number(e.target.value) } });
+});
+
 /* ---------------- 状态轮询 ---------------- */
 async function poll() {
   if (!base) return;
@@ -729,6 +1041,15 @@ async function poll() {
     $("sBackend").textContent = (st.backend || "?") + " / " + (st.device || "?");
     $("sSize").textContent    = (st.width || "?") + " × " + (st.height || "?");
     $("sFps").textContent     = (st.fps ?? "?") + " fps";
+    if (st.ai) {
+      ai = st.ai;
+      $("aiVFps").textContent = (st.fps ?? "?") + " fps";
+      aiSyncUI();
+    } else {
+      $("aiVFps").textContent = (st.fps ?? "?") + " fps";
+      $("sAiFps").textContent = "—";
+      $("sAiRes").textContent = "—";
+    }
     setDot(true, "已连接");
   } catch (e) {
     if (connected) setDot(false, "服务无响应");

@@ -72,6 +72,36 @@ except Exception as _e:                                   # pragma: no cover
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 BOUNDARY = "frame"
 
+# ------------------------------------------------------------------ 状态持久化
+# 把「上次用过的参数」存成一个 JSON（软件画面参数 + AI 参数），
+# 页面重连 / 服务重启后自动恢复。见 state_store.py。
+try:
+    if SCRIPT_DIR not in sys.path:
+        sys.path.insert(0, SCRIPT_DIR)
+    import state_store
+    STATE_FILE_DEFAULT = os.path.join(SCRIPT_DIR, "state.json")
+except Exception as _e:                                   # pragma: no cover
+    state_store = None
+    STATE_FILE_DEFAULT = None
+    _STATE_IMPORT_ERR = "%s: %s" % (type(_e).__name__, _e)
+else:
+    _STATE_IMPORT_ERR = ""
+
+# ------------------------------------------------------------------ 可选 AI 叠加
+# 同进程复用已经转好的 BGR 帧, 不需要"拉 MJPEG → 解码 → 推理 → 再编码"的第二趟。
+# 导入/模型缺失时静默降级, 完全不影响原有推流功能。
+try:
+    if SCRIPT_DIR not in sys.path:
+        sys.path.insert(0, SCRIPT_DIR)
+    from ai_overlay import AiOverlay
+except Exception as _e:                                   # pragma: no cover
+    AiOverlay = None
+    _AI_IMPORT_ERR = "%s: %s" % (type(_e).__name__, _e)
+else:
+    _AI_IMPORT_ERR = ""
+
+AI_OVERLAY = None        # 由 main() 创建; 编码线程只读
+
 # ------------------------------------------------------------------ 默认参数
 DEFAULT_PARAMS = {
     "brightness": 0,      # -100 .. 100        (加减偏移)
@@ -495,10 +525,20 @@ class FrameHub:
 #  画面参数 (线程安全)
 # ============================================================================
 class ParamStore:
-    def __init__(self):
+    def __init__(self, path=None):
         self._lock = threading.Lock()
+        self._path = path
         self._p = dict(DEFAULT_PARAMS)
         self._lut_cache = (None, None)     # (gamma, lut)
+        # 恢复上次保存的值（只认已知键：旧版本残留 / 手改坏的值都不影响启动）
+        saved = state_store.get(path, "params") if (state_store and path) else {}
+        n = 0
+        for k, v in saved.items():
+            if k in DEFAULT_PARAMS and isinstance(v, (int, float, bool)):
+                self._p[k] = v
+                n += 1
+        if n:
+            print("[params] 已恢复上次的 %d 项画面参数 (%s)" % (n, path))
 
     def get(self):
         with self._lock:
@@ -507,12 +547,22 @@ class ParamStore:
     def update(self, patch):
         with self._lock:
             self._p.update(patch)
-            return dict(self._p)
+            snap = dict(self._p)
+        self._save(snap)
+        return snap
 
     def reset(self):
         with self._lock:
             self._p = dict(DEFAULT_PARAMS)
-            return dict(self._p)
+            snap = dict(self._p)
+        # 重置 = 把存档也清掉，否则下次启动又“恢复”回来了
+        if state_store is not None and self._path:
+            state_store.replace(self._path, "params", snap)
+        return snap
+
+    def _save(self, snap):
+        if state_store is not None and self._path:
+            state_store.put(self._path, "params", snap)
 
     def gamma_lut(self, gamma):
         """缓存 gamma 查找表, 避免每帧重算 256 项。"""
@@ -709,6 +759,15 @@ class OpenCVCapture(threading.Thread):
             except queue.Empty:
                 continue
             p = self.params.get()
+            # ---- 可选 AI 叠加 ----
+            # 只在"画面源 = AI 标注"时才碰帧; 切回原图时这段开销为零。
+            _ai = AI_OVERLAY
+            if _ai is not None and _ai.active:
+                try:
+                    _ai.submit(frame)
+                    frame = _ai.draw(frame)
+                except Exception as _e:                   # noqa: BLE001
+                    print("[ai] 叠加异常: %s" % _e, file=sys.stderr)
             jpg = None
             try:
                 ok, buf = cv2.imencode(
@@ -1619,6 +1678,21 @@ FPGA_PRESETS = {
 }
 
 
+def _fpga_pp_off(fpga):
+    """关掉 FPGA 预处理（PP_EN=0），返回一句给页面看的描述。
+
+    预处理（Sobel/阈值/形态学）是给人看的艺术效果，AI 拿那种画面去检测
+    只会瞎猜，所以一旦要用 AI 标注就自动把预处理关掉。
+    """
+    if fpga is None:
+        return "跳过(FPGA I2C 未启用)"
+    try:
+        ok, msg = fpga.apply({"PP_EN": 0})
+        return "已关闭" if ok else ("失败: %s" % msg)
+    except Exception as e:                                   # noqa: BLE001
+        return "失败: %s" % e
+
+
 class FpgaI2C(object):
     """FPGA 寄存器堆的 I2C 访问。
 
@@ -1856,12 +1930,20 @@ class Handler(BaseHTTPRequestHandler):
                 st["device"] = self.args.device
                 st["port"] = self.args.port
                 st["python"] = sys.executable
+                st["ai"] = AI_OVERLAY.status() if AI_OVERLAY is not None else None
                 st["backends"] = {
                     "gi_gst": HAVE_GST_PY,
                     "cv2": HAVE_CV2,
                     "gst_launch": _have_cmd("gst-launch-1.0"),
                 }
                 return self._json(st)
+            if path == "/api/ai":
+                if AI_OVERLAY is None:
+                    msg = "AI 未启用: 启动时加 --ai"
+                    if _AI_IMPORT_ERR:
+                        msg += " (导入 ai_overlay 失败: %s)" % _AI_IMPORT_ERR
+                    return self._json({"ok": False, "error": msg}, 503)
+                return self._json(AI_OVERLAY.status())
             if path == "/api/controls":
                 return self._json(list_v4l2_controls(self.args.device,
                                                      self.args.v4l2ctl))
@@ -1934,6 +2016,16 @@ class Handler(BaseHTTPRequestHandler):
                                            self.args.v4l2ctl)
                 return self._json({"ok": ok, "message": msg},
                                   200 if ok else 500)
+            if path == "/api/ai":
+                if AI_OVERLAY is None:
+                    return self._json({"ok": False, "error": "AI 未启用 (启动时加 --ai)"}, 503)
+                out = AI_OVERLAY.apply(self._read_json())
+                # 切到 AI 标注（或重新启用 AI）时，自动关掉 FPGA 预处理：
+                # Sobel/阈值/形态学是给人看的，AI 拿那种画面去检测只会瞎猜。
+                # 只在“真的要用 AI”的时候写，免得用户单纯调参数也被改掉预处理。
+                if out.get("active"):
+                    out["pp_off"] = _fpga_pp_off(self.fpga)
+                return self._json({"ok": True, "ai": out})
             if path == "/api/fpga":
                 if self.fpga is None:
                     return self._json(
@@ -2134,11 +2226,44 @@ def main():
                     help="FPGA I2C 从机所在总线 (默认 9 = RK I2C9; 设 -1 关闭)")
     ap.add_argument("--fpga-addr", type=lambda s: int(s, 0), default=0x40,
                     help="FPGA I2C 从机地址 (默认 0x40)")
+    ap.add_argument("--ai", action="store_true",
+                    help="启用 AI 标注叠加(人体框/姿态骨架/危险动作); "
+                         "模型在 <ai-dir>/models 下, 缺失则自动降级")
+    ap.add_argument("--ai-dir", default=None,
+                    help="AI 代码与模型目录 (默认自动找 /root/rk/ai)")
+    ap.add_argument("--ai-fps", type=float, default=30.0,
+                    help="AI 推理帧率上限 (默认 30; 与视频帧率无关)")
+    ap.add_argument("--ai-det-model", default=None,
+                    help="检测模型路径 (默认 <ai-dir>/models/yolov8n.rknn)")
+    ap.add_argument("--ai-pose-model", default=None,
+                    help="姿态模型路径 (默认 <ai-dir>/models/yolov8n-pose-hybrid.rknn)")
+    ap.add_argument("--ai-source", default="raw", choices=["raw", "ai"],
+                    help="开机默认画面源 raw=原图 / ai=AI 标注 (网页上可随时切)")
+    ap.add_argument("--ai-kpt-margin", type=float, default=0.15,
+                    help="一级框空间约束: 关节只保留在人体框 ± 该比例内(默认 0.15, <0=不限); "
+                         "二级关键点与三级动作判定同时生效")
+    ap.add_argument("--ai-kpt-max-dist", type=float, default=1.2,
+                    help="距框中心门限(挡鬼点主力): 关节到框中心不得超过该值×(框对角/2), "
+                         "默认 1.2, 0=关闭")
+    ap.add_argument("--ai-det-interval", type=int, default=2,
+                    help="一级检测跳帧(默认 2 = 每两帧检测一次); 1=每帧都检测(最准最慢), "
+                         "调大可明显提高 AI 帧率")
+    ap.add_argument("--ai-copy-frame", action="store_true",
+                    help="推理前拷一份整帧(更干净但多 ~2.5ms/帧; 默认不拷)")
+    ap.add_argument("--ai-zone", default="",
+                    help="越界警戒区, 归一化坐标 例 '0.2,0.6;0.8,0.6;0.8,1;0.2,1'")
     ap.add_argument("--verbose", action="store_true", help="打印每条 HTTP 日志")
+    ap.add_argument("--state-file", default=STATE_FILE_DEFAULT,
+                    help="参数存档路径 (默认 同目录 state.json; 传空字符串=不保存)")
     args = ap.parse_args()
 
     hub = FrameHub()
-    params = ParamStore()
+    # 参数存档：页面重连 / 服务重启后自动恢复上次的取值
+    state_file = (args.state_file or "").strip() or None
+    if state_file and state_store is None:
+        print("[state] 持久化不可用: %s" % _STATE_IMPORT_ERR, file=sys.stderr)
+        state_file = None
+    params = ParamStore(state_file)
 
     # 本板是 8 核异构: cpu0-3 = Cortex-A53@1.92G, cpu4-7 = Cortex-A72@2.11G。
     # 实测同一段 JPEG 编码在小核上 21.8fps、大核上 41.4fps, 差将近一倍,
@@ -2171,6 +2296,42 @@ def main():
         cap = TestCapture(hub, params, args)
     else:
         cap = GstCapture(hub, params, args)
+
+    # ---- 可选: AI 叠加 (必须在 cap.start() 之前就位, 好让第一帧就能画) ----
+    global AI_OVERLAY
+    if args.ai:
+        if AiOverlay is None:
+            print("[ai] 无法启用: %s" % (_AI_IMPORT_ERR or "ai_overlay 不可用"),
+                  file=sys.stderr)
+        else:
+            _zone = []
+            if args.ai_zone:
+                try:
+                    for _pt in args.ai_zone.split(";"):
+                        _x, _y = _pt.split(",")
+                        _zone.append((float(_x), float(_y)))
+                except Exception:
+                    print("[ai] --ai-zone 解析失败, 已忽略", file=sys.stderr)
+            AI_OVERLAY = AiOverlay(ai_dir=args.ai_dir,
+                                   det_model=args.ai_det_model,
+                                   pose_model=args.ai_pose_model,
+                                   ai_fps=args.ai_fps,
+                                   kpt_margin=args.ai_kpt_margin,
+                                   kpt_scale_max=args.ai_kpt_max_dist,
+                                   det_interval=args.ai_det_interval,
+                                   copy_frame=args.ai_copy_frame,
+                                   source=args.ai_source,
+                                   zone=_zone,
+                                   state_path=state_file,
+                                   verbose=args.verbose)
+            AI_OVERLAY.start()
+            print("[ai] AI 叠加已启用: source=%s  %.1f fps  (网页上可切换画面源)"
+                  % (AI_OVERLAY.source, AI_OVERLAY.ai_fps))
+            # 存档里若上次就是「AI 标注」，启动时同样把 FPGA 预处理关掉
+            if AI_OVERLAY.active and args.fpga_bus is not None and args.fpga_bus >= 0:
+                print("[ai] 自动关闭 FPGA 预处理: %s"
+                      % _fpga_pp_off(FpgaI2C(args.fpga_bus, args.fpga_addr)))
+
     cap.start()
 
     Handler.hub = hub

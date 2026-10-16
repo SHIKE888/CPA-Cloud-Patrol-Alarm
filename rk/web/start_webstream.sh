@@ -63,8 +63,20 @@ echo "   端口   : $PORT"
 echo "   地址   : http://${LISTEN_IP:-<本机IP>}:$PORT/"
 echo "   加速   : C 色彩转换 $ACCEL"
 echo "   流水线 : 采集1线程 / 转换4线程 / 编码3线程, 默认绑大核"
+
+# ---- 可选: AI 标注叠加 ----
+# AI=1 时启用(人体框 / 姿态骨架 / 危险动作), 画面源在网页顶栏与 AI 页签里切。
+# AI 是挂在编码线程上的, 切回"原图"就没有额外开销。
+AI_ARGS=""
+if [ "${AI:-0}" = "1" ]; then
+    AI_ARGS="--ai --ai-fps ${AI_FPS:-30} --ai-source ${AI_SRC:-raw} --ai-kpt-margin ${AI_MARGIN:-0.15} --ai-kpt-max-dist ${AI_MAXDIST:-1.2} --ai-det-interval ${AI_INTERVAL:-2}"
+    [ -n "${AI_ZONE:-}" ] && AI_ARGS="$AI_ARGS --ai-zone ${AI_ZONE}"
+    echo "   AI     : 已启用 (画面源 ${AI_SRC:-raw}, AI ${AI_FPS:-30} fps, 关节范围 ±${AI_MARGIN:-0.15}, 检测间隔 ${AI_INTERVAL:-2})"
+else
+    echo "   AI     : 未启用 (加 AI=1 可开启人体框/骨架/危险动作叠加)"
+fi
 echo "=============================================================="
 
 # -u: 关掉 python 的 stdout 块缓冲。重定向到日志文件时 stdout 不是 tty,
 #     不关缓冲的话启动横幅(含 FPGA I2C 探测结果)会迟迟不落盘, 不好排查。
-exec "$PYTHON" -u "$DIR/mipi_webstream.py" --device "$DEV" --port "$PORT" "$@"
+exec "$PYTHON" -u "$DIR/mipi_webstream.py" --device "$DEV" --port "$PORT" $AI_ARGS "$@"
