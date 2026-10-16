@@ -148,7 +148,7 @@ module jpeg_regfile #(
     reg [2:0]  r_fps_div;
     reg [6:0]  r_roi_pct;
     reg [7:0]  r_cam_trig;
-    reg [1:0]  r_res_mode;     // V21: 0=1080p60, 1=4K30
+    reg [1:0]  r_res_mode;     // V21: 0=1080p60, 1=4K30, 2=4K25
     reg        res_chg;        // V21: 模式寄存器写入脉冲 (自清)
     reg [15:0] s_cam_wr_cnt;
     reg        s_cam_busy;
@@ -214,7 +214,18 @@ module jpeg_regfile #(
             r_fps_div    <= 3'd1;      // 原速
             r_roi_pct    <= 7'd100;    // 全画幅
             r_cam_trig   <= 8'd0;
-            r_res_mode   <= 2'd0;      // V21: 默认 1080p60
+            // ★★ V26 实验(2026-10-16): 默认改成 2'd2 = 以 **4K25 直接启动**。
+            //   为什么要试这个: 两轮实测显示 "切到 binning 能成功、切到 4K 不能"
+            //   (写 RES_MODE=2 后 RX 必死, 而写 RES_MODE=0 总能把 RX 拉回来)
+            //   => 怀疑是 **4K 模式本身** 而不是切换机制的问题。
+            //   另外厂商 PCIe 工程 imx415_pcie_top.v 里写的是
+            //       reg_cam_mode <= 2'd1;   // Default: 4K@30fps
+            //   也就是他们本来就是"上电直接以 4K 启动", 运行时热切换未必验证过。
+            //   所以让 FPGA 上电就用 4K 初始化表(主表会带 MODE=1 选 all-pixel),
+            //   一次性验证 4K 的表/几何/链路能不能跑通。
+            //   验证完想回到 1080p: 写 RES_MODE=0 即可(实测这条恢复路径是通的),
+            //   或把这一行改回 2'd0 重新编译。
+            r_res_mode   <= 2'd2;      // V26: 实验 —— 默认 4K25 启动
             res_chg      <= 1'b0;
             // 注: r_heartbeat 不在这里复位, 它由上面那个自由运行计数块统一驱动
         end else begin
