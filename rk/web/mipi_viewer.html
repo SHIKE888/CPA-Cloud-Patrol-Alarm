@@ -199,18 +199,6 @@
         <div class="row"><label>有效画面</label>
           <input type="range" id="f_roi" min="25" max="100" step="1" value="100">
           <span class="val" id="fv_roi">100%</span></div>
-
-        <p class="hint">
-          曝光/增益由 FPGA 通过 I2C 直接写 IMX415 寄存器（曝光 = (2283−SHR0)×7.3µs）。<br>
-          白平衡是 FPGA 里的数字 R/B 增益 —— IMX415 是 RAW sensor 没有白平衡寄存器，
-          本工程的 ISP AWB 又是全自动的，手动白平衡只能在这一级做。<br>
-          <b>输出格式</b>下拉框统一切换分辨率与帧率：会同时写 FPGA 的 RES_MODE(0xE0) 与
-          FPS_DIV(0xC7)，再把 RK 侧采集格式改掉并重开采集（画面会断 1~2 秒）。<br>
-          • <b>4K@25</b>：链路载荷 82.9%，实测可切可跑（切完会重新锁 D-PHY/RX）。<br>
-          • <b>1080P@60</b>：载荷 49.8%，默认档，最稳。<br>
-          • <b>720P@90</b>：载荷只有 33.2%，但 FPGA 侧还没做 720p 裁剪与 90fps 的 VTC 时序，
-          所以选它会直接提示“RTL 未实现”而不会真的切。
-        </p>
       </div>
 
       <!-- ======== 预处理 ======== -->
@@ -316,9 +304,8 @@
           <button class="ghost" id="btnAiRefresh">刷新状态</button>
         </div>
 
-        <div class="row"><label title="两档都是同一套 640 模型（精度最高）；区别是“跑一级检测的那一帧要不要同时跑姿态”。实测降小模型会漏检/丢关节，所以不建议">模型档位</label>
+        <div class="row"><label title="两档都是同一套 640 模型（精度最高）；区别是“跑一级检测的那一帧要不要同时跑姿态”">模型档位</label>
           <div id="aiPresets" style="flex:1;display:flex;gap:6px"></div></div>
-        <p class="hint" id="aiPresetNote" style="margin:-2px 0 6px">—</p>
 
         <div class="row"><label>AI 帧率</label>
           <input type="range" id="a_fps" min="1" max="30" step="1" value="30">
@@ -384,21 +371,6 @@
         <div class="scroll" id="aiEvents" style="max-height:140px;font-size:12px">
           <p class="hint">暂无</p>
         </div>
-
-        <p class="hint">AI 与视频帧率互相独立：这里调的是 <b>AI 推理帧率</b>，
-          画面仍按原始帧率推流（上方「YOLO 帧率」= 实际推理帧率，
-          「一级检测帧率」是跳帧后检测真正执行的频率）。切回「原图」会立即停掉推理与绘制，CPU 占用回到与以前一样；
-          标注是<b>直接叠在推流帧上</b>的，不需要第二路 MJPEG，也没有二次编解码。</p>
-        <p class="hint">标注里的动作名用<b>英文</b>（如 Fall / Climb）—— opencv 的字体画不了中文，
-          传中文进去只会渲染成一串 “???”，所以画面上一律只用英文，网页列表里才带中文对照。
-          一级人体框会约束后面两级：<b>关节范围</b>以外的关节直接当看不见
-          （不画、也不参与动作判定），<b>ROI 外扩</b>越小姿态越只盯着人看；
-          两者都能很好地滤掉远处的误识别骨架与误报。</p>
-        <p class="hint">参数会<b>自动保存</b>（服务端 <code>state.json</code>）：刷新页面、换浏览器、
-          甚至重启服务后，上次用过的画面参数与 AI 设置都会自动恢复。
-          切到「AI 标注」时 FPGA 预处理（Sobel/阈值/形态学）会<b>自动关闭</b> ——
-          那种画面给人看可以，AI 拿去做检测只会瞎猜。</p>
-      </div>
     </div>
 
     <!-- ---------------- FPGA 通信状态（常显） ---------------- -->
@@ -913,7 +885,6 @@ function aiPresets(ai) {
   const have = list.filter(p => p.exists);
   if (!have.length) {
     box.innerHTML = '<span class="hint" style="margin:0">无可用模型</span>';
-    $("aiPresetNote").textContent = "—";
     return;
   }
   box.innerHTML = have.map(p =>
@@ -922,11 +893,6 @@ function aiPresets(ai) {
   box.querySelectorAll("[data-preset]").forEach(b => {
     b.onclick = () => aiPush({ preset: b.dataset.preset });
   });
-  const cur = have.find(p => p.active);
-  const m = (ai && ai.models) || {};
-  $("aiPresetNote").textContent = cur
-    ? (cur.note || "") + (m.det_size ? "　|　当前 det " + m.det_size + " / pose " + m.pose_size : "")
-    : "切换中…";
 }
 
 function aiSyncUI() {
