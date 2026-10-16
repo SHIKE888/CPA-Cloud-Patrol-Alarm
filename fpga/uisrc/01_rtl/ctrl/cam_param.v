@@ -85,7 +85,7 @@ module cam_param #(
 	wire [19:0] exp_cl = (exp_ev == 20'd0) ? 20'd1 :
 	                     (exp_ev > exp_max) ? exp_max : exp_ev;
 
-	assign o_rt_exp = VMAX - exp_cl;      // SHR0 ∈ [SHR0_MIN, VMAX-1]
+	wire  [19:0] exp_calc = VMAX - exp_cl;   // 组合算出来的 SHR0
 
 	//------------------------------------------------------------------ 增益
 	wire [7:0] gain_use = (i_gain == 8'd0)  ? GAIN_DEFAULT :
@@ -111,7 +111,7 @@ module cam_param #(
 	//------------------------------------------------------------------- 看门狗
 	// 参数下发链路一旦卡死, 网页就再也改不了曝光/增益, 而 FPGA 没有可用的
 	// 软复位(0x0A SOFT_RST 是死寄存器) => 只能靠这里兜底自恢复。
-	// busy 超过 ~1ms(25MHz x 25000) 还没等到 ae_done 就放弃本轮。
+	// busy 超过 WD_MAX 还没等到 ae_done 就放弃本轮。
 	// 放弃时按"已处理"记账, 以免 need_send 恒真而反复重发打爆 I2C;
 	// 用户下次改参数时会重新发起一轮。
 	// 20ms 的依据(2026-10-16 实测): 一轮参数下发 = 7 个寄存器 x ~385us
@@ -129,9 +129,17 @@ module cam_param #(
 	end
 	wire wd_expire = (wd_cnt == WD_MAX);
 
+	// ★★ 修复(2026-10-16): 下发期间把 o_rt_exp "钉"在 held_exp 上。
+	//   网页把 20 位曝光拆成 3 个字节逐个写 I2C, 而 ui_cfg_imx415 的 AE 链是每写
+	//   一个寄存器就组合取一次当前值 => 链正好跨在那 3 次写中间时, 会把新旧字节
+	//   混起来写进传感器(实测出现过设了 100 却连续几十秒黑屏)。
+	//   钉住之后一轮内恒为定值; 若期间又来新值, 本轮结束后
+	//   exp_calc != exp_d 会自然再发起一轮, 所以只需要多一轮就收敛。
+	assign o_rt_exp = busy ? held_exp : exp_calc;
+
 	// 参数与「上一次已生效的值」不同 -> 需要重发
 	//   (i_trig 变化也走这条路, 用于强制刷新, 比如上电后先把参数灌一次)
-	wire need_send = (o_rt_exp != exp_d) | (gain_use != gain_d) | (i_trig != trig_d);
+	wire need_send = (exp_calc != exp_d) | (gain_use != gain_d) | (i_trig != trig_d);
 
 	assign o_busy = busy;
 
