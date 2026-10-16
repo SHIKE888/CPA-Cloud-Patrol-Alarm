@@ -1610,21 +1610,47 @@ def pipeline_set_fmt(w, h, media_dev=MEDIA_DEV, media_ctl="media-ctl"):
 #
 #  增益: 0x3090 取值 0..100, 每步 0.3dB (0x64=100 -> 30dB)
 # ============================================================================
-CAM_VMAX     = 2283
-CAM_T_LINE_US = 7.3
+# V24(2026-10-16): VMAX / 行周期跟传感器读出模式走。
+#   曝光行数 = VMAX - SHR0, VMAX 用错曝光就差一倍。
+#     1080p (2x2 binning): VMAX=2283, 行周期 542/74.25MHz = 7.30us
+#     4K    (all-pixel)  : VMAX=4503, 行周期 533/74.25MHz = 7.18us
+#   （对应 ui_imx415_reg.v 的 0x3024/25 与 0x3028, 由 RES_MODE 选表）
+CAM_VMAX_1080      = 2283
+CAM_T_LINE_US_1080 = 7.30
+CAM_VMAX_4K        = 4503
+CAM_T_LINE_US_4K   = 7.18
+
+# 兼容旧引用 (默认按 1080p)
+CAM_VMAX      = CAM_VMAX_1080
+CAM_T_LINE_US = CAM_T_LINE_US_1080
 
 
-def cam_shr0_from_ms(ms):
+def cam_mode_params(regs):
+    """按 FPGA 的 RES_MODE 返回 (VMAX, 行周期us)。RES_MODE: 0=1080p60, 1=4K30, 2=4K25"""
+    try:
+        rm = int(regs.get("RES_MODE", 0) or 0)
+    except Exception:
+        rm = 0
+    if rm in (1, 2):
+        return CAM_VMAX_4K, CAM_T_LINE_US_4K
+    return CAM_VMAX_1080, CAM_T_LINE_US_1080
+
+
+def cam_shr0_from_ms(ms, vmax=None, t_line=None):
     """曝光时间(ms) -> SHR0 寄存器值"""
-    rows = int(round(float(ms) * 1000.0 / CAM_T_LINE_US))
-    rows = max(1, min(rows, CAM_VMAX - 1))
-    return CAM_VMAX - rows
+    vmax = CAM_VMAX if vmax is None else int(vmax)
+    t_line = CAM_T_LINE_US if t_line is None else float(t_line)
+    rows = int(round(float(ms) * 1000.0 / t_line))
+    rows = max(1, min(rows, vmax - 1))
+    return vmax - rows
 
 
-def cam_ms_from_shr0(shr0):
+def cam_ms_from_shr0(shr0, vmax=None, t_line=None):
     """SHR0 -> 曝光时间(ms)"""
-    rows = max(1, CAM_VMAX - int(shr0))
-    return rows * CAM_T_LINE_US / 1000.0
+    vmax = CAM_VMAX if vmax is None else int(vmax)
+    t_line = CAM_T_LINE_US if t_line is None else float(t_line)
+    rows = max(1, vmax - int(shr0))
+    return rows * t_line / 1000.0
 
 
 def cam_phys(regs, status=None):
@@ -1650,10 +1676,12 @@ def cam_phys(regs, status=None):
         shr0 = (pick("CAM_EXP_L", 0, 255, 0) |
                 (pick("CAM_EXP_M", 0, 255, 0) << 8) |
                 (pick("CAM_EXP_H", 0, 15, 0) << 16))
+        # V24: 曝光换算要跟传感器读出模式走 (4K 的 VMAX 是 4503, 不是 2283)
+        vmax, t_line = cam_mode_params(regs)
         # SHR0 = 0 表示“保持初始化表的值”, 按默认 8 报
-        if not (1 <= shr0 <= CAM_VMAX - 1):
+        if not (1 <= shr0 <= vmax - 1):
             shr0 = 8
-        ms = cam_ms_from_shr0(shr0)
+        ms = cam_ms_from_shr0(shr0, vmax, t_line)
 
         # CAM_GAIN = 0 表示“保持初始化表的值” (0x30 -> 14.4dB)
         gain = pick("CAM_GAIN", 1, 100, 0)
@@ -1665,7 +1693,7 @@ def cam_phys(regs, status=None):
             "ev":          pick("EV_BIAS", 0, 15, 8) - 8,
             # 基准帧率跟分辨率模式走: 1080p=60, 4K=30 (V21 模式表)
             "fps":         round(mode_base_fps(regs) / pick("FPS_DIV", 1, 8, 1), 1),
-            "res_mode":    pick("RES_MODE", 0, 1, 0),
+            "res_mode":    pick("RES_MODE", 0, 2, 0),
             "wb_r_pct":    round(pick("WB_R", 1, 255, 128) / 1.28, 0),
             "wb_b_pct":    round(pick("WB_B", 1, 255, 128) / 1.28, 0),
             "roi_pct":     pick("ROI_PCT", 25, 100, 100),
@@ -1787,7 +1815,12 @@ class FpgaI2C(object):
             kl = str(k).strip().lower()
             # ---- 物理量 -> 寄存器 (网页用的是物理量, 更好懂) ----
             if kl in ("cam_exp_ms", "exp_ms"):
-                s = cam_shr0_from_ms(v)
+                # V24: 曝光换算要跟模式走 —— 4K 的 VMAX=4503/行周期7.18us,
+                #      1080p 是 2283/7.30us。用错的话设 16ms 实际只得到 8ms。
+                _vm, _tl = ((CAM_VMAX_4K, CAM_T_LINE_US_4K)
+                            if int(self.args.height) > 1080
+                            else (CAM_VMAX_1080, CAM_T_LINE_US_1080))
+                s = cam_shr0_from_ms(v, _vm, _tl)
                 flat["CAM_EXP_L"] = s & 0xFF
                 flat["CAM_EXP_M"] = (s >> 8) & 0xFF
                 flat["CAM_EXP_H"] = (s >> 16) & 0x0F

@@ -430,6 +430,28 @@ PH1_LOGIC_ODDR X_cam_clk (
 //  现在改由 cam_param 从寄存器堆 (I2C 0x40) 取参数, 完全可控,
 //  而且网页可以实时调。ui_ae_set 不再例化。
 //=============================================================================
+//=============================================================================
+//  V24 (2026-10-16): 传感器读出模式 + 全表重载请求
+//
+//  ⚠ 这两个信号在文件**更早**的位置 (ui_cfg_imx415 例化) 就要用到, 所以声明
+//     必须放在这里 —— 否则会被 Verilog 隐式声明成 1bit wire, 而 ui_cfg 那边
+//     期望 2bit 的 mode, 编译只会报一条 HDL-7225 位宽警告, 到板上才发现模式
+//     根本没传过去。(和之前 S_pp_* 下移踩过的坑一模一样。)
+//     真正的产生逻辑在下面 "V24: 分辨率切换时还要做两件事" 那一节。
+//=============================================================================
+wire [1:0] S_cam_mode_24;
+wire       S_full_reload;
+
+// ---- 传感器读出模式 -> 24MHz 域 (ui_cfg_imx415 挂在 S_clk_24m) ----
+//   RES_MODE: 0=1080p60, 1=4K30, 2=4K25; 传感器的 MODE 只要 0=1080p / 1=4K
+wire [1:0] S_sensor_mode = S_is_4k ? 2'd1 : 2'd0;
+reg  [1:0] S_cam_mode_24_r;
+always @(posedge S_clk_24m or negedge S_pll_lock) begin
+	if (!S_pll_lock) S_cam_mode_24_r <= 2'd0;
+	else             S_cam_mode_24_r <= {S_cam_mode_24_r[0], S_sensor_mode};
+end
+assign S_cam_mode_24 = S_cam_mode_24_r;
+
 wire [19:0] S_cam_exp;
 wire [7:0]  S_cam_gain;
 wire [3:0]  S_cam_ev;
@@ -442,12 +464,15 @@ wire [19:0] S_rt_exp;
 wire        S_ae_cfg_done_25;   // 24MHz 域同步回来的“本轮写完”
 
 cam_param #(
-	.VMAX         (20'd2283),   // ui_imx415_reg.v 0x3024/25/26
-	.SHR0_DEFAULT (20'd8),      // 初始化表的 SHR0
-	.GAIN_DEFAULT (8'h30)       // 初始化表的 0x3090
+	.SHR0_DEFAULT (20'd8)       // 初始化表的 SHR0 (两个模式都是 8)
 ) u_cam_param (
 	.clk        (I_sysclk_25m),
 	.rst_n      (S_pll_lock),
+	// V24: 帧长/增益初值跟传感器读出模式走
+	//   binning: VMAX=2283 行, 行周期 7.30us, GAIN_PGC_0 初值 0x30
+	//   4K     : VMAX=4503 行, 行周期 7.18us, GAIN_PGC_0 初值 0x10
+	.i_vmax         (S_is_4k ? 20'd4503        : 20'd2283),
+	.i_gain_default (S_is_4k ? 8'h10           : 8'h30 ),
 	.i_exp      (S_cam_exp),
 	.i_gain     (S_cam_gain),
 	.i_ev_bias  (S_cam_ev),
@@ -507,7 +532,10 @@ ui_cfg_imx415#(
 X_ui_cfg_imx415(
 	.I_clk			(S_clk_24m		),  
 	.I_rst_n		(S_pll_lock		),  
+	// V24: 传感器读出模式 + 整表重载
 	.I_ae_req		(S_ae_req_24	),
+	.I_cam_mode		(S_cam_mode_24	),
+	.I_full_reload	(S_full_reload	),
 	.I_ae_data		(S_gain_24_s2	),
 	.I_rt_exp		(S_exp_24_s2	),
 	.O_cam_scl		(O_cam_scl		), 
@@ -542,7 +570,10 @@ X_ui_cfg_imx415(
 //   - 本块必须放在**所有使用点之前**(Verilog 先声明后使用)。之前 S_pp_*
 //     下移踩过这个坑(被隐式声明成 1bit), 勿再移动。
 //=============================================================================
-localparam [23:0] RES_RST_CYCLES = 24'd2_000_000;   // 80 ms @ 25MHz
+// 300 ms @ 25MHz。为什么要这么长: 切模式不只受复位窗控制, 还要等
+//   ui_cfg_imx415 把传感器**整张初始化表重写一遍**(201 个寄存器 x ~385us ≈ 78ms),
+//   再加上传感器自己重新锁相、D-PHY RX 重新锁定、写侧重新攒够几帧。
+localparam [23:0] RES_RST_CYCLES = 24'd7_500_000;   // 300 ms @ 25MHz
 // 写侧(含 ISP/预处理)一起复位。若万一某版 ISP 的复位恢复时间不可接受,
 // 把这一个常量置 0 即可退回"只复位读侧"的旧行为, 不用改别的地方。
 localparam        RES_RST_TX_SIDE = 1'b1;
@@ -578,13 +609,62 @@ end
 wire S_res_rstn_rx   = RES_RST_TX_SIDE ? ~S_res_win_rx[1]   : 1'b1;
 wire S_res_rstn_byte = ~S_res_win_byte[1];
 
+//=============================================================================
+//  V24 (2026-10-16): 分辨率切换时还要做两件事 —— 否则 4K 根本出不来
+//
+//  (1) 让传感器换读出模式。1080p 跑的是 2x2 binning, 4K 要 all-pixel; 差的
+//      27 个寄存器(0x3020/21/22、0x3024/25 VMAX、0x3028 HMAX、0x3033 SYS_MODE
+//      以及 0x4004..0x4074 整套 MIPI D-PHY 发送时序)**只在主表相位才会被写**,
+//      所以必须请 ui_cfg_imx415 把整张表重跑一遍。
+//  (2) D-PHY RX 必须重新锁定: 4K 改了那套 D-PHY 时序寄存器, lane 速率变了。
+// ============================================================================
+// ---- 延时 ~32 拍再发“全表重载”, 并且把脉宽展到 16 拍 ----
+//   延时: 让上面那个 24MHz 同步器先把新的 mode 稳住, 否则重载出去了 mode 还没到。
+//   展宽: 25MHz 域 1 拍脉冲跨到 24MHz 域会被整拍蹭掉, 必须拉长。
+reg [6:0] S_res_evt;
+always @(posedge I_sysclk_25m or negedge S_pll_lock) begin
+	if (!S_pll_lock)               S_res_evt <= 7'd0;
+	else if (S_res_chg_d == 2'b01) S_res_evt <= 7'd48;      // 32 延时 + 16 展宽
+	else if (S_res_evt != 7'd0)    S_res_evt <= S_res_evt - 7'd1;
+end
+wire S_full_reload25 = (S_res_evt != 7'd0) && (S_res_evt <= 7'd16);
+
+reg [2:0] S_reload_sync24;
+always @(posedge S_clk_24m or negedge S_pll_lock) begin
+	if (!S_pll_lock) S_reload_sync24 <= 3'b000;
+	else             S_reload_sync24 <= {S_reload_sync24[1:0], S_full_reload25};
+end
+// S_full_reload 的声明已上移到 ui_cfg_imx415 例化之前 (见 V24 那一节)
+assign S_full_reload = (S_reload_sync24[2:1] == 2'b01);   // 24MHz 域的单拍脉冲
+
+// ---- D-PHY RX 复位: 必须用**独立、固定长度**的脉冲, 不能依赖任何在
+//      S_hs_rx_clk 上采样的同步器 —— 因为复位期间它就是把自己那个时钟掐掉
+//      了, 依赖它的同步器会把自己锁死(只能重烧 bit 才能救)。
+//      所以这里只在 25MHz 域计数, 与 S_hs_rx_clk 完全无关。
+reg [23:0] S_dphy_rx_rst_cnt;
+reg        S_dphy_rx_rst = 1'b0;
+always @(posedge I_sysclk_25m or negedge S_pll_lock) begin
+	if (!S_pll_lock) begin
+		S_dphy_rx_rst     <= 1'b0;
+		S_dphy_rx_rst_cnt <= 24'd0;
+	end else if (S_res_chg_d == 2'b01) begin
+		S_dphy_rx_rst     <= 1'b1;
+		S_dphy_rx_rst_cnt <= 24'd1_500_000;   // 60 ms
+	end else if (S_dphy_rx_rst_cnt != 24'd0) begin
+		S_dphy_rx_rst_cnt <= S_dphy_rx_rst_cnt - 24'd1;
+	end else begin
+		S_dphy_rx_rst     <= 1'b0;
+	end
+end
+
 //mipi_rx
 mipi_dphy_rx_over_lvds_wrapper#(
     .DEVICE           ( "PH1"		 ),
     .LANE_NUM         ( 4    		 )
 )X_mipi_dphy_rx_over_lvds_wrapper(
     .I_lp_clk         ( S_clk_70m    ),
-    .I_rst            ( ~S_pll_lock  ),
+    // V24: 分辨率切换时也要复位 D-PHY RX (4K 改了 D-PHY 发送时序, lane 速率变)
+    .I_rst            ( S_dphy_rx_rst | ~S_pll_lock  ),
 
     .I_mipi_clk_p     ( I_clk_hs_p   ),
     .I_mipi_data_hs_p ( I_data_hs_p  ),

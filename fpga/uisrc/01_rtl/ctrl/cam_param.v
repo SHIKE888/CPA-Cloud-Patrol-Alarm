@@ -27,14 +27,23 @@
 //  2026-10-15: 原来 I_ae_req 由厂商的 ui_ae_set 驱动, 而它依赖 VPI 探针
 //  (outprobe0), 该探针的初值在工程里是 0x50 但一旦 VPI 没被 JTAG 写过就不
 //  确定。现在改由本模块驱动, 参数完全可控且可从网页设置。
+//
+//  2026-10-16 (V24): **VMAX 和增益初值改成运行时输入**, 因为传感器现在能切
+//  读出模式, 两个模式的帧长差很多:
+//      1080p (2x2 binning): VMAX = 2283 行, 行周期 542/74.25MHz = 7.3us
+//      4K    (all-pixel)  : VMAX = 4503 行, 行周期 533/74.25MHz = 7.18us
+//  曝光行数 = VMAX - SHR0, 所以 VMAX 算错的话曝光会差一倍。
+//  增益初值也跟着变: 4K 灵敏度高, 初始化表只给 0x10 (4.8dB), binning 给 0x30。
 //==============================================================================
 module cam_param #(
-	parameter [19:0] VMAX         = 20'd2283,   // 帧长(行)
-	parameter [19:0] SHR0_DEFAULT = 20'd8,      // 初始化表的 SHR0
-	parameter [7:0]  GAIN_DEFAULT = 8'h30       // 初始化表的 0x3090
+	parameter [19:0] SHR0_DEFAULT = 20'd8       // 初始化表的 SHR0 (两个模式都是 8)
 )(
 	input  wire        clk,
 	input  wire        rst_n,
+
+	// ---- V24: 跟传感器读出模式走的常量 ----
+	input  wire [19:0] i_vmax,       // 帧长(行): binning 2283, 4K 4503
+	input  wire [7:0]  i_gain_default,// 初始化表的 0x3090: binning 0x30, 4K 0x10
 
 	// ---- 来自寄存器堆 (0xC0 起) ----
 	input  wire [19:0] i_exp,        // SHR0, 0 = 用初始化表的默认
@@ -54,8 +63,8 @@ module cam_param #(
 );
 
 	//------------------------------------------------------------------ 曝光换算
-	wire [19:0] exp_base = (i_exp == 20'd0) ? (VMAX - SHR0_DEFAULT)
-	                                        : (VMAX - i_exp);
+	wire [19:0] exp_base = (i_exp == 20'd0) ? (i_vmax - SHR0_DEFAULT)
+	                                        : (i_vmax - i_exp);
 
 	// EV 倍数: 桶形移位, 不用动态移位量以免综合出大逻辑
 	wire [2:0]  ev_mag = (i_ev_bias >= 4'd8) ? i_ev_bias[2:0]
@@ -81,14 +90,14 @@ module cam_param #(
 	//     注意: 基准曝光已经贴到上限时, +EV 本来就"没有余量"可加(只会被夹住),
 	//     这是正确行为 —— 想要 +EV 提亮需要同时提增益, 那是另一件事。
 	localparam [19:0] SHR0_MIN = 20'd8;
-	wire [19:0] exp_max = VMAX - SHR0_MIN;                 // 2275
+	wire [19:0] exp_max = i_vmax - SHR0_MIN;               // binning 2275 / 4K 4495
 	wire [19:0] exp_cl = (exp_ev == 20'd0) ? 20'd1 :
 	                     (exp_ev > exp_max) ? exp_max : exp_ev;
 
-	wire  [19:0] exp_calc = VMAX - exp_cl;   // 组合算出来的 SHR0
+	wire  [19:0] exp_calc = i_vmax - exp_cl;   // 组合算出来的 SHR0
 
 	//------------------------------------------------------------------ 增益
-	wire [7:0] gain_use = (i_gain == 8'd0)  ? GAIN_DEFAULT :
+	wire [7:0] gain_use = (i_gain == 8'd0)  ? i_gain_default :
 	                      (i_gain > 8'd100) ? 8'd100 : i_gain;
 
 	//------------------------------------------------------------------ 变化检测
@@ -146,7 +155,7 @@ module cam_param #(
 	always @(posedge clk or negedge rst_n) begin
 		if (!rst_n) begin
 			o_ae_req  <= 1'b0;
-			o_ae_gain <= GAIN_DEFAULT;
+			o_ae_gain <= i_gain_default;
 			o_wr_cnt  <= 16'd0;
 			exp_d     <= 20'd0;
 			gain_d    <= 8'd0;

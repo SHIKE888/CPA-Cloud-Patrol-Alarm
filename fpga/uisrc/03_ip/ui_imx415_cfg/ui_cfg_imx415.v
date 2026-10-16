@@ -39,6 +39,12 @@ parameter	 CLK_DIV  = 16'd999
 input  wire             I_clk,  //系统时钟输入
 input  wire             I_rst_n,  //系统复位输入
 input  wire             I_ae_req,//摄像头参数下发请求 (一拍脉冲)
+// V24: 传感器读出模式 —— 0=1080p(2x2 binning), 1=4K(all-pixel), 2=720p。
+//   直接透给下面的 ui_imx415reg, 让它选对应的寄存器表。
+//   ⚠ 切模式必须配 I_full_reload, 否则新表不会被写下去 (> 见下面的重载分支)。
+input  wire [1:0]       I_cam_mode,
+// V24: 请求把整张初始化表重写一遍 (分辨率切换时用)
+input  wire             I_full_reload,
 input  wire	 [7:0] 		I_ae_data,//4 个增益通道的值
 input  wire [19:0]      I_rt_exp,//SHR0 曝光行数 (20 bit)
 output wire             O_cam_scl, //I2C总线，SCL时钟
@@ -98,6 +104,27 @@ always@(posedge I_clk) begin
         ae_req_lat <= 1'b0;      // 已被上面的快通道消费
 end
 
+//=============================================================================
+//  V24: 全表重载请求锁存 (分辨率切换)
+//-----------------------------------------------------------------------------
+//  传感器切 1080p(2x2 binning) <-> 4K(all-pixel) 要改的不是几个寄存器, 而是
+//  0x3020/21/22(HADD/VADD/ADDMODE)、0x3024/25(VMAX)、0x3028(HMAX)、
+//  0x3033(SYS_MODE) 以及 0x4004..0x4074 那一整套 MIPI D-PHY 发送时序
+//  (lane 速率会变)。这些寄存器**只在主表相位(O_cfg_done==0)才会被写入**,
+//  所以必须让状态机回到主表重跑一遍 (201 个寄存器 ≈ 78ms)。
+//
+//  ⚠ 重载期间 I_cam_mode 必须已经稳定 —— 由 system_top 保证:
+//    它把 S_res_chg 延后 ~32 拍再发这个脉冲, 让同步到 24MHz 域的 mode 先稳住。
+//=============================================================================
+reg full_reload_lat = 1'b0;
+
+always@(posedge I_clk) begin
+    if(I_full_reload)
+        full_reload_lat <= 1'b1;
+    else if(full_reload_lat && TS_S == 2'd0 && rst_cnt[7] == 1'b1)
+        full_reload_lat <= 1'b0;      // 已被主表相位消费
+end
+
 //内部计数器产生一个延迟复位
 always@(posedge I_clk or negedge I_rst_n)  
     if(I_rst_n == 1'b0) //复位初始化寄存器
@@ -153,7 +180,18 @@ always@(posedge I_clk ) begin
     end
     else begin
         case(TS_S)
-        0:if(ae_req_lat && O_cfg_done_r)begin
+        0:if(full_reload_lat)begin
+            // ★★ V24: 分辨率切换 —— 强制回到主表相位, 整张初始化表重写一遍。
+            //   注意: 这里**绝对不能**顺手推 TS_S !! REG_SIZE/REG_DATA 是上面
+            //   always@(posedge) 里的**寄存器**, 要下一拍才切回 REG_DATA_REG。
+            //   推早了第一笔会写成上一张表的旧值(增益那次就是这么被搞坏的)。
+            //   让下面那句 (O_cfg_done&O_cfg_done_r&O_ae_cfg_done)==0 自然跳转。
+            O_cfg_done    <= 1'b0;   // 回主表相位
+            O_cfg_done_r  <= 1'b0;
+            O_ae_cfg_done <= 1'b0;   // 允许状态机继续走
+            reg_index     <= 8'd0;
+        end
+        else if(ae_req_lat && O_cfg_done_r)begin
             // ★★ 修复(2026-10-16): 参数下发路径原来有**三处**结构性问题 ——
             //   1) I_ae_req 是 24MHz 域的单拍脉冲, 而 TS_S==0 每次寄存器写入
             //      (~385us) 只占 1 拍, 命中率约 1/9240 => 请求几乎必然被整拍漏掉。
@@ -251,6 +289,7 @@ X_ui_i2c
 //例化CAM的寄存器配置表
 ui_imx415reg X_ui_imx415reg
 (
+	.MODE		(I_cam_mode		),  // V24: 读出模式选表 (0=1080p binning 1=4K all-pixel)
 	.REG_SIZE	(REG_SIZE_REG	),  //寄存器数量
 	.REG_INDEX	(reg_index		),    //寄存索引
 	.REG_DATA	(REG_DATA_REG	)   //寄存器数据
