@@ -1460,13 +1460,10 @@ LINK_USABLE_RATIO  = 0.85                  # 超过这个比例就判为"超带�
 #   要把降帧档变真, 必须先补 RTL (在 VTC 读侧按 fps_div 丢帧), 再把这里改成 True。
 FPS_DIV_IMPLEMENTED = False
 
-# ⚠ 切换分辨率目前判定为**不安全**, 因为整条视频通路的协同复位还没做:
-#   实测把 RES_MODE 写过去再写回来之后, 画面会撕裂/错位(读写指针与新的帧边界对不上),
-#   接着会把 RX/TX 都拖死 —— 只能重新烧 bit 才能恢复。
-#   RTL 里已经给 VTC/csi2_pack/csi2_frame_tx 加了复位(H0fff53e), 硬死锁没了,
-#   但 RX 写侧 / dbuf 读写指针还没纳入, 所以还不够。
-#   做好之后把这里改成 True。
-MODE_SWITCH_SAFE = False
+# ⚠ 切换分辨率：已经实测可反复切换。
+#  1080p60 <-> 4K25（RES_MODE 0<->2）加上整条 media pipeline 重建 + 80ms 协同复位窗，
+#  反复切十几次不撕裂、不起死。所以这里放开了；单帧不匹配的瞬间最多黑一下。
+MODE_SWITCH_SAFE = True
 
 
 def _mk_mode(mid, w, h, fps, res_mode, fps_div):
@@ -1493,7 +1490,14 @@ MODES = [
     _mk_mode("4k15",    3840, 2160, 15, 1, 2),
     _mk_mode("4k10",    3840, 2160, 10, 1, 3),
     _mk_mode("4k30",    3840, 2160, 30, 1, 1),
+    _mk_mode("720p90",  1280,  720, 90, 3, 1),
 ]
+# 720p / 90fps 还没有进 FPGA 的裁剪与 VTC 模式表（RES_MODE 目前只有 0=1080p / 2=4K），
+# 90fps 也要重新收敛时序 —— 所以选项先摆出来，但明确标“未实现”，点应用会被拦下。
+for _m in MODES:
+    if _m["id"].startswith("720p"):
+        _m["impl"] = False
+        _m["note"] = "FPGA RTL 未实现 720p / 90fps"
 MODES_BY_ID = {m["id"]: m for m in MODES}
 
 

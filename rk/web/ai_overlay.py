@@ -50,7 +50,7 @@ _STATE_KEYS = ("enabled", "source", "ai_fps", "det_conf", "nms_thres",
 #   两级串在同一帧会出现一个 45ms 的长尾帧（det 30 + pose 35）把帧率拖住，
 #   拆开后每帧都是短帧 —— 实测 17fps → 26fps，代价是骨架滞后一帧（约 35ms）。
 PRESETS = (
-    {"id": "smooth", "name": "帧率优先（推荐）",
+    {"id": "smooth", "name": "帧率优先",
      "det": "yolov8n-slim.rknn", "pose": "yolov8n-pose-hybrid.rknn",
      "spread": True,
      "note": "检测帧不跑姿态：约 26 fps，骨架滞后一帧"},

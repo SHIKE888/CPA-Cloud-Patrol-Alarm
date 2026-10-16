@@ -21,10 +21,24 @@
     position:sticky; top:0; z-index:10;
   }
   header h1{font-size:15px; margin:0 12px 0 0; font-weight:600; white-space:nowrap}
-  input[type=text]{
+  input[type=text], select{
     background:var(--panel2); border:1px solid var(--line); color:var(--fg);
-    border-radius:8px; padding:7px 10px; font-size:13px; width:230px;
+    border-radius:8px; padding:7px 10px; font-size:13px;
   }
+  input[type=text]{width:230px}
+  /* 下拉框：干掉系统默认外观（那样在深色页面上是一块突兀的浅色），
+     自己画一个灰色小三角，底/边框/圆角全部跟按钮、输入框保持一致 */
+  select{
+    cursor:pointer; appearance:none; -webkit-appearance:none; padding-right:28px;
+    background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6'><path d='M0 0h10L5 6z' fill='%238b949e'/></svg>");
+    background-repeat:no-repeat; background-position:right 9px center;
+    transition:.15s;
+  }
+  select:hover{border-color:var(--acc2)}
+  input[type=text]:focus, select:focus{outline:none; border-color:var(--acc2)}
+  select option{background:var(--panel2); color:var(--fg)}
+  select:disabled{opacity:.55; cursor:not-allowed}
+  .row select{flex:1}
   button{
     background:var(--panel2); border:1px solid var(--line); color:var(--fg);
     border-radius:8px; padding:7px 14px; cursor:pointer; font-size:13px;
@@ -172,12 +186,11 @@
 
         <div class="sep"></div>
 
-        <div class="row"><label>分辨率 / 帧率</label>
-          <select id="sel_res" style="flex:0 0 126px;padding:4px 6px"></select>
-          <select id="sel_fps" style="flex:1;padding:4px 6px"></select></div>
+        <div class="row"><label>输出格式</label>
+          <select id="sel_mode"></select></div>
 
         <div class="grid2" style="margin-top:6px">
-          <button id="btnApplyMode">应用分辨率 / 帧率</button>
+          <button id="btnApplyMode">应用输出格式</button>
           <button class="ghost" id="btnReloadMode">刷新模式表</button>
         </div>
 
@@ -191,10 +204,12 @@
           曝光/增益由 FPGA 通过 I2C 直接写 IMX415 寄存器（曝光 = (2283−SHR0)×7.3µs）。<br>
           白平衡是 FPGA 里的数字 R/B 增益 —— IMX415 是 RAW sensor 没有白平衡寄存器，
           本工程的 ISP AWB 又是全自动的，手动白平衡只能在这一级做。<br>
-          分辨率/帧率由上面的下拉框统一切换：会同时写 FPGA 的 RES_MODE(0xE0) 与
-          FPS_DIV(0xC7)，再把 RK 侧采集格式改掉并重开采集。有效画面用<b>中心裁剪+黑边</b>。<br>
-          ⚠ 4K 在 1000 Mbps 链路上只能跑到 15 fps（带宽 49.8%）；4K30 需要 99.5%，
-          物理上跑不动 —— 要上真 4K30 得先把 FPGA 提到 1200 Mbps（需先做时序收敛）。
+          <b>输出格式</b>下拉框统一切换分辨率与帧率：会同时写 FPGA 的 RES_MODE(0xE0) 与
+          FPS_DIV(0xC7)，再把 RK 侧采集格式改掉并重开采集（画面会断 1~2 秒）。<br>
+          • <b>4K@25</b>：链路载荷 82.9%，实测可切可跑（切完会重新锁 D-PHY/RX）。<br>
+          • <b>1080P@60</b>：载荷 49.8%，默认档，最稳。<br>
+          • <b>720P@90</b>：载荷只有 33.2%，但 FPGA 侧还没做 720p 裁剪与 90fps 的 VTC 时序，
+          所以选它会直接提示“RTL 未实现”而不会真的切。
         </p>
       </div>
 
@@ -623,56 +638,60 @@ $("btnPpRefresh").onclick = async () => { await loadFpga(); toast("已刷新 FPG
 });
 
 /* 定期读心跳/帧计数 —— 证明 FPGA 在线且链路在跑 */
-/* ---------------- 分辨率 / 帧率 下拉 (帧率按分辨率过滤) ---------------- */
+/* ---------------- 输出格式（单个下拉：4K@25 / 1080P@60 / 720P@90） ---------------- */
 let modeTable = null;
 let curModeId = null;
+
+// 框里固定这三个档；服务端没有哪个就少哪个（不会凭空造出来）
+const MODE_CHOICES = ["4k25", "1080p60", "720p90"];
+
+function allModes() {
+  const out = [];
+  (modeTable && modeTable.resolutions || []).forEach(r => r.modes.forEach(m => out.push(m)));
+  return out;
+}
+
+function modeTag(m) {
+  if (m.h >= 2160) return "4K";
+  if (m.h >= 1080) return "1080P";
+  if (m.h >= 720)  return "720P";
+  return m.w + "×" + m.h;
+}
+
+function modeText(m) {
+  let s = modeTag(m) + "@" + m.fps + "fps";
+  if (!m.impl) s += "  ⚠ RTL 未实现";
+  else if (!m.ok) s += "  ⚠ 超带宽 " + m.load_pct + "%";
+  return s;
+}
 
 async function loadModes(keep) {
   try {
     modeTable = await api("/api/modes");
   } catch (e) { toast("读取模式表失败: " + e.message, true); return; }
-  const res = $("sel_res");
-  const old = keep ? res.value : null;
-  res.innerHTML = "";
-  (modeTable.resolutions || []).forEach(r => {
-    const o = document.createElement("option");
-    o.value = r.key; o.textContent = r.w + " × " + r.h;
-    res.appendChild(o);
-  });
-  if (modeTable.current) {
-    curModeId = modeTable.current.id;
-    const k = modeTable.current.w + "x" + modeTable.current.h;
-    if ([...res.options].some(o => o.value === k)) res.value = k;
-  }
-  if (old && [...res.options].some(o => o.value === old)) res.value = old;
-  fillFps();
-}
-
-/* 换分辨率 -> 帧率下拉只留该分辨率的项; 超带宽的标出来 */
-function fillFps() {
-  const r = (modeTable.resolutions || []).find(x => x.key === $("sel_res").value);
-  const sel = $("sel_fps");
+  const sel = $("sel_mode");
+  const old = keep ? sel.value : null;
+  const all = allModes();
+  let list = MODE_CHOICES.map(id => all.find(m => m.id === id)).filter(Boolean);
+  if (!list.length) list = all;              // 服务端还没这三档时把全部列出来
   sel.innerHTML = "";
-  if (!r) return;
-  r.modes.forEach(m => {
+  list.forEach(m => {
     const o = document.createElement("option");
     o.value = m.id;
-    o.textContent = m.fps + " fps"
-                  + (m.ok   ? "" : "  ⚠ 超带宽 " + m.load_pct + "%")
-                  + (m.impl ? "" : "  ⚠ 未实现");
+    o.textContent = modeText(m);
     if (!m.ok || !m.impl) o.style.color = "#f88";
     sel.appendChild(o);
   });
-  if (curModeId && r.modes.some(m => m.id === curModeId)) sel.value = curModeId;
+  const cid = modeTable.current && modeTable.current.id;
+  if (cid && list.some(m => m.id === cid)) sel.value = cid;
+  if (old && list.some(m => m.id === old)) sel.value = old;
+  curModeId = sel.value;
   modeHint();
 }
 
 function curModeObj() {
-  const id = $("sel_fps").value;
-  let hit = null;
-  (modeTable.resolutions || []).forEach(r =>
-    r.modes.forEach(m => { if (m.id === id) hit = m; }));
-  return hit;
+  const id = $("sel_mode").value;
+  return allModes().find(m => m.id === id) || null;
 }
 
 function modeHint() {
@@ -687,8 +706,7 @@ function modeHint() {
   h.innerHTML = s;
 }
 
-$("sel_res").addEventListener("change", () => { fillFps(); modeHint(); });
-$("sel_fps").addEventListener("change", modeHint);
+$("sel_mode").addEventListener("change", modeHint);
 $("btnReloadMode").onclick = () => loadModes(true);
 
 $("btnApplyMode").onclick = async () => {
@@ -700,7 +718,8 @@ $("btnApplyMode").onclick = async () => {
   try {
     const r = await api("/api/mode",
                         { method: "POST", body: JSON.stringify({ id: m.id }) });
-    toast((r.log || []).join("  |  ") || "已切换", !r.ok);
+    if (r.ok) toast((r.log || []).join("  |  ") || "已切换");
+    else toast(r.error || (r.log || []).join("  |  ") || "切换失败", true);
   } catch (e) { toast("切换失败: " + e.message, true); }
   setTimeout(async () => { await loadModes(true); await poll(); }, 2500);
 };
