@@ -133,15 +133,19 @@ always@(posedge I_clk ) begin
     end
     else begin
         case(TS_S)
-        0:if(I_ae_req && O_cfg_done == 1'b1 && O_cfg_done_r == 1'b1)begin
-            // ★★ 2026-10-15 修复: AE 阶段收到新请求必须**最优先**处理。
-            //   原代码里下面 "reg_index==REG_SIZE && O_cfg_done && O_cfg_done_r"
-            //   那一支会先命中并把请求吞掉 (AE 写完后 reg_index 就恒等于 REG_SIZE),
-            //   于是 O_ae_cfg_done 不再翻转 -> cam_param 永远等不到 ae_done
-            //   -> 卡在 busy 不动: CAM_BUSY 恒为 1, CAM_WR_CNT 不再增长,
-            //   表现为网页上改曝光/增益/EV 完全没反应。
-            //   实测 CAM_WR_CNT 停在 2 (前两次碰巧赶上周期刷新把 reg_index 清零,
-            //   请求才被接受), 之后 0.5ms/16.6ms 曝光切换帧平均亮度只差噪声级 ±2。
+        0:if(I_ae_req)begin
+            // ★★ 修复(2026-10-15/16): 新请求必须**无条件最优先**处理。
+            //   原代码里 I_ae_req 排在 reg_index==REG_SIZE 那几支之后, 而有**两个**
+            //   状态会被那几支先命中并吞掉请求:
+            //     (a) AE 写完之后 reg_index 恒等于 REG_SIZE
+            //     (b) 主表刚写完、O_cfg_done_r 还没置位的过渡态
+            //   请求被吞 -> O_ae_cfg_done 不再翻转 -> cam_param 永远等不到
+            //   ae_done -> 卡在 busy: CAM_BUSY 恒 1, CAM_WR_CNT 不涨,
+            //   表现为网页改曝光/增益/EV 完全没反应。
+            //   实测: 加 (a) 的优先处理后, CAM_WR_CNT 从"卡在 2"改善到"卡在 7",
+            //   说明还有 (b) 这条路 —— 所以现在改成无条件。
+            //   在主表阶段接到请求也无害: REG_SIZE 仍由 O_cfg_done 选择主表,
+            //   写完后依次走 ST -> AE, 最终 O_ae_cfg_done 会被拉高。
             O_ae_cfg_done <= 1'b0;
             reg_index   <= 9'd0;
         end

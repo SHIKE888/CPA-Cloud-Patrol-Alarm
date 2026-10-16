@@ -71,11 +71,21 @@ module cam_param #(
 	                                        (exp_base >> 3);
 	wire [19:0] exp_ev = ev_up ? exp_up : exp_dn;
 
-	// 夹紧: 至少 1 行, 最多 VMAX-1 行
+	// 夹紧: 曝光行数 ≤ VMAX - SHR0_MIN, 且 ≥ 1
+	//   ⚠ 修复(2026-10-16): SHR0 **不能压到 8 以下**。
+	//     原来写的是 `(exp_ev >= VMAX) ? (VMAX-1)`, 于是 EV=+3 时
+	//     exp_ev = 基准<<3 = 18200 > VMAX -> exp_cl = VMAX-1 -> SHR0 = 1。
+	//     而 SHR0=1 对 IMX415 是无效/极短曝光, 画面直接变黑 ——
+	//     实测 EV +3 与 -3 的平均亮度都是 ~9.6 (EV+3 本该保持最亮 237.6)。
+	//     SHR0_MIN 取初始化表的默认值 8 (即最长曝光 2275 行 = 16.6ms)。
+	//     注意: 基准曝光已经贴到上限时, +EV 本来就"没有余量"可加(只会被夹住),
+	//     这是正确行为 —— 想要 +EV 提亮需要同时提增益, 那是另一件事。
+	localparam [19:0] SHR0_MIN = 20'd8;
+	wire [19:0] exp_max = VMAX - SHR0_MIN;                 // 2275
 	wire [19:0] exp_cl = (exp_ev == 20'd0) ? 20'd1 :
-	                     (exp_ev >= VMAX)  ? (VMAX - 20'd1) : exp_ev;
+	                     (exp_ev > exp_max) ? exp_max : exp_ev;
 
-	assign o_rt_exp = VMAX - exp_cl;      // SHR0
+	assign o_rt_exp = VMAX - exp_cl;      // SHR0 ∈ [SHR0_MIN, VMAX-1]
 
 	//------------------------------------------------------------------ 增益
 	wire [7:0] gain_use = (i_gain == 8'd0)  ? GAIN_DEFAULT :
@@ -98,6 +108,23 @@ module cam_param #(
 		else        ae_done_d <= i_ae_done;
 	end
 
+	//------------------------------------------------------------------- 看门狗
+	// 参数下发链路一旦卡死, 网页就再也改不了曝光/增益, 而 FPGA 没有可用的
+	// 软复位(0x0A SOFT_RST 是死寄存器) => 只能靠这里兜底自恢复。
+	// busy 超过 ~1ms(25MHz x 25000) 还没等到 ae_done 就放弃本轮。
+	// 放弃时按"已处理"记账, 以免 need_send 恒真而反复重发打爆 I2C;
+	// 用户下次改参数时会重新发起一轮。
+	localparam [19:0] WD_MAX = 20'd25000;
+	reg [19:0] wd_cnt;
+	reg [15:0] wd_timeout_cnt;   // 超时次数, 便于排查
+
+	always @(posedge clk or negedge rst_n) begin
+		if (!rst_n) wd_cnt <= 20'd0;
+		else if (!busy) wd_cnt <= 20'd0;
+		else if (wd_cnt != WD_MAX) wd_cnt <= wd_cnt + 20'd1;
+	end
+	wire wd_expire = (wd_cnt == WD_MAX);
+
 	// 参数与「上一次已生效的值」不同 -> 需要重发
 	//   (i_trig 变化也走这条路, 用于强制刷新, 比如上电后先把参数灌一次)
 	wire need_send = (o_rt_exp != exp_d) | (gain_use != gain_d) | (i_trig != trig_d);
@@ -115,6 +142,7 @@ module cam_param #(
 			held_exp  <= 20'd0;
 			held_gain <= 8'd0;
 			busy      <= 1'b0;
+			wd_timeout_cnt <= 16'd0;
 		end else begin
 			o_ae_req <= 1'b0;                     // 默认低, 脉冲式
 
@@ -127,13 +155,18 @@ module cam_param #(
 					o_ae_req  <= 1'b1;
 					busy      <= 1'b1;
 				end
-			end else if (ae_done_rise) begin
+			end else if (ae_done_rise || wd_expire) begin
 				// 一轮写完: 记下已生效的值, 参数再变才会重新下发
+				// 看门狗超时: 当作已完成(不重复重发), 只累加超时计数
 				exp_d    <= held_exp;
 				gain_d   <= held_gain;
 				trig_d   <= i_trig;
-				o_wr_cnt <= o_wr_cnt + 16'd1;
 				busy     <= 1'b0;
+				if (ae_done_rise) begin
+					o_wr_cnt <= o_wr_cnt + 16'd1;
+				end else begin
+					wd_timeout_cnt <= wd_timeout_cnt + 16'd1;
+				end
 			end
 		end
 	end
