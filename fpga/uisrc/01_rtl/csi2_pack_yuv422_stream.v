@@ -1,17 +1,8 @@
 /*==============================================================================
  *  csi2_pack_yuv422_stream.v  (Phase 1b)
  *  ui_dbuf.R (RGB32 AXIS @ src_clk)
- *      → async FIFO (33b, depth 4096) → YUV pipeline (5 stage)
- *      → output FIFO (34b, depth 4096) → AXIS to Layer-1 csi2_frame_tx 
- *
- *  V28 (2026-10-16): 修 4K 下 TX 完全不出帧 (死锁)
- *      原实现把输出 FIFO 流量门限写死为 1900 —— 那是按 1080p 一行 960 word
- *      (FIFO 2048 ≈ 2 行) 定的。4K 一行是 I_h_active>>1 = 1920 word, 而
- *      line_ready 要求 b_rd_data_count >= 1920。但 a_rd_en 被 b_near_full
- *      (占用 >1900) 提前掉断 ⇒ 占用永远到不了 1920 ⇒ line_ready 永远为假
- *      ⇒ line_priming 不触发 ⇒ m_tvalid 恒 0 ⇒ CIF 一帧都收不到。
- *      修法: 输出/输入 FIFO 都加深到 4096, 门限提到 3840 (留 256 余量,
- *            且 ≫ 1920, 保证 line_ready 可达)。
+ *      → async FIFO (33b, depth 2048) → YUV pipeline (5 stage)
+ *      → output FIFO (34b, depth 1024) → AXIS to Layer-1 csi2_frame_tx 
  *============================================================================*/
 `timescale 1ns/1ps
 
@@ -54,12 +45,8 @@ module csi2_pack_yuv422_stream (
     reg         a_rd_en;
 
     // Stage-C output FIFO wr_data_count (forward-declared for gate)
-    // V28: 计数位宽 = ADDR_WIDTH = 12 (深度 4096)
-    wire [11:0] b_wr_data_count;
-    // V28: 流量门限必须 > 一行 word 数(4K = 1920), 否则 line_ready 永远达不到。
-    //      4096 - 256 = 3840, 既留了余量又远大于 1920。
-    localparam [11:0] B_NEAR_FULL_TH = 12'd3840;
-    wire        b_near_full = (b_wr_data_count > B_NEAR_FULL_TH);
+    wire [10:0] b_wr_data_count;    // ADDR_WIDTH=11 → 11-bit count (depth 2048)
+    wire        b_near_full = (b_wr_data_count > 11'd1900);
     wire        a_can_read  = enable & ~a_empty & ~b_near_full;
 
     always @(posedge dst_clk or negedge dst_rst_n) begin
@@ -69,7 +56,7 @@ module csi2_pack_yuv422_stream (
 
     fifo_32b_async_2 #(
         .DATA_WIDTH(33),
-        .ADDR_WIDTH(12)     // V28: depth 2048 -> 4096 (4K 一行 1920 word)
+        .ADDR_WIDTH(11)
     ) u_async_fifo (
         .rst          (a_rst_async),
         .wr_clk       (src_clk    ),
@@ -187,7 +174,7 @@ module csi2_pack_yuv422_stream (
    
     wire        b_full, b_empty;
     wire [33:0] b_dout;
-    wire [11:0] b_rd_data_count;    // V28: read-side fill (dst_clk domain), 12bit
+    wire [10:0] b_rd_data_count;    // read-side fill (dst_clk domain)
 
     wire        b_wr_en = yuv_admit & ~b_full;
     reg         line_priming;        // 1-cycle prime read so dout holds word0
@@ -199,8 +186,7 @@ module csi2_pack_yuv422_stream (
     reg         line_active;
     reg         line_drain_done;     // accepted last word; close the line.
     reg [15:0]  drain_cnt;           // 1..WORDS_PAYLOAD = which presented word
-    // V28: 门限用 12bit 切片 (4K = 1920, 1080p = 960, 都 < 4096)
-    wire        line_ready = (b_rd_data_count >= WORDS_PAYLOAD[11:0]);
+    wire        line_ready = (b_rd_data_count >= WORDS_PAYLOAD[10:0]);
 
     // Pop the NEXT word while presenting word[drain_cnt-1]; no pop on the last
     // presented word (drain_cnt == WORDS_PAYLOAD).
@@ -243,7 +229,7 @@ module csi2_pack_yuv422_stream (
 
     fifo_32b_async_2 #(
         .DATA_WIDTH(34),
-        .ADDR_WIDTH(12)     // V28: depth 4096 —— 4K 一行 1920 word, 必须能装 ≥ 2 行
+        .ADDR_WIDTH(11)     // depth 2048 (~2 lines @ 960 words)
     ) u_out_fifo (
         .rst          (~dst_rst_n),
         .wr_clk       (dst_clk   ),
