@@ -114,7 +114,11 @@ module cam_param #(
 	// busy 超过 ~1ms(25MHz x 25000) 还没等到 ae_done 就放弃本轮。
 	// 放弃时按"已处理"记账, 以免 need_send 恒真而反复重发打爆 I2C;
 	// 用户下次改参数时会重新发起一轮。
-	localparam [19:0] WD_MAX = 20'd25000;
+	// 20ms 的依据(2026-10-16 实测): 一轮参数下发 = 7 个寄存器 x ~385us
+	// (I2C 100kHz, 每次 4 字节) ≈ 2.7ms, 这里留 7 倍余量。
+	// 原来写的 1ms **比真实一轮还短**, 于是每一轮都在真正写完之前就超时放弃:
+	// CAM_WR_CNT 永远不涨, CAM_BUSY 也几乎看不到(实测 busy 只高 1.0ms 就落回)。
+	localparam [19:0] WD_MAX = 20'd500000;
 	reg [19:0] wd_cnt;
 	reg [15:0] wd_timeout_cnt;   // 超时次数, 便于排查
 

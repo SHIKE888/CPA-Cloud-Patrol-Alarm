@@ -78,6 +78,26 @@ reg  [1 :0] TS_S = 2'd0; 	//状态机寄存器
 
 
 
+//=============================================================================
+//  参数下发请求锁存 (★★ 修复 2026-10-16)
+//-----------------------------------------------------------------------------
+//  I_ae_req 从 25MHz 域展宽、同步过来之后是 24MHz 域的**单拍脉冲**; 而主表状态机
+//  的 TS_S==0 每次寄存器写入(24MHz 下 ~9240 周期)只占 1 拍 => 直接拿它做条件
+//  的话命中率约 1/9240, 请求基本全丢。丢了的后果: O_ae_cfg_done 不再翻转,
+//  cam_param 永远等不到 ae_done -> 卡在 busy -> 网页改曝光/增益"没反应"。
+//  这里先锁存住, 等状态机回到 TS_S==0 再消费。
+//  置位优先, 保证"同一拍里既消费又来了新请求"时不丢;
+//  只在复位结束后消费, 以免上电时那条早期请求把主初始化表打断。
+//=============================================================================
+reg ae_req_lat = 1'b0;
+
+always@(posedge I_clk) begin
+    if(I_ae_req)
+        ae_req_lat <= 1'b1;
+    else if(ae_req_lat && TS_S == 2'd0 && O_cfg_done_r && rst_cnt[7] == 1'b1)
+        ae_req_lat <= 1'b0;      // 已被上面的快通道消费
+end
+
 //内部计数器产生一个延迟复位
 always@(posedge I_clk or negedge I_rst_n)  
     if(I_rst_n == 1'b0) //复位初始化寄存器
@@ -133,21 +153,29 @@ always@(posedge I_clk ) begin
     end
     else begin
         case(TS_S)
-        0:if(I_ae_req)begin
-            // ★★ 修复(2026-10-15/16): 新请求必须**无条件最优先**处理。
-            //   原代码里 I_ae_req 排在 reg_index==REG_SIZE 那几支之后, 而有**两个**
-            //   状态会被那几支先命中并吞掉请求:
-            //     (a) AE 写完之后 reg_index 恒等于 REG_SIZE
-            //     (b) 主表刚写完、O_cfg_done_r 还没置位的过渡态
-            //   请求被吞 -> O_ae_cfg_done 不再翻转 -> cam_param 永远等不到
-            //   ae_done -> 卡在 busy: CAM_BUSY 恒 1, CAM_WR_CNT 不涨,
-            //   表现为网页改曝光/增益/EV 完全没反应。
-            //   实测: 加 (a) 的优先处理后, CAM_WR_CNT 从"卡在 2"改善到"卡在 7",
-            //   说明还有 (b) 这条路 —— 所以现在改成无条件。
-            //   在主表阶段接到请求也无害: REG_SIZE 仍由 O_cfg_done 选择主表,
-            //   写完后依次走 ST -> AE, 最终 O_ae_cfg_done 会被拉高。
-            O_ae_cfg_done <= 1'b0;
-            reg_index   <= 9'd0;
+        0:if(ae_req_lat && O_cfg_done_r)begin
+            // ★★ 修复(2026-10-16): 参数下发路径原来有**三处**结构性问题 ——
+            //   1) I_ae_req 是 24MHz 域的单拍脉冲, 而 TS_S==0 每次寄存器写入
+            //      (~385us) 只占 1 拍, 命中率约 1/9240 => 请求几乎必然被整拍漏掉。
+            //      改为上面 ae_req_lat 锁存, 保证不丢。
+            //   2) 若请求正好落在主表相位 (O_cfg_done==0) 被接住, 会从 reg_index=0
+            //      重跑 201 个主表寄存器(一轮 ~80ms); 更糟的是 O_cfg_done_r 在
+            //      reg_index==REG_SIZE_ST(=2) 那拍才置位, 而当时 REG_DATA 还是待机
+            //      表 => 真正写进去的只有 reg_index 2..6 这 5 个 => 0x3090/0x3092/
+            //      0x3094 **从来没有被写过** (增益只上了一部分, 表现为增益很弱)。
+            //   3) 除请求外没有别的通道能更新参数, 漏一次就"像没反应"。
+            //
+            //   现在: 直接把相位强制切到参数表 (O_cfg_done/O_cfg_done_r 都置 1
+            //   => REG_SIZE 选 REG_SIZE_AE, REG_DATA 选 REG_DATA_AE), 从 reg_index=0
+            //   开始只写 7 个参数寄存器, 一轮 ~2.7ms; 写完在 reg_index==REG_SIZE
+            //   那一支拉高 O_ae_cfg_done, 给 cam_param 一个干净的完成沿。
+            //   门控 O_cfg_done_r: 保证上电时先完整跑完一遍主初始化表,
+            //   否则一上电就被参数请求打断, 传感器根本初始化不起来。
+            O_ae_cfg_done <= 1'b0;   // 本轮开始
+            O_cfg_done    <= 1'b1;   // 强制进参数相位
+            O_cfg_done_r  <= 1'b1;   // (REG_SIZE/REG_DATA 选择器跟着切)
+            reg_index     <= 8'd0;
+            TS_S          <= 2'd1;   // 立刻开始写 (TS_S==0 必然总线空闲)
         end
         else if(reg_index == REG_SIZE && O_cfg_done == 1'b0) begin//如果配置完成
             O_cfg_done <= 1'b1;       //设置 cfg_done标准
@@ -164,10 +192,6 @@ always@(posedge I_clk ) begin
 		else if(reg_index == REG_SIZE && O_cfg_done == 1'b1 && O_cfg_done_r == 1'b1) begin//如果配置完成
             O_ae_cfg_done <= 1'b1;       //设置 cfg_done标准
         end 
-        else if(I_ae_req)begin
-            O_ae_cfg_done <= 0;
-            reg_index   <= 0;
-        end
         else if((O_cfg_done&O_cfg_done_r&O_ae_cfg_done) == 1'b0)
             TS_S <= 2'd1;           //下一个状态
         1:if(!iic_busy)begin        //当总线非忙，才可以操作I2C控制器
