@@ -175,7 +175,17 @@ always@(posedge I_clk ) begin
             O_cfg_done    <= 1'b1;   // 强制进参数相位
             O_cfg_done_r  <= 1'b1;   // (REG_SIZE/REG_DATA 选择器跟着切)
             reg_index     <= 8'd0;
-            TS_S          <= 2'd1;   // 立刻开始写 (TS_S==0 必然总线空闲)
+            // ⚠⚠ 这里**千万不能**顺手写一句 TS_S <= 2'd1 !!
+            //   REG_SIZE / REG_DATA 是上面 always@(posedge) 块里的**寄存器**(不是
+            //   组合逻辑), 它们要**下一拍**才变成参数表的值。如果在这一拍就把
+            //   TS_S 推到 1, 下一拍 TS_S==1 采到的还是**上一拍的 REG_DATA** =>
+            //   reg_index==0 那一笔 (0x3090 = GAIN_PGC_0) 会被写成一笔重复的旧值,
+            //   于是 reg_index 从 1 开始, 0x3090 永远写不到。
+            //   实测(2026-10-16): 曝光/EV 都正常(index 4/5/6 没错位), 只有增益
+            //   **完全没有反应**(0/18/36dB 亮度都是 41.1, 差 0.0) —— 就是这个原因。
+            //   正确做法: 让状态机下一拍由下面那句
+            //     else if((O_cfg_done&O_cfg_done_r&O_ae_cfg_done) == 1'b0) TS_S <= 2'd1;
+            //   自然跳转, 那时 REG_DATA 已经就位(且总线必空闲)。
         end
         else if(reg_index == REG_SIZE && O_cfg_done == 1'b0) begin//如果配置完成
             O_cfg_done <= 1'b1;       //设置 cfg_done标准
