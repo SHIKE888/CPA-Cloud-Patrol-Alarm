@@ -570,10 +570,13 @@ X_ui_cfg_imx415(
 //   - 本块必须放在**所有使用点之前**(Verilog 先声明后使用)。之前 S_pp_*
 //     下移踩过这个坑(被隐式声明成 1bit), 勿再移动。
 //=============================================================================
-// 300 ms @ 25MHz。为什么要这么长: 切模式不只受复位窗控制, 还要等
-//   ui_cfg_imx415 把传感器**整张初始化表重写一遍**(201 个寄存器 x ~385us ≈ 78ms),
-//   再加上传感器自己重新锁相、D-PHY RX 重新锁定、写侧重新攒够几帧。
-localparam [23:0] RES_RST_CYCLES = 24'd7_500_000;   // 300 ms @ 25MHz
+// 500 ms @ 25MHz。为什么要这么长: 切模式不只受复位窗控制, 还要等
+//   ui_cfg_imx415 把传感器**整张初始化表重写一遍**, 再加上传感器重新锁相、
+//   D-PHY RX 重新锁定(要等下面的 250ms 释放)、写侧重新攒够几帧。
+//   时序账: 全表重写 201x385us ≈ 78ms (+ 绕圈的垃圾写, 共 ~257 次 ≈ 99ms)
+//           D-PHY RX 复位保持 250ms 才释放
+//           => 视频通路窗口必须 > 250ms, 否则 RX 还没锁上窗口就结束了。
+localparam [23:0] RES_RST_CYCLES = 24'd12_500_000;  // 500 ms @ 25MHz
 // 写侧(含 ISP/预处理)一起复位。若万一某版 ISP 的复位恢复时间不可接受,
 // 把这一个常量置 0 即可退回"只复位读侧"的旧行为, 不用改别的地方。
 localparam        RES_RST_TX_SIDE = 1'b1;
@@ -641,6 +644,14 @@ assign S_full_reload = (S_reload_sync24[2:1] == 2'b01);   // 24MHz 域的单拍�
 //      S_hs_rx_clk 上采样的同步器 —— 因为复位期间它就是把自己那个时钟掐掉
 //      了, 依赖它的同步器会把自己锁死(只能重烧 bit 才能救)。
 //      所以这里只在 25MHz 域计数, 与 S_hs_rx_clk 完全无关。
+// 250 ms @ 25MHz —— ★★ 这个长度是必须的, 不是随便留的余量。
+//   实测教训(2026-10-16): 一开始写 60ms, 结果切 4K 后 **RX 彻底停住**
+//   (FRAME_CNT 从 56fps 变 0fps)。原因就是 60ms < 传感器全表重写耗时:
+//   ui_cfg 先把 mode 切过去后要写 201 个寄存器(~78ms, 加上绕圈共 ~99ms),
+//   60ms 就把 D-PHY RX 放开了 => 传感器还在重配、lane 速率还没稳定,
+//   RX 锁到了垃圾速率上, 而且自己不会恢复。
+//   改成 250ms: 全表写完(~99ms) + 传感器内部锁相 + 余量。
+//   (写 RES_MODE 再触发一次切换就能重新锁上, 不用重烧 bit —— 已验证。)
 reg [23:0] S_dphy_rx_rst_cnt;
 reg        S_dphy_rx_rst = 1'b0;
 always @(posedge I_sysclk_25m or negedge S_pll_lock) begin
@@ -649,7 +660,7 @@ always @(posedge I_sysclk_25m or negedge S_pll_lock) begin
 		S_dphy_rx_rst_cnt <= 24'd0;
 	end else if (S_res_chg_d == 2'b01) begin
 		S_dphy_rx_rst     <= 1'b1;
-		S_dphy_rx_rst_cnt <= 24'd1_500_000;   // 60 ms
+		S_dphy_rx_rst_cnt <= 24'd6_250_000;   // 250 ms
 	end else if (S_dphy_rx_rst_cnt != 24'd0) begin
 		S_dphy_rx_rst_cnt <= S_dphy_rx_rst_cnt - 24'd1;
 	end else begin
