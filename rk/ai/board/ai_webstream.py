@@ -326,7 +326,11 @@ class InferThread(threading.Thread):
             last_seq = seq
 
             try:
-                img = frame.copy() if args.copy_frame else frame
+                # BUGFIX: 这里是裸 args, 而本线程只把参数存进了 self.args。
+                # 结果每次推理都抛 NameError: name 'args' is not defined,
+                # InferenceThread 全程没跑过一次 (页面显示 YOLO 0.0fps /
+                # det 0.0ms / pose 0.0ms / 哨兵值 1e9 ms)。
+                img = frame.copy() if self.args.copy_frame else frame
                 dets = self.det.run(img)                    # Stage1 + Stage2
                 dets = self.tracker.update(t_start, dets)     # 跟踪 + 平滑
                 dets = self.actions.update(t_start, dets)     # 危险动作
