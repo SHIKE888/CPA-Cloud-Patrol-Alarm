@@ -1489,6 +1489,52 @@ def v4l2_set_fmt(device, w, h, fourcc="NV16", v4l2ctl="v4l2-ctl"):
 
 
 # ============================================================================
+#  切分辨率时改 RK 侧整条 media pipeline
+#
+#  ⚠ 为什么必须用 media-ctl 从 **sensor subdev** 设起:
+#    rkcif 是"上游 subdev 驱动下游"的模型。只跑
+#      v4l2-ctl -d /dev/video22 --set-fmt-video width=3840,height=2160
+#    会返回成功, 但驱动立刻把尺寸从上游 subdev 拉回来 => 实际还是 1920x1080
+#    (实测 --get-fmt-video 一直显示 1920/1080)。
+#    正确做法是先把 sensor 那一环设成目标尺寸, 再让它往下游传播。
+#
+#  实体/链路 (实测 /dev/media2):
+#    m02_back_FPGA-MIPI 9-001a  (/dev/v4l-subdev4)  pad0 Source  <- 源头
+#    rockchip-csi2-dphy3         (/dev/v4l-subdev3)  pad0 Sink / pad1 Source
+#    rockchip-mipi-csi2          (/dev/v4l-subdev2)  pad0 Sink
+#    stream_cif_mipi_id0         (/dev/video22)      pad0 Sink
+#  sensor 驱动的 milianke_set_fmt 只按 (w,h) 做**精确匹配**, 3840x2160 会命中
+#  表里第一个条目 = 4K25 (milianke_mipi.c 里 4K25 排在 4K30 前面)。
+# ============================================================================
+MEDIA_DEV = "/dev/media2"
+MEDIA_FMT_PADS = [
+    ('"m02_back_FPGA-MIPI 9-001a"', 0),
+    ('"rockchip-csi2-dphy3"',        0),
+    ('"rockchip-csi2-dphy3"',        1),
+    ('"rockchip-mipi-csi2"',         0),
+]
+
+
+def pipeline_set_fmt(w, h, media_dev=MEDIA_DEV, media_ctl="media-ctl"):
+    """把目标尺寸灌进整条 pipeline, 从 sensor subdev 开始。
+
+    返回 [(spec, ok, err), ...]
+    """
+    out = []
+    fmt = "fmt:YUYV8_2X8/%dx%d" % (w, h)
+    for ent, pad in MEDIA_FMT_PADS:
+        spec = "%s:%d[%s]" % (ent, pad, fmt)
+        try:
+            p = subprocess.run([media_ctl, "-d", media_dev, "--set-v4l2", spec],
+                               capture_output=True, text=True, timeout=10)
+            err = (p.stderr or "").strip().replace("\n", " ")[:140]
+            out.append((spec, p.returncode == 0, err))
+        except Exception as e:
+            out.append((spec, False, "%s: %s" % (type(e).__name__, e)))
+    return out
+
+
+# ============================================================================
 #  IMX415 曝光/增益换算 (给网页用物理量, 而不是裸寄存器值)
 #
 #  曝光行数 = VMAX - SHR0
@@ -1957,6 +2003,21 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             return {"ok": False, "log": log,
                     "error": "FPGA 写入失败: %s: %s" % (type(e).__name__, e)}
+
+        # ---- RK 侧: 整条 media pipeline 改成新尺寸 ----
+        #   必须改! 只写 FPGA 寄存器的话 rkcif 还按旧尺寸收, 画面是一团错位。
+        #   也必须从 sensor subdev 设起 (见 pipeline_set_fmt 的注释)。
+        #   等一小会儿让 FPGA 的复位窗(80ms)过去, 免得刚设完就被切一刀。
+        time.sleep(0.25)
+        try:
+            res = pipeline_set_fmt(int(mode["w"]), int(mode["h"]))
+            bad = [(s, e) for (s, ok, e) in res if not ok]
+            log.append("media-ctl 设 %dx%d: %d/%d pad 成功"
+                       % (mode["w"], mode["h"], len(res) - len(bad), len(res)))
+            for s, e in bad:
+                log.append("  ✗ %s  %s" % (s, e))
+        except Exception as e:
+            log.append("media-ctl 异常: %s: %s" % (type(e).__name__, e))
         # ⚠ 这里不做 v4l2-ctl: 设备被采集线程占着时 VIDIOC_S_FMT 会被 EBUSY 拒绝。
         #    采集线程重开前(设备空闲)会自己跑一遍, 见 _capture_loop。
         self.args.width = int(mode["w"])
