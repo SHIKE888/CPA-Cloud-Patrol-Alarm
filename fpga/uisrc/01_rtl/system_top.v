@@ -516,6 +516,68 @@ X_ui_cfg_imx415(
 	.O_ae_cfg_done	(S_ae_cfg_done	)
   );
 
+//=============================================================================
+//  V23 (2026-10-16): 分辨率模式切换 —— **整条视频通路**协同复位
+//
+//  V21/V22 只复位了读侧 (ui_vtc / csi2_pack / csi2_frame_tx), 窗口 0.44ms。
+//  实测结果: 不再硬死锁了, 但画面撕裂 —— 右/下会出现一份错位的重复图像,
+//  而且重启采集后码流会彻底断掉。原因两处, 一起修掉:
+//
+//   (a) **窗口太短**: 0.44ms 连一帧的零头都不到 (1080p60 一帧 16.7ms,
+//       4K25 一帧 40ms)。写侧一整帧的数据还在流水线里飞, 复位就结束了,
+//       于是旧模式的残帧和新模式的帧混在一起 => 就是那个错位的重复图像。
+//       这里改成 80ms (> 2 帧 4K25), 保证窗口内没有任何跨模式残帧。
+//
+//   (b) **写侧完全没复位**: ui_image_correction / ui_isp_top / preproc_*
+//       内部的行/组计数器和裁剪边界都跟 S_h_active / S_v_active 走(它们会
+//       随模式变), 不复位的话它们会一直按旧边界切, 写进 DDR 的帧本身就是
+//       错位的 —— 读侧再怎么对齐也救不回来。这里把复位窗同步到
+//       S_hs_rx_clk 域, 把整条写侧也一起复位。
+//
+//  实现说明:
+//   - 窗在 **25MHz 域**生成(S_res_chg 本来就是那一拍的 25MHz 脉冲),
+//     再各自 2 级同步到三个域。窗长 80ms, 跨域完全不用担心亚稳态展宽。
+//   - **不要**去复位 D-PHY RX wrapper: S_hs_rx_clk 就是它恢复出来的,
+//     复位它会让上面这些同步器直接失去时钟。
+//   - 本块必须放在**所有使用点之前**(Verilog 先声明后使用)。之前 S_pp_*
+//     下移踩过这个坑(被隐式声明成 1bit), 勿再移动。
+//=============================================================================
+localparam [23:0] RES_RST_CYCLES = 24'd2_000_000;   // 80 ms @ 25MHz
+// 写侧(含 ISP/预处理)一起复位。若万一某版 ISP 的复位恢复时间不可接受,
+// 把这一个常量置 0 即可退回"只复位读侧"的旧行为, 不用改别的地方。
+localparam        RES_RST_TX_SIDE = 1'b1;
+
+reg  [1:0]  S_res_chg_d;
+reg  [23:0] S_res_hold25;
+always @(posedge I_sysclk_25m or negedge S_pll_lock) begin
+	if (!S_pll_lock) begin
+		S_res_chg_d  <= 2'b00;
+		S_res_hold25 <= 24'd0;
+	end else begin
+		S_res_chg_d <= {S_res_chg_d[0], S_res_chg};
+		if (S_res_chg_d == 2'b01)          S_res_hold25 <= RES_RST_CYCLES;
+		else if (S_res_hold25 != 24'd0)    S_res_hold25 <= S_res_hold25 - 24'd1;
+	end
+end
+wire S_res_win25 = (S_res_hold25 != 24'd0);      // 25MHz 域的"切换中"电平
+
+reg [1:0] S_res_win_pclk, S_res_win_rx, S_res_win_byte;
+always @(posedge S_pclkx1 or negedge S_pll_lock) begin
+	if (!S_pll_lock) S_res_win_pclk <= 2'b00;
+	else             S_res_win_pclk <= {S_res_win_pclk[0], S_res_win25};
+end
+always @(posedge S_hs_rx_clk or negedge S_pll_lock) begin
+	if (!S_pll_lock) S_res_win_rx <= 2'b00;
+	else             S_res_win_rx <= {S_res_win_rx[0], S_res_win25};
+end
+always @(posedge S_dsi_byte_clk or negedge S_pll_lock) begin
+	if (!S_pll_lock) S_res_win_byte <= 2'b00;
+	else             S_res_win_byte <= {S_res_win_byte[0], S_res_win25};
+end
+
+wire S_res_rstn_rx   = RES_RST_TX_SIDE ? ~S_res_win_rx[1]   : 1'b1;
+wire S_res_rstn_byte = ~S_res_win_byte[1];
+
 //mipi_rx
 mipi_dphy_rx_over_lvds_wrapper#(
     .DEVICE           ( "PH1"		 ),
@@ -545,7 +607,8 @@ mipi_dphy_rx_over_lvds_wrapper#(
 //csi解码模块
 ui_csi_unpacket_4lane X_ui_csi_unpacket_4lane(
 	.I_clk            ( S_hs_rx_clk       ),
-	.I_rst_n          ( S_pll_lock        ),
+	// V23: 模式切换时一起复位 (CSI-2 靠 FS/FE 短包重新同步, 不会卡)
+	.I_rst_n          ( S_pll_lock & S_res_rstn_rx ),
 	.I_hs_valid       ( S_hs_rx_valid     ),
 	.I_hs_data        ( S_hs_rx_data      ),
 		
@@ -558,7 +621,8 @@ ui_csi_unpacket_4lane X_ui_csi_unpacket_4lane(
 //转为RAW10数据格式
 ui_raw10_unpacket_4lane X_ui_raw10_unpacket_4lane (
 	.I_clk  			(S_hs_rx_clk		),
-	.I_rst_n			(S_pll_lock			),
+	// V23: 模式切换时一起复位
+	.I_rst_n			(S_pll_lock & S_res_rstn_rx	),
 		
 	.I_csi_frame_start	(S_csi_frame_start	),
 	.I_csi_frame_end  	(S_csi_frame_end	),
@@ -579,7 +643,8 @@ ui_image_correction #(
 (
     .O_line_groups    (S_line_groups     ),  // V21 诊断: 每行像素组数
     .I_clk            (S_hs_rx_clk		  ),
-    .I_rst_n          (S_pll_lock		  ),
+    // V23: 裁剪边界跟 S_h_active/S_v_active 走, 模式一切换就必须复位重对齐
+    .I_rst_n          (S_pll_lock & S_res_rstn_rx		  ),
     // V21: 运行时宽高
     .I_img_width      (S_h_active		  ),
     .I_img_height     (S_v_active		  ),
@@ -601,7 +666,8 @@ ui_image_correction #(
 //米联客ISP图像处理模块
 ui_isp_top X_ui_isp_top (
 	.I_clk		     (S_hs_rx_clk		),
-	.I_rst_n         (S_pll_lock		),
+	// V23: ISP 内部也有按宽高走的行/列计数器, 一起复位
+	.I_rst_n         (S_pll_lock & S_res_rstn_rx		),
 	.I_img_width     (S_h_active		),
 	.I_img_height    (S_v_active		),
 	.I_tlast         (S_axis_tlast 		),
@@ -636,7 +702,7 @@ preproc_top #(
 	.PX_PER_CLK (4)
 ) u_preproc (
 	.clk            (S_hs_rx_clk),
-	.rst_n          (S_pll_lock),
+	.rst_n          (S_pll_lock & S_res_rstn_rx),
 	.i_h_active     (S_h_active),
 	.i_tvalid       (S_ISP_O_tvalid),
 	.i_tuser        (S_ISP_O_tuser),
@@ -666,7 +732,7 @@ preproc_post #(
 	.PX_PER_CLK (4)
 ) u_preproc_post (
 	.clk        (S_hs_rx_clk),
-	.rst_n      (S_pll_lock),
+	.rst_n      (S_pll_lock & S_res_rstn_rx),
 	.i_h_active (S_h_active[11:0]),
 	.i_v_active (S_v_active[11:0]),
 	.i_tvalid   (S_pp_tvalid),
@@ -1032,27 +1098,14 @@ ui_ddr X_ui_ddr (
 );
 
 //=============================================================================
-//  V21: 分辨率模式切换时的复位窗
-//  写 RES_MODE (0xE0) 会产生一拍 25MHz 域脉冲 S_res_chg, 这里:
-//    1) 同步到 dbuf 读侧时钟 S_pclkx1 (2 级 + 边沿检测)
-//    2) 拉长成约 0.44ms (65535 个 147.5MHz 周期) 的复位窗
-//  VTC 在窗口内保持复位 => 行/场计数器从 0 干净重起。
-//  为何需要: 切换时 H_FrameSize 从 2200 变成 2060, 若 hcnt 已超过新帧长,
-//  比较会提前回绕, 导致 dbuf 读侧的 vs/de 节奏错乱、甚至卡住。
+//  V23 (2026-10-16): 复位窗已上移到文件前部
+//  生成逻辑见 "V23 ... 整条视频通路协同复位" 一节 (在写侧第一个使用点之前)。
+//  这里只把**读侧** (S_pclkx1 域) 的复位取出来。
+//  ⚠ 不要再把计数逻辑搬回这个位置 —— 写侧 (ui_csi_unpacket / ui_raw10 /
+//    ui_image_correction / ui_isp_top / preproc_*) 在文件更早的地方就要用到
+//    复位信号, 放在这里会被 Verilog 隐式声明成 1bit wire。
 //=============================================================================
-reg  [2:0]  S_res_chg_sr;
-reg  [15:0] S_res_hold;
-always @(posedge S_pclkx1 or negedge S_pll_lock) begin
-	if (!S_pll_lock) begin
-		S_res_chg_sr <= 3'd0;
-		S_res_hold   <= 16'd0;
-	end else begin
-		S_res_chg_sr <= {S_res_chg_sr[1:0], S_res_chg};
-		if (S_res_chg_sr[2:1] == 2'b10)    S_res_hold <= 16'hFFFF;
-		else if (S_res_hold != 16'd0)      S_res_hold <= S_res_hold - 16'd1;
-	end
-end
-assign S_res_rstn = (S_res_hold == 16'd0);
+assign S_res_rstn = ~S_res_win_pclk[1];
 
 ui_vtc X_ui_vtc (
 	.I_H_ActiveSize    (S_vtc_h_active						), //视频时间参数,行视频信号，一行有效(需要显示的部分)像素所占的时钟数，一个时钟对应一个有效像素
@@ -1120,7 +1173,8 @@ csi2_pack_yuv422_stream u_csi2_pack (
 	.s_tlast		(S_dsi_R_tlast		),
 	// sink: byte_clk 域 YUV422 AXIS
 	.dst_clk		(S_dsi_byte_clk		),
-	.dst_rst_n		(S_dphy_rst_n & S_res_rstn),
+	// V23: 用 byte_clk 域自己同步出来的复位 (原来借用 S_pclkx1 域的, 跨域不干净)
+	.dst_rst_n		(S_dphy_rst_n & S_res_rstn_byte),
 	.enable			(S_dsi_en_int		),
 	.m_tvalid		(S_pack_tvalid		),
 	.m_tready		(S_pack_tready		),
@@ -1190,7 +1244,7 @@ csi2_frame_tx #(
 	.clk			(S_dsi_byte_clk	),
 	// V22: 同 csi2_pack —— 包/帧状态机必须在模式切换时一起复位,
 	// 否则它与新的行/帧边界错位后会卡死(实测: RX 计数在涨但 TX 不出帧)
-	.rst_n			(S_dphy_rst_n & S_res_rstn),
+	.rst_n			(S_dphy_rst_n & S_res_rstn_byte),
 	.enable			(S_dsi_en_int	),
 	.I_h_active		(S_h_active		),
 	.I_v_active		(S_v_active		),
