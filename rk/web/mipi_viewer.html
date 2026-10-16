@@ -583,16 +583,17 @@ function scheduleFpgaPush(patch) {
       fpgaSyncUI();
       fpgaShowSt(d);
       if (d.write_ok === false) toast("FPGA 写入失败: " + (d.message || "?"), true);
+      // 开了预处理（Sobel/阈值/形态学），服务端会把 AI 标注自动切回原图
+      if (d.ai_off) {
+        toast("已打开 FPGA 预处理，AI 标注" + d.ai_off);
+        await aiLoad(true);          // 刷新 AI 面板：画面源按钮跟着切回「原图」
+      }
     } catch (e) { toast("FPGA 参数下发失败: " + e.message, true); }
   }, 60);
 }
 
 document.querySelectorAll("[data-pp]").forEach(b => {
-  b.onclick = () => {
-    // 预处理是给眼睛看的（Sobel/阈值/形态学），AI 拿那种画面只会瞎猜 —— 提醒一下
-    if (ai && ai.active) toast("AI 标注进行中：预处理只在「原图」下有意义，切回 AI 时已自动关闭");
-    scheduleFpgaPush({ PP_EN: 1, PP_MODE: Number(b.dataset.pp) });
-  };
+  b.onclick = () => scheduleFpgaPush({ PP_EN: 1, PP_MODE: Number(b.dataset.pp) });
 });
 $("btnPpOff").onclick     = () => scheduleFpgaPush({ PP_EN: 0 });
 $("btnMorph0").onclick   = () => scheduleFpgaPush({ PP_MORPH: 0 });

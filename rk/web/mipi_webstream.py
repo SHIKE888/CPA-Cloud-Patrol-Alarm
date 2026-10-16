@@ -2039,6 +2039,17 @@ class Handler(BaseHTTPRequestHandler):
                 wok, msg = self.fpga.apply(body)
                 # 写完立刻回读 —— FPGA 侧可能把值夹过, 前端以回读为准
                 _ok, snap = self.fpga.snapshot()
+                # 打开预处理（PP_EN=1 且真的在做 Sobel/阈值/形态学，即 PP_MODE≠0）时，
+                # 自动把 AI 标注切回原图 —— 反过来“切到 AI 标注会自动关预处理”，两边对称。
+                # PP_MODE=0（直通原图）不影响 AI，不触发。
+                _regs = snap.get("regs") or {}
+                if (int(_regs.get("PP_EN", 0)) == 1 and int(_regs.get("PP_MODE", 0)) != 0
+                        and AI_OVERLAY is not None and AI_OVERLAY.active):
+                    try:
+                        AI_OVERLAY.apply({"source": "raw"})
+                        snap["ai_off"] = "已切回原图"
+                    except Exception as _e:                          # noqa: BLE001
+                        snap["ai_off"] = "切换失败: %s" % _e
                 snap["write_ok"] = wok
                 snap["message"] = msg
                 snap["meta"] = fpga_meta()
