@@ -290,14 +290,35 @@ static int milianke_enum_frame_interval(struct v4l2_subdev *sd,
 {
     u32 i, idx = 0;
 
-    /* 只枚举与请求宽高匹配的那些模式的帧率 */
+    /*
+     * V4L2 规范里 enum_frame_interval 是"枚举器": 调用方给 index,
+     * 我们回答"第 index 个可用的 (宽, 高, 帧率)"组合。
+     *
+     *  - 调用方给了非 0 的 width/height 时, 只在匹配这些尺寸的模式里数 index;
+     *  - width/height 为 0 表示"不过滤", 数全部模式。
+     *
+     * ★ 为什么必须支持 width/height == 0:
+     *   rkcif 的 rkcif_create_dummy_buf() 就是 memset(fie,0) 之后只设
+     *   fie.index, 然后逐个 index 调用本回调, 用返回的
+     *       size = fie.width * fie.height * 2
+     *   取所有模式的最大值来决定 dummy buffer 要多大。
+     *   旧实现把 width/height 当"必须匹配的过滤器", 遇到 width==0 就一路
+     *   continue 最后返回 -EINVAL -> rkcif 的循环立刻 break -> max_size 保持 0
+     *   -> rkcif_alloc_buffer(size=0) 返回 -EINVAL -> 用户侧看到
+     *      "VIDIOC_STREAMON returned -1 (Cannot allocate memory)"。
+     *   1080p 时因为 get_fmt 兜底路径偶尔能拿到尺寸所以"看起来正常",
+     *   4K 时更依赖这条枚举路径, 于是 4K 完全起不来。
+     */
     for (i = 0; i < MILIANKE_NUM_MODES; i++)
     {
-        if (fie->width != milianke_modes[i].width ||
-            fie->height != milianke_modes[i].height)
+        if (fie->width && fie->height &&
+            (fie->width != milianke_modes[i].width ||
+             fie->height != milianke_modes[i].height))
             continue;
         if (idx == fie->index)
         {
+            fie->width = milianke_modes[i].width;
+            fie->height = milianke_modes[i].height;
             fie->code = MEDIA_BUS_FMT_YUYV8_2X8;
             fie->interval.numerator = milianke_modes[i].fps_num;
             fie->interval.denominator = milianke_modes[i].fps_den;
