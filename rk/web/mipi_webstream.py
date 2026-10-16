@@ -1613,12 +1613,12 @@ def pipeline_set_fmt(w, h, media_dev=MEDIA_DEV, media_ctl="media-ctl"):
 # V24(2026-10-16): VMAX / 行周期跟传感器读出模式走。
 #   曝光行数 = VMAX - SHR0, VMAX 用错曝光就差一倍。
 #     1080p (2x2 binning): VMAX=2283, 行周期 542/74.25MHz = 7.30us
-#     4K    (all-pixel)  : VMAX=4503, 行周期 533/74.25MHz = 7.18us
+# V27: 4K    (all-pixel)  : VMAX=3449, 行周期 861/74.25MHz = 11.60us (891Mbps 档)
 #   （对应 ui_imx415_reg.v 的 0x3024/25 与 0x3028, 由 RES_MODE 选表）
 CAM_VMAX_1080      = 2283
 CAM_T_LINE_US_1080 = 7.30
-CAM_VMAX_4K        = 4503
-CAM_T_LINE_US_4K   = 7.18
+CAM_VMAX_4K        = 3449
+CAM_T_LINE_US_4K   = 11.60
 
 # 兼容旧引用 (默认按 1080p)
 CAM_VMAX      = CAM_VMAX_1080
@@ -1676,7 +1676,7 @@ def cam_phys(regs, status=None):
         shr0 = (pick("CAM_EXP_L", 0, 255, 0) |
                 (pick("CAM_EXP_M", 0, 255, 0) << 8) |
                 (pick("CAM_EXP_H", 0, 15, 0) << 16))
-        # V24: 曝光换算要跟传感器读出模式走 (4K 的 VMAX 是 4503, 不是 2283)
+        # V24/V27: 曝光换算要跟传感器读出模式走 (4K 的 VMAX 是 3449, 不是 2283)
         vmax, t_line = cam_mode_params(regs)
         # SHR0 = 0 表示“保持初始化表的值”, 按默认 8 报
         if not (1 <= shr0 <= vmax - 1):
@@ -1815,7 +1815,7 @@ class FpgaI2C(object):
             kl = str(k).strip().lower()
             # ---- 物理量 -> 寄存器 (网页用的是物理量, 更好懂) ----
             if kl in ("cam_exp_ms", "exp_ms"):
-                # V24: 曝光换算要跟模式走 —— 4K 的 VMAX=4503/行周期7.18us,
+                # V24/V27: 曝光换算要跟模式走 —— 4K 的 VMAX=3449/行周期11.60us,
                 #      1080p 是 2283/7.30us。用错的话设 16ms 实际只得到 8ms。
                 _vm, _tl = ((CAM_VMAX_4K, CAM_T_LINE_US_4K)
                             if int(self.args.height) > 1080

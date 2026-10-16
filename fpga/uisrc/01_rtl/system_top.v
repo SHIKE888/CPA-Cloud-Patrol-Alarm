@@ -470,9 +470,10 @@ cam_param #(
 	.rst_n      (S_pll_lock),
 	// V24: 帧长/增益初值跟传感器读出模式走
 	//   binning: VMAX=2283 行, 行周期 7.30us, GAIN_PGC_0 初值 0x30
-	//   4K     : VMAX=4503 行, 行周期 7.18us, GAIN_PGC_0 初值 0x10
-	.i_vmax         (S_is_4k ? 20'd4503        : 20'd2283),
-	.i_gain_default (S_is_4k ? 8'h10           : 8'h30 ),
+	// V27: 4K 改用 891Mbps 档(SYS_MODE=5), HMAX=861clk@74.25MHz = 11.60us
+	//      VMAX=3449 -> 40.0ms -> 25.0fps, 与 4K25 的 VTC(2060x2864) 对齐
+	.i_vmax         (S_is_4k ? 20'd3449        : 20'd2283),
+	.i_gain_default (8'h30                          ),
 	.i_exp      (S_cam_exp),
 	.i_gain     (S_cam_gain),
 	.i_ev_bias  (S_cam_ev),
@@ -640,31 +641,68 @@ end
 // S_full_reload 的声明已上移到 ui_cfg_imx415 例化之前 (见 V24 那一节)
 assign S_full_reload = (S_reload_sync24[2:1] == 2'b01);   // 24MHz 域的单拍脉冲
 
-// ---- D-PHY RX 复位: 必须用**独立、固定长度**的脉冲, 不能依赖任何在
-//      S_hs_rx_clk 上采样的同步器 —— 因为复位期间它就是把自己那个时钟掐掉
-//      了, 依赖它的同步器会把自己锁死(只能重烧 bit 才能救)。
-//      所以这里只在 25MHz 域计数, 与 S_hs_rx_clk 完全无关。
-// 250 ms @ 25MHz —— ★★ 这个长度是必须的, 不是随便留的余量。
-//   实测教训(2026-10-16): 一开始写 60ms, 结果切 4K 后 **RX 彻底停住**
-//   (FRAME_CNT 从 56fps 变 0fps)。原因就是 60ms < 传感器全表重写耗时:
-//   ui_cfg 先把 mode 切过去后要写 201 个寄存器(~78ms, 加上绕圈共 ~99ms),
-//   60ms 就把 D-PHY RX 放开了 => 传感器还在重配、lane 速率还没稳定,
-//   RX 锁到了垃圾速率上, 而且自己不会恢复。
-//   改成 250ms: 全表写完(~99ms) + 传感器内部锁相 + 余量。
-//   (写 RES_MODE 再触发一次切换就能重新锁上, 不用重烧 bit —— 已验证。)
-reg [23:0] S_dphy_rx_rst_cnt;
-reg        S_dphy_rx_rst = 1'b0;
+// ---- 同步 O_cfg_done 到 25MHz 域 ----
+//   用它判断"传感器全表重写"什么时候完成 —— 比猜时长靠谱得多。
+reg [2:0] S_cfg_done_sync25;
+always @(posedge I_sysclk_25m or negedge S_pll_lock) begin
+	if (!S_pll_lock) S_cfg_done_sync25 <= 3'b000;
+	else             S_cfg_done_sync25 <= {S_cfg_done_sync25[1:0], S_cam_cfg_done};
+end
+wire S_cfg_done_25 = S_cfg_done_sync25[2];
+
+//=============================================================================
+//  V25 (2026-10-16): D-PHY RX 复位 —— 用**完成信号**触发, 不再猜时长
+//-----------------------------------------------------------------------------
+//  两轮实测教训(都是切 4K 后 RX 彻底停住, FRAME_CNT 56fps -> 0):
+//    第一轮: 复位保持 60ms  -> 死
+//    第二轮: 复位保持 250ms -> 还是死
+//  因为"该等多久"取决于两件都不固定的事:
+//    ① ui_cfg 把传感器整张初始化表写完 (201 个寄存器 ~78ms, 加绕圈共 ~99ms)
+//    ② 传感器自己把 PLL 锁上、重启码流 (厂商资料没给, 只能实测)
+//  猜时长永远不保险。所以改成:
+//    复位一直保持 -> 等 O_cfg_done 上升(=主表写完) -> 再等 150ms -> 才释放
+//  另外加 1.2s 超时兜底: 万一完成信号没来(比如连写两次 RES_MODE 把边沿吃掉),
+//  也不会把整个视频通路永久摁在复位里 (那样只能重烧 bit 才能救)。
+//=============================================================================
+localparam [23:0] DPHY_RST_MARGIN  = 24'd3_750_000;   // 150 ms @ 25MHz
+localparam [24:0] DPHY_RST_TIMEOUT = 25'd30_000_000;  // 1.2 s  @ 25MHz
+
+reg  [1:0]  S_cfg_done_edge;
+reg         S_reload_wait;
+reg  [23:0] S_after_done_cnt;
+reg  [24:0] S_dphy_rst_to_cnt;
+reg         S_dphy_rx_rst = 1'b0;
+
 always @(posedge I_sysclk_25m or negedge S_pll_lock) begin
 	if (!S_pll_lock) begin
+		S_cfg_done_edge   <= 2'b00;
+		S_reload_wait     <= 1'b0;
+		S_after_done_cnt  <= 24'd0;
+		S_dphy_rst_to_cnt <= 25'd0;
 		S_dphy_rx_rst     <= 1'b0;
-		S_dphy_rx_rst_cnt <= 24'd0;
-	end else if (S_res_chg_d == 2'b01) begin
-		S_dphy_rx_rst     <= 1'b1;
-		S_dphy_rx_rst_cnt <= 24'd6_250_000;   // 250 ms
-	end else if (S_dphy_rx_rst_cnt != 24'd0) begin
-		S_dphy_rx_rst_cnt <= S_dphy_rx_rst_cnt - 24'd1;
 	end else begin
-		S_dphy_rx_rst     <= 1'b0;
+		S_cfg_done_edge <= {S_cfg_done_edge[0], S_cfg_done_25};
+		if (S_res_chg_d == 2'b01) begin
+			// 切换请求: 把 D-PHY RX 按住, 开始等"主表写完"
+			S_reload_wait     <= 1'b1;
+			S_dphy_rx_rst     <= 1'b1;
+			S_after_done_cnt  <= 24'd0;
+			S_dphy_rst_to_cnt <= DPHY_RST_TIMEOUT;
+		end else if (S_reload_wait) begin
+			if (S_cfg_done_edge == 2'b01) begin
+				// 主表写完 -> 再留 150ms 给传感器锁相/重启码流
+				S_reload_wait    <= 1'b0;
+				S_after_done_cnt <= DPHY_RST_MARGIN;
+			end else if (S_dphy_rst_to_cnt != 25'd0) begin
+				S_dphy_rst_to_cnt <= S_dphy_rst_to_cnt - 25'd1;
+			end else begin
+				S_reload_wait <= 1'b0;   // 超时兜底: 强行进入余量计时
+			end
+		end else if (S_after_done_cnt != 24'd0) begin
+			S_after_done_cnt <= S_after_done_cnt - 24'd1;
+		end else begin
+			S_dphy_rx_rst <= 1'b0;       // 释放
+		end
 	end
 end
 

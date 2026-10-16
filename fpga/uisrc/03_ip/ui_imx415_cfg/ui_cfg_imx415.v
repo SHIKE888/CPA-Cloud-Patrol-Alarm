@@ -301,8 +301,8 @@ always@(*)
 //        配合 ui_imx415_reg.v 主表开头把 0x3000/0x3002 写 0(待机),
 //        整条链就是正确的 待机 -> 改模式寄存器 -> 运行 顺序。
 //        (原来这里写的是 0x00/0x00 “挂待机”, 于是全链以“待机”结尾, 顺序反了。)
-		0:		REG_DATA_ST = {16'h3000, 8'h01}; 
-		1:		REG_DATA_ST = {16'h3002, 8'h01}; 
+		0:		REG_DATA_ST = {16'h3000, 8'h00};   // V27: 0=Operating (启动) 
+		1:		REG_DATA_ST = {16'h3002, 8'h00};   // V27: 0=Master operation start 
 		default:REG_DATA_ST = {16'h0000, 8'h00};
    endcase
 

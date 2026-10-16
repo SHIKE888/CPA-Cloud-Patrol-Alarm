@@ -1,0 +1,11738 @@
+
+===== PAGE 1 =====
+ 
+ 
+1 
+Copyright 2018 Sony Semiconductor Solutions Corporation 
+ 
+Diagonal 6.43 mm (Type 1/2.8) CMOS Solid-state Image Sensor with Square Pixel for 
+Color Cameras 
+ 
+IMX415-AAQR-G 
+ 
+Description 
+The IMX415-AAQR-G is a diagonal 6.4 mm (Type 1/2.8) CMOS active pixel type solid-state image sensor with a 
+square pixel array and 8.46 M effective pixels. This chip operates with analog 2.9 V, digital 1.1 V, and interface 1.8 V 
+triple power supply, and has low power consumption. High sensitivity, low dark current and no smear are achieved 
+through the adoption of R, G and B primary color mosaic filters. This chip features an electronic shutter with variable 
+charge-integration time. 
+(Applications: Security cameras) 
+ 
+Features 
+◆ CMOS active pixel type dots 
+◆ Built-in timing adjustment circuit, H/V driver and serial communication circuit 
+◆ Input frequency: 24 MHz / 27 MHz / 37.125 MHz / 72 MHz / 74.25 MHz 
+◆ Number of recommended recording pixels: 3840 (H) × 2160 (V) approx. 8.29M pixel 
+◆ Readout mode 
+All-pixel scan mode 
+Horizontal / Vertical 2/2-line binning mode 
+Window cropping mode 
+Horizontal / Vertical direction - Normal / Inverted readout mode 
+◆ Readout rate 
+Maximum frame rate in 
+All-pixel scan mode: 12 bit: 60.3 frame/s, 10 bit: 90.9 frame/s 
+◆ High dynamic range (HDR) function 
+Multiple exposure HDR 
+Digital overlap HDR 
+◆ Synchronizing sensors function 
+◆ Variable-speed shutter function (resolution 1H units) 
+◆ CDS / PGA function 
+0 dB to 30 dB : Analog Gain 30 dB (step pitch 0.3 dB) 
+30.3 dB to 72 dB : Analog Gain 30 dB + Digital Gain 0.3 dB to 42 dB (step pitch 0.3 dB) 
+◆ Supports I/O 
+CSI-2 serial data output ( 2 Lane / 4 Lane ), RAW10 / RAW12 output 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+Sony Semiconductor Solutions Corporation reserves the right to change products and specifications without prior notice. 
+This information does not convey any license by any implication or otherwise under any patents or other right. 
+Application circuits shown, if any, are typical examples illustrating the operation of the devices. Sony Semiconductor Solutions 
+Corporation cannot assume responsibility for any problems arising out of the use of these circuits. 
+ 
+E19505D2X
+
+===== PAGE 2 =====
+IMX415-AAQR-G 
+ 
+ 
+2 
+ 
+ 
+Device Structure 
+◆ CMOS image sensor 
+◆ Image size 
+Diagonal 6.4 mm (Type 1/2.8) 
+approx. 8.40 M pixels, All pixels 
+◆ Total number of pixels 
+3864 (H) × 2228 (V)  
+approx. 8.60 M pixels 
+◆ Number of effective pixels 
+3864 (H) × 2192 (V)  
+approx. 8.46 M pixels 
+◆ Number of active pixels 
+3864 (H) × 2176 (V)  
+approx. 8.40 M pixels 
+◆ Number of recommended recording pixels 
+3840 (H) × 2160 (V)  
+approx. 8.29 M pixels 
+◆ Unit cell size 
+1.45 µm (H) × 1.45 µm (V) 
+◆ Optical black 
+Horizontal (H) direction: Front 0 pixels, rear 0 pixels 
+Vertical (V) direction: Front 36 pixels, rear 0 pixels 
+◆ Dummy 
+Horizontal (H) direction: Front 0 pixels, rear 0 pixels 
+Vertical (V) direction: Front 1 pixels, rear 1 pixels 
+◆ Substrate material 
+Silicon 
+ 
+ 
+
+===== PAGE 3 =====
+IMX415-AAQR-G 
+ 
+ 
+3 
+ 
+ 
+Absolute Maximum Ratings 
+Item 
+Symbol 
+Min. 
+Max. 
+Unit 
+Remarks 
+Supply voltage (analog: 2.9 V) 
+AVDD 
+-0.3 
+3.3 
+V 
+ 
+Supply voltage (interface: 1.8 V) 
+OVDD 
+-0.3 
+3.3 
+V 
+ 
+Supply voltage (digital: 1.1 V) 
+DVDD 
+-0.3 
+2.0 
+V 
+ 
+Input voltage 
+VI 
+-0.3 
+OVDD + 0.3 
+V 
+Not exceed 3.3 V 
+Output voltage 
+VO 
+-0.3 
+OVDD + 0.3 
+V 
+Not exceed 3.3 V 
+Operating temperature 
+Topr 
+-30 
+85 
+˚C 
+ 
+Storage temperature 
+Tstg 
+-40 
+85 
+˚C 
+ 
+ 
+Application Conditions 
+Item 
+Symbol 
+Min. 
+Typ. 
+Max. 
+Unit 
+Supply voltage (analog: 2.9 V) 
+AVDD 
+2.80 
+2.90 
+3.00 
+V 
+Supply voltage (interface: 1.8 V) 
+OVDD 
+1.70 
+1.80 
+1.90 
+V 
+Supply voltage (digital: 1.1 V) 
+DVDD 
+1.00 
+1.10 
+1.20 
+V 
+Performance guarantee temperature 
+Tspec 
+-10 
+─ 
+60 
+˚C 
+ 
+ 
+
+===== PAGE 4 =====
+IMX415-AAQR-G 
+ 
+ 
+4 
+ 
+ 
+USE RESTRICTION NOTICE 
+ 
+ 
+ 
+This USE RESTRICTION NOTICE ("Notice") is for customers who are considering or currently using the 
+image sensor products ("Products") set forth in this specifications book. Sony Semiconductor Solutions  
+Corporation ("SSS") may, at any time, modify this Notice which will be available to you in the latest  
+specifications book for the Products. You should abide by the latest version of this Notice. If a SSS  
+subsidiary or distributor has its own use restriction notice on the Products, such a use restriction notice will 
+additionally apply between you and the subsidiary or distributor. You should consult a sales representative of  
+the subsidiary or distributor of SSS on such a use restriction notice when you consider using the Products. 
+ 
+ 
+Use Restrictions 
+ The Products are intended for incorporation into such general electronic equipment as office products, 
+communication products, measurement products, and home electronics products in accordance with 
+the terms and conditions set forth in this specifications book and otherwise notified by SSS from time 
+to time. 
+ You should not use the Products for critical applications which may pose a life- or injury-threatening 
+risk or are highly likely to cause significant property damage in the event of failure of the Products. You 
+should consult your sales representative beforehand when you consider using the Products for such 
+critical applications. In addition, you should not use the Products in weapon or military equipment. 
+ SSS disclaims and does not assume any liability and damages arising out of misuse, improper use, 
+modification, use of the Products for the above-mentioned critical applications, weapon and military 
+equipment, or any deviation from the requirements set forth in this specifications book. 
+ 
+ 
+Design for Safety 
+ SSS is making continuous efforts to further improve the quality and reliability of the Products; however, 
+failure of a certain percentage of the Products is inevitable. Therefore, you should take sufficient care 
+to ensure the safe design of your products such as component redundancy, anti-conflagration features, 
+and features to prevent mis-operation in order to avoid accidents resulting in injury or death, fire or 
+other social damage as a result of such failure. 
+ 
+ 
+Export Control 
+ If the Products are controlled items under the export control laws or regulations of various countries, 
+approval may be required for the export of the Products under the said laws or regulations. 
+You should be responsible for compliance with the said laws or regulations. 
+ 
+ 
+No License Implied 
+ The technical information shown in this specifications book is for your reference purposes only. The 
+availability of this specifications book shall not be construed as giving any indication that SSS and its 
+licensors will license any intellectual property rights in such information by any implication or otherwise. 
+SSS will not assume responsibility for any problems in connection with your use of such information or 
+for any infringement of third-party rights due to the same. It is therefore your sole legal and financial 
+responsibility to resolve any such problems and infringement. 
+ 
+ 
+Governing Law 
+ This Notice shall be governed by and construed in accordance with the laws of Japan, without reference 
+to principles of conflict of laws or choice of laws. All controversies and disputes arising out of or relating 
+to this Notice shall be submitted to the exclusive jurisdiction of the Tokyo District Court in Japan as the 
+court of first instance. 
+ 
+ 
+Other Applicable Terms and Conditions 
+ The terms and conditions in the SSS additional specifications, which will be made available to you when 
+you order the Products, shall also be applicable to your use of the Products as well as to this 
+specifications book. You should review those terms and conditions when you consider purchasing 
+and/or using the Products. 
+ 
+ 
+General-0.0.9 
+
+===== PAGE 5 =====
+IMX415-AAQR-G 
+ 
+ 
+5 
+ 
+ 
+Contents 
+Description ............................................................................................................................................................................. 1 
+Features ................................................................................................................................................................................. 1 
+Device Structure ..................................................................................................................................................................... 2 
+Absolute Maximum Ratings .................................................................................................................................................... 3 
+Application Conditions ............................................................................................................................................................ 3 
+USE RESTRICTION NOTICE ................................................................................................................................................ 4 
+Optical Center ........................................................................................................................................................................ 7 
+Pixel Arrangement .................................................................................................................................................................. 8 
+Block Diagram and Pin Configuration ..................................................................................................................................... 9 
+Pin Description ...................................................................................................................................................................... 11 
+Electrical Characteristics ...................................................................................................................................................... 14 
+DC Characteristics ............................................................................................................................................................ 14 
+Current Consumption ........................................................................................................................................................ 15 
+AC Characteristics ............................................................................................................................................................ 16 
+Master Clock Waveform (INCK) .................................................................................................................................... 16 
+System Clear (XCLR) .................................................................................................................................................... 17 
+XVS / XHS Input Characteristics in Slave Mode (Register XMASTER = 1) .................................................................. 18 
+XVS / XHS Output Characteristics in Master Mode (Register XMASTER = 0) .............................................................. 18 
+Serial Communication ................................................................................................................................................... 19 
+I/O Equivalent Circuit Diagram ............................................................................................................................................. 21 
+Spectral Sensitivity Characteristics ...................................................................................................................................... 22 
+Image Sensor Characteristics .............................................................................................................................................. 23 
+Image Sensor Characteristics Measurement Method........................................................................................................... 24 
+Measurement Conditions .................................................................................................................................................. 24 
+Color Coding of Physical Pixel Array ................................................................................................................................ 24 
+Definition of standard imaging conditions ......................................................................................................................... 24 
+Measurement Method ....................................................................................................................................................... 25 
+Setting Registers Using Serial Communication .................................................................................................................... 26 
+Description of Setting Registers (I2C) ............................................................................................................................... 26 
+Register Communication Timing (I2C) ............................................................................................................................... 27 
+Communication Protocol ................................................................................................................................................... 28 
+Register Write and Read (I2C) .......................................................................................................................................... 29 
+Single Read from Random Location ............................................................................................................................. 29 
+Single Read from Current Location ............................................................................................................................... 29 
+Sequential Read Starting from Random Location ......................................................................................................... 30 
+Sequential Read Starting from Current Location ........................................................................................................... 30 
+Single Write to Random Location .................................................................................................................................. 31 
+Sequential Write Starting from Random Location ......................................................................................................... 31 
+Register Map ........................................................................................................................................................................ 32 
+Readout Drive mode ............................................................................................................................................................ 48 
+Operating mode ................................................................................................................................................................ 48 
+Image Data Output Format (CSI-2 output) ........................................................................................................................ 50 
+Frame Format ............................................................................................................................................................... 50 
+Frame Structure ............................................................................................................................................................ 50 
+Embedded Data Line .................................................................................................................................................... 51 
+Image Data Output Format ............................................................................................................................................... 53 
+All-pixel mode ................................................................................................................................................................ 54 
+Horizontal/Vertical 2/2-line binning mode ...................................................................................................................... 57 
+Window Cropping Mode ................................................................................................................................................ 62 
+Description of Various Function ............................................................................................................................................ 64 
+Standby Mode................................................................................................................................................................... 64 
+Slave Mode and Master Mode .......................................................................................................................................... 65 
+Gain Adjustment Function ................................................................................................................................................. 67 
+Black Level Adjustment Function ...................................................................................................................................... 68 
+Normal Operation and Inverted Operation ........................................................................................................................ 69 
+Shutter and Integration Time Settings ............................................................................................................................... 70 
+Example of Integration Time Setting ............................................................................................................................. 70 
+Normal Exposure Operation (Controlling the Integration Time in 1H Units) ...................................................................... 71 
+
+===== PAGE 6 =====
+IMX415-AAQR-G 
+ 
+ 
+6 
+ 
+ 
+Long Exposure Operation (Control by Expanding the Number of Lines per Frame) ......................................................... 72 
+Example of Integration Time Settings ............................................................................................................................... 73 
+Signal Output .................................................................................................................................................................... 74 
+CSI-2 output...................................................................................................................................................................... 74 
+MIPI Transmitter ............................................................................................................................................................... 76 
+Number of Internal A/D Conversion Bits Setting ............................................................................................................ 77 
+Output Signal Range ..................................................................................................................................................... 77 
+INCK Setting ..................................................................................................................................................................... 78 
+Register Hold Setting ........................................................................................................................................................ 82 
+Mode Transitions .............................................................................................................................................................. 83 
+Other Function .................................................................................................................................................................. 84 
+Power-on and Power-off Sequence ...................................................................................................................................... 85 
+Power-on sequence .......................................................................................................................................................... 85 
+Slew Rate Limitation of Power-on Sequence .................................................................................................................... 86 
+Power-off sequence .......................................................................................................................................................... 87 
+Sensor Setting Flow .......................................................................................................................................................... 88 
+Setting Flow in Sensor Slave Mode .............................................................................................................................. 88 
+Setting Flow in Sensor Master Mode ............................................................................................................................ 89 
+Peripheral Circuit .................................................................................................................................................................. 90 
+Spot Pixel Specifications ...................................................................................................................................................... 91 
+Zone Definition .................................................................................................................................................................. 91 
+Notice on White Pixels Specifications .................................................................................................................................. 92 
+Measurement Method for Spot Pixels .................................................................................................................................. 93 
+Spot Pixel Pattern Specification ........................................................................................................................................... 94 
+Marking ................................................................................................................................................................................ 95 
+Notes On Handling ............................................................................................................................................................... 96 
+Package Outline ................................................................................................................................................................... 98 
+List of Trademark Logos and Definition Statements ............................................................................................................. 99 
+ 
+ 
+
+===== PAGE 7 =====
+IMX415-AAQR-G 
+ 
+ 
+7 
+ 
+ 
+Optical Center 
+ 
+Sensor
+scanning V
+direction (normal)
+Sensor
+scanning H
+direction (normal)
+Package
+outline V
+direction
+4.65 ± 0.075 mm
+6.00 ± 0.075 mm
+Top View
+Package center
+Optical center
+A1-Pin
+P1-Pin
+A11-Pin
+P11-Pin
+Package
+outline H
+direction
+Package reference (H, V)
+12.0 ± 0.1 mm
+9.30 ± 0.10 mm
+Effective pixel area
+Chip area
+ 
+ 
+Optical Center 
+ 
+ 
+
+===== PAGE 8 =====
+IMX415-AAQR-G 
+ 
+ 
+8 
+ 
+ 
+Pixel Arrangement 
+ 
+A11 pin
+Top View
+Reference pin
+OB side ignored area
+8
+17
+18
+Vertical scan direction (Normal)
+Horizontal scan direction (Normal)
+Vertical(V) direction effective OB
+Total number of pixels: 
+3864(H) × 2228(V) =  8.60 M
+Number of effective pixels: 3864(H) × 2192(V) =  8.46 M
+Number of active pixels:
+3864(H) × 2176(V) =  8.40 M
+Number of recommended recording pixels:
+3840(H) × 2160(V) =  8.29 M
+12
+Effective margin for color processing
+13
+3840
+9
+Effective margin for color processing
+Effective margin for color processing
+Recording Pixel area
+G
+12
+Effective pixel ignored area
+0
+0
+Ignored area of effective pixel side
+Effective margin for color processing
+Ignored area of effective pixel side
+G B
+R
+2160
+2
+Effective pixel ignored area
+R G
+G B
+1
+OB side ignored area
+A1 pin
+P1 pin
+P11 pin
+Dummy
+1
+1
+Dummy
+G
+G
+B
+R
+G R
+G
+B
+G
+R
+G B
+G
+R
+G B
+G R
+G
+B
+G
+G
+B
+R
+ 
+ 
+* 
+Reference pin number is consecutive numbering of package pin array. 
+ 
+See the Pin Configuration for the number of each pin. 
+ 
+Dummy is the effective pixels to ignore the data content. 
+ 
+The last Effective line and column are not read-out. 
+ 
+Pixel Arrangement 
+ 
+ 
+
+===== PAGE 9 =====
+IMX415-AAQR-G 
+ 
+ 
+9 
+ 
+ 
+Block Diagram and Pin Configuration 
+ 
+Sensor
+Drive Circuit
+PLL
+Bias
+Sensor Control Unit
+CDS/Column Circuit
+2/4 lane CSI-2 Output
+12/10 Bit digital Output
+CDS/Column Circuit
+ 
+ 
+Block Diagram 
+ 
+ 
+
+===== PAGE 10 =====
+IMX415-AAQR-G 
+ 
+ 
+10 
+ 
+ 
+ 
+A
+B
+C
+D
+E
+F
+G
+H
+J
+K
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+NC
+NC
+NC
+NC
+NC
+NC
+NC
+NC
+NC
+NC
+NC
+NC
+VDDLSC
+VRLT
+VSSHPX
+(GND)
+Power Supply (2.9V)
+Power Supply (1.8V)
+GND (2.9V)
+GND (1.1V / 1.8V)
+Clock
+Data output 
+DMO1N
+VSSLSC
+DCKN
+VDDLSC
+DMO3N
+DMO1P
+VSSLSC
+VSSLSC
+DMO3P
+VSSHPX
+VDDHPX
+VDDHPX
+VSSHPX
+(GND)
+(GND)
+SCL
+(GND)
+(GND)
+VDDHPX
+TVMON
+VRLRS
+VRHT
+VSSLSC
+VSSLSC
+VDDLIF
+VSSHPX
+(GND)
+(GND)
+(GND)
+(GND)
+VSSLSC
+(GND)
+(GND)
+VDDLIF
+VSSLSC
+DCKP
+(GND)
+VDDHPX
+VDDHPX
+VSSHPX
+NC
+NC
+NC
+NC
+NC
+(GND)
+(GND)
+(GND)
+(GND)
+VSSLSC
+VSSLSC
+VDDLSC
+VSSLSC
+NC
+(GND)
+Power Supply (1.1V)
+VDDLPL2
+VSSLCN
+VSSLPL2
+DMO4N
+VSSLPL1
+VSSLSC
+DMO2N
+(GND)
+TOUT
+NC
+DMO4P
+VSSLSC
+DMO2P
+VSSLSC
+VSSLSC
+VSSLSC
+VSSLSC
+INCK
+L
+M
+N
+11
+NC
+NC
+NC
+NC
+SDA
+VDDMIO
+SLAMODE0
+VDDLSC
+(GND)
+(GND)
+NC
+(GND)
+XVS
+XCLR
+XHS
+TENABLE
+NC
+(GND)
+NC
+(GND)
+NC
+(GND)
+NC
+(GND)
+NC
+(GND)
+(GND)
+VSSHAN
+VDDHAN
+NC
+NC
+(GND)
+(GND)
+P
+VDDMIO
+VDDMIO
+VDDLCN
+VSSLSC
+VSSLSC
+VSSLCN
+VSSHPX
+VSSHPX
+VSSHPX
+VSSHPX
+VDDHAN
+VSSLSC
+VDDHAN
+VSSHPX
+SLAMODE1
+(GND)
+NC
+(GND)
+(GND)
+NC
+(GND)
+VDDLPL1
+VDDMIO
+VDDLSC
+VDDLCN
+Bottom View
+Capacitor connection 
+ 
+ 
+*The N.C. pin with (GND) can be connected to GND. 
+ 
+Pin Configuration 
+ 
+ 
+
+===== PAGE 11 =====
+IMX415-AAQR-G 
+ 
+ 
+11 
+ 
+ 
+Pin Description 
+No. 
+Pin No 
+I/O 
+Analog 
+/ Digital 
+Symbol 
+Description 
+1 
+A1 
+― 
+― 
+N.C. 
+GND connectable 
+2 
+A3 
+Power 
+D 
+VDDLSC 
+1.1 V power supply 
+3 
+A4 
+Power 
+D 
+VDDMIO 
+1.8 V power supply 
+4 
+A5 
+Power 
+D 
+VDDMIO 
+1.8 V power supply 
+5 
+A6 
+Power 
+D 
+VDDLSC 
+1.1 V power supply 
+6 
+A7 
+Power 
+D 
+VDDLCN 
+1.1 V power supply 
+7 
+A8 
+― 
+― 
+N.C. 
+GND connectable 
+8 
+A9 
+O 
+A 
+VRHT 
+Capacitor connection 
+9 
+A11 
+― 
+― 
+N.C. 
+GND connectable 
+10 
+B3 
+GND 
+D 
+VSSLSC 
+1.1 V / 1.8 V GND 
+11 
+B4 
+GND 
+D 
+VSSLSC 
+1.1 V / 1.8 V GND 
+12 
+B5 
+GND 
+D 
+VSSLSC 
+1.1 V / 1.8 V GND 
+13 
+B6 
+GND 
+D 
+VSSLSC 
+1.1 V / 1.8 V GND 
+14 
+B7 
+GND 
+D 
+VSSLCN 
+1.1 V / 1.8 V GND 
+15 
+B8 
+― 
+― 
+N.C. 
+GND connectable 
+16 
+B9 
+GND 
+A 
+VSSHPX 
+2.9 V GND 
+17 
+C1 
+Power 
+D 
+VDDLIF 
+1.1 V power supply 
+18 
+C2 
+GND 
+D 
+VSSLSC 
+1.1 V / 1.8 V GND 
+19 
+C3 
+― 
+― 
+N.C. 
+GND connectable 
+20 
+C4 
+O 
+A 
+TVMON 
+TEST output pin, OPEN 
+21 
+C5 
+― 
+― 
+N.C. 
+GND connectable 
+22 
+C6 
+― 
+― 
+N.C. 
+GND connectable 
+23 
+C7 
+― 
+― 
+N.C. 
+GND connectable 
+24 
+C8 
+― 
+― 
+N.C. 
+GND connectable 
+25 
+C9 
+― 
+― 
+N.C. 
+GND connectable 
+26 
+C10 
+GND 
+A 
+VSSHPX 
+2.9 V GND 
+27 
+C11 
+O 
+A 
+VRLRS 
+Capacitor connection 
+28 
+D1 
+GND 
+D 
+VSSLSC 
+1.1 V / 1.8 V GND 
+29 
+D2 
+GND 
+D 
+VSSLSC 
+1.1 V / 1.8 V GND 
+30 
+D3 
+― 
+― 
+N.C. 
+GND connectable 
+31 
+D4 
+GND 
+A 
+VSSHAN 
+2.9 V GND 
+32 
+D5 
+GND 
+A 
+VSSHPX 
+2.9 V GND 
+33 
+D6 
+GND 
+A 
+VSSHPX 
+2.9 V GND 
+34 
+D7 
+GND 
+A 
+VSSHPX 
+2.9 V GND 
+35 
+D8 
+GND 
+A 
+VSSHPX 
+2.9 V GND 
+36 
+D9 
+― 
+― 
+N.C. 
+GND connectable 
+37 
+D10 
+GND 
+A 
+VSSHPX 
+2.9 V GND 
+38 
+D11 
+O 
+A 
+VRLT 
+Capacitor connection 
+39 
+E1 
+O 
+D 
+DMO3N 
+CSI-2 output (data) 
+40 
+E2 
+O 
+D 
+DMO3P 
+CSI-2 output (data) 
+41 
+E3 
+― 
+― 
+N.C. 
+GND connectable 
+42 
+E4 
+Power 
+A 
+VDDHAN 
+2.9 V power supply 
+43 
+E5 
+Power 
+A 
+VDDHAN 
+2.9 V power supply 
+44 
+E6 
+Power 
+A 
+VDDHPX 
+2.9 V power supply 
+45 
+E7 
+Power 
+A 
+VDDHPX 
+2.9 V power supply 
+46 
+E8 
+Power 
+A 
+VDDHPX 
+2.9 V power supply 
+
+===== PAGE 12 =====
+IMX415-AAQR-G 
+ 
+ 
+12 
+ 
+ 
+No. 
+Pin No 
+I/O 
+Analog 
+/ Digital 
+Symbol 
+Description 
+47 
+E9 
+― 
+― 
+N.C. 
+GND connectable 
+48 
+E10 
+― 
+― 
+N.C. 
+GND connectable 
+49 
+E11 
+― 
+― 
+N.C. 
+GND connectable 
+50 
+F1 
+O 
+D 
+DMO1N 
+CSI-2 output (data) 
+51 
+F2 
+O 
+D 
+DMO1P 
+CSI-2 output (data) 
+52 
+F10 
+GND 
+D 
+VSSLSC 
+1.1 V / 1.8 V GND 
+53 
+F11 
+Power 
+D 
+VDDLSC 
+1.1 V power supply 
+54 
+G1 
+GND 
+D 
+VSSLSC 
+1.1 V / 1.8 V GND 
+55 
+G2 
+GND 
+D 
+VSSLSC 
+1.1 V / 1.8 V GND 
+56 
+G10 
+I 
+D 
+TENABLE 
+Test enable, OPEN 
+57 
+G11 
+Power 
+D 
+VDDMIO 
+1.8 V power supply 
+58 
+H1 
+O 
+D 
+DCKN 
+CSI-2 output (clock) 
+59 
+H2 
+O 
+D 
+DCKP 
+CSI-2 output (clock) 
+60 
+H10 
+I 
+D 
+SLAMODE0 
+Select slave address 
+61 
+H11 
+I 
+D 
+XCLR 
+System clear 
+62 
+J1 
+GND 
+D 
+VSSLSC 
+1.1 V / 1.8 V GND 
+63 
+J2 
+GND 
+D 
+VSSLSC 
+1.1 V / 1.8 V GND 
+64 
+J10 
+I 
+D 
+SLAMODE1 
+Select slave address 
+65 
+J11 
+I/O 
+D 
+SDA 
+Serial data communication 
+66 
+K1 
+O 
+D 
+DMO2N 
+CSI-2 output (data) 
+67 
+K2 
+O 
+D 
+DMO2P 
+CSI-2 output (data) 
+68 
+K3 
+― 
+― 
+N.C. 
+GND connectable 
+69 
+K4 
+― 
+― 
+N.C. 
+GND connectable 
+70 
+K5 
+Power 
+A 
+VDDHAN 
+2.9 V power supply 
+71 
+K6 
+― 
+― 
+N.C. 
+GND connectable 
+72 
+K7 
+Power 
+A 
+VDDHPX 
+2.9 V power supply 
+73 
+K8 
+Power 
+A 
+VDDHPX 
+2.9 V power supply 
+74 
+K9 
+― 
+― 
+N.C. 
+GND connectable 
+75 
+K10 
+I/O 
+D 
+SCL 
+Serial clock input 
+76 
+K11 
+I/O 
+D 
+XVS 
+Vertical sync signal 
+77 
+L1 
+O 
+D 
+DMO4N 
+CSI-2 output (data) 
+78 
+L2 
+O 
+D 
+DMO4P 
+CSI-2 output (data) 
+79 
+L3 
+― 
+― 
+N.C. 
+GND connectable 
+80 
+L4 
+― 
+― 
+N.C. 
+GND connectable 
+81 
+L5 
+GND 
+A 
+VSSHPX 
+2.9 V GND 
+82 
+L6 
+― 
+― 
+N.C. 
+GND connectable 
+83 
+L7 
+GND 
+A 
+VSSHPX 
+2.9 V GND 
+84 
+L8 
+GND 
+A 
+VSSHPX 
+2.9 V GND 
+85 
+L9 
+― 
+― 
+N.C. 
+GND connectable 
+86 
+L10 
+I/O 
+D 
+TOUT 
+Digital TEST output pin, OPEN 
+87 
+L11 
+I/O 
+D 
+XHS 
+Horizontal sync signal 
+88 
+M1 
+GND 
+D 
+VSSLSC 
+1.1 V / 1.8 V GND 
+89 
+M2 
+GND 
+D 
+VSSLSC 
+1.1 V / 1.8 V GND 
+90 
+M3 
+― 
+― 
+N.C. 
+GND connectable 
+91 
+M4 
+― 
+― 
+N.C. 
+GND connectable 
+92 
+M5 
+― 
+― 
+N.C. 
+GND connectable 
+93 
+M6 
+― 
+― 
+N.C. 
+GND connectable 
+94 
+M7 
+― 
+― 
+N.C. 
+GND connectable 
+95 
+M8 
+― 
+― 
+N.C. 
+GND connectable 
+
+===== PAGE 13 =====
+IMX415-AAQR-G 
+ 
+ 
+13 
+ 
+ 
+No. 
+Pin No 
+I/O 
+Analog 
+/ Digital 
+Symbol 
+Description 
+96 
+M9 
+― 
+― 
+N.C. 
+GND connectable 
+97 
+M10 
+GND 
+D 
+VSSLSC 
+1.1 V / 1.8 V GND 
+98 
+M11 
+I 
+D 
+INCK 
+Master clock input 
+99 
+N3 
+GND 
+D 
+VSSLSC 
+1.1 V / 1.8 V GND 
+100 
+N4 
+GND 
+A 
+VSSLPL2 
+1.1 V / 1.8 V GND 
+101 
+N5 
+GND 
+A 
+VSSLPL1 
+1.1 V / 1.8 V GND 
+102 
+N6 
+GND 
+D 
+VSSLSC 
+1.1 V / 1.8 V GND 
+103 
+N7 
+GND 
+D 
+VSSLSC 
+1.1 V / 1.8 V GND 
+104 
+N8 
+GND 
+D 
+VSSLSC 
+1.1 V / 1.8 V GND 
+105 
+N9 
+GND 
+D 
+VSSLCN 
+1.1 V / 1.8 V GND 
+106 
+P1 
+― 
+― 
+N.C. 
+GND connectable 
+107 
+P3 
+Power 
+D 
+VDDLIF 
+1.1 V power supply 
+108 
+P4 
+Power 
+A 
+VDDLPL2 
+1.1 V power supply 
+109 
+P5 
+Power 
+A 
+VDDLPL1 
+1.1 V power supply 
+110 
+P6 
+Power 
+D 
+VDDLSC 
+1.1 V power supply 
+111 
+P7 
+Power 
+D 
+VDDMIO 
+1.8 V power supply 
+112 
+P8 
+Power 
+D 
+VDDLSC 
+1.1 V power supply 
+113 
+P9 
+Power 
+D 
+VDDLCN 
+1.1 V power supply 
+114 
+P11 
+― 
+― 
+N.C. 
+GND connectable 
+ 
+ 
+ 
+
+===== PAGE 14 =====
+IMX415-AAQR-G 
+ 
+ 
+14 
+ 
+ 
+Electrical Characteristics 
+DC Characteristics 
+Item 
+Pins 
+Symbol 
+Condition 
+Min. 
+Typ. 
+Max. 
+Unit 
+Supply 
+voltage 
+Analog 
+VDDHx 
+AVDD 
+ 
+2.80 
+2.90 
+3.00 
+V 
+Interface 
+VDDMx 
+OVDD 
+ 
+1.70 
+1.80 
+1.90 
+V 
+Digital 
+VDDLx 
+DVDD 
+ 
+1.00 
+1.10 
+1.20 
+V 
+Digital input voltage 
+XHS 
+XVS 
+XCLR 
+INCK 
+SLAMODE0 
+SLAMODE1 
+VIH 
+XVS / XHS 
+Slave Mode 
+0.8 × OVDD 
+― 
+― 
+V 
+VIL 
+— 
+― 
+0.2 × OVDD 
+V 
+Digital output voltage 
+XHS 
+XVS 
+TOUT 
+VOH 
+XVS / XHS 
+Master Mode 
+OVDD – 0.2 
+― 
+― 
+V 
+VOL 
+― 
+― 
+0.2 
+V 
+ 
+ 
+ 
+
+===== PAGE 15 =====
+IMX415-AAQR-G 
+ 
+ 
+15 
+ 
+ 
+Current Consumption 
+Item 
+Symbol 
+Typ. 
+Max. 
+Unit 
+Operating current 
+MIPI CSI-2 / 4 Lane, 2079 Mbps 
+12 bit, 60 frame/s 
+All-pixel mode  
+IAVDD 
+128 
+156 
+mA 
+IOVDD 
+3 
+3 
+mA 
+IDVDD 
+187 
+250 
+mA 
+Standby current 
+IAVDD_STB 
+－ 
+0.2 
+mA 
+IOVDD_STB 
+－ 
+0.2 
+mA 
+IDVDD_STB 
+－ 
+15.1 
+mA 
+ 
+Operating current:  
+(Typ.) Supply voltage 2.9 V / 1.8 V / 1.1 V, Tj = 25 ˚C, standard luminous intensity. 
+(Max.) Supply voltage 3.0 V / 1.9 V / 1.2 V, Tj = 60 ˚C, worst state of internal circuit 
+operating current consumption, 
+Standby: 
+ 
+(Max.) Supply voltage 3.0 V / 1.9 V / 1.2 V, Tj = 60 ˚C, INCK: 0 V, light-obstructed state. 
+ 
+ 
+ 
+
+===== PAGE 16 =====
+IMX415-AAQR-G 
+ 
+ 
+16 
+ 
+ 
+AC Characteristics 
+Master Clock Waveform (INCK) 
+INCK
+0.8 × OVDD
+0.2 × OVDD
+0.5 × OVDD
+1/fINCK
+tP
+Duty Ratio = tWP / tP × 100
+tWP
+tWHINCK
+tWLINCK
+Tr_inck
+Tf_inck
+ 
+ 
+INCK 24MHz, 27MHz, 37125MHz, 72MHz, 74.25MHz 
+ 
+Item 
+Symbol 
+Min. 
+Typ. 
+Max. 
+Unit 
+Remarks 
+INCK clock frequency 
+fINCK 
+fINCK × 0.96 
+fINCK 
+fINCK × 1.02 
+MHz 
+fINCK = 24 MHz, 27 MHz, 
+37.125 MHz, 72 MHz, 
+74.25 MHz 
+INCK Low level pulse width 
+tWLINCK 
+4 
+― 
+― 
+ns 
+INCK High level pulse width 
+tWHINCK 
+4 
+― 
+― 
+ns 
+INCK clock duty 
+― 
+45 
+50 
+55 
+% 
+Define with 0.5 × OVDD 
+INCK Rise time 
+Tr_inck 
+― 
+― 
+5 
+ns 
+20 % to 80 % 
+INCK Fall time 
+Tf_inck 
+― 
+― 
+5 
+ns 
+80 % to 20 % 
+ 
+*  The INCK fluctuation affects the frame rate. 
+ 
+ 
+
+===== PAGE 17 =====
+IMX415-AAQR-G 
+ 
+ 
+17 
+ 
+ 
+System Clear (XCLR) 
+ 
+XCLR
+0.8 × OVDD
+0.2 × OVDD
+tWLXCLR
+Tf_xclr
+Tr_xclr
+ 
+ 
+Item 
+Symbol 
+Min. 
+Typ. 
+Max. 
+Unit 
+Remarks 
+XCLR Low level pulse width 
+tWLXCLR 
+4 / fINCK  
+― 
+― 
+ns 
+ 
+XCLR Rise time 
+Tr_xclr 
+― 
+― 
+5 
+ns 
+20 % to 80 % 
+XCLR Fall time 
+Tf_xclr 
+― 
+― 
+5 
+ns 
+80 % to 20 % 
+ 
+ 
+ 
+
+===== PAGE 18 =====
+IMX415-AAQR-G 
+ 
+ 
+18 
+ 
+ 
+XVS / XHS Input Characteristics in Slave Mode (Register XMASTER = 1) 
+0.8 × OVDD
+0.2 × OVDD
+XVS
+XHS
+tWLXHS
+tHFDLY
+tVRDLY
+tWHXHS
+0.8 × OVDD
+0.2 × OVDD
+Tf_xvs
+Tr_xvs
+Tf_xhs
+Tr_xhs
+ 
+ 
+Item 
+Symbol 
+Min. 
+Typ. 
+Max. 
+Unit 
+Remarks 
+XHS Low level pulse width 
+tWLXHS 
+4 / fINCK 
+― 
+― 
+ns 
+ 
+XHS High level pulse width 
+tWHXHS 
+4 / fINCK 
+― 
+― 
+ns 
+ 
+XVS - XHS fall width 
+tHFDLY 
+1 / fINCK 
+― 
+― 
+ns 
+ 
+XHS - XVS rise width 
+tVRDLY 
+1 / fINCK 
+― 
+― 
+ns 
+ 
+XVS Rise time 
+Tr_xvs 
+― 
+― 
+5 
+ns 
+20 % to 80 % 
+XVS Fall time 
+Tf_xvs 
+― 
+― 
+5 
+ns 
+80 % to 20 % 
+XHS Rise time 
+Tr_xhs 
+― 
+― 
+5 
+ns 
+20 % to 80 % 
+XHS Fall time 
+Tf_xhs 
+― 
+― 
+5 
+ns 
+80 % to 20 % 
+ 
+ 
+XVS / XHS Output Characteristics in Master Mode (Register XMASTER = 0) 
+* XVS and XHS cannot be used for the sync signal to pixels. 
+Be sure to detect sync code to detect the start of effective pixels in 1 line. 
+For the output waveforms in master mode, see the item of “Slave Mode and Master Mode” 
+ 
+ 
+ 
+
+===== PAGE 19 =====
+IMX415-AAQR-G 
+ 
+ 
+19 
+ 
+ 
+Serial Communication 
+I2C 
+ 
+Repeated
+Start 
+condition
+SDA
+SCL
+VIH/VOH
+VIL/VOL
+VIL
+VIH
+tBUF
+tr
+tLOW
+tHD;DAT
+tSU;DAT
+tHD;STA
+tf
+tr
+tHIGH
+tHD;STA
+tSU;STA
+tSU;STO
+Start 
+condition
+Stop 
+condition
+tof
+ 
+ 
+I2C Specification 
+Item 
+Symbol 
+Min. 
+Typ. 
+Max. 
+Unit 
+Remarks 
+Low level input voltage 
+VIL 
+–0.3 
+— 
+0.3 × OVDD 
+V 
+ 
+High level input voltage 
+VIH 
+0.7 × OVDD 
+— 
+1.9 
+V 
+ 
+Low level output voltage 
+VOL 
+0 
+— 
+0.2 × OVDD 
+V 
+OVDD < 2 V, Sink 3 mA 
+High level output voltage 
+VOH 
+0.8 × OVDD 
+— 
+— 
+V 
+ 
+Input current 
+Ii 
+–10 
+— 
+10 
+µA 0.1 × OVDD to 0.9 × OVDD 
+Input Capacitance for 
+SCL / SDA  
+Ci 
+— 
+— 
+10 
+pF  
+ 
+ 
+I2C AC Characteristics (Standard-mode, Fast-mode) 
+Item 
+Symbol 
+Min. 
+Typ. 
+Max. 
+Unit 
+Remarks 
+SCL clock frequency 
+fSCL 
+0 
+— 
+400 
+kHz 
+ 
+Hold time (Start Condition) 
+tHD;STA 
+0.6 
+— 
+― 
+µs 
+ 
+Low period of the SCL clock 
+tLOW 
+1.3 
+— 
+― 
+µs 
+ 
+High period of the SCL clock 
+tHIGH 
+0.6 
+— 
+― 
+µs 
+ 
+Set-up time (Repeated Start Condition) tSU;STA 
+0.6 
+— 
+― 
+µs 
+ 
+Data hold time 
+tHD;DAT 
+0 
+— 
+0.9 
+µs 
+ 
+Data set-up time 
+tSU;DAT 
+100 
+— 
+― 
+ns 
+ 
+Rise time of both SDA and SCL signals tr 
+― 
+— 
+300 
+ns 
+ 
+Fall time of both SDA and SCL signals 
+tf 
+― 
+— 
+300 
+ns 
+ 
+Set-up time (Stop Condition) 
+tSU;STO 
+0.6 
+— 
+― 
+µs 
+ 
+Bus free time between a STOP and 
+START Condition 
+tBUF 
+1.3 
+— 
+― 
+µs 
+ 
+Output fall time 
+tof 
+— 
+— 
+250 
+ns 
+Load 10 pF to 400 pF,  
+0.7 × OVDD to 0.3 × OVDD 
+ 
+ 
+ 
+
+===== PAGE 20 =====
+IMX415-AAQR-G 
+ 
+ 
+20 
+ 
+ 
+I2C AC Characteristics (Fast-mode Plus) 
+Item 
+Symbol 
+Min. 
+Typ. 
+Max. 
+Unit 
+Remarks 
+SCL clock frequency 
+fSCL 
+0 
+— 
+1000 
+kHz 
+INCK ≥ 16 MHz 
+Hold time (Start Condition) 
+tHD;STA 
+0.26 
+— 
+― 
+µs 
+ 
+Low period of the SCL clock 
+tLOW 
+0.5 
+— 
+― 
+µs 
+ 
+High period of the SCL clock 
+tHIGH 
+0.26 
+— 
+― 
+µs 
+ 
+Set-up time (Repeated Start Condition) tSU;STA 
+0.26 
+— 
+― 
+µs 
+ 
+Data hold time 
+tHD;DAT 
+0 
+— 
+0.9 
+µs 
+ 
+Data set-up time 
+tSU;DAT 
+50 
+— 
+― 
+ns 
+ 
+Rise time of both SDA and SCL signals tr 
+― 
+— 
+120 
+ns 
+ 
+Fall time of both SDA and SCL signals 
+tf 
+― 
+— 
+120 
+ns 
+ 
+Set-up time (Stop Condition) 
+tSU;STO 
+0.26 
+— 
+― 
+µs 
+ 
+Bus free time between a STOP and 
+START Condition 
+tBUF 
+0.5 
+— 
+― 
+µs 
+ 
+Output fall time 
+tof 
+— 
+— 
+120 
+ns 
+Load 10 pF to 400 pF,  
+0.7 × OVDD to 0.3 × OVDD 
+ 
+ 
+ 
+
+===== PAGE 21 =====
+IMX415-AAQR-G 
+ 
+ 
+21 
+ 
+ 
+I/O Equivalent Circuit Diagram 
+TENABLE
+SDA
+SCL
+XVS
+XHS
+TOUT
+XCLR
+SLAMODE0
+SLAMODE1
+VRLRS
+VRLT
+Symbol
+Equivalent circuit
+Symbol
+:　External pin
+Equivalent circuit
+TVMON
+DMOxP
+DMOxN
+DCKP
+DCKN
+INCK
+VRHT
+ 
+ 
+ 
+ 
+
+===== PAGE 22 =====
+IMX415-AAQR-G 
+ 
+ 
+22 
+ 
+ 
+Spectral Sensitivity Characteristics 
+(Characteristics in the wafer status) 
+ 
+ 
+ 
+ 
+0.0
+0.1
+0.2
+0.3
+0.4
+0.5
+0.6
+0.7
+0.8
+0.9
+1.0
+400 450 500 550 600 650 700 750 800 850 900 950 1000
+Relative response [a.u.]
+Wave Length [nm]
+Red
+Green
+Blue
+
+===== PAGE 23 =====
+IMX415-AAQR-G 
+ 
+ 
+23 
+ 
+ 
+Image Sensor Characteristics 
+ (AVDD = 2.9 V, OVDD = 1.8 V, DVDD = 1.1 V, Tj = 60 ˚C, All-pixel mode, 12 bit 30 frame/s, Gain: 0 dB) 
+Item 
+Symbol 
+Min. 
+Typ. 
+Max. 
+Unit 
+Measurement 
+method 
+Remarks 
+G sensitivity 
+S 
+1740 
+(255) 
+2048 
+(300) 
+― 
+Digit 
+(mV) 
+1 
+1/30 s storage 
+12 bit converted value 
+Sensitivity 
+ratio 
+R / G 
+RG 
+0.42 
+― 
+0.58 
+― 
+2 
+― 
+B / G 
+BG 
+0.26 
+― 
+0.44 
+― 
+Saturation signal 
+Vsat 
+3895 
+(570) 
+― 
+― 
+Digit 
+(mV) 
+3 
+12 bit converted value 
+Video signal shading 
+SH 
+― 
+― 
+25 
+% 
+4 
+― 
+Vertical line 
+VL 
+― 
+― 
+90 
+µV 
+5 
+12 bit converted value 
+Dark signal 
+Vdt 
+― 
+― 
+0.89 
+(0.13) 
+Digit 
+(mV) 
+6 
+1/30 s storage 
+12 bit converted value 
+Dark signal shading 
+ΔVdt 
+― 
+― 
+0.89 
+(0.13) 
+Digit 
+(mV) 
+7 
+1/30 s storage 
+12 bit converted value 
+ 
+Note)  1. Converted value into mV using 1Digit = 0.1465 mV for 12-bit output and 1Digit = 0.5865 mV for 10-bit output. 
+2. The video signal shading is the measured value in the wafer status (including color filter) and does not  
+include characteristics of the seal glass. 
+3. The characteristics above apply to effective pixel area. 
+ 
+ 
+
+===== PAGE 24 =====
+IMX415-AAQR-G 
+ 
+ 
+24 
+ 
+ 
+Image Sensor Characteristics Measurement Method 
+Measurement Conditions 
+1. In the following measurements, the device drive conditions are at the typical values of the bias conditions and 
+clock voltage conditions. 
+2. In the following measurements, spot pixels are excluded and, unless otherwise specified, the optical black (OB) 
+level is used as the reference for the signal output. 
+ 
+Color Coding of Physical Pixel Array 
+The primary color filters of this image sensor are arranged in the layout shown in the figure below. Gr and Gb 
+represent the G signal on the same line as the R and B signals, respectively. The R signal and Gr signal lines and the 
+Gb signal and B signal lines are output successively. 
+ 
+R
+B
+Gb
+Gr
+R
+B
+Gb
+Gr
+R
+B
+Gb
+Gr
+R
+B
+Gb
+Gr
+Vertical scan direction 
+(Normal)
+Horizontal scan direction 
+(Normal)
+ 
+ 
+Color Coding Diagram 
+ 
+Definition of standard imaging conditions 
+◆ Standard imaging condition I: 
+Use a pattern box (luminance: 706 cd/m2, color temperature of 3200 K halogen source) as a subject. (Pattern for 
+evaluation is not applicable.) Use a testing standard lens with CM500S (t = 1.0 mm) as an IR cut filter and image at 
+F5.6. The luminous intensity to the sensor receiving surface at this point is defined as the standard sensitivity 
+testing luminous intensity. 
+ 
+◆ Standard imaging condition II: 
+Image a light source (color temperature of 3200 K) with a uniformity of brightness within 2 % at all angles. Use a 
+testing standard lens with CM500S (t = 1.0 mm) as an IR cut filter. The luminous intensity is adjusted to the value 
+indicated in each testing item by the lens diaphragm. 
+ 
+ 
+ 
+
+===== PAGE 25 =====
+IMX415-AAQR-G 
+ 
+ 
+25 
+ 
+ 
+Measurement Method 
+1. 
+Sensitivity 
+Set the measurement condition to the standard imaging condition I. After setting the electronic shutter mode with 
+a shutter speed of 1/100 s, measure the Gr and Gb signal outputs (VGr, VGb) at the center of the screen, and 
+substitute the values into the following formula. 
+ 
+S = (VGr + VGb) / 2 × 100 / 30 [mV] 
+ 
+2. 
+Sensitivity ratio 
+Set the measurement condition to the standard imaging condition II. After adjusting the average value of the Gr 
+and Gb signal outputs to 300 mV, measure the R signal output (VR [mV]), the Gr and Gb signal outputs (VGr, 
+VGb [mV]) and the B signal output (VB [mV]) at the center of the screen in frame readout mode, and substitute 
+the values into the following formulas. 
+ 
+VG = (VGr + VGb) / 2 
+RG = VR / VG 
+BG = VB / VG 
+ 
+3. 
+Saturation signal 
+Set the measurement condition to the standard imaging condition II. After adjusting the luminous intensity to 20 
+times the intensity with the average value of the Gr and Gb signal outputs, 300 mV, measure the minimum values 
+of the Gr, Gb, R and B signal outputs. 
+ 
+4. 
+Video signal shading 
+Set the measurement condition to the standard imaging condition II. With the lens diaphragm at F2.8, adjust the 
+luminous intensity so that the average value of the Gr and Gb signal outputs is 300 mV. Then measure the 
+maximum value (Gmax [mV]) and the minimum value (Gmin [mV]) of the Gr and Gb signal outputs, and substitute 
+the values into the following formula. 
+ 
+SH = (Gmax – Gmin) / 300 × 100 [%] 
+ 
+5. 
+Vertical Line 
+With the device junction temperature of 60 ˚C and the device in the light-obstructed state, calculates each 
+average output of Gr, Gb, R and B on respective columns. Calculates maximum value of difference with adjacent 
+column on the same color (VL [µV]). 
+ 
+6. 
+Dark signal 
+With the device junction temperature of 60 ˚C and the device in the light-obstructed state, divide the output 
+difference between 1/30 s integration and 1/300 s integration by 0.9, and calculate the signal output converted to 
+1/30 s integration. Measure the average value of this output (Vdt [mV]). 
+ 
+7. 
+Dark signal shading 
+After the measurement item 6, measure the maximum value (Vdmax [mV]) and the minimum value (Vdmin [mV]) 
+of the dark signal output, and substitute the values into the following formula. 
+ 
+ΔVdt = Vdmax – Vdmin [mV] 
+ 
+ 
+ 
+ 
+
+===== PAGE 26 =====
+IMX415-AAQR-G 
+ 
+ 
+26 
+ 
+ 
+Setting Registers Using Serial Communication 
+This sensor can write and read the setting values of the various registers shown in the Register Map by I2C 
+communication. See the Register Map for the addresses and setting values to be set. 
+ 
+Description of Setting Registers (I2C) 
+The serial data input order is MSB-first transfer. The table below shows the various data types and descriptions. 
+Using SLAMODE0 and SLAMODE1 pins, SLAVE address can be changed. 
+ 
+Master
+SDA
+Sensor
+SCL
+ 
+ 
+Pin connection of serial communication 
+ 
+SLAVE Address 
+SLAMODE1 
+pin 
+SLAMODE0 
+pin 
+MSB 
+ 
+LSB 
+Low 
+Low 
+0 
+0 
+1 
+1 
+0 
+1 
+0 
+R / W 
+Low 
+High 
+0 
+0 
+1 
+0 
+0 
+0 
+0 
+R / W 
+High 
+Low 
+0 
+1 
+1 
+0 
+1 
+1 
+0 
+R / W 
+High 
+High 
+0 
+1 
+1 
+0 
+1 
+1 
+1 
+R / W 
+* R/W is data direction bit 
+ 
+R / W 
+R / W bit 
+Data direction 
+0 
+Write (Master to Sensor) 
+1 
+Read (Sensor to Master) 
+ 
+I2C pin description 
+Symbol 
+Pin No. 
+Remarks 
+SCL 
+K10 
+I2C serial clock input 
+SDA 
+J11 
+I2C serial data communication 
+ 
+ 
+ 
+
+===== PAGE 27 =====
+IMX415-AAQR-G 
+ 
+ 
+27 
+ 
+ 
+Register Communication Timing (I2C) 
+In I2C communication system, communication can be performed excluding the prohibited 1H period as described in 
+the below figure. 
+For the registers marked "V" in the item of Reflection timing, when the communication is performed in the 
+communication period shown in the figure below they are reflected by “Frame reflection register reflection timing”. 
+For the registers marked “I” in the item of Reflection timing, the settings are reflected when the communication is 
+performed. 
+Using REGHOLD function is recommended for register setting using I2C communication. For REGHOLD function, 
+see “Register Transmission Setting” in “Description of Functions”. 
+ 
+Blank line
+XVS
+XHS
+Data line
+Data line
+Blank line
+Blank line
+Blank line
+Blank line
+Blank line
+Blank line
+Blank line
+Blank line
+Blank line
+Blank line
+Blank line
+Frame reflection register 
+reflection timing
+Recommended serial communication period
+Data line
+Data line
+Data line
+Data line
+Blank line
+1XHS period
+Communication prohibited period
+6XHS period
+Blank line
+Blank line
+Data line
+Data line
+Data line
+ 
+ 
+ 
+
+===== PAGE 28 =====
+IMX415-AAQR-G 
+ 
+ 
+28 
+ 
+ 
+Communication Protocol 
+I2C serial communication supports a 16-bit register address and 8-bit data message type.  
+ 
+ 
+Communication Protocol 
+ 
+Data is transferred serially, MSB first in 8-bit units. After each data byte is transferred, A (Acknowledge) / A
+―
+ 
+(Negative Acknowledge) is transferred. Data (SDA) is transferred at the clock (SCL) cycle. SDA can change only 
+while SCL is Low, so the SDA value must be held while SCL is High. The Start condition is defined by SDA changing 
+from High to Low while SCL is High. When the Stop condition is not generated in the previous communication phase 
+and Start condition for the next communication is generated, that Start condition is recognized as a Repeated Start 
+condition. 
+ 
+ 
+Start Condition 
+ 
+ 
+Stop Condition 
+ 
+ 
+Repeated Start Condition 
+ 
+After transfer of each data byte, the Master or the sensor transmits an Acknowledge / Negative Acknowledge and 
+release (does not drive) SDA. When Negative Acknowledge is generated, the Master must immediately generate the 
+Stop Condition and end the communication.  
+ 
+ 
+Acknowledge and Negative Acknowledge 
+ 
+ 
+From Master to Slave
+From Slave to Master
+S : Start Condition
+Sr : Repeated Start Condition
+P : Stop Condition
+A : Acknowledge
+A : Negative Acknowledge
+Direction depend on operation
+R/W=
+0: Write (Master → Sensor)
+1: Read (Sensor → Master)
+S
+Slave 
+Address
+[7:1]
+R
+/
+W
+Register 
+Address
+[15:8]
+A
+Register 
+Address
+[7:0]
+A
+A
+DATA
+[7:0]
+A
+/
+A
+P
+S
+The data changes while the clock is low
+A7
+A6
+A5
+A4
+A3
+A2
+A1
+R/W
+ACK
+MSB
+LSB
+SDA
+SCL
+Start condition
+D5
+D4
+D3
+D2
+D1
+D0
+R/W
+ACK/
+NACK
+P
+Stop condition
+Bus free state
+SDA
+SCL
+SDA
+SCL
+A7
+A6
+A5
+A4
+A3
+ACK/
+NACK
+MSB
+Sr
+The stop condition is not generated.
+Start condition
+SDA
+SCL
+SDA
+SCL
+A2
+A1
+R/W
+ACK
+A2
+A1
+R/W
+NACK
+
+===== PAGE 29 =====
+IMX415-AAQR-G 
+ 
+ 
+29 
+ 
+ 
+Register Write and Read (I2C) 
+This sensor corresponds to four reed modes and the two write modes. 
+ 
+Single Read from Random Location 
+The sensor has an index function that indicates which address it is focusing on. In reading the data at an optional 
+single address, the Master must set the index value to the address to be read. For this purpose, it performs 
+dummy write operation up to the register address. The upper level of the figure below shows the sensor internal 
+index value, and the lower level of the figure shows the SDA I/O data flow. The Master sets the sensor index value 
+to M by designating the sensor slave address with a write request, then designating the address (M). Then, the 
+Master generates the start condition. The Start Condition is generated without generating the Stop Condition, so it 
+becomes the Repeated Start Condition. Next, when the Master sends the slave address with a read request, the 
+sensor outputs an Acknowledge immediately followed by the index address data on SDA. After the Master 
+receives the data, it generates a Negative Acknowledge and the Stop Condition to end the communication. 
+ 
+ 
+ 
+Single Read from Random Location 
+ 
+Single Read from Current Location 
+After the slave address is transmitted by a write request, that address is designated by the next communication 
+and the index holds that value. In addition, when data read/write is performed, the index is incremented by the 
+subsequent Acknowledge/Negative Acknowledge timing. When the index value is known to indicate the address 
+to be read, sending the slave address with a read request allows the data to be read immediately after 
+Acknowledge. After receiving the data, the Master generates a Negative Acknowledge and the Stop Condition to 
+end the communication, but the index value is incremented, so the data at the next address can be read by 
+sending the slave address with a read request. 
+ 
+ 
+ 
+Single Read from Current Location 
+ 
+ 
+Previous index value
+S
+Slave 
+Address
+[7:1]
+0
+Register 
+Address
+[15:8]
+A
+Register 
+Address
+[7:0]
+A
+A Sr
+Slave 
+Address
+[7:1]
+1
+A
+DATA
+[7:0]
+A
+P
+Index M
+Index
+M+1
+Index, value M
+From Master to Slave
+From Slave to Master
+S : Start Condition
+P : Stop Condition
+A : Acknowledge
+A : Negative Acknowledge
+Sr : Repeated Start Condition
+Previous index value, K
+S
+Slave 
+Address
+[7:1]
+1
+A
+DATA
+[7:0]
+A
+P
+Index
+K+2
+S
+Slave 
+Address
+[7:1]
+1
+A
+DATA
+[7:0]
+A
+P
+Index
+K+1
+From Master to Slave
+From Slave to Master
+S : Start Condition
+P : Stop Condition
+A : Acknowledge
+A : Negative Acknowledge
+
+===== PAGE 30 =====
+IMX415-AAQR-G 
+ 
+ 
+30 
+ 
+ 
+Sequential Read Starting from Random Location 
+In reading data sequentially, which is starting from an optional address, the Master must set the index value to the 
+start of the addresses to be read. For this purpose, dummy write operation includes the register address setting. 
+The Master sets the sensor index value to M by designating the sensor slave address with a read request, then 
+designating the address (M). Then, the Master generates the Repeated Start Condition. 
+Next, when the Master sends the slave address with a read request, the sensor outputs an Acknowledge followed 
+immediately by the index address data on SDA. When the Master outputs an Acknowledge after it receives the 
+data, the index value inside the sensor is incremented and the data at the next address is output on SDA. This 
+allows the Master to read data sequentially. After reading the necessary data, the Master generates a Negative 
+Acknowledge and the Stop Condition to end the communication. 
+ 
+ 
+ 
+Sequential Read Starting from Random Location 
+ 
+Sequential Read Starting from Current Location 
+When the index value is known to indicate the address to be read, sending the slave address with a read request 
+allows the data to be read immediately after the Acknowledge. When the Master outputs an Acknowledge after it 
+receives the data, the index value inside the sensor is incremented and the data at the next address is output on 
+SDA. 
+This allows the Master to read data sequentially. After reading the necessary data, the Master generates a 
+Negative Acknowledge and the Stop Condition to end the communication. 
+ 
+ 
+ 
+Sequential Read Starting from Current Location 
+ 
+ 
+S
+Slave 
+Address
+[7:1]
+0
+Register 
+Address
+[15:8]
+A
+Register 
+Address
+[7:0]
+A
+A Sr
+Slave 
+Address
+[7:1]
+1
+A
+DATA
+[7:0]
+DATA
+[7:0]
+A
+A
+DATA
+[7:0]
+A
+A
+P
+Index M
+Index
+M+1
+Index
+(M+L)
+Index
+(M+L-1)
+L bytes of data
+Previous index value, K
+Index, value M
+From Master to Slave
+From Slave to Master
+S : Start Condition
+P : Stop Condition
+A : Acknowledge
+A : Negative Acknowledge
+Sr : Repeated Start Condition
+S
+Slave 
+Address
+[7:1]
+1
+A
+DATA
+[7:0]
+A
+DATA
+[7:0]
+A
+A
+DATA
+[7:0]
+A
+P
+L bytes of data
+Index
+(M+L)
+Index K
+Index
+K+1
+Index
+(K+L-1)
+From Master to Slave
+From Slave to Master
+S : Start Condition
+P : Stop Condition
+A : Acknowledge
+A : Negative Acknowledge
+
+===== PAGE 31 =====
+IMX415-AAQR-G 
+ 
+ 
+31 
+ 
+ 
+Single Write to Random Location 
+The Master sets the sensor index value to M by designating the sensor slave address with a write request, and 
+designating the address (M). After that the Master can write the value in the designated register by transmitting 
+the data to be written. After writing the necessary data, the Master generates the Stop Condition to end the 
+communication. 
+ 
+ 
+ 
+Single Write to Random Location 
+ 
+Sequential Write Starting from Random Location 
+The Master can write a value to register address M by designating the sensor slave address with a write request, 
+designating the address (M), and then transmitting the data to be written. After the sensor receives the write data, 
+it outputs an Acknowledge and at the same time increments the register address, so the Master can write to the 
+next address simply by continuing to transmit data. After the Master writes the necessary number of bytes, it 
+generates the Stop Condition to end the communication. 
+ 
+ 
+ 
+Sequential Write Starting from Random Location 
+ 
+ 
+S
+Slave 
+Address
+[7:1]
+0
+Register 
+Address
+[15:8]
+A
+Register 
+Address
+[7:0]
+A
+A
+DATA
+[7:0]
+A
+/
+A
+P
+Index M
+Previous index value
+Index
+M+1
+Index, value M
+From Master to Slave
+From Slave to Master
+S : Start Condition
+P : Stop Condition
+A : Acknowledge
+A : Negative Acknowledge
+S
+Slave 
+Address
+[7:1]
+0
+Register 
+Address
+[15:8]
+A
+Register 
+Address
+[7:0]
+A
+A
+Index M
+DATA
+[7:0]
+A
+Previous index value
+DATA
+[7:0]
+Index
+M+1
+Index
+(M+L)
+Index
+(M+L-1)
+A
+A
+DATA
+[7:0]
+A
+/
+A
+P
+L bytes of data
+Index, value M
+From Master to Slave
+From Slave to Master
+S : Start Condition
+P : Stop Condition
+A : Acknowledge
+A : Negative Acknowledge
+
+===== PAGE 32 =====
+IMX415-AAQR-G 
+ 
+ 
+32 
+ 
+ 
+Register Map 
+This sensor has a total of 4352 bytes (256 × 17) of registers, composed of registers with LSB addresses 00h to FFh 
+that correspond to MSB address 30h to 40h. Use the initial values for empty address. Some registers must be 
+change from the initial values, so the sensor control side should be capable of setting 4352 bytes. 
+ 
+There are three different register reflection timings. 
+About the Reflection timing column of the Register Map, registers noted as "I" are reflected immediately after writing 
+to register, registers noted as "S" are set during standby mode and reflected after standby canceled, registers noted 
+as "V" are reflected at “Fame reflection register reflection timing” on the figure described in the section of “Setting 
+Registers with Serial Communication”. 
+ 
+Do not perform communication to addresses not listed in the Register Map. Doing so may result in operation errors. 
+However, other registers that requires communication to address not listed above may be added, so addresses up to 
+FFh should be supported for LSB address; 3000h to 40FFh. 
+ 
+* 
+For the register that is writing " * " to the setting value in description (Indicated by red letter), change the value  
+ 
+from the default value after the reset. 
+** 
+In Gain setting only, it is reflected on the next frame which was settings. 
+*** 
+Setting except for the setting values described in the description column is prohibited. 
+
+===== PAGE 33 =====
+IMX415-AAQR-G 
+ 
+ 
+33 
+ 
+ 
+(1) Registers corresponding to address = 30**h. 
+ 
+Address 
+bit 
+Register 
+name 
+Description 
+Default value 
+after reset 
+Reflection 
+timing 
+By 
+register 
+By 
+address 
+3000h 
+0 
+STANDBY 
+Standby 
+0: Operating   1: Standby 
+1h 
+01h 
+I 
+1 
+― 
+Fixed to “0h” 
+0h 
+― 
+2 
+― 
+Fixed to “0h” 
+0h 
+― 
+3 
+― 
+Fixed to “0h” 
+0h 
+― 
+4 
+― 
+Fixed to “0h” 
+0h 
+― 
+5 
+― 
+Fixed to “0h” 
+0h 
+― 
+6 
+― 
+Fixed to “0h” 
+0h 
+― 
+7 
+― 
+Fixed to “0h” 
+0h 
+― 
+3001h 
+0 
+REGHOLD 
+Register hold 
+(Function not to update V reflection 
+register) 
+0: Invalid   1: Valid 
+0h 
+00h 
+I 
+1 
+― 
+Fixed to “0h” 
+0h 
+― 
+2 
+― 
+Fixed to “0h” 
+0h 
+― 
+3 
+― 
+Fixed to “0h” 
+0h 
+― 
+4 
+― 
+Fixed to “0h” 
+0h 
+― 
+5 
+― 
+Fixed to “0h” 
+0h 
+― 
+6 
+― 
+Fixed to “0h” 
+0h 
+― 
+7 
+― 
+Fixed to “0h” 
+0h 
+― 
+3002h 
+0 
+XMSTA 
+Setting of master mode operation 
+0: Master mode operation start 
+1: Master mode operation stop 
+1h 
+01h 
+I 
+1 
+― 
+Fixed to “0h” 
+0h 
+― 
+2 
+― 
+Fixed to “0h” 
+0h 
+― 
+3 
+― 
+Fixed to “0h” 
+0h 
+― 
+4 
+― 
+Fixed to “0h” 
+0h 
+― 
+5 
+― 
+Fixed to “0h” 
+0h 
+― 
+6 
+― 
+Fixed to “0h” 
+0h 
+― 
+7 
+― 
+Fixed to “0h” 
+0h 
+― 
+3003h 
+0 
+XMASTER 
+Select Master /Slave mode 
+0: Master mode 
+1: Slave mode 
+0h 
+00h 
+S 
+1 
+― 
+Fixed to “0h” 
+0h 
+― 
+2 
+― 
+Fixed to “0h” 
+0h 
+― 
+3 
+― 
+Fixed to “0h” 
+0h 
+― 
+4 
+― 
+Fixed to “0h” 
+0h 
+― 
+5 
+― 
+Fixed to “0h” 
+0h 
+― 
+6 
+― 
+Fixed to “0h” 
+0h 
+― 
+7 
+― 
+Fixed to “0h” 
+0h 
+― 
+
+===== PAGE 34 =====
+IMX415-AAQR-G 
+ 
+ 
+34 
+ 
+ 
+Address 
+bit 
+Register 
+name 
+Description 
+Default value 
+after reset 
+Reflection 
+timing 
+By 
+register 
+By 
+address 
+3008h 
+0 
+BCWAIT_TIME 
+[9:0] 
+LSB 
+0FFh 
+FFh 
+S 
+1 
+The value is set according to INCK. 
+Refer to “INCK setting” 
+2 
+3 
+4 
+5 
+6 
+7 
+3009h 
+0 
+00h 
+1 
+MSB 
+2 
+― 
+Fixed to “0h” 
+0h 
+― 
+3 
+― 
+Fixed to “0h” 
+0h 
+― 
+4 
+― 
+Fixed to “0h” 
+0h 
+― 
+5 
+― 
+Fixed to “0h” 
+0h 
+― 
+6 
+― 
+Fixed to “0h” 
+0h 
+― 
+7 
+― 
+Fixed to “0h” 
+0h 
+― 
+300Ah 
+0 
+CPWAIT_TIME 
+[9:0] 
+LSB 
+0B6h 
+B6h 
+S 
+1 
+The value is set according to INCK.  
+Refer to “INCK setting” 
+2 
+3 
+4 
+5 
+6 
+7 
+300Bh 
+0 
+A0h 
+1 
+MSB 
+2 
+― 
+Fixed to “0h” 
+0h 
+― 
+3 
+― 
+Fixed to “0h” 
+0h 
+― 
+4 
+― 
+Fixed to “0h” 
+0h 
+― 
+5 
+― 
+Fixed to “1h” 
+1h 
+― 
+6 
+― 
+Fixed to “0h” 
+0h 
+― 
+7 
+― 
+Fixed to “1h” 
+1h 
+― 
+301Ch 
+0 
+WINMODE 
+[3:0] 
+Window mode setting 
+0: All-pixel mode, Horizontal/Vertical 
+2/2-line binning 
+4: Window cropping mode 
+0h 
+00h 
+V 
+1 
+2 
+3 
+4 
+― 
+Fixed to “0h” 
+0h 
+― 
+5 
+― 
+Fixed to “0h” 
+0h 
+― 
+6 
+― 
+Fixed to “0h” 
+0h 
+― 
+7 
+― 
+Fixed to “0h” 
+0h 
+― 
+
+===== PAGE 35 =====
+IMX415-AAQR-G 
+ 
+ 
+35 
+ 
+ 
+Address 
+bit 
+Register 
+name 
+Description 
+Default value 
+after reset 
+Reflection 
+timing 
+By 
+register 
+By 
+address 
+3020h 
+0 
+HADD 
+Mode setting 
+0h: All-pixel mode 
+1h: Horizontal 2 binning 
+0h 
+00h 
+S 
+1 
+― 
+Fixed to “0h” 
+0h 
+― 
+2 
+― 
+Fixed to “0h” 
+0h 
+― 
+3 
+― 
+Fixed to “0h” 
+0h 
+― 
+4 
+― 
+Fixed to “0h” 
+0h 
+― 
+5 
+― 
+Fixed to “0h” 
+0h 
+― 
+6 
+― 
+Fixed to “0h” 
+0h 
+― 
+7 
+― 
+Fixed to “0h” 
+0h 
+― 
+3021h 
+0 
+VADD 
+Mode setting 
+0h: All-pixel mode 
+1h: Vertical 2 binning 
+0h 
+00h 
+S 
+1 
+― 
+Fixed to “0h” 
+0h 
+― 
+2 
+― 
+Fixed to “0h” 
+0h 
+― 
+3 
+― 
+Fixed to “0h” 
+0h 
+― 
+4 
+― 
+Fixed to “0h” 
+0h 
+― 
+5 
+― 
+Fixed to “0h” 
+0h 
+― 
+6 
+― 
+Fixed to “0h” 
+0h 
+― 
+7 
+― 
+Fixed to “0h” 
+0h 
+― 
+3022h 
+0 
+ADDMODE 
+[1:0] 
+Mode setting 
+0h: All-pixel mode 
+1h: Horizontal/Vertical 2/2-line binning 
+0h 
+00h 
+S 
+1 
+2 
+― 
+Fixed to “0h” 
+0h 
+― 
+3 
+― 
+Fixed to “0h” 
+0h 
+― 
+4 
+― 
+Fixed to “0h” 
+0h 
+― 
+5 
+― 
+Fixed to “0h” 
+0h 
+― 
+6 
+― 
+Fixed to “0h” 
+0h 
+― 
+7 
+― 
+Fixed to “0h” 
+0h 
+― 
+
+===== PAGE 36 =====
+IMX415-AAQR-G 
+ 
+ 
+36 
+ 
+ 
+Address 
+bit 
+Register 
+name 
+Description 
+Default value 
+after reset 
+Reflection 
+timing 
+By 
+register 
+By 
+address 
+3024h 
+0 
+VMAX 
+[19:0] 
+LSB  
+008CAh 
+CAh 
+V 
+1 
+When sensor master mode vertical  
+span setting. 
+ 
+For details, see the item of  
+“Slave Mode and Master Mode” 
+in the section of  
+“Description of Various Functions”. 
+2 
+3 
+4 
+5 
+6 
+7 
+3025h 
+0 
+08h 
+1 
+2 
+3 
+4 
+5 
+6 
+7 
+3026h 
+0 
+00h 
+1 
+2 
+3 
+MSB 
+4 
+― 
+Fixed to “0h” 
+0h 
+― 
+5 
+― 
+Fixed to “0h” 
+0h 
+― 
+6 
+― 
+Fixed to “0h” 
+0h 
+― 
+7 
+― 
+Fixed to “0h” 
+0h 
+― 
+3028h 
+0 
+HMAX 
+[15:0] 
+LSB 
+0226h 
+26h 
+V 
+1 
+When sensor master mode horizontal  
+span setting. 
+ 
+For details, see the item of  
+“Slave Mode and Master Mode” 
+in the section of  
+“Description of Various Functions”. 
+2 
+3 
+4 
+5 
+6 
+7 
+3029h 
+0 
+02h 
+1 
+2 
+3 
+4 
+5 
+6 
+7 
+MSB 
+
+===== PAGE 37 =====
+IMX415-AAQR-G 
+ 
+ 
+37 
+ 
+ 
+Address 
+bit 
+Register 
+name 
+Description 
+Default value 
+after reset 
+Reflection 
+timing 
+By 
+register 
+By 
+address 
+3030h 
+0 
+HREVERSE 
+Horizontal direction 
+Readout inversion control 
+0: Normal 
+1: Inverted 
+0h 
+00h 
+V 
+1 
+VREVERSE 
+Vertical direction 
+Readout inversion control 
+0: Normal 
+1: Inverted 
+0h 
+V 
+2 
+― 
+Fixed to “0h” 
+0h 
+― 
+3 
+― 
+Fixed to “0h” 
+0h 
+― 
+4 
+― 
+Fixed to “0h” 
+0h 
+― 
+5 
+― 
+Fixed to “0h” 
+0h 
+― 
+6 
+― 
+Fixed to “0h” 
+0h 
+― 
+7 
+― 
+Fixed to “0h” 
+0h 
+― 
+3031h 
+0 
+ADBIT 
+[1:0]  
+AD conversion bits setting 
+0: AD 10 bit 
+1: AD 12 bit ( 11 bit + digital dither ) 
+1h 
+01h 
+S 
+1 
+2 
+― 
+Fixed to “0h” 
+0h 
+― 
+3 
+― 
+Fixed to “0h” 
+0h 
+― 
+4 
+― 
+Fixed to “0h” 
+0h 
+― 
+5 
+― 
+Fixed to “0h” 
+0h 
+― 
+6 
+― 
+Fixed to “0h” 
+0h 
+― 
+7 
+― 
+Fixed to “0h” 
+0h 
+― 
+3032h 
+0 
+MDBIT 
+Number of output bit setting 
+0: 10 bit 
+1: 12 bit 
+1h 
+01h 
+S 
+1 
+― 
+Fixed to “0h” 
+0h 
+― 
+2 
+― 
+Fixed to “0h” 
+0h 
+― 
+3 
+― 
+Fixed to “0h” 
+0h 
+― 
+4 
+― 
+Fixed to “0h” 
+0h 
+― 
+5 
+― 
+Fixed to “0h” 
+0h 
+― 
+6 
+― 
+Fixed to “0h” 
+0h 
+― 
+7 
+― 
+Fixed to “0h” 
+0h 
+― 
+3033h 
+0 
+SYS_MODE 
+[3:0] 
+Output IF mode setting 
+0: 2376 Mbps  
+2: 2079 Mbps 
+4: 1782 Mbps 
+5: 891 Mbps 
+6: 1188 Mbps 
+7: 594 Mbps 
+8: 1440 / 1485 Mbps 
+9: 720 Mbps 
+4h 
+04h 
+S 
+1 
+2 
+3 
+4 
+― 
+Fixed to “0h” 
+0h 
+― 
+5 
+― 
+Fixed to “0h” 
+0h 
+― 
+6 
+― 
+Fixed to “0h” 
+0h 
+― 
+7 
+― 
+Fixed to “0h” 
+0h 
+― 
+
+===== PAGE 38 =====
+IMX415-AAQR-G 
+ 
+ 
+38 
+ 
+ 
+Address 
+bit 
+Register 
+name 
+Description 
+Default value 
+after reset 
+Reflection 
+timing 
+By 
+register 
+By 
+address 
+3040h 
+0 
+PIX_HST 
+[12:0] 
+LSB 
+0000h 
+00h 
+V 
+1 
+In window cropping mode 
+Start position 
+(Horizontal direction) 
+ 
+Multiples of 2 
+2 
+3 
+4 
+5 
+6 
+7 
+3041h 
+0 
+00h 
+1 
+2 
+3 
+4 
+MSB 
+5 
+― 
+Fixed to “0h” 
+0h 
+― 
+6 
+― 
+Fixed to “0h” 
+0h 
+― 
+7 
+― 
+Fixed to “0h” 
+0h 
+― 
+3042h 
+0 
+PIX_HWIDTH 
+[12:0] 
+LSB 
+0F18h 
+18h 
+V 
+1 
+In window cropping mode 
+Cropping width 
+(Horizontal direction) 
+ 
+Multiples of 24 
+2 
+3 
+4 
+5 
+6 
+7 
+3043h 
+0 
+0Fh 
+1 
+2 
+3 
+4 
+MSB 
+5 
+― 
+Fixed to “0h” 
+0h 
+― 
+6 
+― 
+Fixed to “0h” 
+0h 
+― 
+7 
+― 
+Fixed to “0h” 
+0h 
+― 
+3044h 
+0 
+PIX_VST 
+[12:0] 
+LSB 
+0000h 
+00h 
+V 
+1 
+In window cropping mode 
+Start position 
+(Vertical direction) 
+ 
+Designated in Line ×2,  
+Multiples of 4 
+2 
+3 
+4 
+5 
+6 
+7 
+3045h 
+0 
+00h 
+1 
+2 
+3 
+4 
+MSB 
+5 
+― 
+Fixed to “0h” 
+0h 
+― 
+6 
+― 
+Fixed to “0h” 
+0h 
+― 
+7 
+― 
+Fixed to “0h” 
+0h 
+― 
+
+===== PAGE 39 =====
+IMX415-AAQR-G 
+ 
+ 
+39 
+ 
+ 
+Address 
+bit 
+Register 
+name 
+Description 
+Default value 
+after reset 
+Reflection 
+timing 
+By 
+register 
+By 
+address 
+3046h 
+0 
+PIX_VWIDTH 
+[12:0] 
+LSB 
+1120h 
+20h 
+V 
+1 
+In window cropping mode 
+Cropping width 
+(Vertical direction) 
+ 
+Designated in Line × 2,  
+Multiples of 4 
+2 
+3 
+4 
+5 
+6 
+7 
+3047h 
+0 
+11h 
+1 
+2 
+3 
+4 
+MSB 
+5 
+― 
+Fixed to “0h” 
+0h 
+― 
+6 
+― 
+Fixed to “0h” 
+0h 
+― 
+7 
+― 
+Fixed to “0h” 
+0h 
+― 
+3050h 
+0 
+SHR0 
+[19:0] 
+LSB 
+00066h 
+66h 
+V 
+1 
+Storage time adjustment 
+Designated in line units. 
+2 
+3 
+4 
+5 
+6 
+7 
+3051h 
+0 
+00h 
+1 
+2 
+3 
+4 
+5 
+6 
+7 
+3052h 
+0 
+00h 
+1 
+2 
+3 
+MSB 
+4 
+― 
+Fixed to “0h” 
+0h 
+― 
+5 
+― 
+Fixed to “0h” 
+0h 
+― 
+6 
+― 
+Fixed to “0h” 
+0h 
+― 
+7 
+― 
+Fixed to “0h” 
+0h 
+― 
+
+===== PAGE 40 =====
+IMX415-AAQR-G 
+ 
+ 
+40 
+ 
+ 
+Address 
+bit 
+Register 
+name 
+Description 
+Default value 
+after reset 
+Reflection 
+timing 
+By 
+register 
+By 
+address 
+3090h 
+0 
+GAIN_PGC_0 
+[8:0] 
+LSB 
+000h 
+00h 
+V 
+1 
+Gain setting 
+(0.0dB to 72.0dB / 0.3dB step) 
+2 
+3 
+4 
+5 
+6 
+7 
+3091h 
+0 
+MSB 
+00h 
+1 
+― 
+Fixed to “0h” 
+0h 
+― 
+2 
+― 
+Fixed to “0h” 
+0h 
+― 
+3 
+― 
+Fixed to “0h” 
+0h 
+― 
+4 
+― 
+Fixed to “0h” 
+0h 
+― 
+5 
+― 
+Fixed to “0h” 
+0h 
+― 
+6 
+― 
+Fixed to “0h” 
+0h 
+― 
+7 
+― 
+Fixed to “0h” 
+0h 
+― 
+30C0h 
+0 
+XVSOUTSEL 
+[1:0] 
+XVS pin setting in master mode 
+0: Fixed to Low 
+2: VSYNC output 
+2h 
+2Ah 
+I 
+1 
+2 
+XHSOUTSEL 
+[1:0] 
+XHS pin setting in master mode 
+0: Fixed to Low 
+2: HSYNC output 
+2h 
+I 
+3 
+4 
+― 
+Fixed to “2h” 
+2h 
+― 
+5 
+6 
+― 
+Fixed to “0h” 
+0h 
+― 
+7 
+― 
+Fixed to “0h” 
+0h 
+― 
+30C1h 
+0 
+XVS_DRV 
+[1:0] 
+XVS pin setting 
+0: XVS output (Master mode) 
+3: HiZ (Slave mode) 
+3h 
+0Fh 
+S 
+1 
+2 
+XHS_DRV 
+[1:0] 
+XHS pin setting 
+0: XHS output (Master mode) 
+3: HiZ (Slave mode) 
+3h 
+S 
+3 
+4 
+― 
+Fixed to “0h” 
+0h 
+― 
+5 
+6 
+― 
+Fixed to “0h” 
+0h 
+― 
+7 
+― 
+Fixed to “0h” 
+0h 
+― 
+
+===== PAGE 41 =====
+IMX415-AAQR-G 
+ 
+ 
+41 
+ 
+ 
+Address 
+bit 
+Register 
+name 
+Description 
+Default value 
+after reset 
+Reflection 
+timing 
+By 
+register 
+By 
+address 
+30CCh 
+0 
+― 
+Fixed to “0h” 
+0h 
+00h 
+― 
+1 
+― 
+Fixed to “0h” 
+0h 
+― 
+2 
+― 
+Fixed to “0h” 
+0h 
+― 
+3 
+― 
+Fixed to “0h” 
+0h 
+― 
+4 
+XVSLNG 
+[1:0] 
+XVS pulse width setting  
+in master mode. 
+0: 1H 
+1: 2H 
+2: 4H 
+3: 8H 
+0h 
+I 
+5 
+6 
+― 
+Fixed to “0h” 
+0h 
+― 
+7 
+― 
+Fixed to “0h” 
+0h 
+― 
+30CDh 
+0 
+― 
+Fixed to “0h” 
+0h 
+00h 
+― 
+1 
+― 
+Fixed to “0h” 
+0h 
+― 
+2 
+― 
+Fixed to “0h” 
+0h 
+― 
+3 
+― 
+Fixed to “0h” 
+0h 
+― 
+4 
+XHSLNG 
+[1:0] 
+XHS pulse width setting  
+in master mode. 
+0: 16clock 
+1: 32clock 
+2: 64clock 
+3: 128clock 
+0h 
+I 
+5 
+6 
+― 
+Fixed to “0h” 
+0h 
+― 
+7 
+― 
+Fixed to “0h” 
+0h 
+― 
+30D9h 
+0 
+DIG_CLP_VSTART 
+[4:0] 
+The value is set according to Readout 
+mode. 
+2: Horizontal / Vertical 2/2-line binning 
+mode 
+6: All-pixel scan mode 
+06h 
+06h 
+S 
+1 
+2 
+3 
+4 
+5 
+― 
+Fixed to “0h” 
+0h 
+― 
+6 
+― 
+Fixed to “0h” 
+0h 
+― 
+7 
+― 
+Fixed to “0h” 
+0h 
+― 
+30DAh 
+0 
+DIG_CLP_VNUM 
+[1:0] 
+The value is set according to Readout 
+mode. 
+1: Horizontal / Vertical 2/2-line binning 
+mode 
+2: All-pixel scan mode 
+2h 
+02h 
+S 
+1 
+2 
+― 
+Fixed to “0h” 
+0h 
+― 
+3 
+― 
+Fixed to “0h” 
+0h 
+― 
+4 
+― 
+Fixed to “0h” 
+0h 
+― 
+5 
+― 
+Fixed to “0h” 
+0h 
+― 
+6 
+― 
+Fixed to “0h” 
+0h 
+― 
+7 
+― 
+Fixed to “0h” 
+0h 
+― 
+
+===== PAGE 42 =====
+IMX415-AAQR-G 
+ 
+ 
+42 
+ 
+ 
+Address 
+bit 
+Register 
+name 
+Description 
+Default value 
+after reset 
+Reflection 
+timing 
+By 
+register 
+By 
+address 
+30E2h 
+0 
+BLKLEVEL 
+[9:0] 
+LSB 
+032h 
+32h 
+I 
+1 
+Black level offset value setting 
+ 
+10-bit readout mode: 1digit/1h 
+12-bit readout mode: 4digit/1h 
+2 
+3 
+4 
+5 
+6 
+7 
+30E3h 
+0 
+00h 
+1 
+MSB 
+2 
+― 
+Fixed to “0h” 
+0h 
+― 
+3 
+― 
+Fixed to “0h” 
+0h 
+― 
+4 
+― 
+Fixed to “0h” 
+0h 
+― 
+5 
+― 
+Fixed to “0h” 
+0h 
+― 
+6 
+― 
+Fixed to “0h” 
+0h 
+― 
+7 
+― 
+Fixed to “0h” 
+0h 
+― 
+ 
+ 
+ 
+
+===== PAGE 43 =====
+IMX415-AAQR-G 
+ 
+ 
+43 
+ 
+ 
+(2) Registers corresponding to address = 31**h. 
+ 
+Address 
+bit 
+Register 
+name 
+Description 
+Default value 
+after reset 
+Reflection 
+timing 
+By 
+register 
+By 
+address 
+3115h 
+[7:0] 
+INCKSEL1 
+[7:0] 
+The value is set according to INCK. 
+Refer to “INCK setting” 
+00h 
+00h 
+S 
+3116h 
+[7:0] 
+INCKSEL2 
+[7:0] 
+The value is set according to INCK. 
+Refer to “INCK setting” 
+28h 
+28h 
+S 
+3118h 
+0 
+INCKSEL3 
+[10:0] 
+LSB 
+0C0h 
+C0h 
+S 
+1 
+The value is set according to INCK. 
+Refer to “INCK setting” 
+2 
+3 
+4 
+5 
+6 
+7 
+3119h 
+0 
+00h 
+1 
+2 
+MSB 
+3 
+― 
+Fixed to “0h” 
+0h 
+― 
+4 
+― 
+Fixed to “0h” 
+0h 
+― 
+5 
+― 
+Fixed to “0h” 
+0h 
+― 
+6 
+― 
+Fixed to “0h” 
+0h 
+― 
+7 
+― 
+Fixed to “0h” 
+0h 
+― 
+311Ah 
+0 
+INCKSEL4 
+[10:0] 
+LSB 
+0E0h 
+E0h 
+S 
+1 
+The value is set according to INCK. 
+Refer to “INCK setting” 
+2 
+3 
+4 
+5 
+6 
+7 
+311Bh 
+0 
+00h 
+1 
+2 
+MSB 
+3 
+― 
+Fixed to “0h” 
+0h 
+― 
+4 
+― 
+Fixed to “0h” 
+0h 
+― 
+5 
+― 
+Fixed to “0h” 
+0h 
+― 
+6 
+― 
+Fixed to “0h” 
+0h 
+― 
+7 
+― 
+Fixed to “0h” 
+0h 
+― 
+311Eh 
+[7:0] 
+INCKSEL5 
+[7:0] 
+The value is set according to INCK. 
+Refer to “INCK setting” 
+28h 
+28h 
+S 
+ 
+ 
+ 
+
+===== PAGE 44 =====
+IMX415-AAQR-G 
+ 
+ 
+44 
+ 
+ 
+(3) Registers corresponding to address = 32**h. 
+Address 
+bit 
+Register 
+name 
+Description 
+Default value 
+after reset 
+Reflection 
+timing 
+By 
+register 
+By 
+Address 
+32D4h 
+[7:0] 
+― 
+Set to “21h” 
+20h 
+20h 
+S 
+32ECh 
+[7:0] 
+― 
+Set to “A1h” 
+A0h 
+A0h 
+S 
+ 
+(4) Registers corresponding to address = 34**h. 
+Address 
+bit 
+Register 
+name 
+Description 
+Default value 
+after reset 
+Reflection 
+timing 
+By 
+register 
+By 
+Address 
+344Ch 
+[7:0] 
+― 
+Set to “2Bh” 
+00h 
+00h 
+S 
+344Dh 
+[7:0] 
+― 
+Set to “01h” 
+00h 
+00h 
+S 
+344Eh 
+[7:0] 
+― 
+Set to “EDh” 
+00h 
+00h 
+S 
+344Fh 
+[7:0] 
+― 
+Set to “01h” 
+00h 
+00h 
+S 
+3450h 
+[7:0] 
+― 
+Set to “F6h” 
+00h 
+00h 
+S 
+3451h 
+[7:0] 
+― 
+Set to “02h” 
+00h 
+00h 
+S 
+3452h 
+[7:0] 
+― 
+Set to “7Fh” 
+00h 
+00h 
+S 
+3453h 
+[7:0] 
+― 
+Set to “03h” 
+00h 
+00h 
+S 
+ 
+(5) Registers corresponding to address = 35**h. 
+Address 
+bit 
+Register 
+name 
+Description 
+Default value 
+after reset 
+Reflection 
+timing 
+By 
+register 
+By 
+address 
+358Ah 
+[7:0] 
+― 
+Set to “04h” 
+06h 
+06h 
+S 
+35A1h 
+[7:0] 
+― 
+Set to “02h” 
+00h 
+00h 
+S 
+35ECh 
+[7:0] 
+― 
+Set to “27h” 
+04h 
+04h 
+S 
+35EEh 
+[7:0] 
+― 
+Set to “8Dh” 
+27h 
+27h 
+S 
+35F0h 
+[7:0] 
+― 
+Set to “8Dh” 
+29h 
+29h 
+S 
+35F2h 
+[7:0] 
+― 
+Set to “29h” 
+04h 
+04h 
+S 
+ 
+(6) Registers corresponding to address = 36**h. 
+Address 
+bit 
+Register 
+name 
+Description 
+Default value 
+after reset 
+Reflection 
+timing 
+By 
+register 
+By 
+Address 
+36BCh 
+[7:0] 
+― 
+Set to “0Ch” 
+00h 
+00h 
+S 
+36CCh 
+[7:0] 
+― 
+Set to “53h” 
+FFh 
+FFh 
+S 
+36CDh 
+[7:0] 
+― 
+Set to “00h” 
+01h 
+01h 
+S 
+36CEh 
+[7:0] 
+― 
+Set to “3Ch” 
+00h 
+00h 
+S 
+36D0h 
+[7:0] 
+― 
+Set to “8Ch” 
+FFh 
+FFh 
+S 
+36D1h 
+[7:0] 
+― 
+Set to “00h” 
+01h 
+01h 
+S 
+36D2h 
+[7:0] 
+― 
+Set to “71h” 
+00h 
+00h 
+S 
+36D4h 
+[7:0] 
+― 
+Set to “3Ch” 
+00h 
+00h 
+S 
+36D6h 
+[7:0] 
+― 
+Set to “53h” 
+FFh 
+FFh 
+S 
+36D7h 
+[7:0] 
+― 
+Set to “00h” 
+01h 
+01h 
+S 
+36D8h 
+[7:0] 
+― 
+Set to “71h” 
+00h 
+00h 
+S 
+36DAh 
+[7:0] 
+― 
+Set to “8Ch” 
+FFh 
+FFh 
+S 
+36DBh 
+[7:0] 
+― 
+Set to “00h” 
+01h 
+01h 
+S 
+ 
+ 
+ 
+
+===== PAGE 45 =====
+IMX415-AAQR-G 
+ 
+ 
+45 
+ 
+ 
+(7) Registers corresponding to address = 37**h. 
+Address 
+bit 
+Register 
+name 
+Description 
+Default value 
+after reset 
+Reflection 
+timing 
+By 
+register 
+By 
+address 
+3701h 
+[7:0] 
+ADBIT1 
+[7:0] 
+The value is set according to AD 
+Conversion bits 
+00h: AD 10-bit 
+03h: AD 12-bit ( 11 bit + digital dither ) 
+03h 
+03h 
+S 
+3720h 
+[7:0] 
+― 
+Set to “00h” 
+07h 
+07h 
+S 
+3724h 
+[7:0] 
+― 
+Set to “02h” 
+0Ah 
+0Ah 
+S 
+3726h 
+[7:0] 
+― 
+Set to “02h” 
+0Ah 
+0Ah 
+S 
+3732h 
+[7:0] 
+― 
+Set to “02h” 
+00h 
+00h 
+S 
+3734h 
+[7:0] 
+― 
+Set to “03h” 
+0Ah 
+0Ah 
+S 
+3736h 
+[7:0] 
+― 
+Set to “03h” 
+0Ah 
+0Ah 
+S 
+3742h 
+[7:0] 
+― 
+Set to “03h” 
+00h 
+00h 
+S 
+ 
+(8) Registers corresponding to address = 38**h. 
+Address 
+bit 
+Register 
+name 
+Description 
+Default value 
+after reset 
+Reflection 
+timing 
+By 
+register 
+By 
+address 
+3862h 
+[7:0] 
+― 
+Set to “E0h” 
+7Fh 
+7Fh 
+S 
+38CCh 
+[7:0] 
+― 
+Set to “30h” 
+33h 
+33h 
+S 
+38CDh 
+[7:0] 
+― 
+Set to “2Fh” 
+33h 
+33h 
+S 
+ 
+(9) Registers corresponding to address = 39**h. 
+Address 
+bit 
+Register 
+name 
+Description 
+Default value 
+after reset 
+Reflection 
+timing 
+By 
+register 
+By 
+address 
+395Ch 
+[7:0] 
+― 
+Set to “0Ch” 
+00h 
+00h 
+S 
+39A4h 
+[7:0] 
+― 
+Set to “07h” 
+00h 
+00h 
+S 
+39A8h 
+[7:0] 
+― 
+Set to “32h” 
+1Eh 
+1Eh 
+S 
+39AAh 
+[7:0] 
+― 
+Set to “32h” 
+1Eh 
+1Eh 
+S 
+39ACh 
+[7:0] 
+― 
+Set to “32h” 
+19h 
+19h 
+S 
+39AEh 
+[7:0] 
+― 
+Set to “32h” 
+19h 
+19h 
+S 
+39B0h 
+[7:0] 
+― 
+Set to “32h” 
+19h 
+19h 
+S 
+39B2h 
+[7:0] 
+― 
+Set to “2Fh” 
+19h 
+19h 
+S 
+39B4h 
+[7:0] 
+― 
+Set to “2Dh” 
+19h 
+19h 
+S 
+39B6h 
+[7:0] 
+― 
+Set to “28h” 
+19h 
+19h 
+S 
+39B8h 
+[7:0] 
+― 
+Set to “30h” 
+1Eh 
+1Eh 
+S 
+39BAh 
+[7:0] 
+― 
+Set to “30h” 
+1Eh 
+1Eh 
+S 
+39BCh 
+[7:0] 
+― 
+Set to “30h” 
+19h 
+19h 
+S 
+39BEh 
+[7:0] 
+― 
+Set to “30h” 
+19h 
+19h 
+S 
+39C0h 
+[7:0] 
+― 
+Set to “30h” 
+19h 
+19h 
+S 
+39C2h 
+[7:0] 
+― 
+Set to “2Eh” 
+19h 
+19h 
+S 
+39C4h 
+[7:0] 
+― 
+Set to “2Bh” 
+19h 
+19h 
+S 
+39C6h 
+[7:0] 
+― 
+Set to “25h” 
+19h 
+19h 
+S 
+ 
+
+===== PAGE 46 =====
+IMX415-AAQR-G 
+ 
+ 
+46 
+ 
+ 
+ 
+(10) Registers corresponding to address = 3A**h. 
+Address 
+bit 
+Register 
+name 
+Description 
+Default value 
+after reset 
+Reflection 
+timing 
+By 
+register 
+By 
+address 
+3A42h 
+[7:0] 
+― 
+Set to “D1h” 
+11h 
+11h 
+S 
+3A4Ch 
+[7:0] 
+― 
+Set to “77h” 
+37h 
+37h 
+S 
+3AE0h 
+[7:0] 
+― 
+Set to “02h” 
+00h 
+00h 
+S 
+3AECh 
+[7:0] 
+― 
+Set to “0Ch” 
+00h 
+00h 
+S 
+ 
+(11) Registers corresponding to address = 3B**h. 
+Address 
+bit 
+Register 
+name 
+Description 
+Default value 
+after reset 
+Reflection 
+timing 
+By 
+register 
+By 
+address 
+3B00h 
+[7:0] 
+― 
+Set to “2Eh” 
+28h 
+28h 
+S 
+3B06h 
+[7:0] 
+― 
+Set to “29h” 
+23h 
+23h 
+S 
+3B98h 
+[7:0] 
+― 
+Set to “25h” 
+19h 
+19h 
+S 
+3B99h 
+[7:0] 
+― 
+Set to “21h” 
+19h 
+19h 
+S 
+3B9Bh 
+[7:0] 
+― 
+Set to “13h” 
+19h 
+19h 
+S 
+3B9Ch 
+[7:0] 
+― 
+Set to “13h” 
+19h 
+19h 
+S 
+3B9Dh 
+[7:0] 
+― 
+Set to “13h” 
+19h 
+19h 
+S 
+3B9Eh 
+[7:0] 
+― 
+Set to “13h” 
+16h 
+16h 
+S 
+3BA1h 
+[7:0] 
+― 
+Set to “00h” 
+04h 
+04h 
+S 
+3BA2h 
+[7:0] 
+― 
+Set to “06h” 
+09h 
+09h 
+S 
+3BA3h 
+[7:0] 
+― 
+Set to “0Bh” 
+09h 
+09h 
+S 
+3BA4h 
+[7:0] 
+― 
+Set to “10h” 
+0Dh 
+0Dh 
+S 
+3BA5h 
+[7:0] 
+― 
+Set to “14h” 
+0Dh 
+0Dh 
+S 
+3BA6h 
+[7:0] 
+― 
+Set to “18h” 
+0Dh 
+0Dh 
+S 
+3BA7h 
+[7:0] 
+― 
+Set to “1Ah” 
+0Dh 
+0Dh 
+S 
+3BA8h 
+[7:0] 
+― 
+Set to “1Ah” 
+0Dh 
+0Dh 
+S 
+3BA9h 
+[7:0] 
+― 
+Set to “1Ah” 
+0Dh 
+0Dh 
+S 
+3BACh 
+[7:0] 
+― 
+Set to “EDh” 
+00h 
+00h 
+S 
+3BADh 
+[7:0] 
+― 
+Set to “01h” 
+00h 
+00h 
+S 
+3BAEh 
+[7:0] 
+― 
+Set to “F6h” 
+22h 
+22h 
+S 
+3BAFh 
+[7:0] 
+― 
+Set to “02h” 
+00h 
+00h 
+S 
+3BB0h 
+[7:0] 
+― 
+Set to “A2h” 
+84h 
+84h 
+S 
+3BB1h 
+[7:0] 
+― 
+Set to “03h” 
+00h 
+00h 
+S 
+3BB2h 
+[7:0] 
+― 
+Set to “E0h” 
+A2h 
+A2h 
+S 
+3BB3h 
+[7:0] 
+― 
+Set to “03h” 
+00h 
+00h 
+S 
+3BB4h 
+[7:0] 
+― 
+Set to “E0h” 
+11h 
+11h 
+S 
+3BB5h 
+[7:0] 
+― 
+Set to “03h” 
+01h 
+01h 
+S 
+3BB6h 
+[7:0] 
+― 
+Set to “E0h” 
+ECh 
+ECh 
+S 
+3BB7h 
+[7:0] 
+― 
+Set to “03h” 
+01h 
+01h 
+S 
+3BB8h 
+[7:0] 
+― 
+Set to “E0h” 
+7Ah 
+7Ah 
+S 
+3BBAh 
+[7:0] 
+― 
+Set to “E0h” 
+D1h 
+D1h 
+S 
+3BBCh 
+[7:0] 
+― 
+Set to “DAh” 
+ECh 
+ECh 
+S 
+3BBEh 
+[7:0] 
+― 
+Set to “88h” 
+F5h 
+F5h 
+S 
+3BC0h 
+[7:0] 
+― 
+Set to “44h” 
+43h 
+43h 
+S 
+3BC2h 
+[7:0] 
+― 
+Set to “7Bh” 
+7Ah 
+7Ah 
+S 
+3BC4h 
+[7:0] 
+― 
+Set to “A2h” 
+A1h 
+A1h 
+S 
+3BC8h 
+[7:0] 
+― 
+Set to “BDh” 
+D1h 
+D1h 
+S 
+3BCAh 
+[7:0] 
+― 
+Set to “BDh” 
+DBh 
+DBh 
+S 
+ 
+ 
+ 
+
+===== PAGE 47 =====
+IMX415-AAQR-G 
+ 
+ 
+47 
+ 
+ 
+(12) Registers corresponding to address = 40**h. 
+Address 
+bit 
+Register 
+name 
+Description 
+Default value 
+Reflection 
+timing 
+By 
+register 
+By 
+address 
+4001h 
+0 
+LANEMODE 
+[2:0] 
+Output interface selection 
+1: CSI-2  2lane 
+3: CSI-2  4lane 
+3h 
+03h 
+S 
+1 
+2 
+3 
+― 
+Fixed to “0h” 
+0h 
+― 
+4 
+― 
+Fixed to “0h” 
+0h 
+― 
+5 
+― 
+Fixed to “0h” 
+0h 
+― 
+6 
+― 
+Fixed to “0h” 
+0h 
+― 
+7 
+― 
+Fixed to “0h” 
+0h 
+― 
+4004h 
+[7:0] 
+TXCLKESC_FREQ 
+[15:0] 
+The value is set according to INCK. 
+Refer to “INCK setting” 
+1290h 
+90h 
+S 
+4005h 
+[7:0] 
+12h 
+400Ch 
+0 
+INCKSEL6 
+The value is set according to INCK. 
+Refer to “INCK setting” 
+1h 
+01h 
+S 
+1 
+― 
+Fixed to “0h” 
+0h 
+― 
+2 
+― 
+Fixed to “0h” 
+0h 
+― 
+3 
+― 
+Fixed to “0h” 
+0h 
+― 
+4 
+― 
+Fixed to “0h” 
+0h 
+― 
+5 
+― 
+Fixed to “0h” 
+0h 
+― 
+6 
+― 
+Fixed to “0h” 
+0h 
+― 
+7 
+― 
+Fixed to “0h” 
+0h 
+― 
+4018h 
+[7:0] 
+TCLKPOST 
+[15:0] 
+Global timing setting 
+00B7h 
+B7h 
+S 
+4019h 
+[7:0] 
+00h 
+401Ah 
+[7:0] 
+TCLKPREPARE 
+[15:0] 
+Global timing setting 
+0067h 
+67h 
+S 
+401Bh 
+[7:0] 
+00h 
+401Ch 
+[7:0] 
+TCLKTRAIL 
+[15:0] 
+Global timing setting 
+006Fh 
+6Fh 
+S 
+401Dh 
+[7:0] 
+00h 
+401Eh 
+[7:0] 
+TCLKZERO 
+[15:0] 
+Global timing setting 
+01DFh 
+DFh 
+S 
+401Fh 
+[7:0] 
+01h 
+4020h 
+[7:0] 
+THSPREPARE 
+[15:0] 
+Global timing setting 
+006Fh 
+6Fh 
+S 
+4021h 
+[7:0] 
+00h 
+4022h 
+[7:0] 
+THSZERO 
+[15:0] 
+Global timing setting 
+00CFh 
+CFh 
+S 
+4023h 
+[7:0] 
+00h 
+4024h 
+[7:0] 
+THSTRAIL 
+ [15:0] 
+Global timing setting  
+006Fh 
+6Fh 
+S 
+4025h 
+[7:0] 
+00h 
+4026h 
+[7:0] 
+THSEXIT 
+ [15:0] 
+Global timing setting 
+00B7h 
+B7h 
+S 
+4027h 
+[7:0] 
+00h 
+4028h 
+[7:0] 
+TLPX 
+[15:0] 
+Global timing setting 
+005Fh 
+5Fh 
+S 
+4029h 
+[7:0] 
+00h 
+4074h 
+0 
+INCKSEL7 
+[2:0] 
+The value is set according to INCK. 
+Refer to “INCK setting” 
+0h 
+00h 
+S 
+1 
+2 
+3 
+― 
+Fixed to “0h” 
+0h 
+― 
+4 
+― 
+Fixed to “0h” 
+0h 
+― 
+5 
+― 
+Fixed to “0h” 
+0h 
+― 
+6 
+― 
+Fixed to “0h” 
+0h 
+― 
+7 
+― 
+Fixed to “0h” 
+0h 
+― 
+ 
+   
+ 
+ 
+
+===== PAGE 48 =====
+IMX415-AAQR-G 
+ 
+ 
+48 
+ 
+ 
+Readout Drive mode 
+Operating mode 
+The table below shows the operating modes available with this sensor. 
+These frame rates indicate the maximum rates for each mode. When using a typical frame rate, please refer to the 
+“List of Setting Register” at section “Image Data Output Format”. 
+ 
+Mode 
+Lane 
+Data rate 
+[Mbps/Lane] 
+AD 
+conversion 
+[bit] 
+Output 
+bit width 
+[bit] 
+Frame 
+rate 
+[frame/s] 
+Recording Pixels 
+INCK 
+[MHz] 
+1H period 
+[Clock] 
+1V period 
+[XHS] 
+H 
+[pixels] 
+V 
+[lines] 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+All pixel 
+2 
+2079 
+10 
+10 
+44.4 
+3840 
+2160 
+27, 37.125, 
+74.25 
+746  (*1) 
+2238 
+12 
+12 
+37.5 
+887  (*1) 
+1782 
+10 
+10 
+38.5 
+27, 37.125, 
+74.25 
+861  (*1) 
+12 
+12 
+32.4 
+1022  (*1) 
+1440 
+10 
+10 
+31.6 
+24, 72 
+1016  (*2) 
+1188 
+10 
+10 
+26.5 
+24, 27, 
+37.125, 72, 
+74.25 
+1250  (*1) 
+12 
+12 
+22.2 
+24, 27, 
+37.125, 72, 
+74.25 
+1494  (*1) 
+891 
+10 
+10 
+19.8 
+27, 37.125, 
+74.25 
+1668  (*1) 
+12 
+12 
+16.6 
+1990  (*1) 
+720 
+10 
+10 
+16.2 
+24, 72 
+1985  (*2) 
+594 
+10 
+10 
+13.4 
+27, 37.125, 
+74.25 
+2475  (*1) 
+12 
+12 
+11.2 
+2958  (*1) 
+4 
+2376 
+10 
+10 
+90.9 
+27, 37.125, 
+74.25 
+365  (*1) 
+2079 
+10 
+10 
+82.9 
+27, 37.125, 
+74.25 
+400  (*1) 
+12 
+12 
+60.3 
+550  (*1) 
+1782 
+10 
+10 
+72.4 
+27, 37.125, 
+74.25 
+458  (*1) 
+12 
+12 
+60.3 
+550  (*1) 
+1485 
+10 
+10 
+61.6 
+27, 37.125, 
+74.25 
+538  (*1) 
+1440 
+10 
+10 
+60.4 
+24, 72 
+532  (*2) 
+12 
+12 
+51.1 
+629  (*2) 
+1188 
+10 
+10 
+51.5 
+24, 27, 
+37.125, 72, 
+74.25 
+644  (*1) 
+12 
+12 
+43.3 
+24, 27, 
+37.125, 72, 
+74.25 
+766  (*1) 
+891 
+10 
+10 
+38.5 
+27, 37.125, 
+74.25 
+861  (*1) 
+12 
+12 
+32.4 
+1022  (*1) 
+720 
+10 
+10 
+31.6 
+24, 72 
+1017  (*2) 
+12 
+12 
+26.5 
+1210  (*2) 
+594 
+10 
+10 
+26.2 
+27, 37.125, 
+74.25 
+1265  (*1) 
+12 
+12 
+22.0 
+1506  (*1) 
+ 
+(*1)  Clock frequency = 74.25 [MHz] 
+(*2)  Clock frequency = 72 [MHz] 
+ 
+ 
+ 
+
+===== PAGE 49 =====
+IMX415-AAQR-G 
+ 
+ 
+49 
+ 
+ 
+ 
+Mode 
+Lane 
+Data rate 
+[Mbps/Lane] 
+AD 
+conversion 
+[bit] 
+Output 
+bit width 
+[bit] 
+Frame 
+rate 
+[frame/s] 
+Recording Pixels 
+INCK 
+[MHz] 
+1H period 
+[Clock] 
+1V period 
+[XHS] 
+H 
+[pixels] 
+V 
+[lines] 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+Horizontal/ 
+Vertical 
+2/2-line 
+binning 
+2 
+2079 
+10 
+12 
+70.2 
+1920 
+1080 
+27, 37.125, 
+74.25 
+472  (*1) 
+2238 
+1782 
+10 
+12 
+61.2 
+27, 37.125, 
+74.25 
+542  (*1) 
+891 
+10 
+12 
+32.2 
+27, 37.125, 
+74.25 
+1030  (*1) 
+594 
+10 
+12 
+21.8 
+27, 37.125, 
+74.25 
+1518  (*1) 
+4 
+2079 
+10 
+12 
+90.9 
+27, 37.125, 
+74.25 
+365  (*1) 
+1782 
+10 
+12 
+90.9 
+27, 37.125, 
+74.25 
+365  (*1) 
+1440 
+10 
+12 
+88.1 
+24, 72 
+365  (*2) 
+891 
+10 
+12 
+61.2 
+27, 37.125, 
+74.25 
+542  (*1) 
+720 
+10 
+12 
+50.7 
+24, 72 
+634  (*2) 
+594 
+10 
+12 
+42.2 
+27, 37.125, 
+74.25 
+786  (*1) 
+ 
+(*1)  Clock frequency = 74.25 [MHz] 
+(*2)  Clock frequency = 72 [MHz] 
+ 
+ 
+ 
+
+===== PAGE 50 =====
+IMX415-AAQR-G 
+ 
+ 
+50 
+ 
+ 
+Image Data Output Format (CSI-2 output) 
+Frame Format 
+Each line of each image frame is output like the General Frame Format of CSI-2. The settings for each packet 
+header are shown below. 
+ 
+DATA Type 
+Header [5:0] 
+Name 
+Setting register 
+(I2C) 
+Description 
+00h 
+Frame Start Code 
+N/A 
+FS 
+01h 
+Frame End Code 
+N/A 
+FE 
+12h 
+Embedded Data 
+N/A 
+Embedded data 
+2Bh 
+RAW10 
+Address: 3032h 
+MDBIT [0] 
+0A0Ah 
+2Ch 
+RAW12 
+0C0Ch 
+37h 
+OB Data 
+N/A 
+Vertical OB line data 
+ 
+Frame Structure 
+Recording pixel area
+(Effective pixels, color processing margin)
+EBD(Embedded data)
+Vertical effective OB
+Ignored OB
+Frame blanking
+Line blanking
+FS
+PH
+PH
+PH
+PF
+FE
+Ignored OB
+Next Frame
+FS
+PH
+EBD(Embedded data)
+PF
+B
+R G
+G
+B
+R G
+G
+B
+R G
+G
+B
+R G
+G
+Dummy
+Dummy
+ 
+ 
+Frame Structure of CSI-2 output 
+ 
+ 
+
+===== PAGE 51 =====
+IMX415-AAQR-G 
+ 
+ 
+51 
+ 
+ 
+Embedded Data Line 
+The Embedded data line is output in a line following the sync code FS. 
+Embedded Data Format
+2
+[7:0]
+3
+[7:0]
+07h
+07h
+Packet Footer
+RAW10 
+Packet Header
+RAW12 
+1
+[7:0]
+55h
+Packet Footer
+Packet Header
+55h
+1
+[9:2]
+55h
+[1:0]
+4
+[1:0]
+55h
+[3:0]
+1
+[7:0]
+4
+[7:0]
+190
+[7:0]
+189
+[7:0]
+188
+[7:0]
+…
+…
+191
+[7:0]
+2
+[7:0]
+3
+[7:0]
+4
+[7:0]
+5
+[7:0]
+6
+[7:0]
+7
+[7:0]
+8
+[7:0]
+55h
+9
+[7:0]
+10
+[7:0]
+11
+[7:0]
+55h
+07h
+2
+[9:2]
+3
+[9:2]
+4
+[9:2]
+3
+[1:0]
+2
+[1:0]
+1
+[1:0]
+1
+[11:4]
+1
+[7:0]
+2
+[7:0]
+55h
+3
+[7:0]
+4
+[7:0]
+5
+[7:0]
+6
+[7:0]
+55h
+7
+[7:0]
+8
+[7:0]
+55h
+9
+[7:0]
+Packet Footer
+55h
+07h
+2
+[11:4]
+1
+[3:0]
+2
+[3:0]
+Packet Header
+ 
+ 
+ 
+ 
+
+===== PAGE 52 =====
+IMX415-AAQR-G 
+ 
+ 
+52 
+ 
+ 
+Specific output examples are shown below. 
+ 
+Pixel 
+(8bit) 
+bit 
+I2C address 
+[HEX] 
+Data Byte Description 
+Description 
+1 
+[7:0] 
+－ 
+－ 
+ignored 
+2 
+[3:0] 
+301C[3:0] 
+WINMODE 
+ 
+3 
+[3:0] 
+－ 
+－ 
+ignored 
+[4] 
+3030[0] 
+HREVERSE 
+ 
+[6:5] 
+3022[1:0] 
+ADDMODE 
+ 
+[7] 
+－ 
+－ 
+ignored 
+4 to 8 
+[7:0] 
+－ 
+－ 
+ignored 
+9 
+[4:0] 
+－ 
+－ 
+ignored 
+[5] 
+3030[1] 
+VREVERSE 
+ 
+[7:6] 
+－ 
+－ 
+ignored 
+10 
+[7:0] 
+－ 
+－ 
+ignored 
+11 
+[5:0] 
+－ 
+－ 
+ignored 
+[7:6] 
+3031[1:0] 
+ADBIT 
+ 
+12 
+[7:0] 
+－ 
+－ 
+ignored 
+13 
+[2:0] 
+4001[2:0] 
+LANEMODE 
+ 
+[3] 
+3032[0] 
+MDBIT 
+ 
+[7:4] 
+3033[3:0] 
+SYS_MODE 
+ 
+14 to 23 
+[7:0] 
+－ 
+－ 
+ignored 
+24 
+[7:0] 
+3050[7:0] 
+SHR0 
+ 
+25 
+[7:0] 
+3051[7:0] 
+26 
+[3:0] 
+3052[3:0] 
+[7:4] 
+－ 
+－ 
+ignored 
+27 to 53 
+[7:0] 
+－ 
+－ 
+ignored 
+54 
+[7:0] 
+30E2[7:0] 
+BLKLEVEL 
+ 
+55 
+[1:0] 
+30E3[1:0] 
+[7:2] 
+－ 
+－ 
+ignored 
+56 to 216 
+[7:0] 
+－ 
+－ 
+ignored 
+ 
+Output data is Data[7:0] = 00h from 217 to 224 pixel. 
+Output data is Data[7:0] = 07h from 225 to end pixel. 
+ 
+ 
+ 
+
+===== PAGE 53 =====
+IMX415-AAQR-G 
+ 
+ 
+53 
+ 
+ 
+Image Data Output Format 
+The table below shows the register setting example of typical frame rate. 
+The frame rate is obtained by the following formula when using other frame rates. 
+ 
+Frame rate [frame / s] = 1 / ( VTTL × (1H period) ) 
+ 
+VTTL 
+: 1 frame line length or VMAX 
+ 
+ 
+ “1V period” or more in the table of "Operating mode" 
+ 
+1H period (set in unit [s]) : “1H period” or more in the table of "Operating mode" 
+ 
+ 
+
+===== PAGE 54 =====
+IMX415-AAQR-G 
+ 
+ 
+54 
+ 
+ 
+ 
+All-pixel mode 
+List of Setting Register 
+Address 
+bit 
+Register 
+Name 
+Initial 
+Value 
+CSI-2 serial / 2lane 
+Remarks 
+10 
+15 
+15.74 
+15 / 25 
+30 
+30 
+30.01 
+[frame/s] 
+594 
+891 
+720 
+1188 
+1782 
+2079 
+1440 
+[Mbps/lane] 
+44.5 
+29.7 
+28.3 
+29.7 / 17.8 
+14.9 
+14.9 
+14.9 
+1H period [μs] 
+3008h 
+[7:0] BCWAIT_TIME 0FFh 
+Refer to “INCK setting” 
+ 
+3009h 
+[1:0] 
+300Ah 
+[7:0] CPWAIT_TIME 0B6h 
+300Bh 
+[1:0] 
+301Ch 
+[3:0] WINMODE 
+0h 
+0h 
+All pixel mode 
+3022h 
+[1:0] ADDMODE 
+0h 
+0h 
+All pixel mode 
+3024h 
+[7:0] 
+VMAX 
+8CAh 
+8CAh 
+ 
+3025h 
+[7:0] 
+3026h 
+[3:0] 
+3028h 
+[7:0] HMAX 
+226h 
+CE4h 
+898h 
+7F0h 
+898h / 
+528h 
+44Ch 
+44Ch 
+42Ah 
+ 
+3029h 
+[7:0] 
+3030h 
+[0] HREVERSE 
+0h 
+0h / 1h 
+0: Nor. , 1: Inv. 
+[1] VREVERSE 
+0h 
+0h / 1h 
+0: Nor. , 1: Inv. 
+3031h 
+[1:0] ADBIT 
+1h 
+0h / 1h 
+0h / 1h 
+0h 
+1h / 0h 
+0h / 1h 
+0h / 1h 
+0h 
+0: 10 bit, 1: 12 bit 
+3032h 
+[0] MDBIT 
+1h 
+0h / 1h 
+0h / 1h 
+0h 
+1h / 0h 
+0h / 1h 
+0h / 1h 
+0h 
+0: 10 bit, 1: 12 bit 
+3033h 
+[3:0] SYS_MODE 
+4h 
+7h 
+5h 
+9h 
+6h 
+4h 
+2h 
+8h 
+ 
+3115h 
+[7:0] INCKSEL1 
+00h 
+Refer to “INCK setting” 
+ 
+3116h 
+[7:0] INCKSEL2 
+28h 
+3118h 
+[7:0] INCKSEL3 
+0C0h 
+3119h 
+[2:0] 
+311Ah 
+[7:0] INCKSEL4 
+0E0h 
+311Bh 
+[2:0] 
+311Eh 
+[7:0] INCKSEL5 
+28h 
+3200h 
+to 
+3BFFh 
+[7:0] 
+ 
+Refer to “Register Map” 
+ 
+4001h 
+[2:0] LANEMODE 
+3h 
+1h 
+2lane 
+4004h 
+[7:0] TXCLCKES_F
+REQ 
+1290h 
+Refer to “INCK setting” 
+ 
+4005h 
+[7:0] 
+400Ch 
+[0] INCKSEL6 
+1h 
+4018h 
+[7:0] TCLKPOST 
+00B7h 
+0067h 
+007Fh 
+006Fh 
+008Fh 
+00B7h 
+00D7h 
+009Fh 
+Global timing 
+4019h 
+[7:0] 
+401Ah 
+[7:0] TCLKPREPAR
+E 
+0067h 
+0027h 
+0037h 
+002Fh 
+004Fh 
+0067h 
+007Fh 
+0057h 
+Global timing 
+401Bh 
+[7:0] 
+401Ch 
+[7:0] TCLKTRAIL 
+006Fh 
+0027h 
+0037h 
+002Fh 
+0047h 
+006Fh 
+007Fh 
+0057h 
+Global timing 
+401Dh 
+[7:0] 
+401Eh 
+[7:0] TCLKZERO 
+01DFh 
+00B7h 
+00F7h 
+00BFh 
+0137h 
+01DFh 
+0237h 
+0187h 
+Global timing 
+401Fh 
+[7:0] 
+4020h 
+[7:0] THSPREPARE 006Fh 
+002Fh 
+003Fh 
+002Fh 
+004Fh 
+006Fh 
+0087h 
+005Fh 
+Global timing 
+4021h 
+[7:0] 
+4022h 
+[7:0] THSZERO 
+00CFh 
+004Fh 
+006Fh 
+0057h 
+0087h 
+00CFh 
+00EFh 
+00A7h 
+Global timing 
+4023h 
+[7:0] 
+4024h 
+[7:0] THSTRAIL 
+006Fh 
+002Fh 
+003Fh 
+002Fh 
+004Fh 
+006Fh 
+0087h 
+005Fh 
+Global timing 
+4025h 
+[7:0] 
+4026h 
+[7:0] THSEXIT 
+00B7h 
+0047h 
+005Fh 
+004Fh 
+007Fh 
+00B7h 
+00DFh 
+0097h 
+Global timing 
+4027h 
+[7:0] 
+4028h 
+[7:0] TLPX 
+005Fh 
+0027h 
+002Fh 
+0027h 
+003Fh 
+005Fh 
+006Fh 
+004Fh 
+Global timing 
+4029h 
+[7:0] 
+4074h 
+[2:0] INCKSEL7 
+0h 
+Refer to “INCK setting” 
+ 
+
+===== PAGE 55 =====
+IMX415-AAQR-G 
+ 
+ 
+55 
+ 
+ 
+ 
+Address 
+bit 
+Register 
+Name 
+Initial 
+Value 
+CSI-2 serial / 4lane 
+Remarks 
+20 /  
+25 
+25 /  
+30.01 
+30 
+30 / 
+50 
+30.01 / 
+60.03 
+60 
+60 
+60 
+90.16 [frame/s] 
+594 
+720 
+891 
+1188 
+1440 
+1485 
+1782 
+2079 
+2376 [Mbps/lane] 
+22.3 / 
+17.8 
+17.8 / 
+14.9 
+14.9 
+14.9 / 
+8.9 
+14.9 / 
+7.5 
+7.5 
+7.5 
+7.5 
+5.0 
+1H period [μs] 
+3008h 
+[7:0] BCWAIT_TIME 0FFh 
+Refer to “INCK setting” 
+ 
+3009h 
+[1:0] 
+300Ah 
+[7:0] CPWAIT_TIME 0B6h 
+300Bh 
+[1:0] 
+301Ch 
+[3:0] WINMODE 
+0h 
+0h 
+All pixel mode 
+3022h 
+[1:0] ADDMODE 
+0h 
+0h 
+All pixel mode 
+3024h 
+[7:0] 
+VMAX 
+8CAh 
+8CAh 
+ 
+3025h 
+[7:0] 
+3026h 
+[3:0] 
+3028h 
+[7:0] HMAX 
+226h 
+672h / 
+528h 
+500h / 
+42Ah 
+44Ch 
+44Ch / 
+294h 
+42Ah / 
+215h 
+226h 
+226h 
+226h 
+16Eh  
+3029h 
+[7:0] 
+3030h 
+[0] HREVERSE 
+0h 
+0h / 1h 
+0: Nor. , 1: Inv. 
+[1] VREVERSE 
+0h 
+0h / 1h 
+0: Nor. , 1: Inv. 
+3031h 
+[1:0] ADBIT 
+1h 
+1h / 0h 1h / 0h 0h / 1h 1h / 0h 1h / 0h 
+0h 
+0h / 1h 0h / 1h 
+0h 
+0: 10 bit, 1: 12 bit 
+3032h 
+[0] MDBIT 
+1h 
+1h / 0h 1h / 0h 0h / 1h 1h / 0h 1h / 0h 
+0h 
+0h / 1h 0h / 1h 
+0h 
+0: 10 bit, 1: 12 bit 
+3033h 
+[3:0] SYS_MODE 
+4h 
+7h 
+9h 
+5h 
+6h 
+8h 
+8h 
+4h 
+2h 
+0h 
+ 
+3115h 
+[7:0] INCKSEL1 
+00h 
+Refer to “INCK setting” 
+ 
+3116h 
+[7:0] INCKSEL2 
+28h 
+3118h 
+[7:0] INCKSEL3 
+0C0h 
+3119h 
+[2:0] 
+311Ah 
+[7:0] INCKSEL4 
+0E0h 
+311Bh 
+[2:0] 
+311Eh 
+[7:0] INCKSEL5 
+28h 
+3200h 
+to 
+3BFFh 
+[7:0] 
+ 
+Refer to “Register Map” 
+ 
+4001h 
+[2:0] LANEMODE 
+3h 
+3h 
+4lane 
+4004h 
+[7:0] TXCLCKES_F
+REQ 
+1290h 
+Refer to “INCK setting” 
+ 
+4005h 
+[7:0] 
+400Ch 
+[0] INCKSEL6 
+1h 
+4018h 
+[7:0] TCLKPOST 
+00B7h 0067h 006Fh 007Fh 008Fh 009Fh 00A7h 00B7h 00D7h 00E7h Global timing 
+4019h 
+[7:0] 
+401Ah 
+[7:0] TCLKPREPAR
+E 
+0067h 0027h 002Fh 0037h 004Fh 0057h 0057h 0067h 007Fh 008Fh Global timing 
+401Bh 
+[7:0] 
+401Ch 
+[7:0] TCLKTRAIL 
+006Fh 0027h 002Fh 0037h 0047h 0057h 005Fh 006Fh 007Fh 008Fh Global timing 
+401Dh 
+[7:0] 
+401Eh 
+[7:0] TCLKZERO 
+01DFh 00B7h 00BFh 00F7h 0137h 0187h 0197h 01DFh 0237h 027Fh Global timing 
+401Fh 
+[7:0] 
+4020h 
+[7:0] THSPREPARE 006Fh 002Fh 002Fh 003Fh 004Fh 005Fh 005Fh 006Fh 0087h 0097h Global timing 
+4021h 
+[7:0] 
+4022h 
+[7:0] THSZERO 
+00CFh 004Fh 0057h 006Fh 0087h 00A7h 00AFh 00CFh 00EFh 010Fh Global timing 
+4023h 
+[7:0] 
+4024h 
+[7:0] THSTRAIL 
+006Fh 002Fh 002Fh 003Fh 004Fh 005Fh 005Fh 006Fh 0087h 0097h Global timing 
+4025h 
+[7:0] 
+4026h 
+[7:0] THSEXIT 
+00B7h 0047h 004Fh 005Fh 007Fh 0097h 009Fh 00B7h 00DFh 00F7h Global timing 
+4027h 
+[7:0] 
+4028h 
+[7:0] TLPX 
+005Fh 0027h 0027h 002Fh 003Fh 004Fh 004Fh 005Fh 006Fh 007Fh Global timing 
+4029h 
+[7:0] 
+4074h 
+[2:0] INCKSEL7 
+0h 
+Refer to “INCK setting” 
+ 
+ 
+ 
+
+===== PAGE 56 =====
+IMX415-AAQR-G 
+ 
+ 
+56 
+ 
+ 
+Effective margin for color processing
+Effective margin for color processing
+Effective margin
+for color processing
+2160
+8
+18
+Recording pixel area
+1
+EBD(Embedded data)
+12
+3840
+17
+12
+Vertical effective OB
+Ignored OB
+Effective margin
+for color processing
+VB
+Vertical blanking
+Horizontal blanking
+R
+B
+G
+G
+R
+B
+G
+G
+R
+B
+G
+G
+R
+B
+G
+G
+HB
+R
+B
+G
+G
+FS
+PH
+PH
+PH
+PF
+1
+FE
+Ignored area of effective pixel 
+12
+R
+B
+G
+G
+R
+B
+G
+G
+R
+B
+G
+G
+Ignored OB
+1
+Ignored area of effective pixel 
+2
+1
+8
+1
+Dummy
+Dummy
+XVS
+XHS
+Vertical read out direction
+Horizontal read out direction
+ 
+ 
+Pixel Array Image Drawing in All pixel mode 
+ 
+XVS
+XHS
+Line No. during 
+normal operation
+2
+3
+20
+37
+Line No. during 
+inverted operation
+12
+2
+3
+20
+37
+: Embedded data
+: Ineffective OB / Blanking
+: Effective OB
+: Ignored area of effective pixel
+: Margin for color processing
+: Recording pixel area
+: Packet header / Packet footer
+HB : Horizontal blanking
+1
+1
+: FS / FE
+19
+19
+* It outputs in the format of RAW10 or RAW12.
+52
+2219
+60
+59
+2218
+22112210
+51
+2220
+2227
+50
+43
+Horizontal pixel output image 
+normal operation
+1
+12
+3852
+13
+3853
+3864
+2
+13
+3853
+14
+3854
+3865
+Horizontal pixel output image 
+inverted operation
+40
+51
+2230
+2219
+38
+38
+22282229
+42
+41
+VB : Vertical blanking
+39
+2230
+40
+2231
+: Dummy
+1
+1
+17
+18
+1
+1
+12
+2160
+8
+8
+2
+1
+VB
+12
+12
+3840
+HB
+c
+ 
+ 
+Drive Timing Chart for All pixel mode 
+ 
+ 
+
+===== PAGE 57 =====
+IMX415-AAQR-G 
+ 
+ 
+57 
+ 
+ 
+Horizontal/Vertical 2/2-line binning mode 
+List of Setting Register 
+Address 
+bit 
+Register 
+Name 
+Initial 
+Value 
+CSI-2 serial / 2lane 
+Remarks 
+10 
+15 
+30 
+30 
+[frame/s] 
+594 
+891 
+1782 
+2079 
+[Mbps/lane] 
+44.5 
+29.7 
+14.9 
+14.9 
+1H period [μs] 
+3008h 
+[7:0] BCWAIT_TIME 0FFh 
+Refer to “INCK setting” 
+ 
+3009h 
+[1:0] 
+300Ah 
+[7:0] CPWAIT_TIME 0B6h 
+300Bh 
+[1:0] 
+301Ch 
+[3:0] WINMODE 
+0h 
+0h 
+All pixel mode 
+3020h 
+[0] HADD 
+0h 
+1h 
+Horizontal 2 binning 
+3021h 
+[0] VADD 
+0h 
+1h 
+Vertical 2 binning 
+3022h 
+[1:0] ADDMODE 
+0h 
+1h 
+H/V 2/2-line binning 
+3024h 
+[7:0] 
+VMAX 
+8CAh 
+8CAh 
+ 
+3025h 
+[7:0] 
+3026h 
+[3:0] 
+3028h 
+[7:0] HMAX 
+226h 
+CE4h 
+898h 
+44Ch 
+44Ch 
+ 
+3029h 
+[7:0] 
+3030h 
+[0] HREVERSE 
+0h 
+0h / 1h 
+0: Nor. , 1: Inv. 
+[1] VREVERSE 
+0h 
+0h / 1h 
+0: Nor. , 1: Inv. 
+3031h 
+[1:0] ADBIT 
+1h 
+0h 
+10 bit 
+3032h 
+[0] MDBIT 
+1h 
+1h 
+12 bit 
+3033h 
+[3:0] SYS_MODE 
+4h 
+7h 
+5h 
+4h 
+2h 
+ 
+30D9h 
+[4:0] DIG_CLP_VST
+ART 
+06h 
+02h 
+H/V 2/2-line binning 
+30DAh [1:0] DIG_CLP_VNU
+M 
+2h 
+1h 
+H/V 2/2-line binning 
+3115h 
+[7:0] INCKSEL1 
+00h 
+Refer to “INCK setting” 
+ 
+3116h 
+[7:0] INCKSEL2 
+28h 
+3118h 
+[7:0] INCKSEL3 
+0C0h 
+3119h 
+[2:0] 
+311Ah 
+[7:0] INCKSEL4 
+0E0h 
+311Bh 
+[2:0] 
+311Eh 
+[7:0] INCKSEL5 
+28h 
+3200h 
+to 
+3BFFh 
+[7:0] 
+ 
+Refer to “Register Map” 
+ 
+4001h 
+[2:0] LANEMODE 
+3h 
+1h 
+2lane 
+4004h 
+[7:0] TXCLCKES_F
+REQ 
+1290h 
+Refer to “INCK setting” 
+ 
+4005h 
+[7:0] 
+400Ch 
+[0] INCKSEL6 
+1h 
+4018h 
+[7:0] TCLKPOST 
+00B7h 
+0067h 
+007Fh 
+00B7h 
+00D7h 
+Global timing 
+4019h 
+[7:0] 
+401Ah 
+[7:0] TCLKPREPAR
+E 
+0067h 
+0027h 
+0037h 
+0067h 
+007Fh 
+Global timing 
+401Bh 
+[7:0] 
+401Ch 
+[7:0] TCLKTRAIL 
+006Fh 
+0027h 
+0037h 
+006Fh 
+007Fh 
+Global timing 
+401Dh 
+[7:0] 
+401Eh 
+[7:0] TCLKZERO 
+01DFh 
+00B7h 
+00F7h 
+01DFh 
+0237h 
+Global timing 
+401Fh 
+[7:0] 
+4020h 
+[7:0] THSPREPARE 006Fh 
+002Fh 
+003Fh 
+006Fh 
+0087h 
+Global timing 
+4021h 
+[7:0] 
+4022h 
+[7:0] THSZERO 
+00CFh 
+004Fh 
+006Fh 
+00CFh 
+00EFh 
+Global timing 
+4023h 
+[7:0] 
+
+===== PAGE 58 =====
+IMX415-AAQR-G 
+ 
+ 
+58 
+ 
+ 
+Address 
+bit 
+Register 
+Name 
+Initial 
+Value 
+CSI-2 serial / 2lane 
+Remarks 
+10 
+15 
+30 
+30 
+[frame/s] 
+594 
+891 
+1782 
+2079 
+[Mbps/lane] 
+4024h 
+[7:0] THSTRAIL 
+006Fh 
+002Fh 
+003Fh 
+006Fh 
+0087h 
+Global timing 
+4025h 
+[7:0] 
+4026h 
+[7:0] THSEXIT 
+00B7h 
+0047h 
+005Fh 
+00B7h 
+00DFh 
+Global timing 
+4027h 
+[7:0] 
+4028h 
+[7:0] TLPX 
+005Fh 
+0027h 
+002Fh 
+005Fh 
+006Fh 
+Global timing 
+4029h 
+[7:0] 
+4074h 
+[2:0] INCKSEL7 
+0h 
+Refer to “INCK setting” 
+ 
+ 
+ 
+ 
+
+===== PAGE 59 =====
+IMX415-AAQR-G 
+ 
+ 
+59 
+ 
+ 
+ 
+Address 
+bit 
+Register 
+Name 
+Initial 
+Value 
+CSI-2 serial / 4lane 
+Remarks 
+20 
+25 
+30 
+30.01 
+60 
+60 
+[frame/s] 
+594 
+720 
+891 
+1440 
+1782 
+2079 
+[Mbps/lane] 
+22.3 
+17.8 
+14.9 
+14.9 
+7.5 
+7.5 
+1H period [μs] 
+3008h 
+[7:0] BCWAIT_TIME 0FFh 
+Refer to “INCK setting” 
+ 
+3009h 
+[1:0] 
+300Ah 
+[7:0] CPWAIT_TIME 0B6h 
+300Bh 
+[1:0] 
+301Ch 
+[3:0] WINMODE 
+0h 
+0h 
+All pixel mode 
+3020h 
+[0] HADD 
+0h 
+1h 
+Horizontal 2 binning 
+3021h 
+[0] VADD 
+0h 
+1h 
+Vertical 2 binning 
+3022h 
+[1:0] ADDMODE 
+0h 
+1h 
+H/V 2/2-line binning 
+3024h 
+[7:0] 
+VMAX 
+8CAh 
+8CAh 
+ 
+3025h 
+[7:0] 
+3026h 
+[3:0] 
+3028h 
+[7:0] HMAX 
+226h 
+672h 
+500h 
+44Ch 
+42Ah 
+226h 
+226h 
+ 
+3029h 
+[7:0] 
+3030h 
+[0] HREVERSE 
+0h 
+0h / 1h 
+0: Nor. , 1: Inv. 
+[1] VREVERSE 
+0h 
+0h / 1h 
+0: Nor. , 1: Inv. 
+3031h 
+[1:0] ADBIT 
+1h 
+0h 
+10 bit 
+3032h 
+[0] MDBIT 
+1h 
+1h 
+12 bit 
+3033h 
+[3:0] SYS_MODE 
+4h 
+7h 
+9h 
+5h 
+8h 
+4h 
+2h 
+ 
+30D9h 
+[4:0] DIG_CLP_VST
+ART 
+06h 
+02h 
+H/V 2/2-line binning 
+30DAh [1:0] DIG_CLP_VNU
+M 
+2h 
+1h 
+H/V 2/2-line binning 
+3115h 
+[7:0] INCKSEL1 
+00h 
+Refer to “INCK setting” 
+ 
+3116h 
+[7:0] INCKSEL2 
+28h 
+3118h 
+[7:0] INCKSEL3 
+0C0h 
+3119h 
+[2:0] 
+311Ah 
+[7:0] INCKSEL4 
+0E0h 
+311Bh 
+[2:0] 
+311Eh 
+[7:0] INCKSEL5 
+28h 
+3200h 
+to 
+3BFFh 
+[7:0] 
+ 
+Refer to “Register Map” 
+ 
+4001h 
+[2:0] LANEMODE 
+3h 
+3h 
+4lane 
+4004h 
+[7:0] TXCLCKES_F
+REQ 
+1290h 
+Refer to “INCK setting” 
+ 
+4005h 
+[7:0] 
+400Ch 
+[0] INCKSEL6 
+1h 
+4018h 
+[7:0] TCLKPOST 
+00B7h 
+0067h 
+006Fh 
+007Fh 
+009Fh 
+00B7h 
+00D7h 
+Global timing 
+4019h 
+[7:0] 
+401Ah 
+[7:0] TCLKPREPAR
+E 
+0067h 
+0027h 
+002Fh 
+0037h 
+0057h 
+0067h 
+007Fh 
+Global timing 
+401Bh 
+[7:0] 
+401Ch 
+[7:0] TCLKTRAIL 
+006Fh 
+0027h 
+002Fh 
+0037h 
+0057h 
+006Fh 
+007Fh 
+Global timing 
+401Dh 
+[7:0] 
+401Eh 
+[7:0] TCLKZERO 
+01DFh 
+00B7h 
+00BFh 
+00F7h 
+0187h 
+01DFh 
+0237h 
+Global timing 
+401Fh 
+[7:0] 
+4020h 
+[7:0] THSPREPARE 006Fh 
+002Fh 
+002Fh 
+003Fh 
+005Fh 
+006Fh 
+0087h 
+Global timing 
+4021h 
+[7:0] 
+4022h 
+[7:0] THSZERO 
+00CFh 
+004Fh 
+0057h 
+006Fh 
+00A7h 
+00CFh 
+00EFh 
+Global timing 
+4023h 
+[7:0] 
+
+===== PAGE 60 =====
+IMX415-AAQR-G 
+ 
+ 
+60 
+ 
+ 
+Address 
+bit 
+Register 
+Name 
+Initial 
+Value 
+CSI-2 serial / 4lane 
+Remarks 
+20 
+25 
+30 
+30.01 
+60 
+60 
+[frame/s] 
+594 
+720 
+891 
+1440 
+1782 
+2079 
+[Mbps/lane] 
+4024h 
+[7:0] THSTRAIL 
+006Fh 
+002Fh 
+002Fh 
+003Fh 
+005Fh 
+006Fh 
+0087h 
+Global timing 
+4025h 
+[7:0] 
+4026h 
+[7:0] THSEXIT 
+00B7h 
+0047h 
+004Fh 
+005Fh 
+0097h 
+00B7h 
+00DFh 
+Global timing 
+4027h 
+[7:0] 
+4028h 
+[7:0] TLPX 
+005Fh 
+0027h 
+0027h 
+002Fh 
+004Fh 
+005Fh 
+006Fh 
+Global timing 
+4029h 
+[7:0] 
+4074h 
+[2:0] INCKSEL7 
+0h 
+Refer to “INCK setting” 
+ 
+ 
+ 
+
+===== PAGE 61 =====
+IMX415-AAQR-G 
+ 
+ 
+61 
+ 
+ 
+Effective margin for color processing
+Effective margin for color processing
+Effective margin
+for color processing
+1080
+4
+6
+Recording pixel area
+1
+EBD(Embedded data)
+6
+1920
+11
+4
+6
+Vertical effective OB
+Ignored OB
+Effective margin
+for color processing
+VB
+Vertical blanking
+Horizontal blanking
+R
+B
+G
+G
+R
+B
+G
+G
+R
+B
+G
+G
+R
+B
+G
+G
+HB
+R
+B
+G
+G
+FS
+PH
+PH
+PH
+PF
+1
+FE
+Ignored area of effective pixel 
+6
+R
+B
+G
+G
+R
+B
+G
+G
+R
+B
+G
+G
+Ignored OB
+1
+Ignored area of effective pixel 
+1
+12
+1
+1
+Dummy
+Dummy
+Dummy
+XVS
+Vertical read out direction
+Horizontal read out direction
+XHS
+XHS
+HB
+ 
+ 
+Pixel Array Image Drawing in Horizontal /Vertical 2/2-line binning mode  
+ 
+XVS
+XHS
+Line No. during 
+normal operation
+2
+3
+14
+19
+Line No. during 
+inverted operation
+2
+3
+14
+19
+: Embedded data
+: Ineffective OB / Blanking
+: Effective OB
+: Ignored area of effective pixel
+: Margin for color processing
+: Recording pixel area
+: Packet header / Packet footer
+HB : Horizontal blanking
+1
+1
+: FS / FE
+13
+13
+* It outputs in the format of RAW12.
+28
+1111
+27
+31
+1110
+11071106
+32
+1112
+1115
+26
+23
+Horizontal pixel output image 
+normal operation
+1
+6
+1926
+7
+1927
+1932
+1
+6
+1926
+7
+1927
+1932
+Horizontal pixel output image 
+inverted operation
+22
+27
+1116
+1111
+20
+20
+1116
+22
+VB : Vertical blanking
+: Dummy
+1933
+1944
+1933
+1944
+21
+1117
+1117
+21
+11
+11
+1
+1
+6
+1
+1
+4
+1080
+4
+6
+1
+1
+VB
+HB
+12
+6
+1920
+6
+ 
+ 
+Drive Timing Chart for Horizontal /Vertical 2/2-line binning mode 
+ 
+In "2/2 binning", pixels binning by normal direction and inverted direction are shifted by the same color one pixel. 
+ 
+ 
+
+===== PAGE 62 =====
+IMX415-AAQR-G 
+ 
+ 
+62 
+ 
+ 
+Window Cropping Mode 
+Sensor signals are cut out and read out in arbitrary positions. 
+This function support All-pixel mode, Horizontal/Vertical 2/2-line binning mode, Multiple exposure HDR, Digital 
+overlap HDR and Vertical / Horizontal direction-normal / inverted readout mode of each modes. 
+ 
+Cropping position is set, regarding effective pixel with dummy start position as origin (0, 0) in normal mode 
+direction. That is a start point which is an offset from the origin and cropping width. 
+Cropping is available from each driving mode and horizontal period is fixed to the value at same as the mode 
+before window cropping. Pixels cropped by horizontal cropping setting are output with left shifted and that extends 
+the horizontal blanking period. 
+Window position and size is used fixed value. (An ignore frame is output when it is changed.) 
+ 
+Window cropping image is shown in the figure below. 
+The same physical pixel area as all-pixel mode is cropped when start position and width are same setting in 
+Horizontal/Vertical 2/2-line binning mode, Multiple exposure HDR and Digital overlap HDR. 
+At inverted mode, it is the same as the “Recording pixel with Effective margin for color processing (green 
+rectangle in the figure) “ area in normal mode. 
+ 
+Effective margin for color processing
++ Recording pixel
+Effective margin
+for color processing
+EBD(Embedded data)
+Vertical effective OB
+Ignored OB
+Vertical blanking
+Horizontal blanking
+FS
+PH
+PH
+PH
+FE
+Ignored area of effective pixel 
+Ignored OB
+Ignored area of effective pixel 
+(0, 0)
+PIX_HWIDTH
+(PIX_HST, PIX_VST/2)
+18
+17
+12
+Vertical scan direction (Normal)
+Horizontal scan direction (Normal)
+R
+B
+G
+G
+B
+R G
+G
+B
+R G
+G
+B
+R G
+G
+1
+1
+B
+G
+R
+B
+G
+G
+R
+B
+G
+G
+R
+B
+G
+G
+R
+B
+G
+G
+B
+R G
+G
+Effective margin
+for color processing
+EBD(Embedded data)
+Vertical effective OB
+Ignored OB
+Vertical blanking
+Horizontal blanking
+FS
+PH
+PH
+PH
+FE
+Ignored OB
+R
+B
+G
+G
+R
+B
+G
+G
+PIX_HWIDTH
+18
+17
+1
+R
+B
+G
+G
+(PIX_HST, (PIX_VST+20)/2)
+Vertical scan direction (Inverted)
+Horizontal scan direction (Inverted)
+1
+R
+B G
+G
+R
+B G
+G
+R
+B G
+G
+R
+B G
+G
+Effective margin for color processing
++ Recording pixel
+G
+R
+B
+G
+B
+G
+G
+R
+13 effective pixel
+3 effective pixel
+(0, 0)
+(PIX_HST+PIX_HWIDTH, (PIX_VST+PIX_VWIDTH+20)/2)
+H Normal / V Normal
+H Inverted / V Inverted
+Dummy
+Dummy
+3 effective pixel
+13 effective pixel
+Dummy
+Dummy
+PIX_VWIDTH/2
+PIX_VWIDTH/2
+PF
+PF
+ 
+Image Drawing of Window Cropping Mode in Horizontal/Vertical, normal/inverted direction 
+ 
+Supplement) The first readout pixel color is “G” at windows cropping mode in inverted direction. 
+ 
+ 
+
+===== PAGE 63 =====
+IMX415-AAQR-G 
+ 
+ 
+63 
+ 
+ 
+ 
+List of Setting Register 
+Register 
+Register details 
+Initial 
+value 
+Setting value 
+Remarks 
+Address 
+bit 
+WINMODE 
+301Ch 
+[3:0] 
+0h 
+4h: Window Cropping mode 
+ 
+PIX_HST 
+3040h 
+[7:0] 
+0000h 
+Effective pixel Start position 
+(Horizontal direction) 
+Specified as a multiple of 2 
+3041h 
+[4:0] 
+PIX_HWIDTH 
+3042h 
+[7:0] 
+0F18h 
+Effective pixel Cropping width 
+(Horizontal direction) 
+Specified as a multiple of 24 
+3043h 
+[4:0] 
+PIX_VST 
+3044h 
+[7:0] 
+0000h 
+Effective pixel Star position 
+(Vertical direction) 
+Designated in V units ( Line×2 ) 
+Specified as a multiple of 4 
+3045h 
+[4:0] 
+PIX_VWIDTH 
+3046h 
+[7:0] 
+1120h 
+Effective pixel Cropping width 
+(Vertical direction) 
+Designated in V units ( Line×2 ) 
+Specified as a multiple of 4 
+3047h 
+[4:0] 
+ 
+Restrictions on Window cropping mode 
+The register settings should satisfy following conditions: 
+ 
+Set WINMODE: 4h. 
+ 
+◆ PIX_VST, PIX_VWIDTH 
+Set PIX_VST, PIX_VWIDTH to a multiple of 4. 
+ 
+ 
+PIX_VST = n1×4 
+ 
+PIX_VWIDTH = n2×4 
+ 
+Cropped starting position and width is set multiple of 2 addresses, because PIX_VST, PIX_VWIDTH is internal 
+V address unit. 
+ 
+Cropped area is needed to set pre 13 pixel, rear 3 pixel for signal processing. 
+ 
+◆ PIX_HST, PIX_HWIDTH 
+Set PIX_HST to a multiple of 2. 
+Set PIX_HWIDTH to a multiple of 24. 
+ 
+ 
+PIX_HST = n3×2 
+ 
+PIX_VWIDTH = n4×24 
+ 
+Where n1~4 are integer equal or more than 0. 
+ 
+ 
+VTTL (1frame line length or VMAX) ≥ (PIX_VWIDTH / 2) + 46 
+Set VTTL to 1222 or more. 
+ 
+ 
+VTTL ≥ 1222 
+ 
+ 
+◆ Frame rate on Window cropping mode 
+Frame rate [frame/s] = 1 / ( VTTL × (1H period) ) 
+1H period (set in unit: [s]) : Set "1H period" or more in the table of "Operating mode" before cropping mode. 
+ 
+ 
+
+===== PAGE 64 =====
+IMX415-AAQR-G 
+ 
+ 
+64 
+ 
+ 
+Description of Various Function 
+Standby Mode 
+This sensor stops its operation and goes into standby mode which reduces the power consumption by writing “1” to 
+the standby control register STANDBY. Standby mode is also established after power-on or other system reset 
+operation. 
+ 
+List of Standby Mode Setting 
+Register 
+Register details 
+Initial  
+value 
+Setting value 
+Remarks 
+Address 
+bit 
+STANDBY 
+3000h 
+[0] 
+1h 
+1h: Standby 
+0h: Operating 
+Register communication is 
+executed in standby mode. 
+ 
+The serial communication registers hold the previous values. However, the address registers transmitted in standby 
+mode are overwritten. The serial communication block operates even in standby mode, so standby mode can be 
+canceled by setting the STANDBY register to “0”. Some time is required for sensor internal circuit stabilization after 
+standby mode is canceled. After standby mode is canceled, a normal image is output from the 9 frames after internal 
+regulator stabilization 24 ms or more. 
+For details of the sequence of setting and cancel standby mode, see the sensor setting flow after power on. 
+ 
+Register
+initial settings
+Initial regulator 
+stabilization period
+24 ms
+SDA
+SCL
+Initialization period 8 frames
+Normal image output
+Standby 
+cancel
+XVS
+ 
+ 
+Sequence from Standby Cancel to Stable Image Output 
+ 
+ 
+
+===== PAGE 65 =====
+IMX415-AAQR-G 
+ 
+ 
+65 
+ 
+ 
+Slave Mode and Master Mode 
+The sensor can be switched between slave mode and master mode. The switching is made by the XMASTER 
+register. Establish the XMASTER status before canceling the system reset. (Do not switch this register status during 
+operation.) 
+ 
+Input a vertical sync signal to XVS and input a horizontal sync signal to XHS when a sensor is in slave mode. 
+For sync signal interval, input data lines to output for vertical sync signal and 1H period designated in each operating 
+mode for horizontal sync signal. See the section of "Readout Drive mode" for the number of output data line and 1H 
+period. 
+Set the XMSTA register 0h in order to start the operation after setting to master mode. In addition, set the count 
+number of sync signal in vertical direction by the VMAX [19:0] register and the clock number in horizontal direction by 
+the HMAX [15:0] register. See the description of Operation Mode for details of the section of "Readout Drive mode". 
+ 
+List of Slave and Master Mode Setting 
+Register 
+Register details 
+Initial 
+value 
+Setting value 
+Remarks 
+Address 
+bit 
+XMASTER 
+ 3003h 
+[0] 
+0h 
+0h: Master mode 
+1h: Slave mode 
+ 
+ 
+ 
+List of Register in Master Mode 
+Register 
+Register details 
+Initial 
+value 
+Setting value 
+Remarks 
+Address 
+bit 
+XMSTA 
+3002h 
+[0] 
+1h 
+1h: Master operation ready 
+0h: Master operation start 
+The master operation starts 
+by setting 0. 
+VMAX [19:0] 
+3024h 
+[7:0] 
+008CAh 
+See the item of each drive 
+mode. 
+Line number per frame 
+designated 
+3025h 
+[7:0] 
+3026h 
+[3:0] 
+HMAX [15:0] 
+3028h 
+[7:0] 
+0226h 
+See the item of each drive 
+mode. 
+Clock number per line 
+designated 
+3029h 
+[7:0] 
+XVSOUTSEL 
+[1:0] 
+30C0h 
+[1:0] 
+2h 
+0h: Fixed to Low 
+2h: VSYNC output 
+ 
+XHSOUTSEL 
+[1:0] 
+[3:2] 
+2h 
+0h: Fixed to Low 
+2h: HSYNC output 
+ 
+XVS_DRV [1:0] 
+30C1h 
+[1:0] 
+3h 
+0h: XVS output (Master mode) 
+3h: Hi-z (Slave mode) 
+ 
+XHS_DRV [1:0] 
+[3:2] 
+3h 
+0h: XHS output (Master mode) 
+3h: Hi-z (Slave mode) 
+ 
+XVSLNG [1:0] 
+30CCh 
+[5:4] 
+0h 
+0h: 1H, 1h: 2H, 2h: 4H, 3h: 8H 
+XVS low level pulse width 
+designated 
+XHSLNG [1:0] 
+30CDh 
+[5:4] 
+0h 
+0h: 16clock, 1h: 32clock  
+2h: 64clock, 3h: 128clock  
+See the next 
+XHS low level pulse width 
+designated 
+ 
+ 
+ 
+
+===== PAGE 66 =====
+IMX415-AAQR-G 
+ 
+ 
+66 
+ 
+ 
+XVS
+XHS
+XHS
+XHSLNG = 0
+XHSLNG = 1
+XHSLNG = 2
+XHSLNG = 3
+PH
+DataOut
+System delay
+XVSLNG = 1d: 2H width
+XVSLNG = 0d: 1H width
+XVSLNG = 2d: 4H width
+XVSLNG = 3d: 8H width
+XVS
+XHS
+ 
+ 
+XVS/XHS output waveform in sensor master mode  
+ 
+ 
+The XVS and XHS are output in timing that set 0 to the register XMSTA. If set 0 to XMSTA during standby, the XVS 
+and XHS are output just after standby is released. The XVS and XHS are output asynchronous with other input or 
+output signals. In addition, the output signals are output with an undefined latency time (system delay) relative to the 
+XHS. Therefore, refer to the sync codes output from the sensor and perform synchronization. 
+ 
+ 
+ 
+
+===== PAGE 67 =====
+IMX415-AAQR-G 
+ 
+ 
+67 
+ 
+ 
+Gain Adjustment Function 
+The Programmable Gain Control (PGC) of this device consists of the analog block and digital block. The total of 
+analog gain and digital gain can be set up to 72dB by the GAIN_PGC_0 [8:0] register setting. The same setting is 
+applied in all colors. 
+ 
+The value which is 10/3 times the gain is set to register. (0.3 dB step) 
+ 
+Example) 
+When set to 6 dB: 6 × 10/3 = 20d; GAIN_PGC_0 = 14h 
+When set to 12.6 dB: 12.6 × 10/3 = 42d; GAIN_PGC_0 = 2Ah 
+ 
+ 
+ 
+List of PGC Register 
+Register 
+Register details 
+Initial value 
+Setting value 
+Remarks 
+Address 
+bit 
+Setting range 
+GAIN_PGC_0 
+[8:0] 
+3090h 
+[7:0] 
+000h 
+00h-F0h 
+(0d-240d) 
+Setting value: Gain [dB] × 10/3 
+(0.3 dB step) 
+3091h 
+[0] 
+ 
+The gain setting is reflected at the next frame that the communication is performed as shown below. 
+Frame
+Frame
+Frame
+Frame
+Frame
+Frame
+Time base
+Communication period
+Register Communication
+XVS
+Frame
+GAIN_PGC_0 = 14h
+GAIN_PGC_0 = 00h
+Gain 
+setting
+Output Signal
+0dB
+6dB
+GAIN_PGC_0 = 00h
+Frame
+ 
+ 
+Gain Reflection Timing 
+ 
+ 
+0.0
+6.0
+12.0
+18.0
+24.0
+30.0
+36.0
+42.0
+48.0
+54.0
+60.0
+66.0
+72.0
+0h
+14h
+28h
+3Ch
+50h
+64h
+78h
+8Ch
+A0h
+B4h
+C8h
+DCh
+F0h
+Gain [dB]
+Register setting Value [Hex]
+Analog Gain
+Analog + Digital Gain
+
+===== PAGE 68 =====
+IMX415-AAQR-G 
+ 
+ 
+68 
+ 
+ 
+Black Level Adjustment Function 
+The black level offset (offset variable range: 000h to 3FFh) can be added relative to the data in which the digital gain 
+modulation was performed by the BLKLEVEL [9:0] register. 
+Note that the offset unit changes according to the output bit setting. 
+When the output data length is 10-bit output, increasing the register setting value by 1h increases the black level by 1 
+LSB. When the output data length is 12-bit output, increasing the register setting value by 1h increases the black 
+level by 4 LSB. 
+ 
+ 
+Use with values shown below is recommended. 
+10-bit output: 032h (50d) 
+12-bit output: 032h (200d) 
+ 
+List of Black Level Adjustment Register 
+Register 
+Register details 
+Initial value 
+Setting value 
+Address 
+bit 
+BLKLEVEL 
+[9:0] 
+30E2h 
+[7:0] 
+032h 
+000h to 3FFh 
+30E3h 
+[1:0] 
+ 
+ 
+ 
+
+===== PAGE 69 =====
+IMX415-AAQR-G 
+ 
+ 
+69 
+ 
+ 
+Normal Operation and Inverted Operation 
+The sensor readout direction (normal / inverted) in vertical direction can be switched by VREVERSE register settings 
+and in horizontal direction can be switched by the HREVERSE register setting. See the section of "Image Data 
+Output Format" for the order of readout lines in normal and inverted modes. See the section of “List of Setting 
+Register” for the other register settings. 
+One invalid frame is generated when reading immediately after the readout vertical direction change in order to 
+switch the normal operation and inversion between frames. 
+ 
+List of Drive Direction Setting Register 
+ 
+Register 
+Register details 
+Initial value 
+Setting value 
+Address 
+bit 
+HREVERSE 
+3030h 
+[0] 
+0h 
+0h: Normal 
+1h: Inverted 
+VREVERSE 
+[1] 
+0h 
+0h: Normal 
+1h: Inverted 
+ 
+In normal mode
+In inverted mode
+(Chip outline)
+(Chip outline)
+A1-Pin
+P1-Pin
+A11-Pin
+P11-Pin
+V (+)
+H (+)
+A1-Pin
+P1-Pin
+A11-Pin
+P11-Pin
+V (+)
+H (+)
+ 
+ 
+Normal and Inverted Drive Outline in Vertical Direction (TOP VIEW) 
+ 
+In normal mode
+In inverted mode
+(Chip outline)
+(Chip outline)
+A1-Pin
+P1-Pin
+A11-Pin
+P11-Pin
+V (+)
+H (+)
+A1-Pin
+P1-Pin
+A11-Pin
+P11-Pin
+V (+)
+H (+)
+ 
+ 
+Normal and Inverted Drive Outline in Horizontal Direction (TOP VIEW) 
+ 
+ 
+
+===== PAGE 70 =====
+IMX415-AAQR-G 
+ 
+ 
+70 
+ 
+ 
+Shutter and Integration Time Settings 
+This sensor has a variable electronic shutter function that can control the integration time in line units. In addition, this 
+sensor performs rolling shutter operation in which electronic shutter and readout operation are performed 
+sequentially for each line. 
+ 
+Note)  For integration time control, an image which reflects the setting is output from the frame after the setting  
+changes. 
+ 
+Example of Integration Time Setting 
+The sensor's integration time is obtained by the following formula. 
+ 
+Integration time = 1 frame period - SHR0 × (1H period) + Toffset 
+ 
+  Where Toffset is 1.79 [μs] at AD 10bit mode and 2.68 [μs] at AD 12bit mode. 
+ 
+*1 The frame period is determined by the input XVS when the sensor is operating in slave mode, or the register 
+VMAX value in master mode. The frame period is designated in 1H units, so the time is determined by  
+(Number of lines × 1H period). 
+*2 See the section of "Readout Drive mode" for the 1H period. 
+ 
+In this section, the shutter operation and storage time are shown as in the figure below with the time sequence on the 
+horizontal axis and the vertical address on the vertical axis. For simplification, shutter and readout operation are 
+noted in line units. 
+ 
+Time base
+XVS
+Sensor
+XHS
+Last line
+Last-1 line
+Last-2 line
+4 line
+1 line
+2 line
+3 line
+Output
+blanking
+effective signal
+blanking
+effective signal
+Chip bottom side
+Shutter timing
+Readout timing
+blanking
+Integration time
+N frame
+N+1 frame
+Chip top side
+CSI-2
+Packet
+FS (Frame Start)
+FE (Frame End)
+Blanking
+Embedded Data
+N frame
+N+1 frame
+ 
+ 
+Image Drawing of Shutter Operation 
+ 
+ 
+
+===== PAGE 71 =====
+IMX415-AAQR-G 
+ 
+ 
+71 
+ 
+ 
+Normal Exposure Operation (Controlling the Integration Time in 1H Units) 
+The integration time can be controlled by varying the electronic shutter timing. In the electronic shutter settings, the 
+integration time is controlled by the SHR0 [19:0] register. Set SHR0 [19:0] to a value between 8 and (Number of lines 
+per frame - 4). When the sensor is operating in slave mode, the number of lines per frame is determined by the XVS 
+interval (number of lines), using the input XHS interval as the line unit. 
+When the sensor is operating in master mode, the number of lines per frame is determined by the VMAX register. 
+The number of lines per frame differs according to the operating mode. 
+ 
+Registers Used to Set the Integration Time in 1H Units 
+Register 
+Register details 
+Initial value 
+Setting value 
+Address 
+bit 
+SHR0 [19:0] 
+3050h 
+[7:0] 
+00066h 
+Sets the shutter sweep time. 
+8 to (Number of lines per frame - 4) 
+* Others: Setting prohibited 
+3051h 
+[7:0] 
+3052h 
+[3:0] 
+VMAX [19:0] 
+3024h 
+[7:0] 
+008CAh 
+Sets the number of lines per frame  
+(only in master mode). See section 
+"Readout Drive mode" for the setting 
+value in each mode. 
+3025h 
+[7:0] 
+3026h 
+[3:0] 
+ 
+ 
+ 
+      Frame5
+integration time
+      Frame4
+integration time
+XVS
+XHS
+Time base
+Frame1
+Output timimg
+…
+V-BLK
+Frame2
+      Frame2
+integration time
+Readout timing 
+Shutter timing
+Integration time
+Communication period
+SHR0=β
+SHR0=α
+CSI-2 Packet
+V-BLK
+Frame3
+V-BLK
+Frame4
+V-BLK
+Frame5
+V-BLK
+β
+      Frame3
+integration time
+FS (Frame Start)
+FE (Frame End)
+Embedded Data
+Blanking
+α
+β
+β
+ 
+ 
+Image Drawing of Integration Time Control within a Frame 
+ 
+ 
+
+===== PAGE 72 =====
+IMX415-AAQR-G 
+ 
+ 
+72 
+ 
+ 
+Long Exposure Operation (Control by Expanding the Number of Lines per Frame) 
+Long exposure operation can be performed by lengthening the frame period. 
+When the sensor is operating in slave mode, this is done by lengthening the input vertical sync signal (XVS) pulse 
+interval. 
+When the sensor is operating in master mode, it is done by designating a larger register VMAX [19:0] value 
+compared to normal operation. When the integration time is extended by increasing the number of lines, the rear V 
+blanking increases by an equivalent amount. 
+ 
+Although the maximum value of long exposure operation changes in each mode, the maximum of long time exposure 
+is approximately 1 s. 
+When set to a number of V lines or more than that noted for each operating mode, the imaging characteristics are not 
+guaranteed during long exposure operation. 
+ 
+      Frame4
+integration time
+XVS
+XHS
+Time base
+Frame1
+Output timimg
+V-BLK
+Frame2
+      Frame2
+integration time
+Readout timing 
+Shutter timing
+Integration time
+Communication period
+VMAX=3375
+SHR0=α
+VMAX=2250
+SHR0=α
+CSI-2 Packet
+V-BLK
+Frame3
+V-BLK
+Frame4
+V-BLK
+      Frame3
+integration time
+FS (Frame Start)
+FE (Frame End)
+Embedded Data
+Blanking
+α
+α
+α
+α
+…
+ 
+ 
+Image Drawing of Long Integration Time Control by Adjusting the Frame Period 
+ 
+ 
+ 
+
+===== PAGE 73 =====
+IMX415-AAQR-G 
+ 
+ 
+73 
+ 
+ 
+Example of Integration Time Settings 
+The example of register setting for controlling the storage time is shown below. 
+ 
+Example of Integration Time Settings  
+Operation 
+Sensor setting (register) 
+Integration time 
+VMAX* 
+SHR0** 
+All-pixel scan mode 
+2250 
+2246 
+4H + Toffset 
+ 
+… 
+… 
+N 
+(2250 - N) H + Toffset 
+ 
+… 
+… 
+8 
+2242H + Toffset 
+ 
+Where Toffset is 1.79 [μs] at AD 10bit mode and 2.68 [μs] at AD 12bit mode. 
+ 
+* 
+In sensor master mode. In slave mode, the interval is the same as XVS input. 
+** The SHR0 setting value (N) is set between “8” and “the VMAX value (M) – 4”. 
+ 
+ 
+ 
+
+===== PAGE 74 =====
+IMX415-AAQR-G 
+ 
+ 
+74 
+ 
+ 
+Signal Output 
+CSI-2 output 
+The output formats of this sensor support the following modes. 
+ 
+CSI-2 serial 2 Lane / 4 Lane, RAW10 / RAW12 
+ 
+The 2 Lane / 4 Lane serial signal output method using this sensor is described below. 
+Complied with the CSI-2, data is output using 2 Lane / 4 Lane. The image data is output from the CSI-2 output pin. 
+The DMO1P / DMO1N are called the Lane1 data signal, the DMO2P / DMO2N are called the Lane2 data signal, the 
+DMO3P / DMO3N are called the Lane3 data signal, the DMO4P / DMO4N are called the Lane4 data signal. In 
+addition, the clock signals are output from DCKP / DCKN of the CSI-2 pins. 
+In 2 Lane mode, data is output from Lane1 and Lane2. In 4 Lane mode, data is output from Lane1, Lane2, Lane3 and 
+Lane4. 
+The bit rate maximum value is 2376 Mbps / Lane in 4 Lane mode and 2079 Mbps / Lane in 2 Lane mode. 
+The select of RAW10 / RAW12 is set by the register: MDBIT [0]. The number of output lanes is set by the register: 
+LANEMODE [2:0]. 
+Unused lanes output signals conformed to MIPI standard. 
+ 
+Register 
+Register details 
+Initial 
+value 
+Setting value 
+Address 
+bit 
+MDBIT 
+3032h 
+[0] 
+1h 
+0h: RAW10 
+1h: RAW12 
+LANEMODE [2:0] 
+4001h 
+[2:0] 
+3h 
+1h: 2 Lane 
+3h: 4 Lane 
+ 
+The formats of RAW12 and RAW10 are shown below. 
+ 
+→ RAW12 Format
+P0
+P1
+P2
+P3
+P0
+[11:4]
+→ RAW10 Format
+…
+…
+P1
+[11:4]
+P2
+[11:4]
+P0
+[9:2]
+P3
+[1:0]
+P2
+[1:0]
+P1
+[1:0]
+P0
+[1:0]
+P1
+[9:2]
+P2
+[9:2]
+P3
+[9:2]
+P1
+[3:0]
+P0
+[3:0]
+P3
+[11:4]
+P3
+[3:0]
+P2
+[3:0]
+P4
+[9:2]
+ 
+ 
+The Example of Format of RAW12 / RAW10 
+ 
+ 
+
+===== PAGE 75 =====
+IMX415-AAQR-G 
+ 
+ 
+75 
+ 
+ 
+The each format of 2 Lane and 4 Lane are shown below. 
+Sensor
+P0
+P1
+a) 2 Lane-RAW12
+P2
+P3
+PH
+…
+P0
+[11:4]
+P0
+[3:0]
+P1
+[11:4]
+P1
+[3:0]
+P2
+[11:4]
+P2
+[3:0]
+P3
+[11:4]
+P3
+[3:0]
+…
+PH
+P4
+[11:4]
+P4
+[3:0]
+P5
+[11:4]
+P5
+[3:0]
+P6
+[11:4]
+…
+Sensor
+P0
+P1
+b) 2 Lane-RAW10
+P2
+P3
+PH
+…
+P0
+[9:2]
+P0[1:0]
+P1
+[9:2]
+P1[1:0]
+P2
+[9:2]
+P2[1:0]
+P3
+[9:2]
+P3[1:0]
+…
+P4
+[9:2]
+PH
+P4[1:0]
+P5
+[9:2]
+P5[1:0]
+P6
+[9:2]
+P6[1:0]
+P7
+[9:2]
+P7[1:0]
+…
+Lane1
+(DMO1P/DMO1N)
+Lane2
+(DMO2P/DMO2N)
+PH
+PH
+PH
+PH
+Lane1
+(DMO1P/DMO1N)
+Lane2
+(DMO2P/DMO2N)
+ 
+ 
+2 Lane Output Format 
+ 
+ 
+Sensor
+P0
+P1
+c) 4 Lane-RAW12
+P2
+P3
+PH
+…
+P0
+[11:4]
+P0
+[3:0]
+P1
+[11:4]
+P1
+[3:0]
+P2
+[11:4]
+P2
+[3:0]
+P3
+[11:4]
+P3
+[3:0]
+…
+PH
+P4
+[11:4]
+P4
+[3:0]
+P5
+[11:4]
+P5
+[3:0]
+P6
+[11:4]
+P6
+[3:0]
+P7
+[11:4]
+P7
+[3:0]
+…
+PH
+PH
+P8
+[11:4]
+P8
+[3:0]
+P9
+[11:4]
+P9
+[3:0]
+P10
+[11:4]
+P10
+[3:0]
+P11
+[11:4]
+P11
+[3:0]
+P12
+[11:4]
+P12
+[3:0]
+P13
+[11:4]
+P13
+[3:0]
+P14
+[11:4]
+P14
+[3:0]
+P15
+[11:4]
+P15
+[3:0]
+…
+…
+Sensor
+P0
+P1
+d) 4 Lane-RAW10
+P2
+P3
+PH
+…
+P0
+[9:2]
+P0[1:0]
+P1
+[9:2]
+P1[1:0]
+P2
+[9:2]
+P2[1:0]
+P3
+[9:2]
+P3[1:0]
+…
+P4
+[9:2]
+PH
+P8
+[9:2]
+P4[1:0]
+P5
+[9:2]
+P5[1:0]
+P6
+[9:2]
+P6[1:0]
+P7
+[9:2]
+P7[1:0]
+…
+P9
+[9:2]
+PH
+PH
+P10
+[9:2]
+P11
+[9:2]
+P8[1:0]
+P9[1:0]
+P10[1:0]
+P11[1:0]
+P12
+[9:2]
+P13
+[9:2]
+P14
+[9:2]
+P15
+[9:2]
+P12[1:0]
+P13[1:0]
+P14[1:0]
+P15[1:0]
+P16
+[9:2]
+P17
+[9:2]
+P18
+[9:2]
+P19
+[9:2]
+…
+…
+Lane1
+(DMO1P/DMO1N)
+Lane2
+(DMO2P/DMO2N)
+Lane3
+(DMO3P/DMO3N)
+Lane4
+(DMO4P/DMO4N)
+Lane1
+(DMO1P/DMO1N)
+Lane2
+(DMO2P/DMO2N)
+Lane3
+(DMO3P/DMO3N)
+Lane4
+(DMO4P/DMO4N)
+ 
+ 
+4 Lane Output Format 
+ 
+ 
+ 
+
+===== PAGE 76 =====
+IMX415-AAQR-G 
+ 
+ 
+76 
+ 
+ 
+MIPI Transmitter 
+Output pins (DMO1P, DMO1N, DMO2P, DMO2N, DMO3P, DMO3N, DMO4P, DMO4N, DCKP, DCKN) are described 
+in this section.  
+ 
+Sensor 
+DMO1N
+DMO2N
+DMO3N
+DMO4N
+DMO1P
+DMO2P
+DMO3P
+DMO4P
+DCKN
+DCKP
+F2
+F1
+K2
+K1
+E2
+E1
+L2
+L1
+H2
+H1
++
+-
++
+-
++
+-
++
+-
++
+-
+Data Lane 1
+Data Lane 2
+Data Lane 3
+Data Lane 4
+Clock Lane
+ 
+Relationship between Pin Name and MIPI Output Lane 
+ 
+The pixel signals are output by the CSI-2 High-speed serial interface.  
+See the MIPI Standard 
+・MIPI Alliance Standard for Camera Serial Interface 2 (CSI-2) Version 1.2 
+・MIPI Alliance Specification for D-PHY Version 1.2 
+ 
+The CSI-2 transfers one bit with a pair of differential signals. The transmitter outputs differential current signal after 
+converting pixel signals to it. Insert external resistance in differential pair in a series or use cells with a built-in 
+resistance on the Receiver side. When inserting an external resistor, as close as possible to the Receiver. The 
+differential signals maintain a constant interval and reach the receiver with the shortest wiring length possible to 
+avoid malfunction. The maximum bit rate of each Lane is 2376 Mbps / Lane. 
+ 
+Lane Control
+and
+Interface Logic
+Dp
+Dn
+Tx
+Protocol Side
+Line Side
+Clock
+Data
+Control
+LP-Tx
+HS-Tx
+ 
+ 
+Universal Lane Module Functions 
+ 
+ 
+
+===== PAGE 77 =====
+IMX415-AAQR-G 
+ 
+ 
+77 
+ 
+ 
+Number of Internal A/D Conversion Bits Setting 
+The number of internal A/D conversion bits can be selected from 10 bits or 12 bits by the register ADBIT. See the 
+section of "Readout Drive mode" for the correspondence with each mode. 
+ 
+List of Bit Width Selection 
+Register  
+Register details 
+Initial value 
+Setting value 
+Address 
+bit 
+ADBIT 
+3031h 
+[1:0] 
+1h 
+0h: 10 bit 
+1h: 12 bit 
+ 
+Output Signal Range 
+ 
+In CSI-2 output mode, the sensor output has either a 10 bit or 12 bit gradation, and the maximum output value is the 
+3FFh value (10 bit output) and the FFFh one (12 bit output). 
+The output range for each output gradation is shown in the table below. 
+ 
+Output Gradation and Output Range (CSI-2 Output) 
+Output gradation 
+Output value 
+Min. 
+Max. 
+10 bit 
+000h 
+3FFh 
+12 bit 
+000h 
+FFFh 
+ 
+ 
+ 
+
+===== PAGE 78 =====
+IMX415-AAQR-G 
+ 
+ 
+78 
+ 
+ 
+INCK Setting 
+The available operation mode varies according to INCK frequency. Input either 24 MHz, 27 MHz, 37.125 MHz, 72 
+MHz or 74.25 MHz for INCK frequency. The INCK setting register and the list of INCK setting are shown in the table 
+below. 
+ 
+In the MIPI Alliance Specification for D-PHY Version 1.2, 
+when operating above 1500 Mbps, an initial deskew sequence shall be transmitted before High-Speed Data 
+Transmission. When operating at or below 1500 Mbps, the transmission of the initial deskew sequence is optional. 
+When operating at or above 1440 Mbps, this Sensor transmits the initial deskew burst. 
+ 
+INCK Setting Register 
+ 
+Data rate: 2376Mbps / lane 
+Register 
+Register details 
+Initial 
+value 
+INCK 
+Address 
+Bit 
+27 
+[MHz] 
+37.125 
+[MHz] 
+74.25 
+[MHz] 
+BCWAIT_TIME 
+3009-08h 
+[9:0] 
+0FFh 
+05Dh 
+07Fh 
+0FFh 
+CPWAIT_TIME 
+300B-0Ah 
+[9:0] 
+0B6h 
+042h 
+05Bh 
+0B6h 
+SYS_MODE 
+3033h 
+[3:0] 
+4h 
+0h 
+0h 
+0h 
+INCKSEL1 
+3115h 
+[7:0] 
+00h 
+00h 
+00h 
+00h 
+INCKSEL2 
+3116h 
+[7:0] 
+28h 
+23h 
+24h 
+28h 
+INCKSEL3 
+3119-18h 
+[10:0] 
+0C0h 
+108h 
+100h 
+100h 
+INCKSEL4 
+311B-1Ah 
+[10:0] 
+0E0h 
+0E7h 
+0E0h 
+0E0h 
+INCKSEL5 
+311Eh 
+[7:0] 
+28h 
+23h 
+24h 
+28h 
+TXCLKESC_FREQ 
+4005-04h 
+[15:0] 
+1290h 
+06C0h 
+0948h 
+1290h 
+INCKSEL6 
+400Ch 
+[0] 
+1h 
+1h 
+1h 
+1h 
+INCKSEL7 
+4074h 
+[2:0] 
+0h 
+0h 
+0h 
+0h 
+ 
+Data rate: 2079Mbps / lane 
+Register 
+Register details 
+Initial 
+value 
+INCK 
+Address 
+bit 
+27 
+[MHz] 
+37.125 
+[MHz] 
+74.25 
+[MHz] 
+BCWAIT_TIME 
+3009-08h 
+[9:0] 
+0FFh 
+05Dh 
+07Fh 
+0FFh 
+CPWAIT_TIME 
+300B-0Ah 
+[9:0] 
+0B6h 
+042h 
+05Bh 
+0B6h 
+SYS_MODE 
+3033h 
+[3:0] 
+4h 
+2h 
+2h 
+2h 
+INCKSEL1 
+3115h 
+[7:0] 
+00h 
+00h 
+00h 
+00h 
+INCKSEL2 
+3116h 
+[7:0] 
+28h 
+23h 
+24h 
+28h 
+INCKSEL3 
+3119-18h 
+[10:0] 
+0C0h 
+0E7h 
+0E0h 
+0E0h 
+INCKSEL4 
+311B-1Ah 
+[10:0] 
+0E0h 
+0E7h 
+0E0h 
+0E0h 
+INCKSEL5 
+311Eh 
+[7:0] 
+28h 
+23h 
+24h 
+28h 
+TXCLKESC_FREQ 
+4005-04h 
+[15:0] 
+1290h 
+06C0h 
+0948h 
+1290h 
+INCKSEL6 
+400Ch 
+[0] 
+1h 
+1h 
+1h 
+1h 
+INCKSEL7 
+4074h 
+[2:0] 
+0h 
+0h 
+0h 
+0h 
+ 
+ 
+ 
+
+===== PAGE 79 =====
+IMX415-AAQR-G 
+ 
+ 
+79 
+ 
+ 
+ 
+Data rate: 1782Mbps / lane 
+Register 
+Register details 
+Initial 
+value 
+INCK 
+Address 
+bit 
+27 
+[MHz] 
+37.125 
+[MHz] 
+74.25 
+[MHz] 
+BCWAIT_TIME 
+3009-08h 
+[9:0] 
+0FFh 
+05Dh 
+07Fh 
+0FFh 
+CPWAIT_TIME 
+300B-0Ah 
+[9:0] 
+0B6h 
+042h 
+05Bh 
+0B6h 
+SYS_MODE 
+3033h 
+[3:0] 
+4h 
+4h 
+4h 
+4h 
+INCKSEL1 
+3115h 
+[7:0] 
+00h 
+00h 
+00h 
+00h 
+INCKSEL2 
+3116h 
+[7:0] 
+28h 
+23h 
+24h 
+28h 
+INCKSEL3 
+3119-18h 
+[10:0] 
+0C0h 
+0C6h 
+0C0h 
+0C0h 
+INCKSEL4 
+311B-1Ah 
+[10:0] 
+0E0h 
+0E7h 
+0E0h 
+0E0h 
+INCKSEL5 
+311Eh 
+[7:0] 
+28h 
+23h 
+24h 
+28h 
+TXCLKESC_FREQ 
+4005-04h 
+[15:0] 
+1290h 
+06C0h 
+0948h 
+1290h 
+INCKSEL6 
+400Ch 
+[0] 
+1h 
+1h 
+1h 
+1h 
+INCKSEL7 
+4074h 
+[2:0] 
+0h 
+0h 
+0h 
+0h 
+ 
+Data rate: 1485 Mbps / lane 
+Register 
+Register details 
+Initial 
+value 
+INCK 
+Address 
+bit 
+27 
+[MHz] 
+37.125 
+[MHz] 
+74.25 
+[MHz] 
+BCWAIT_TIME 
+3009-08h 
+[9:0] 
+0FFh 
+05Dh 
+07Fh 
+0FFh 
+CPWAIT_TIME 
+300B-0Ah 
+[9:0] 
+0B6h 
+042h 
+05Bh 
+0B6h 
+SYS_MODE 
+3033h 
+[3:0] 
+4h 
+8h 
+8h 
+8h 
+INCKSEL1 
+3115h 
+[7:0] 
+00h 
+00h 
+00h 
+00h 
+INCKSEL2 
+3116h 
+[7:0] 
+28h 
+23h 
+24h 
+28h 
+INCKSEL3 
+3119-18h 
+[10:0] 
+0C0h 
+0A5h 
+0A0h 
+0A0h 
+INCKSEL4 
+311B-1Ah 
+[10:0] 
+0E0h 
+0E7h 
+0E0h 
+0E0h 
+INCKSEL5 
+311Eh 
+[7:0] 
+28h 
+23h 
+24h 
+28h 
+TXCLKESC_FREQ 
+4005-04h 
+[15:0] 
+1290h 
+06C0h 
+0948h 
+1290h 
+INCKSEL6 
+400Ch 
+[0] 
+1h 
+1h 
+1h 
+1h 
+INCKSEL7 
+4074h 
+[2:0] 
+0h 
+0h 
+0h 
+0h 
+ 
+Data rate: 1440Mbps / lane 
+Register 
+Register details 
+Initial 
+value 
+INCK 
+Address 
+bit 
+24 
+[MHz] 
+72 
+[MHz] 
+BCWAIT_TIME 
+3009-08h 
+[9:0] 
+0FFh 
+054h 
+0F8h 
+CPWAIT_TIME 
+300B-0Ah 
+[9:0] 
+0B6h 
+03Bh 
+0B0h 
+SYS_MODE 
+3033h 
+[3:0] 
+4h 
+8h 
+8h 
+INCKSEL1 
+3115h 
+[7:0] 
+00h 
+00h 
+00h 
+INCKSEL2 
+3116h 
+[7:0] 
+28h 
+23h 
+28h 
+INCKSEL3 
+3119-18h 
+[10:0] 
+0C0h 
+0B4h 
+0A0h 
+INCKSEL4 
+311B-1Ah 
+[10:0] 
+0E0h 
+0FCh 
+0E0h 
+INCKSEL5 
+311Eh 
+[7:0] 
+28h 
+23h 
+28h 
+TXCLKESC_FREQ 
+4005-04h 
+[15:0] 
+1290h 
+0600h 
+1200h 
+INCKSEL6 
+400Ch 
+[0] 
+1h 
+1h 
+1h 
+INCKSEL7 
+4074h 
+[2:0] 
+0h 
+0h 
+0h 
+ 
+ 
+ 
+
+===== PAGE 80 =====
+IMX415-AAQR-G 
+ 
+ 
+80 
+ 
+ 
+ 
+Data rate: 1188Mbps / lane 
+Register 
+Register details 
+Initial 
+value 
+INCK 
+Address 
+bit 
+24 
+[MHz] 
+27 
+[MHz] 
+37.125 
+[MHz] 
+72 
+[MHz] 
+74.25 
+[MHz] 
+BCWAIT_TIME 
+3009-08h 
+[9:0] 
+0FFh 
+054h 
+05Dh 
+07Fh 
+0F8h 
+0FFh 
+CPWAIT_TIME 
+300B-0Ah 
+[9:0] 
+0B6h 
+03Bh 
+042h 
+05Bh 
+0B0h 
+0B6h 
+SYS_MODE 
+3033h 
+[3:0] 
+4h 
+6h 
+6h 
+6h 
+6h 
+6h 
+INCKSEL1 
+3115h 
+[7:0] 
+00h 
+00h 
+00h 
+00h 
+00h 
+00h 
+INCKSEL2 
+3116h 
+[7:0] 
+28h 
+24h 
+23h 
+24h 
+28h 
+28h 
+INCKSEL3 
+3119-18h 
+[10:0] 
+0C0h 
+0C6h 
+084h 
+080h 
+084h 
+080h 
+INCKSEL4 
+311B-1Ah 
+[10:0] 
+0E0h 
+15Ah 
+0E7h 
+0E0h 
+0E7h 
+0E0h 
+INCKSEL5 
+311Eh 
+[7:0] 
+28h 
+24h 
+23h 
+24h 
+28h 
+28h 
+TXCLKESC_FREQ 
+4005-04h 
+[15:0] 
+1290h 
+0600h 
+06C0h 
+0948h 
+1200h 
+1290h 
+INCKSEL6 
+400Ch 
+[0] 
+1h 
+0h 
+0h 
+0h 
+0h 
+0h 
+INCKSEL7 
+4074h 
+[2:0] 
+0h 
+0h 
+0h 
+0h 
+0h 
+0h 
+ 
+Data rate: 891Mbps / lane 
+Register 
+Register details 
+Initial 
+value 
+INCK 
+Address 
+bit 
+27 
+[MHz] 
+37.125 
+[MHz] 
+74.25 
+[MHz] 
+BCWAIT_TIME 
+3009-08h 
+[9:0] 
+0FFh 
+05Dh 
+07Fh 
+0FFh 
+CPWAIT_TIME 
+300B-0Ah 
+[9:0] 
+0B6h 
+042h 
+05Bh 
+0B6h 
+SYS_MODE 
+3033h 
+[3:0] 
+4h 
+5h 
+5h 
+5h 
+INCKSEL1 
+3115h 
+[7:0] 
+00h 
+00h 
+00h 
+00h 
+INCKSEL2 
+3116h 
+[7:0] 
+28h 
+23h 
+24h 
+28h 
+INCKSEL3 
+3119-18h 
+[10:0] 
+0C0h 
+0C6h 
+0C0h 
+0C0h 
+INCKSEL4 
+311B-1Ah 
+[10:0] 
+0E0h 
+0E7h 
+0E0h 
+0E0h 
+INCKSEL5 
+311Eh 
+[7:0] 
+28h 
+23h 
+24h 
+28h 
+TXCLKESC_FREQ 
+4005-04h 
+[15:0] 
+1290h 
+06C0h 
+0948h 
+1290h 
+INCKSEL6 
+400Ch 
+[0] 
+1h 
+0h 
+0h 
+0h 
+INCKSEL7 
+4074h 
+[2:0] 
+0h 
+1h 
+1h 
+1h 
+ 
+Data rate: 720Mbps / lane 
+Register 
+Register details 
+Initial 
+value 
+INCK 
+Address 
+bit 
+24 
+[MHz] 
+72 
+[MHz] 
+BCWAIT_TIME 
+3009-08h 
+[9:0] 
+0FFh 
+054h 
+0F8h 
+CPWAIT_TIME 
+300B-0Ah 
+[9:0] 
+0B6h 
+03Bh 
+0B0h 
+SYS_MODE 
+3033h 
+[3:0] 
+4h 
+9h 
+9h 
+INCKSEL1 
+3115h 
+[7:0] 
+00h 
+00h 
+00h 
+INCKSEL2 
+3116h 
+[7:0] 
+28h 
+23h 
+28h 
+INCKSEL3 
+3119-18h 
+[10:0] 
+0C0h 
+0B4h 
+0A0h 
+INCKSEL4 
+311B-1Ah 
+[10:0] 
+0E0h 
+0FCh 
+0E0h 
+INCKSEL5 
+311Eh 
+[7:0] 
+28h 
+23h 
+28h 
+TXCLKESC_FREQ 
+4005-04h 
+[15:0] 
+1290h 
+0600h 
+1200h 
+INCKSEL6 
+400Ch 
+[0] 
+1h 
+0h 
+0h 
+INCKSEL7 
+4074h 
+[2:0] 
+0h 
+1h 
+1h 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+
+===== PAGE 81 =====
+IMX415-AAQR-G 
+ 
+ 
+81 
+ 
+ 
+ 
+Data rate: 594Mbps / lane 
+Register 
+Register details 
+Initial 
+value 
+INCK 
+Address 
+bit 
+27 
+[MHz] 
+37.125 
+[MHz] 
+74.25 
+[MHz] 
+BCWAIT_TIME 
+3009-08h 
+[9:0] 
+0FFh 
+05Dh 
+07Fh 
+0FFh 
+CPWAIT_TIME 
+300B-0Ah 
+[9:0] 
+0B6h 
+042h 
+05Bh 
+0B6h 
+SYS_MODE 
+3033h 
+[3:0] 
+4h 
+7h 
+7h 
+7h 
+INCKSEL1 
+3115h 
+[7:0] 
+00h 
+00h 
+00h 
+00h 
+INCKSEL2 
+3116h 
+[7:0] 
+28h 
+23h 
+24h 
+28h 
+INCKSEL3 
+3119-18h 
+[10:0] 
+0C0h 
+084h 
+080h 
+080h 
+INCKSEL4 
+311B-1Ah 
+[10:0] 
+0E0h 
+0E7h 
+0E0h 
+0E0h 
+INCKSEL5 
+311Eh 
+[7:0] 
+28h 
+23h 
+24h 
+28h 
+TXCLKESC_FREQ 
+4005-04h 
+[15:0] 
+1290h 
+06C0h 
+0948h 
+1290h 
+INCKSEL6 
+400Ch 
+[0] 
+1h 
+0h 
+0h 
+0h 
+INCKSEL7 
+4074h 
+[2:0] 
+0h 
+1h 
+1h 
+1h 
+ 
+ 
+ 
+
+===== PAGE 82 =====
+IMX415-AAQR-G 
+ 
+ 
+82 
+ 
+ 
+Register Hold Setting 
+V reflected register setting can be transmitted with divided to several frames and it can be reflected globally at a 
+certain frame by the register REGHOLD. Setting REGHOLD = 1 prevents the registers that set thereafter from being 
+reflected at the frame reflection timing. The registers that are set when setting REGHOLD = 1 are reflected globally 
+by setting REGHOLD = 0 at the desired frame to reflect the register. 
+ 
+Register Hold Setting Register 
+Register  
+Register details 
+Initial value 
+Setting value 
+Address 
+bit 
+REGHOLD 
+3001h 
+[0] 
+0h 
+0: Invalid 
+1: Valid (Register hold) 
+ 
+XVS
+XHS
+REGHOLD = 1
+Register A
+is not reflected. 
+Register A
+Register B
+Register C
+Register D
+are reflected. 
+: Communication period
+Register setting A
+Register setting B
+Register setting C
+Register setting D
+Register B
+is not reflected. 
+REGHOLD = 0
+Register C
+is not reflected. 
+Register 
+Hold
+ 
+ 
+Register Hold Setting 
+ 
+ 
+ 
+
+===== PAGE 83 =====
+IMX415-AAQR-G 
+ 
+ 
+83 
+ 
+ 
+Mode Transitions 
+The Mode transition between operations is shown below. These examples shown in case that setting is completed 
+within one communication timing. 
+ 
+List of Mode Transition 
+Transition 
+State 
+Horizontal direction normal 
+→ 
+Horizontal direction inverted 
+Via the Standby state 
+is unnecessary. 
+Horizontal direction inverted 
+→ 
+Horizontal direction normal 
+All-pixel scan mode 
+→ 
+Window cropping mode 
+Via the Standby state 
+is unnecessary. 
+One invalid frame is 
+generated. 
+Window cropping mode 
+→ 
+All-pixel scan mode 
+Vertical direction normal 
+→ 
+Vertical direction inverted 
+Vertical direction inverted 
+→ 
+Vertical direction normal 
+Vertical direction line number change 
+(Master mode : VMAX change, Slave mode : XVS interval change) 
+Horizontal direction 1H period change 
+(Master mode : HMAX change, Slave mode : XHS interval change) 
+- Transition between modes other than above 
+- Change the input frequency of INCK *1 
+- Change the register setting noted “S” in the reflection timing column of the Register Map. 
+Via the standby state 
+is necessary. 
+ 
+*1  When changing input INCK frequency, care should be taken not to be input pulses whose width are shorter than 
+ the High / Low level width in front and behind of the INCK pulse at the frequency change. If the pulses above 
+ generate at the frequency change, change INCK frequency during system reset in the state of XCLR = Low, and 
+ then perform system clear in the state of XCLR = High following the item of "Power on sequence" in the section of 
+ "Power on / off sequence". Execute initial setting again because the register settings become default state after 
+ system clear. 
+ 
+ 
+ 
+
+===== PAGE 84 =====
+IMX415-AAQR-G 
+ 
+ 
+84 
+ 
+ 
+Other Function 
+This sensor has the function as below. About detail, refer to each application note. 
+ 
+ 
+Digital overlap HDR (2 / 3 frame) 
+ 
+Multiple exposure HDR (2 / 4 frame) 
+ 
+Additional Function of Synchronizing Sensors 
+ 
+ 
+ 
+
+===== PAGE 85 =====
+IMX415-AAQR-G 
+ 
+ 
+85 
+ 
+ 
+Power-on and Power-off Sequence 
+Power-on sequence 
+1. 
+Turn On the power supplies so that the power supplies rise in order of 1.1 V power supply (DVDD) →1.8 V power 
+supply (OVDD) → 2.9 V power supply (AVDD). In addition, all power supplies should finish rising within 200 ms. 
+2. 
+The register values are undefined immediately after power-on, so the system must be cleared. Hold XCLR at Low 
+level for 500 ns or more after all the power supplies have finished rising. (The register values after a system clear 
+are the default values.) 
+3. 
+The system clear is applied by setting XCLR to High level. Input the master clock after setting the XCLR pin to High 
+level. 
+4. 
+Make the sensor setting by register communication after the system clear. 
+2.9 V power supply (AVDD)
+1.8 V power supply (OVDD)
+1.1 V power supply (DVDD)
+INCK
+SDA
+SCL
+XVS
+XHS
+T1
+T0
+T2
+Initial setting
+Standby mode cancel
+TSYNC
+Depend on the rising of 
+1.8V power supply
+XCLR
+TLOW
+T3
+Slave mode   : XVS and XHS must not be over OVDD
+Master mode : Depend on the rising of 1.8V power supply
+T4
+SLAMODE0
+SLAMODE1
+After rising of OVDD
+ 
+ 
+Power-on Sequence 
+ 
+Item 
+Symbol 
+Min. 
+Max. 
+Unit 
+1.1 V power supply rising → 1.8 V power supply rising 
+T0 
+0 
+― 
+ns 
+1.8 V power supply rising → 2.9 V power supply rising 
+T1 
+0 
+― 
+ns 
+Rising time of all power supply 
+T2 
+― 
+200 
+ms 
+2.9 V power supply rising  → Clear OFF 
+TLOW 
+500 
+― 
+ns 
+Clear OFF → INCK rising 
+T3 
+1 
+― 
+µs 
+Clear OFF → Communication start 
+T4 
+20 
+― 
+µs 
+Standby OFF (communication)  
+→ External input XHS, XVS (slave mode only) 
+TSYNC 
+24 
+― 
+ms 
+ 
+ 
+ 
+
+===== PAGE 86 =====
+IMX415-AAQR-G 
+ 
+ 
+86 
+ 
+ 
+Slew Rate Limitation of Power-on Sequence 
+Conform the slew rate limitation shown below when power supply change 0 V to each voltage (0 % to 100 %) in 
+power-on sequence. 
+ 
+OVDD
+AVDD
+DVDD
+OVDD
+AVDD
+0V
+100%
+SR = ΔV/Δt
+Δt
+ΔV
+DVDD
+ 
+ 
+ 
+Item 
+Symbol 
+Power supply 
+Min. 
+Max. 
+Unit 
+Remarks 
+Slew rate 
+SR 
+DVDD (1.1 V) 
+— 
+25 
+mV/μs 
+ 
+OVDD (1.8 V) 
+— 
+25 
+mV/μs 
+AVDD (2.9 V) 
+— 
+25 
+mV/μs 
+ 
+ 
+ 
+
+===== PAGE 87 =====
+IMX415-AAQR-G 
+ 
+ 
+87 
+ 
+ 
+Power-off sequence 
+Turn Off the power supplies so that the power supplies fall in order of 2.9 V power supply (AVDD) → 1.8 V power 
+supply (OVDD) → 1.1 V power supply (DVDD). In addition, all power supplies should be falling within 200 ms. Set each 
+digital input pin (INCK, SDA, SCL, XCLR, XVS, XHS) to 0 V before the 1.8 V power supply (OVDD) falls.  
+ 
+XCLR
+SDA
+SCL
+XVS
+XHS
+1.8 V power supply (OVDD)
+Fixed to 0 before
+OVDD supplies have finished falling.
+Depend on the falling of
+OVDD power supply
+Fixed to the high impedance state or 0 before
+the power supplies have finished falling.
+2.9 V power supply (AVDD)
+1.1 V power supply (DVDD)
+INCK
+Fixed to 0 before
+OVDD supplies have finished falling.
+SLAMODE0
+SLAMODE1
+Fixed to 0 before
+OVDD supplies have finished falling.
+ 
+ 
+Power-off Sequence 
+ 
+Item 
+Symbol 
+Min. 
+Max. 
+Unit 
+2.9 V power shut down → 1.8 V power shut down 
+T5 
+0 
+― 
+ns 
+1.8 V power shut down → 1.1 V power shut down 
+T6 
+0 
+― 
+ns 
+Shut down time of all power supply 
+T7 
+― 
+200 
+ms 
+ 
+ 
+
+===== PAGE 88 =====
+IMX415-AAQR-G 
+ 
+ 
+88 
+ 
+ 
+Sensor Setting Flow 
+Setting Flow in Sensor Slave Mode 
+The figure below shows operating flow in sensor slave mode. 
+For details of "Power-on" to "System clear", see the item of "Power-on sequence" in this section. 
+For details of “Standby cancel" until "Wait for image stabilization", see the item of "Standby mode". 
+“Standby setting (power save mode)” can be made by setting the STANDBY register to “1” during “Operation”.  
+ 
+Power-on
+Register settings
+Wait for internal regulator stabilization
+24ms
+Wait for image stabilization
+8frame
+Operation
+ INCK input
+XVS and XHS input start 
+Standby cancel
+STANDBY=0
+Standby setting
+(power save mode)
+STANDBY=1
+Register changes
+Shutter
+Gain
+Other
+Pin settings
+Start
+XVS and XHS input stop
+Change to settings after standby cancel.
+Set XMASTER = 1 in slave mode.
+System clear
+XCLR pin : Low → High
+ 
+ 
+Sensor Setting Flow (Sensor Slave Mode) 
+ 
+ 
+
+===== PAGE 89 =====
+IMX415-AAQR-G 
+ 
+ 
+89 
+ 
+ 
+Setting Flow in Sensor Master Mode 
+The figure below shows operating flow in sensor master mode. 
+For details of "Power-on" to "System clear", see the item of "Power-on sequence" in this section. 
+For details of “Standby cancel" until "Wait for image stabilization", see the item of "Standby mode". 
+In master mode, “Master mode start” by setting register XMSTA to “0” after “Waiting for internal regulator 
+stabilization”. 
+“Standby setting (power save mode) can be made by setting the STANDBY register to “1” during “Operation”. This 
+time set "master mode stop" by setting XMSTA to "1". 
+ 
+Power-on
+Register settings
+Standby cancel
+STANDBY=0
+Wait for image stabilization 
+8frame
+Operation
+ INCK input
+Master mode start
+XMSTA=0
+Wait for internal regulator stabilization
+24ms
+XVS and XHS output start 
+Pin settings
+Start
+System clear
+XCLR pin : Low     High
+Change to settings after standby cancel.
+Register changes
+Shutter
+Gain
+Other
+Standby setting
+(power save mode)
+STANDBY=1
+Master mode stop
+XMSTA=1
+ 
+ 
+Sensor Setting Flow (Sensor Master Mode) 
+ 
+ 
+
+===== PAGE 90 =====
+IMX415-AAQR-G 
+ 
+ 
+90 
+ 
+ 
+Peripheral Circuit 
+ 
+Common 
+GND
+IMX415
+Clock Lane
+MIPI Lane1
+MIPI Lane2
+MIPI Lane3
+MIPI Lane4
+MIPI Rx
+H2
+DCKP
+H1
+DCKN
+F2
+DMO1P
+F1
+DMO1N
+K2
+DMO2P
+K1
+DMO2N
+E2
+DMO3P
+E1
+DMO3N
+L2
+DMO4P
+L1
+DMO4N
+IMX415
+A9 VRHT
+C11 VRLRS
+D11 VRLT
+1.0uF
+10uF
+4.7uF
+Common
+GND
+G10 TENABLE
+L10 TOUT
+C4 TVMON
+OPEN
+OPEN
+OPEN
+IMX415
+OVDD
+ 1.8V
+1kΩ
+1kΩ
+K10 SCL
+J11 SDA
+L11 XHS
+K11 XVS
+H10 SLAMODE0
+J10 SLAMODE1
+H11 XCLR
+N7
+E4 E5
+E8
+K5
+K8
+VDDHAN
+E7
+K7
+VDDHPX
+A4 A5 G11 P7
+VDDMIO
+A3 A6 Ｆ11 P6
+VDDLSC
+A7 P9
+VDDLCN
+C1 P3
+VDDLIF
+P5
+P4
+VDDLPL1
+VDDLPL2
+IMX415
+VDDHAN
+VDDHAN
+VDDHPX
+VDDHPX
+VDDHPX
+VDDLCN
+VDDMIO
+VDDMIO
+VDDMIO
+VSSLSC
+D4
+VSSHAN
+N4
+VSSLPL2
+N5
+VSSLPL1
+N8
+VSSLSC
+N6
+VSSLSC
+N3
+VSSLSC
+M10
+VSSLSC
+M2
+VSSLSC
+M1
+VSSLSC
+J2
+VSSLSC
+J1
+VSSLSC
+G2
+VSSLSC
+G1
+VSSLSC
+F10
+VSSLSC
+D2
+VSSLSC
+D1
+VSSLSC
+C2
+VSSLSC
+B6
+VSSLSC
+B5
+VSSLSC
+B4
+VSSLSC
+B3
+VSSLSC
+B7
+VSSLCN
+N9
+VSSLCN
+L7
+VSSHPX
+L5
+VSSHPX
+D10
+VSSHPX
+D7
+VSSHPX
+D6
+VSSHPX
+D5
+VSSHPX
+C10
+VSSHPX
+B9
+VSSHPX
+L8
+VSSHPX
+D8
+VSSHPX
+VDDLIF
+VDDLSC
+VDDLSC
+VDDLSC
+E6
+VDDHPX
+DVDD
+ 1.1V
+0.1uF
+1.0uF
+0.01uF
+1.0uF
+0.1uF
+4.7uF
+0.1uF
+4.7uF
+0.1uF
+1.0uF
+AVDD 
+2.9V
+OVDD
+ 1.8V
+0.01uF
+1.0uF
+0.1uF
+4.7uF
+0.1uF
+1.0uF
+P8
+VDDLSC
+M11 INCK
+ 
+ 
+ 
+Application circuits shown are typical examples illustrating the operation of the devices. 
+Sony Semiconductor Solutions Corporation cannot assume responsibility for any problems arising out of the use 
+of these circuits or for any infringement of third party and other right due to same. 
+ 
+ 
+
+===== PAGE 91 =====
+IMX415-AAQR-G 
+ 
+ 
+91 
+ 
+ 
+Spot Pixel Specifications 
+(AVDD = 2.9 V, OVDD = 1.8 V, DVDD = 1.1 V, Tj = 60 ˚C, 30 frame/s, Gain: 0 dB) 
+Type of distortion 
+Level 
+Maximum distorted pixels in each zone 
+Measurement 
+method 
+Remarks 
+II' 
+Effective 
+OB 
+III 
+Ineffective 
+OB 
+Black or white 
+pixels at high light 
+30 % 
+< 
+D 
+ 
+ 
+60 
+No evaluation 
+criteria applied 
+1 
+ 
+White pixels  
+in the dark 
+5.6 mV 
+< 
+D 
+ 
+ 
+800 
+No evaluation 
+criteria applied 
+2 
+1/30 s storage 
+Black pixels at 
+signal saturated 
+ 
+ 
+D 
+< 428 mV 
+0 
+No evaluation 
+criteria applied 
+3 
+ 
+ 
+Note) 1. Zone is specified based on all-pixel drive mode 
+ 
+2. D Spot pixel level 
+ 
+3. See the Spot Pixel Pattern Specifications for the specifications in which pixel and black pixel are close. 
+ 
+Zone Definition 
+18
+OB side ignored area
+17
+(1, 1)
+V.OB
+(3864, 35)
+Vertical effective OB
+(3864, 2225)
+3864
+2176
+Ignored area of effective pixel
+12
+(1, 50)
+(1, 18)
+1
+OB side ignored area
+(1, 36)
+1
+(1, 37)
+(1, 38)
+ZoneIII
+ZoneII’
+Ignored area of effective pixel
+2
+1
+(3864, 2227)
+(3864, 2228)
+Dummy
+Dummy
+ 
+ 
+ 
+ 
+
+===== PAGE 92 =====
+IMX415-AAQR-G 
+ 
+ 
+92 
+ 
+ 
+Notice on White Pixels Specifications 
+ 
+19 pcs
+10 pcs
+4 pcs
+2 pcs
+1 pcs
+Annual number of occurrence
+50.0 mV or higher
+72.0 mV or higher
+White Pixel Level (in case of integration time = 1/30 s)
+(Tj =  60 ˚C)
+5.6 mV or higher
+10.0 mV or higher
+24.0 mV or higher
+ 
+ 
+ 
+ 
+ 
+ 
+After delivery inspection of CMOS image sensors, particle radiation such as cosmic rays etc. may distort pixels of  
+ 
+CMOS image sensors, and then distorted pixels may cause white point effects in dark signals in picture images.  
+ 
+(Such white point effects shall be hereinafter referred to as "White Pixels".)  
+ 
+Unfortunately, it is not possible with current scientific technology for CMOS image sensors to prevent such White  
+ 
+Pixels. It is recommended that when you use CMOS image sensors, you should consider taking measures against  
+ 
+such White Pixels, such as adoption of automatic compensation systems for White Pixels in dark signals and  
+ 
+establishment of quality assurance standards.  
+ 
+Unless the Seller's liability for White Pixels is otherwise set forth in an agreement between you and the Seller, 
+Sony Semiconductor Solutions Corporation or its distributors (hereinafter collectively referred to as the "Seller")  
+will, at the Seller's expense, replace such CMOS image sensors, in the event the CMOS image sensors delivered  
+by the Seller are found to be to the Seller's satisfaction, to have over the allowable range of White Pixels as set forth 
+above under the heading "Spot Pixels Specifications", within the period of three months after the delivery date of  
+such CMOS image sensors from the Seller to you; provided that the Seller disclaims and will not assume any liability 
+after you have incorporated such CMOS image sensors into other products. 
+ 
+Please be aware that Seller disclaims and will not assume any liability for (1) CMOS image sensors fabricated, 
+ 
+altered or modified after delivery to you, (2) CMOS image sensors incorporated into other products, (3) CMOS 
+ 
+image sensors shipped to a third party in any form whatsoever, or (4) CMOS image sensors delivered to you 
+over three months ago. Except the above mentioned replacement by Seller, neither Sony Semiconductor Solutions 
+Corporation nor its distributors will assume any liability for White Pixels. Please resolve any problem or trouble arising
+from or in connection with White Pixels at your costs and expenses. 
+ 
+ 
+ 
+ [For Your Reference] The Annual Number of White Pixels Occurrence 
+The chart below shows the predictable data on the annual number of White Pixels occurrence in a single-story 
+building in Tokyo at an altitude of 0 meters. It is recommended that you should consider taking measures against 
+the annual White Pixels, such as adoption of automatic compensation systems appropriate for each annual 
+number of White Pixels occurrence.  
+ 
+ The data in the chart is based on records of past field tests, and signifies estimated number of White Pixels 
+ 
+ calculated according to structures and electrical properties of each device. Moreover, the data in the chart is 
+ 
+ for your reference purpose only, and is not to be used as part of any CMOS image sensor specifications. 
+ 
+ 
+ Example of Annual Number of Occurrence 
+ 
+ Note 1) The above data indicates the number of White Pixels occurrence when a CMOS image sensor is left  
+ 
+   
+for a year. 
+ 
+ Note 2) The annual number of White Pixels occurrence fluctuates depending on the CMOS image sensor storage
+ 
+   
+environment (such as altitude, geomagnetic latitude and building structure), time (solar activity effects) 
+ 
+   
+and so on. Moreover, there may be statistic errors. Please take notice and understand that this is an 
+ 
+   
+example of test data with experiments that have being conducted over a specific time period and in 
+ 
+   
+a specific environment. 
+ 
+ Note 3) This data does not guarantee the upper limits of the number of White Pixels occurrence. 
+ 
+ 
+ 
+Material_No.03-0.0.10 
+
+===== PAGE 93 =====
+IMX415-AAQR-G 
+ 
+ 
+93 
+ 
+ 
+Measurement Method for Spot Pixels 
+After setting to standard imaging condition II, and the device driver should be set to meet bias and clock voltage 
+conditions. Configure the drive circuit according to the example and measure. 
+ 
+1. Black or white pixels at high light 
+After adjusting the luminous intensity so that the average value VG of the Gb / Gr signal outputs is 300 mV, 
+measure the local dip point (black pixel at high light, ViB) and peak point (white pixel at high light, ViK) in the Gr / 
+Gb / R / B signal output Vi (i = Gr / Gb / R / B), and substitute the value into the following formula. 
+ 
+    Spot pixel level D = ((ViB or ViK) / Average value of Vi) × 100 [%] 
+ 
+White pixel
+ViK
+ViB
+Vi (i = R, G, B, VG = 300 mV )
+Black pixel
+ 
+ 
+Signal output waveform of R / G / B channel 
+ 
+2. White pixels in the dark 
+Set the device to a dark setting and measure the local peak point of the signal output waveform, using the 
+average value of the dark signal output as a reference. 
+ 
+3. Black pixels at signal saturated 
+Set the device to operate in saturation and measure the local dip point, using the OB output as a reference. 
+ 
+Level D
+Vsat (Min = 570 mV )
+Black pixel
+OB output
+ 
+ 
+Signal output waveform of R/G/B channel 
+ 
+ 
+
+===== PAGE 94 =====
+IMX415-AAQR-G 
+ 
+ 
+94 
+ 
+ 
+Spot Pixel Pattern Specification 
+White Pixel, Black Pixel and Bright Pixel are judged from the pattern whether they are allowed or rejected, and 
+counted. 
+ 
+List of White Pixel, Black Pixel and Bright Pixel Pattern 
+2
+No.
+Pattern
+●
+●
+1
+●
+●
+R
+B
+G
+G
+Rejected
+White pixel
+Black pixel
+Bright pixel
+Rejected
+ 
+ 
+Note)   1.”●” shows the position of white pixel, black pixel and bright pixel. 
+White pixel, black pixel and bright pixel are specified separately according the pattern. 
+(Example: If a black pixel and a white pixel is in the pattern No.1 respectively, they are not judged to 
+be rejected.) 
+2. When one or more spot pixels indicated “Rejected” is selected and removed. 
+3. Spot pixels other than described in the table above are all counted including the number of allowable 
+spot pixels by zone. 
+ 
+ 
+
+===== PAGE 95 =====
+IMX415-AAQR-G 
+ 
+ 
+95 
+ 
+ 
+Marking 
+ 
+ 
+ 
+ 
+ 
+ 
+
+===== PAGE 96 =====
+IMX415-AAQR-G 
+ 
+ 
+96 
+ 
+ 
+Notes On Handling 
+ 
+ 
+ 
+ 
+ 
+1. Static charge prevention 
+ 
+Image sensors are easily damaged by static discharge. Before handling be sure to take the following 
+ 
+protective measures. 
+ 
+ (1) Either handle bare handed or use non-chargeable gloves, clothes or material. 
+ 
+  
+Also use conductive shoes. 
+ 
+ (2) Use a wrist strap when handling directly. 
+ 
+ (3) Install grounded conductive mats on the floor and working table to prevent the generation of static 
+ 
+  
+electricity. 
+ 
+ (4) Ionized air is recommended for discharge when handling image sensors. 
+ 
+ (5) For the shipment of mounted boards, use boxes treated for the prevention of static charges. 
+ 
+ 
+2. Protection from dust and dirt 
+ 
+Image sensors are packed and delivered with care taken to protect the element glass surfaces from 
+ 
+harmful dust and dirt. Clean glass surfaces with the following operations as required before use. 
+ 
+ (1) Perform all lens assembly and other work in a clean environment (class 1000 or less). 
+ 
+ (2) Do not touch the glass surface with hand and make any object contact with it. 
+ 
+  
+If dust or other is stuck to a glass surface, blow it off with an air blower. 
+ 
+  
+(For dust stuck through static electricity, ionized air is recommended.) 
+ 
+ (3) Clean with a cotton swab with ethyl alcohol if grease stained. Be careful not to scratch the glass. 
+ 
+ (4) Keep in a dedicated case to protect from dust and dirt. To prevent dew condensation, preheat or 
+ 
+  
+precool when moving to a room with great temperature differences. 
+ 
+ (5) When a protective tape is applied before shipping, remove the tape applied for electrostatic 
+ 
+  
+protection just before use. Do not reuse the tape. 
+ 
+ 
+3. Installing (attaching) 
+ 
+ (1) If a load is applied to the entire surface by a hard component, bending stress may be generated 
+ 
+  
+and the package may fracture, etc., depending on the flatness of the bottom of the package. 
+ 
+  
+Therefore, for installation, use either an elastic load, such as a spring plate, or an adhesive. 
+ 
+ (2) The adhesive may cause the marking on the rear surface to disappear. 
+ 
+ (3) If metal, etc., clash or rub against the package surface, the package may chip or fragment and 
+ 
+  
+generate dust. 
+ 
+ (4) Acrylate anaerobic adhesives are generally used to attach this product. In addition, cyanoacrylate 
+ 
+  
+instantaneous adhesives are sometimes used jointly with acrylate anaerobic adhesives to hold 
+ 
+  
+the product in place until the adhesive completely hardens. (Reference) 
+ 
+ (5) Note that the sensor may be damaged when using ultraviolet ray and infrared laser for mounting it.  
+ 
+
+===== PAGE 97 =====
+IMX415-AAQR-G 
+ 
+ 
+97 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+4. Reflow soldering conditions 
+ 
+The following items should be observed for reflow soldering. 
+ 
+ (1) Recommended temperature profile for reflow soldering 
+Control item
+1. Preheating
+2. Temperature up (down)
+3. Reflow temperature
+4. Peak temperature
+Profile (at part side surface)
+150 to 180 °C
+60 to 120 s
+Over 230 °C
+10 to 30 s
+Max. 5 °C/s
+Max. 240 ± 5 °C
++4 °C/s or less (– 6 °C/s or less)
+Temperature
+Peak 240 ± 5 °C
+230 °C
+Max. 5 °C/s
+– 6 °C/s or less
++4 °C/s 
+or less
+180 °C
+150 °C
+10 to 30 s
+60 to 120 s
+Reflow
+Time
+Preheating
+ 
+ 
+ (2) Reflow conditions 
+ 
+  
+(a) Make sure the temperature of the upper surface of the seal glass resin adhesive portion of the 
+ 
+  
+ 
+package does not exceed 245 °C. 
+ 
+  
+(b) Perform the reflow soldering only one time. 
+ 
+  
+(c) Finish reflow soldering within 72 h after unsealing the degassed packing. 
+ 
+  
+ 
+Store the products under the condition of temperature of 30 °C or less and humidity of  
+ 
+  
+ 
+70 % RH or less after unsealing the package. 
+ 
+  
+(d) Perform re-baking only one time under the condition at 125 °C for 24 h. 
+ 
+ 
+(e) Note that condensation on glass or discoloration on resin interfaces may occur if the actual temperature  
+ 
+  
+ 
+and time exceed the conditions mentioned above. 
+ 
+ (3) Others 
+ 
+  
+(a) Carry out evaluation for the solder joint reliability in your company. 
+ 
+  
+(b) After the reflow, the paste residue of protective tape may remain around the seal glass. 
+ 
+  
+ 
+(The paste residue of protective tape should be ignored except remarkable one.) 
+ 
+  
+(c) Note that X-ray inspection may damage characteristics of the sensor. 
+ 
+ 
+5. Others 
+ 
+ (1) Do not expose to strong light (sun rays) for long periods, as the color filters of color devices will 
+ 
+  
+be discolored. 
+ 
+ (2) Exposure to high temperature or humidity will affect the characteristics. Accordingly avoid storage 
+ 
+  
+or use in such conditions. 
+ 
+ (3) This product is precision optical parts, so care should be taken not to apply excessive mechanical 
+ 
+  
+shocks or force. 
+ 
+ (4) Note that imaging characteristics of the sensor may be affected when approaching strong 
+ 
+  
+electromagnetic wave or magnetic field during operation. 
+ 
+ (5) Note that image may be affected by the light leaked to optical black when using an infrared cut 
+ 
+  
+filter that has transparency in near infrared ray area during shooting subjects with high luminance. 
+ 
+ (6) Please perform the tilt adjustment for the optical axis in your company as required.  
+
+===== PAGE 98 =====
+IMX415-AAQR-G 
+ 
+ 
+98 
+ 
+ 
+Package Outline 
+(Unit: mm) 
+ 
+ 
+ 
+ 
+
+===== PAGE 99 =====
+IMX415-AAQR-G 
+ 
+ 
+99 
+ 
+ 
+List of Trademark Logos and Definition Statements  
+ 
+ 
+
+===== PAGE 100 =====
+IMX415-AAQR-G 
+ 
+ 
+ 
+100 
+Revision History 
+Date of 
+change 
+Rev. 
+Page 
+Contain of Change 
+2019 / 05 / 21 
+E19505 
+－ 
+First Edition 
+2019 / 10 / 29 
+E19505A9X 
+1 
+Deleted: Recommended exit pupil distance at Features 
+10 
+Correction: Changed figure legend from GND(1.8 V / 1.1 V) to 
+GND(1.1 V / 1.8 V) 
+11 - 13 
+Correction: Changed description from 1.1 V GND to 1.1 V / 1.8 V GND 
+24 
+Deleted: (exit pupil distance – 30 mm) 
+39 
+Correction: Register address 3081h deleted 
+51 
+Correction: Fig. Embedded data line corrected. 
+Note and “Table Embedded Data Line Tag” deleted. 
+53, 63 
+Correction: (unit[s]) -> (set in unit [s]) 
+55 
+Correction: 90 -> 90.16 [frame/s] 
+56, 61 
+Correction: Fig. Drive Timing Chart 
+61 
+Correction: Note at "Fig. Drive Timing Chart” 
+It outputs in the format of RAW10 or RAW12. -> It outputs in the 
+format of RAW12. 
+2021 / 02 / 09 
+E19505B12 
+3 
+Correction: Application Conditions 
+AVDD1 -> AVDD, DVDD1 -> DVDD 
+21 
+Correction: I/O Equivalent Circuit Diagram 
+37 
+Correction: SYS_MODE 
+1140 / 1485 Mbps -> 1440 / 1485 Mbps 
+40, 67 
+Correction: GAIN_PCG_0 -> GAIN_PGC_0 
+48 
+Correction: Operating mode 
+          1H period [All pixel, 2, 594, 10, 10] 
+50 
+Deleted: DATA Type [10h NULL] 
+52 
+Correction: 3030[3:0] -> 3033[3:0] 
+18 to 23 -> 14 to 23 
+53, 65, 69 
+70, 71, 77 
+Correction: Explanatory text 
+P53 L6, 7 
+in "Operating mode" -> in the table of "Operating mode" 
+P65 L7, 11 
+the section of "Operating mode"  
+-> the section of "Readout Drive mode" 
+P69 L3  
+the section of "Operating Modes"  
+-> the section of "Image Data Output Format" 
+P70 *2 
+"Operating Modes" -> the section of "Readout Drive mode" 
+P71 VMAX [19:0] Setting value 
+"Operating Modes" -> section "Readout Drive mode" 
+P77 L3  
+the section of "Operating Modes"  
+- > the section of "Readout Drive mode" 
+54, 57 
+Correction: LAMEMODE -> LANEMODE, 2 lame -> 2lane 
+
+===== PAGE 101 =====
+IMX415-AAQR-G 
+ 
+ 
+ 
+101 
+Date of 
+change 
+Rev. 
+Page 
+Contain of Change 
+2021 / 02 / 09 
+E19505B12 
+57, 59 
+Correction: DIG_CLP_VSTAET ->DIG_CLP_VSTART 
+          DIG_VLP_VNUM -> DIG_CLP_VNUM 
+59 
+Correction: 25 [frame/s] HMAX 
+4FFh -> 500h 
+65 
+Correction: List of Register in Master Mode 
+XHSLNG bit [6:5] -> [5:4] 
+74 
+Correction: LANEMODE [2:0] Address 
+4011h ->4001h 
+75 
+Correction: Explanatory text 
+The each formal … -> The each format … 
+76 
+Correction: DMOPx -> DMOxP, DMONx -> DMOxN, DCKM -> DCKN 
+77 
+Correction: ADBIT bit  
+[0] -> [1:0] 
+78 - 80 
+Correction: SYS_MODE Address 
+3034h -> 3033h 
+84 
+Correction: Power-on sequence 3. 
+The maser clock input -> Input the master clock 
+86 
+Correction: Power-off Sequence 
+fowling -> falling 
+87, 88 
+Correction: Explanatory text 
+Reset cancel -> System clear 
+87, 88 
+Correction: Sensor Setting Flow (Sensor Slave Mode) 
+Sensor Setting Flow (Sensor Master Mode) 
+standby release -> standby cancel 
+96 
+Correction: Reflow soldering conditions 
+2021 / 05 / 11 
+E19505C14 
+18 
+Correction: 
+XVS / XHS Input Characteristics In Master Mode  
+(XMASTER pin = Low, CMOS Output) 
+→XVS / XHS Output Characteristics In Master Mode 
+(XMASTER pin = Low, CMOS Output) 
+44, 45 
+Added: Register address 
+344Ch, 344Dh, 344Eh, 344Fh, 3450h, 3451h, 
+35ECh, 35EEh, 35F0h, 35F2h, 
+3720h, 
+39A4h, 39A8h, 39Aah, 39Ach, 39AEh, 39B0h, 39B2h, 39B4h, 
+39B6h, 39B8h, 39Bah, 39BCh, 39BEh, 39C0h, 39C2h, 39C4h, 
+39C6h 
+49 
+Correction: Values of Operating mode table 
+Frame rate and 1H period value in Horizontal/Vertical 
+2/2-line binning mode 
+2022 / 10 / 17 
+E19505D2X 
+1 
+Deleted: Description 
+        Applications: FA cameras, Industrial cameras 
+24 
+Deleted: Definition of standard imaging conditions 
+        Standard imaging condition III 
+
+===== PAGE 102 =====
+IMX415-AAQR-G 
+ 
+ 
+ 
+102 
+Date of 
+change 
+Rev. 
+Page 
+Contain of Change 
+2022 / 10 / 17 
+E19505D2X 
+25 
+Correction: 4.Video signal shading 
+          standard imaging condition III→ 
+standard imaging condition II 
+37 
+Added: SYS_MODE 
+   6: 1188 Mbps 
+48 
+Added: Operating mode 
+       information of 1188Mbps/Lane mode  
+54, 55 
+Added: List of Setting Register 
+       1188Mbps/Lane mode setting 
+62 
+Correction: Window Cropping Mode 
+  Vertical scan direction (Normal) arrow start point, 
+Vertical scan direction (Inverted) arrow end point 
+80 
+Added: INCK Setting 
+       1188Mbps/Lane mode setting 
+ 
