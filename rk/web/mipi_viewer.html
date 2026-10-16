@@ -347,6 +347,9 @@
           <button class="ghost on" id="btnAiLabel">动作标签</button>
           <button class="ghost" id="btnAiHud">角标</button>
         </div>
+        <div class="grid2" style="margin-top:8px">
+          <button class="ghost" id="btnAiSkOnly">纯骨骼（黑底）</button>
+        </div>
 
         <div class="sep"></div>
 
@@ -917,6 +920,7 @@ function aiSyncUI() {
   $("btnAiScore").classList.toggle("on", !!ai.show_score);
   $("btnAiLabel").classList.toggle("on", !!ai.show_label);
   $("btnAiHud").classList.toggle("on", !!ai.show_hud);
+  $("btnAiSkOnly").classList.toggle("on", !!ai.skeleton_only);
 
   $("aiState").textContent = ai.ok ? (ai.err ? "已加载 · " + ai.err : "已加载")
                                    : (ai.err || "未加载");
@@ -971,6 +975,9 @@ function aiPush(patch) {
         const nm = (ai.presets || []).find(p => p.id === ai.preset);
         toast("已切换到「" + (nm ? nm.name : ai.preset) + "」");
       }
+      if ("skeleton_only" in patch && ai) {
+        toast(ai.skeleton_only ? "已切到纯骨骼（黑底）" : "已恢复画面叠加");
+      }
     } catch (e) { toast("AI 设置失败: " + e.message, true); }
   }, 60);
 }
@@ -984,6 +991,7 @@ $("btnAiSk").onclick    = () => aiPush({ show_skeleton: !(ai && ai.show_skeleton
 $("btnAiScore").onclick = () => aiPush({ show_score: !(ai && ai.show_score) });
 $("btnAiLabel").onclick = () => aiPush({ show_label: !(ai && ai.show_label) });
 $("btnAiHud").onclick   = () => aiPush({ show_hud: !(ai && ai.show_hud) });
+$("btnAiSkOnly").onclick = () => aiPush({ skeleton_only: !(ai && ai.skeleton_only) });
 
 $("a_fps").addEventListener("input", e => {
   $("av_fps").textContent = e.target.value + " fps";

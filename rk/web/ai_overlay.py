@@ -36,8 +36,8 @@ except Exception:                                        # noqa: BLE001
 _STATE_KEYS = ("enabled", "source", "ai_fps", "det_conf", "nms_thres",
                "kpt_conf", "max_persons", "roi_expand", "kpt_margin",
                "kpt_scale_max", "det_interval", "copy_frame", "show_skeleton",
-               "show_score", "show_label", "show_hud", "zone", "tune",
-               "preset", "spread_pose")
+               "show_score", "show_label", "show_hud", "skeleton_only",
+               "zone", "tune", "preset", "spread_pose")
 
 # 模型档位。
 #
@@ -95,7 +95,7 @@ class AiOverlay(object):
                  spread_pose=True,
                  source="raw", enabled=True,
                  zone=None, show_skeleton=True, show_score=True, show_label=True,
-                 show_hud=False, state_path=None, verbose=False):
+                 show_hud=False, skeleton_only=False, state_path=None, verbose=False):
         self.ai_dir = os.path.abspath(ai_dir or default_ai_dir())
         mdir = os.path.join(self.ai_dir, "models")
         self.model_dir = mdir
@@ -138,6 +138,8 @@ class AiOverlay(object):
         self.show_score = bool(show_score)
         self.show_label = bool(show_label)
         self.show_hud = bool(show_hud)
+        # 纯骨骼模式：整帧涂黑，只留关节点/骨架（不带人体框与标签）—— 隐私场景用
+        self.skeleton_only = bool(skeleton_only)
         self.verbose = bool(verbose)
         self.zone = list(zone or [])
 
@@ -342,11 +344,19 @@ class AiOverlay(object):
             return frame
         with self._lock:
             res = self._result
-        if not res:
-            return frame
         try:
-            from det_core import draw_person
+            from det_core import draw_person, draw_pose
         except Exception:                                       # noqa: BLE001
+            return frame
+
+        if self.skeleton_only:
+            # 纯骨骼模式：先把整帧涂黑（推理用的是原来的帧，不受影响），
+            # 下面只画关节点/骨架线，不画人体框、分数、动作标签。
+            try:
+                frame[:] = 0
+            except Exception:                                   # noqa: BLE001
+                pass
+        elif not res:
             return frame
 
         for d in res:
@@ -357,6 +367,12 @@ class AiOverlay(object):
                 color, thick = (0, 165, 255), 3
             else:
                 color, thick = (0, 255, 0), 2
+            if self.skeleton_only:
+                # 黑底上只留骨架：点画大一点、线稍粗，远程看也一眼能认出姿势
+                if self.show_skeleton and d.get("kps") is not None:
+                    draw_pose(frame, d["kps"], color=color, thickness=max(2, thick),
+                              radius=5)
+                continue
             label = ""
             acts = d.get("actions") or []
             if self.show_label and acts:
@@ -541,6 +557,7 @@ class AiOverlay(object):
             "show_score": self.show_score,
             "show_label": self.show_label,
             "show_hud": self.show_hud,
+            "skeleton_only": self.skeleton_only,
             "pose_preset": self.preset,
             "preset": self.preset,
             "presets": self._preset_list(),
@@ -559,7 +576,8 @@ class AiOverlay(object):
             src = str(patch["source"]).lower()
             if src in ("raw", "ai"):
                 self.source = src
-        for k in ("show_skeleton", "show_score", "show_label", "show_hud"):
+        for k in ("show_skeleton", "show_score", "show_label", "show_hud",
+                  "skeleton_only"):
             if k in patch:
                 setattr(self, k, bool(patch[k]))
         if "ai_fps" in patch:
