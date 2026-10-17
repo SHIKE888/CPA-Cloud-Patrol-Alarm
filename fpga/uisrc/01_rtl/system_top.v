@@ -952,8 +952,9 @@ cfg_ctrl_top #(
 	// ★ 构建版本号 (I2C 0xA9 低 / 0xAA 高 可读)。注意这里会覆盖 cfg_ctrl_top
 	//   的 parameter 默认值 —— 2026-10-17 就因为改错地方导致版本号一直读 0x0101,
 	//   白白多烧了一轮。以后改这个号只能改这里。
+	//   0x3702 = V37b (修 HDL-7225: st_corr_fc 隐式 1bit net, 0xD0/0xD1 只接了 bit0)
 	//   0x3701 = V37 第 1 次构建 (4K 纯厂商 VMAX=4503, 验证传感器是否出帧)
-	.CFG_VER  (16'h3701)
+	.CFG_VER  (16'h3702)
 ) u_cfg_ctrl (
 	.i_sys_clk    (I_sysclk_25m),
 	.i_sys_rst_n  (1'b1),

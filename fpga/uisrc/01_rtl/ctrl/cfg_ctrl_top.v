@@ -118,8 +118,15 @@ module cfg_ctrl_top #(
 	wire        cfg_res_chg;    // V21
 
 	// 帧计数 (像素域), 同步回系统域供回读
-	reg [31:0] cnt_pix;
-	reg [31:0] cnt_s1, cnt_s2;
+	// ★★ V37: 这些声明必须放在 jpeg_regfile 例化**之前**。
+	//    V36 把 `wire [15:0] st_corr_fc = corr_t2[15:0];` 写在了例化之后的 229 行,
+	//    但 166 行已经用到了它 => Verilog 在用法处隐式生成了一个 **1bit** net,
+	//    于是 0xD0/0xD1 只接到 bit0, 读出来永远是 0 (TD 警告 HDL-7225)。
+	//    诊断仪表自己的 bug 差点又被当成"真的没数据"。
+	reg  [31:0] cnt_csi_pix, cnt_corr_pix, cnt_line_pix;
+	reg  [31:0] cnt_s1, cnt_s2;
+	reg  [31:0] csi_t1, csi_t2, corr_t1, corr_t2, line_t1, line_t2;
+	wire [15:0] st_corr_fc = corr_t2[15:0];
 
 	jpeg_regfile #(.JPEG_VER(CFG_VER)) u_regfile (
 		.I_clk           (i_sys_clk),
@@ -195,9 +202,8 @@ module cfg_ctrl_top #(
 	//         0xB8..0xBB <-- CSI-2 FS 短包计数 = 传感器真实帧率 (最关键的数)
 	//         0xD0/0xD1  <-- ui_image_correction 输出帧计数(低16位, 会回转)
 	//       另存一个行计数 cnt_line_pix, 当前未引出, 留着以后用。
+	//      (声明已提前到 jpeg_regfile 例化之前, 见上面 V37 注释)
 	//-------------------------------------------------------------------------
-	reg [31:0] cnt_csi_pix, cnt_corr_pix, cnt_line_pix;
-	reg [31:0] csi_t1, csi_t2, corr_t1, corr_t2, line_t1, line_t2;
 
 	always @(posedge i_pix_clk or negedge i_pix_rst_n) begin
 		if (!i_pix_rst_n) begin
@@ -224,9 +230,6 @@ module cfg_ctrl_top #(
 			cnt_s1  <= csi_t2;       cnt_s2  <= cnt_s1;
 		end
 	end
-
-	// 0xD0/0xD1 改成 "裁剪模块输出帧计数(低16位)"
-	wire [15:0] st_corr_fc = corr_t2[15:0];
 
 	//-------------------------------------------------------------------------
 	// 配置信号: 系统域 -> 像素域 (2 级同步)
