@@ -961,10 +961,10 @@ cfg_ctrl_top #(
 	// ★ 构建版本号 (I2C 0xA9 低 / 0xAA 高 可读)。注意这里会覆盖 cfg_ctrl_top
 	//   的 parameter 默认值 —— 2026-10-17 就因为改错地方导致版本号一直读 0x0101,
 	//   白白多烧了一轮。以后改这个号只能改这里。
-	//   0x3806 = V38f (GAP_LINE 200->100: 每行余量 5.9%->10%, 治逐行偏移/斜切)
+	//   0x3807 = V38g (撤销 V38f: GAP_LINE 100->200, 回到实测可用的 4K25)
 	//   0x3805 = V38e (4K25: h_frame 2652 / v_frame 2225 / VMAX 3420)
 	//   0x3804 = V38d (补上 0x3024/0x3025: VMAX 3449->4282)
-	.CFG_VER  (16'h3806)
+	.CFG_VER  (16'h3807)
 ) u_cfg_ctrl (
 	.i_sys_clk    (I_sysclk_25m),
 	.i_sys_rst_n  (1'b1),
@@ -1476,16 +1476,16 @@ csi2_frame_tx #(
 	.VC			(2'd0 ),
 	.BPP_NUM	(2    ),
 	.BPP_DEN	(1    ),
-	// V38f: GAP_LINE 200 -> 100。
-	//   症状: 用户描述"整幅拉升倾斜" + "以左上到右下为界斜向上下错位"。
-	//   = 每行横向偏 1 个 beat(2 像素), 2160 行累积 4320 像素, 绕过 3840 一次
-	//     => 正好出现一条对角分界线。
-	//   根因: uidbuf 读侧 r_xcnt 必须在 VTC 有效窗口内数到 I_R_XSIZE-1 才产生行尾,
-	//         窗口内少一个 beat 就不进位, 行边界永久错开且无法自愈。
-	//   而少 beat 是因为余量只有 5.9%: TX 每行 16.98us vs VTC 17.98us。
-	//   GAP 200->100 后 TX 每行 16.18us, 余量 10.0%。
-	//   ★ GAP 不能小于 ~800ns: 40 clk(320ns) 实测会报 MIPI_CSI2 CRC/ECC 错。
-	.GAP_LINE	(32'd100 ),
+	// ★★★ 不要动这两个参数 ★★★
+	//   GAP_LINE=200 (1.6us) 是实测验证过的: 4K25 下 rkcif 25.00 fps, ECC=0, CRC=0。
+	//   V38f 曾把它改成 100 想"增加每行余量", 结果 4K 直接掉到 0.99 fps,
+	//   并爆出 MIPI_CSI2 ERR1:0x10000000 (ecc2) / ERR1:0x18000000 (crc,vc:3)。
+	//   原因: 减小 GAP 是把 TX 对上游 packer 的吞吐要求提高了(每行 16.98us->16.18us),
+	//         并不会给出任何余量; 而且 csi2_frame_tx 在 payload 期间只要 s_tvalid 掉一拍
+	//         就会把 hs_en 拉低, 那等于把这个 packet 提前截断 -> 必然报错。
+	//   GAP_LINE=40 (320ns) 在 V38b 也试过, 同样报 CRC/ECC。
+	//   => 这条链路的 GAP 已经调好了, 逐行偏移要另找原因。
+	.GAP_LINE	(32'd200 ),
 	.GAP_FRAME	(32'd4000)
 ) u_csi2_frame_tx (
 	.clk			(S_dsi_byte_clk	),
