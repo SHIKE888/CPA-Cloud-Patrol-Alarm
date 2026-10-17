@@ -190,14 +190,23 @@ parameter CS_WIDTH        = 1
 	wire [12:0] S_vtc_h_active = H_ACTIVE[12:0];                            // 1920
 	wire [12:0] S_vtc_h_start  = H_ACTIVE + H_FP;                           // 2008
 	wire [12:0] S_vtc_h_end    = H_ACTIVE + H_FP + H_SA;                    // 2052
-	wire [12:0] S_vtc_h_frame  = S_is_4k ? 13'd2060
-	                                     : (H_ACTIVE+H_FP+H_SA+H_BP);   // 4K:2060 FHD:2200
+	// V38c: 4K 行周期从 2060 拉到 2800 —— 给 TX 足够时间。
+	//   硬约束 (实测 V38 验证):
+	//     TX 每行 = 1920(payload) + 200(gap) + 3 = 2123 byte_clk = 16.98us
+	//     VTC 每行只给 h_frame/147.5MHz
+	//     2060 -> 13.97us  < 16.98us  => TX 永远追不上, 输出只有 12.5fps
+	//     2800 -> 18.98us  > 16.98us  => 有 11.8% 余量  ✅
+	//   注意: 数据只在每行的 VTC de 窗口内可读, 场消隐期没有数据可读,
+	//         所以加大 v_frame 没用, 必须加大 h_frame。
+	//   代价: 帧率 = 147.5MHz/(2800 x 2634) = 20.00fps (4K20)
+	wire [12:0] S_vtc_h_frame  = S_is_4k ? 13'd2800
+	                                     : (H_ACTIVE+H_FP+H_SA+H_BP);   // 4K:2800 FHD:2200
 	wire [11:0] S_vtc_v_active = S_is_4k ? 12'd2160 : V_ACTIVE[11:0];
 	wire [11:0] S_vtc_v_start  = S_is_4k ? 12'd2164 : (V_ACTIVE+V_FP);
 	wire [11:0] S_vtc_v_end    = S_is_4k ? 12'd2169 : (V_ACTIVE+V_FP+V_SA);
-	// 4K 场周期: 2387 -> 30fps(99.5% 带宽, 跑不动), 2865 -> 24.992fps(82.9% 可用)
-	// V35c: 2865 不是随便取的 —— 见下方 i_vmax 处的推导
-	wire [11:0] S_vtc_v_frame  = (S_res_mode == 2'd2) ? 12'd2865
+	// 4K 场周期: 与 h_frame=2800 配套 -> 147.5MHz/(2800 x 2634) = 20.00fps
+	//   原来是 2060x2865 = 24.99fps, 但那个行周期装不下 TX 的 16.98us, 只能跑 12.5fps
+	wire [11:0] S_vtc_v_frame  = (S_res_mode == 2'd2) ? 12'd2634
 	                           : (S_res_mode == 2'd1) ? 12'd2387
 	                                                  : (V_ACTIVE+V_FP+V_SA+V_BP);
 	//===============================================================
@@ -469,12 +478,10 @@ cam_param #(
 ) u_cam_param (
 	.clk        (I_sysclk_25m),
 	.rst_n      (S_pll_lock),
-	// V38: 4K 传感器表回退到 V27 的 891Mbps 方案 (已证明可用的速率档)。
-	//   V37b (厂商 1440Mbps + VMAX=4503) 实测: CSI-FS = 0.00 fps, 行组数停在 486
-	//   => 1440Mbps (MIPI 时钟 720MHz) 超出 PH1A90 LVDS 接收器能力, 一个帧都收不到。
-	//   1080p 的 891Mbps (445.5MHz) 已被证实可用。
-	//   本版只把 4K 的 HMAX/VMAX 配套改回 861/3449, 先验证传感器能否出帧。
-	.i_vmax         (S_is_4k ? 20'd3449        : 20'd2283),
+	// V38c: 4K 传感器帧率配到 20.00fps 以匹配 VTC (4K20)。
+	//   实测: VMAX=3449 -> 24.83fps, 反推行时间 = 1/(24.83x3449) = 11.677us
+	//   20.00fps 需要帧长 50.00ms => VMAX = 50.00ms/11.677us = 4282
+	.i_vmax         (S_is_4k ? 20'd4282        : 20'd2283),
 	.i_gain_default (S_is_4k ? 8'h10 : 8'h20   ),
 	.i_exp      (S_cam_exp),
 	.i_gain     (S_cam_gain),
@@ -947,9 +954,9 @@ cfg_ctrl_top #(
 	// ★ 构建版本号 (I2C 0xA9 低 / 0xAA 高 可读)。注意这里会覆盖 cfg_ctrl_top
 	//   的 parameter 默认值 —— 2026-10-17 就因为改错地方导致版本号一直读 0x0101,
 	//   白白多烧了一轮。以后改这个号只能改这里。
-	//   0x3802 = V38b (GAP_LINE 200->40, GAP_FRAME 4000->1000; 试解决输出只有 12.5fps)
-	//   0x3801 = V38   (4K 回退 891Mbps — 确认传感器真出帧 24.83fps)
-	.CFG_VER  (16'h3802)
+	//   0x3803 = V38c (GAP 回退 200; h_frame 2060->2800, v_frame 2634 => 4K20)
+	//   0x3802 = V38b (GAP_LINE 200->40 —— 已验证会把 MIPI 时序弄坏, 已回退)
+	.CFG_VER  (16'h3803)
 ) u_cfg_ctrl (
 	.i_sys_clk    (I_sysclk_25m),
 	.i_sys_rst_n  (1'b1),
@@ -1461,18 +1468,11 @@ csi2_frame_tx #(
 	.VC			(2'd0 ),
 	.BPP_NUM	(2    ),
 	.BPP_DEN	(1    ),
-	// V38b: GAP_LINE 原 200 byte_clk = 1.6us/行, 远超 MIPI 实际需要的行间隙(~100ns)。
-	//   实测 (V38, 4K): 传感器 CSI-FS 24.83fps, 但 rkcif 只收到 12.52fps。
-	//   TX 每行 = 1920(payload) + 200(gap) + 3(header/CRC) = 2123 clk
-	//           = 2123/125MHz = 16.98us
-	//   而 VTC 每行只给 2060/147.5MHz = 13.97us
-	//   => TX 比允许值慢 22%, 读侧一帧跨不过一个 VTC 周期, 只能隔一个 vsync 出帧
-	//      => 输出正好是 VTC 的一半 (12.5fps), 而写侧 24.83fps 不同步
-	//      => 相位持续漂移, 表现为"画面一直扭曲流动"
-	//   收到 40 clk(0.32us) 后 TX 每行 = 1963 clk = 15.70us, 仍略大于 13.97us,
-	//   所以帧率不会再翻倍, 但加上 GAP 收缩后一帧的总耗时降下来了, 再实测验证。
-	.GAP_LINE	(32'd40  ),
-	.GAP_FRAME	(32'd1000)
+	// V38c: GAP_LINE 改回 200 —— GAP=40 时 dmesg 刷满 MIPI_CSI2 ERR1/ERR2
+	//   (crc/ecc, VC 0/1/2 全中), rkcif 一帧都凑不齐。200 clk = 1.6us 是 RK 端
+	//   可靠解码必需的, 不能当"浪费"砍。
+	.GAP_LINE	(32'd200 ),
+	.GAP_FRAME	(32'd4000)
 ) u_csi2_frame_tx (
 	.clk			(S_dsi_byte_clk	),
 	// V22: 同 csi2_pack —— 包/帧状态机必须在模式切换时一起复位,
