@@ -468,11 +468,12 @@ cam_param #(
 ) u_cam_param (
 	.clk        (I_sysclk_25m),
 	.rst_n      (S_pll_lock),
-	// V24: 帧长/增益初值跟传感器读出模式走
-	//   binning: VMAX=2283 行, 行周期 7.30us, GAIN_PGC_0 初值 0x20
-	// V35: 4K 改回厂商验证配置(SYS_MODE=8, 1440Mbps), HMAX=533, VMAX=4503
-	//      帧时间 533x4503 / 542x2283 = 1.94 倍于 binning => 60/1.94 = 30.9fps (4K30)
-	.i_vmax         (S_is_4k ? 20'd4503        : 20'd2283),
+	// V35: 4K 改回厂商验证配置(SYS_MODE=8, 1440Mbps), HMAX=533 不动
+	//      行时间 = 533/74.25MHz = 7.178us (与厂商 4K30 完全一致)
+	//      只把 VMAX 从厂商的 4503(30.9fps) 拉到 5572 => 40.0ms => 25.00fps,
+	//      因为 FPGA 输出端 VTC 固定 25fps (4K30 需要 99.5% 带宽, 跑不动)。
+	//      写侧/读侧帧率必须对得上, 否则 dbuf 溢出或欠载 -> 画面撕裂。
+	.i_vmax         (S_is_4k ? 20'd5572        : 20'd2283),
 	.i_gain_default (S_is_4k ? 8'h10 : 8'h20   ),
 	.i_exp      (S_cam_exp),
 	.i_gain     (S_cam_gain),
