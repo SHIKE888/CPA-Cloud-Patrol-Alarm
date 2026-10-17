@@ -30,10 +30,10 @@
 //
 //  2026-10-16 (V24): **VMAX 和增益初值改成运行时输入**, 因为传感器现在能切
 //  读出模式, 两个模式的帧长差很多:
-//      1080p (2x2 binning): VMAX = 2283 行, 行周期 542/74.25MHz = 7.3us
-//      4K    (all-pixel)  : VMAX = 3449 行, 行周期 861/74.25MHz = 11.60us (V27)
+//      1080p (2x2 binning): VMAX = 2283 行, HMAX = 542, SYS_MODE=0x05 (891Mbps)
+//      4K    (all-pixel)  : VMAX = 4503 行, HMAX = 533, SYS_MODE=0x08 (1440Mbps)  V35
 //  曝光行数 = VMAX - SHR0, 所以 VMAX 算错的话曝光会差一倍。
-//  增益初值也跟着变: 4K 灵敏度高, 初始化表只给 0x10 (4.8dB), binning 给 0x30。
+//  增益初值也跟着变: 4K 灵敏度高, 初始化表只给 0x10 (4.8dB), binning 给 0x20。
 //==============================================================================
 module cam_param #(
 	parameter [19:0] SHR0_DEFAULT = 20'd8       // 初始化表的 SHR0 (两个模式都是 8)
@@ -42,8 +42,8 @@ module cam_param #(
 	input  wire        rst_n,
 
 	// ---- V24: 跟传感器读出模式走的常量 ----
-	input  wire [19:0] i_vmax,       // 帧长(行): binning 2283, 4K 3449 (V27)
-	input  wire [7:0]  i_gain_default,// 初始化表的 0x3090: binning 0x30, 4K 0x10
+	input  wire [19:0] i_vmax,       // 帧长(行): binning 2283, 4K 4503 (V35)
+	input  wire [7:0]  i_gain_default,// 初始化表的 0x3090: binning 0x20, 4K 0x10
 
 	// ---- 来自寄存器堆 (0xC0 起) ----
 	input  wire [19:0] i_exp,        // SHR0, 0 = 用初始化表的默认

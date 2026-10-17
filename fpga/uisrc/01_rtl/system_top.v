@@ -469,11 +469,11 @@ cam_param #(
 	.clk        (I_sysclk_25m),
 	.rst_n      (S_pll_lock),
 	// V24: 帧长/增益初值跟传感器读出模式走
-	//   binning: VMAX=2283 行, 行周期 7.30us, GAIN_PGC_0 初值 0x30
-	// V27: 4K 改用 891Mbps 档(SYS_MODE=5), HMAX=861clk@74.25MHz = 11.60us
-	//      VMAX=3449 -> 40.0ms -> 25.0fps, 与 4K25 的 VTC(2060x2864) 对齐
-	.i_vmax         (S_is_4k ? 20'd3449        : 20'd2283),
-	.i_gain_default (8'h30                          ),
+	//   binning: VMAX=2283 行, 行周期 7.30us, GAIN_PGC_0 初值 0x20
+	// V35: 4K 改回厂商验证配置(SYS_MODE=8, 1440Mbps), HMAX=533, VMAX=4503
+	//      帧时间 533x4503 / 542x2283 = 1.94 倍于 binning => 60/1.94 = 30.9fps (4K30)
+	.i_vmax         (S_is_4k ? 20'd4503        : 20'd2283),
+	.i_gain_default (S_is_4k ? 8'h10 : 8'h20   ),
 	.i_exp      (S_cam_exp),
 	.i_gain     (S_cam_gain),
 	.i_ev_bias  (S_cam_ev),
