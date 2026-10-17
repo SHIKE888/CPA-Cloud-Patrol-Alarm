@@ -59,18 +59,14 @@
 //        BCWAIT=0x54, CPWAIT=0x3B
 //        0x4004/0x4018..0x4028 整组 D-PHY 发送时序换成 1440Mbps 那一套
 //        ADBIT 输出保持 10bit (0x3032=0x00) -> ui_raw10_unpacket_4lane 不用改
-//  ★ V35d 上板实测后修正的帧长模型 (踩过的坑, 别再踩):
-//   实测 1080p(HMAX=542,VMAX=2283) = 59.68fps -> 行时间 7.34us
-//   实测 4K   (HMAX=533,VMAX=5574) = 12.50fps -> 行时间 14.35us
-//   比 1.955 ≈ 2。因为全像素一行读 3840 像素, binning 只读 1920。
-//   ⇒ HMAX 的时间单位不是跨模式恒定的, 不能拿 74.25MHz 当常数直接套。
-//   (厂商 4K 表 VMAX=4503, 按此算是 15.5fps, 它标的 4K30 应未经实测)
-//
-//   帧长取 2788 = 40.0128ms / 14.3524us:
-//        写侧 = 1/(2788 x 14.3524us) = 24.9922   fps
-//        读侧 = 147.5MHz/(2060x2865) = 24.991952 fps  (ui_vtc)
-//        相差 12ppm。为什么不用 30fps: 输出链路 4lane x1000Mbps = 500MB/s,
-//        4K30 需 497.7MB/s = 99.5%, 加 MIPI 包头开销跑不动; 4K25 只要 82.9%。
+//  ★ V37: 4K 完全回到厂商原值 (VMAX=4503), 不再自己算帧长。
+//     原因: V36 加上了可用的 CSI-2 帧首计数后测出 ——
+//       1080p: CSI-FS = 61.67 fps (仪表正常), 行组数 486, rkcif 59.26
+//       4K   : CSI-FS = 0.00 fps (一个帧都没有), 行组数 486, rkcif 12.51
+//     => 4K 下传感器根本没出帧。rkcif 那 12.5fps 是 FPGA 从 dbuf 反复
+//        吐出陈旧数据。这就是"4K 撕裂/无法辨认"的真相 —— 不是时序问题。
+//     => 本版只改一个变量 VMAX: 2788 -> 厂商原值 4503, 看能否出帧。
+//     (之前"VMAX 改了帧率不变"也解释得通了: 传感器压根没在跑)
 //  交叉验证: GitHub tipoman9/imx415_modes 的 3840x2160@30fps 表同样是
 //        SYS_MODE=0x08 + INCKSEL6=1 + INCKSEL7=0 + 同量级的 D-PHY 时序。
 //
@@ -111,8 +107,8 @@ module ui_imx415reg (
         11:  REG_DATA = (MODE==2'd1) ? {16'h3021, 8'h00} : {16'h3021, 8'h01};// VADD: 0=no-add(4K), 1=2x2-binning
         12:  REG_DATA = (MODE==2'd1) ? {16'h3022, 8'h00} : {16'h3022, 8'h01};// ADDMODE[1:0]: 0=off(4K), 1=binning
       13:  REG_DATA = {16'h3023, 8'h01};// VCMODE
-      14:  REG_DATA = (MODE==2'd1) ? {16'h3024, 8'hE4} : {16'h3024, 8'hEB};// VMAX[7:0]: 4K=0xE4, binning=0xEB
-      15:  REG_DATA = (MODE==2'd1) ? {16'h3025, 8'h0A} : {16'h3025, 8'h08};// VMAX[15:8]: 4K=0x0A => 2788(24.992fps), binning=0x08 => 2283
+      14:  REG_DATA = (MODE==2'd1) ? {16'h3024, 8'h97} : {16'h3024, 8'hEB};// VMAX[7:0]: 4K=0x97, binning=0xEB
+      15:  REG_DATA = (MODE==2'd1) ? {16'h3025, 8'h11} : {16'h3025, 8'h08};// VMAX[15:8]: 4K=0x11 => 4503 (厂商原值), binning=0x08 => 2283
       16:  REG_DATA = {16'h3026, 8'h00};// VMAX[19:0]
       17:  REG_DATA = (MODE==2'd1) ? {16'h3028, 8'h15} : {16'h3028, 8'h1E};// HMAX[7:0]: 4K=0x15(533), binning=0x1E(542)
       18:  REG_DATA = {16'h3029, 8'h02};// HMAX[15:8]: 0x02 for all modes

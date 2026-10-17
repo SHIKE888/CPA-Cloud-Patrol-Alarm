@@ -19,8 +19,8 @@ rd_corr() { # 16 位裁剪帧计数
 
 echo "########## 0) 版本 ##########"
 l=$(g 0xA9); h=$(g 0xAA)
-echo "  VER = 0x$(printf '%02X' $h)$(printf '%02X' $l)"
-if [ "$h" -ne 0x36 ]; then echo "  !! 不是 V36 的 bit, 先重新烧录"; exit 0; fi
+echo "  VER = 0x$(printf '%02X' $h)$(printf '%02X' $l)  (V37 应为 0x3701)"
+if [ "$h" != "55" ]; then echo "  !! 高字节不是 55(=0x37), 不是 V37 的 bit, 先重新烧录"; exit 0; fi
 
 echo ""
 echo "########## 1) 停 web ##########"
