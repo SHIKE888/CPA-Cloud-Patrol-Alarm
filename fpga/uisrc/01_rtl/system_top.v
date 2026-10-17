@@ -952,7 +952,11 @@ assign S_cfg_sda_i = IO_cfg_sda;
 
 cfg_ctrl_top #(
 	.DEV_ADDR (7'h40),
-	.CFG_VER  (16'h0101)
+	// ★ 构建版本号 (I2C 0xA9 低 / 0xAA 高 可读)。注意这里会覆盖 cfg_ctrl_top
+	//   的 parameter 默认值 —— 2026-10-17 就因为改错地方导致版本号一直读 0x0101,
+	//   白白多烧了一轮。以后改这个号只能改这里。
+	//   0x3601 = V36 第 1 次构建 (加了真帧计数: 0xB8=CSI FS 计数, 0xD0=裁剪帧计数)
+	.CFG_VER  (16'h3601)
 ) u_cfg_ctrl (
 	.i_sys_clk    (I_sysclk_25m),
 	.i_sys_rst_n  (1'b1),
@@ -962,6 +966,10 @@ cfg_ctrl_top #(
 	.i_pix_clk    (S_hs_rx_clk),
 	.i_pix_rst_n  (S_pll_lock),
 	.i_frame_tuser(S_ISP_O_tuser),
+	// V36: 真正的帧首/行尾信号 (S_ISP_O_tuser 实测恒 0, 不能用作计数)
+	.i_fs_csi     (S_csi_frame_start),   // CSI-2 FS 短包 -> 传感器真实帧率
+	.i_fs_corr    (S_axis_tuser),        // 裁剪模块输出帧首
+	.i_last_corr  (S_axis_tlast),        // 裁剪模块输出行尾
 	.o_pp_mode    (S_pp_mode),
 	.o_pp_sobel_shift (S_pp_sobel_sh),
 	.o_pp_thresh  (S_pp_thresh),

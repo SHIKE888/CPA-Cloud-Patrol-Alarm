@@ -43,7 +43,11 @@ module cfg_ctrl_top #(
 	// ---- 像素时钟域 ----
 	input  wire        i_pix_clk,
 	input  wire        i_pix_rst_n,
-	input  wire        i_frame_tuser,      // 帧首脉冲, 用于帧计数
+	input  wire        i_frame_tuser,      // (旧) ISP 输出帧首 — 实测恒为 0, 仅保留端口
+	// V36 诊断: 真正能用的帧首信号 (都在 i_pix_clk 域)
+	input  wire        i_fs_csi,           // CSI-2 FS 短包 -> 传感器真实帧率
+	input  wire        i_fs_corr,          // ui_image_correction 输出帧首
+	input  wire        i_last_corr,        // ui_image_correction 行尾
 	// V21 诊断: 一行的像素组数 (来自 i_pix_clk 域)
 	input  wire [15:0] i_line_groups,
 
@@ -159,7 +163,7 @@ module cfg_ctrl_top #(
 		.O_cfg_cam_trig  (cfg_cam_trig),
 		.O_cfg_res_mode  (cfg_res_mode),   // V21
 		.O_res_chg       (cfg_res_chg),    // V21
-		.I_st_cam_wr_cnt (i_cam_wr_cnt),
+		.I_st_cam_wr_cnt (st_corr_fc),
 		.I_st_cam_busy   (i_cam_busy),
 		.I_st_line_groups(lg_max)
 	);
@@ -185,21 +189,44 @@ module cfg_ctrl_top #(
 
 	//-------------------------------------------------------------------------
 	// 帧计数 (像素域) + 同步回系统域
+	//  V36: 原来的 i_frame_tuser (=S_ISP_O_tuser) 实测恒为 0, 计数器 0xB8 一直是 0,
+	//       害得我们无法判定"传感器只给 12.5fps"还是"FPGA 只吐 12.5fps"。
+	//       现在改成两个一定存在的信号:
+	//         0xB8..0xBB <-- CSI-2 FS 短包计数 = 传感器真实帧率 (最关键的数)
+	//         0xD0/0xD1  <-- ui_image_correction 输出帧计数(低16位, 会回转)
+	//       另存一个行计数 cnt_line_pix, 当前未引出, 留着以后用。
 	//-------------------------------------------------------------------------
+	reg [31:0] cnt_csi_pix, cnt_corr_pix, cnt_line_pix;
+	reg [31:0] csi_t1, csi_t2, corr_t1, corr_t2, line_t1, line_t2;
+
 	always @(posedge i_pix_clk or negedge i_pix_rst_n) begin
-		if (!i_pix_rst_n) cnt_pix <= 32'd0;
-		else if (i_frame_tuser) cnt_pix <= cnt_pix + 32'd1;
+		if (!i_pix_rst_n) begin
+			cnt_csi_pix  <= 32'd0;
+			cnt_corr_pix <= 32'd0;
+			cnt_line_pix <= 32'd0;
+		end else begin
+			if (i_fs_csi)     cnt_csi_pix  <= cnt_csi_pix  + 32'd1;
+			if (i_fs_corr)    cnt_corr_pix <= cnt_corr_pix + 32'd1;
+			if (i_last_corr)  cnt_line_pix <= cnt_line_pix + 32'd1;
+		end
 	end
 
 	always @(posedge i_sys_clk or negedge sys_rst_n) begin
 		if (!sys_rst_n) begin
-			cnt_s1 <= 32'd0;
-			cnt_s2 <= 32'd0;
+			cnt_s1 <= 32'd0; cnt_s2 <= 32'd0;
+			csi_t1 <= 32'd0; csi_t2 <= 32'd0;
+			corr_t1 <= 32'd0; corr_t2 <= 32'd0;
+			line_t1 <= 32'd0; line_t2 <= 32'd0;
 		end else begin
-			cnt_s1 <= cnt_pix;
-			cnt_s2 <= cnt_s1;
+			csi_t1  <= cnt_csi_pix;  csi_t2  <= csi_t1;
+			corr_t1 <= cnt_corr_pix; corr_t2 <= corr_t1;
+			line_t1 <= cnt_line_pix; line_t2 <= line_t1;
+			cnt_s1  <= csi_t2;       cnt_s2  <= cnt_s1;
 		end
 	end
+
+	// 0xD0/0xD1 改成 "裁剪模块输出帧计数(低16位)"
+	wire [15:0] st_corr_fc = corr_t2[15:0];
 
 	//-------------------------------------------------------------------------
 	// 配置信号: 系统域 -> 像素域 (2 级同步)
