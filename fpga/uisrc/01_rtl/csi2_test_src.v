@@ -105,11 +105,24 @@ module csi2_test_src #(
     wire [CLIN+7:0]  line_lo  = line * lb_mod;      // 低 8 位才是要的
     wire [7:0]       bc       = line_lo[7:0] + byte_off[7:0];
 
+    // ---- MODE == 2: 4K 几何/撕裂诊断图案 ----
+    //  设计要点:
+    //   (1) 灰度输出: 4 个字节同值 {g,g,g,g}, 所以【完全不受 YUYV 字节序影响】
+    //       (Y/U/V 谁在哪个字节都得到同一个灰阶) —— 排障阶段不引入额外变量
+    //   (2) 64 word (=128px) x 64 行 的棋盘: 水平重复/镜像/错位一眼可见
+    //   (3) 每 64 word 一条竖亮线, 每 64 行一条横亮线: 用来定位行列错位
+    //   (4) 棋盘亮度上叠加 line[5:0] 的斜坡: 垂直方向绕回/上下错位
+    //       会在画面上看到亮度突然跳变
+    wire        is_grid = (col[5:0] == 6'd0) || (line[5:0] == 6'd0);
+    wire [7:0]  g_chk   = (col[5] ^ line[5]) ? 8'd152 : 8'd48;
+    wire [7:0]  g_pat   = is_grid ? 8'd255 : (g_chk + {2'b00, line[5:0]});
+
     always @(*) begin
         m_tvalid    = enable;
         m_tuser_sof = enable && (line == 0) && (col == 0);
         m_tlast     = enable && (col == LINE_WORDS[CCOL-1:0] - 1'b1);
-        m_tdata     = (MODE == 1) ? lfsr
+        m_tdata     = (MODE == 2) ? {g_pat, g_pat, g_pat, g_pat}
+                    : (MODE == 1) ? lfsr
                                   : {bc + 8'd3, bc + 8'd2, bc + 8'd1, bc};
     end
 

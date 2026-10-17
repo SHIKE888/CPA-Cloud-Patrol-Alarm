@@ -1374,8 +1374,18 @@ csi2_pack_yuv422_stream u_csi2_pack (
 //  没用到的那一路会被直接优化掉, 不占资源。
 //
 //  2026-10-15: 链路验证已通过 (3 帧 12,441,600 字节 零误差), 置 0 恢复正式通路。
+//
+//  ★ 2026-10-17 V32: 置 1 做【单 4K MIPI 纯传输 demo】
+//    目的: 把 "4K 撕裂" 到底出在 TX/CSI-2/RK 这一段, 还是出在 RX/ISP/DDR/packer
+//    这一段彻底分开。打开后整条输出通路变成:
+//        内置 4K 测试图案 -> csi2_frame_tx -> D-PHY TX -> RK
+//    完全绕开 IMX415 RX / ui_isp / preproc / ui_dbuf / csi2_pack。
+//    配合 V31 (FPGA 上电即 4K25), 默认就是 3840x2160 的 checker 图案。
+//    图案 = 64x64 模盘 + 每 64 行/列的亮网格线 + 行号斜坡 (全灰度,
+//    不受 YUYV 字节序影响), 重得/镜像/上下绕回一眼可见。
+//    测完把本常量置回 1'b0 即恢复正式通路。
 //=============================================================================
-localparam JPEG_TEST_SRC = 1'b0;
+localparam JPEG_TEST_SRC = 1'b1;
 
 wire        S_test_tvalid;
 wire [31:0] S_test_tdata;
@@ -1383,11 +1393,11 @@ wire        S_test_tsof;
 wire        S_test_tlast;
 
 csi2_test_src #(
-	.H_ACTIVE	(H_ACTIVE),
-	.V_ACTIVE	(V_ACTIVE),
+	.H_ACTIVE	(3840),         // V32: 4K demo (必须是常呈, 与 V31 的 RES_MODE=2 一致)
+	.V_ACTIVE	(2160),
 	.BPP_NUM	(2),
 	.BPP_DEN	(1),
-	.MODE		(0),            // 0 = 线性计数 (逐字节可校验)
+	.MODE		(2),            // V32: 2 = 4K 几何诊断图案(模盘+网格+行号斜坡)
 	.LFSR_SEED	(32'hDEAD_BEEF)
 ) u_csi2_test_src (
 	.clk			(S_dsi_byte_clk		),
