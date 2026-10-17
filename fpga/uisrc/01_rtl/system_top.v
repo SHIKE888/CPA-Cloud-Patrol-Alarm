@@ -190,23 +190,24 @@ parameter CS_WIDTH        = 1
 	wire [12:0] S_vtc_h_active = H_ACTIVE[12:0];                            // 1920
 	wire [12:0] S_vtc_h_start  = H_ACTIVE + H_FP;                           // 2008
 	wire [12:0] S_vtc_h_end    = H_ACTIVE + H_FP + H_SA;                    // 2052
-	// V38c: 4K 行周期从 2060 拉到 2800 —— 给 TX 足够时间。
-	//   硬约束 (实测 V38 验证):
-	//     TX 每行 = 1920(payload) + 200(gap) + 3 = 2123 byte_clk = 16.98us
-	//     VTC 每行只给 h_frame/147.5MHz
-	//     2060 -> 13.97us  < 16.98us  => TX 永远追不上, 输出只有 12.5fps
-	//     2800 -> 18.98us  > 16.98us  => 有 11.8% 余量  ✅
-	//   注意: 数据只在每行的 VTC de 窗口内可读, 场消隐期没有数据可读,
-	//         所以加大 v_frame 没用, 必须加大 h_frame。
-	//   代价: 帧率 = 147.5MHz/(2800 x 2634) = 20.00fps (4K20)
-	wire [12:0] S_vtc_h_frame  = S_is_4k ? 13'd2800
-	                                     : (H_ACTIVE+H_FP+H_SA+H_BP);   // 4K:2800 FHD:2200
+	// V38e: 4K25 —— h_frame 与 v_frame 必须同时满足两个约束:
+	//   (a) 每行预算 = h_frame/147.5MHz 要 >= TX 的 16.98us
+	//       (1920 payload + 200 GAP_LINE + 3 = 2123 byte_clk @125MHz)
+	//       => h_frame >= 2504
+	//   (b) 帧率 = 147.5MHz/(h_frame x v_frame) = 25fps
+	//       => h_frame x v_frame = 5,900,000
+	//   取 2652 x 2225 = 5,900,700:
+	//       帧率     = 24.997 fps
+	//       每行预算 = 2652/147.5M = 17.98us  (余量 5.9%)
+	//       场消隐   = (2225-2160) x 17.98us = 1168us  (RK 要求 >=1000us ✅)
+	//       且 v_end(2169) < v_frame(2225) ✅
+	wire [12:0] S_vtc_h_frame  = S_is_4k ? 13'd2652
+	                                     : (H_ACTIVE+H_FP+H_SA+H_BP);   // 4K:2652 FHD:2200
 	wire [11:0] S_vtc_v_active = S_is_4k ? 12'd2160 : V_ACTIVE[11:0];
 	wire [11:0] S_vtc_v_start  = S_is_4k ? 12'd2164 : (V_ACTIVE+V_FP);
 	wire [11:0] S_vtc_v_end    = S_is_4k ? 12'd2169 : (V_ACTIVE+V_FP+V_SA);
-	// 4K 场周期: 与 h_frame=2800 配套 -> 147.5MHz/(2800 x 2634) = 20.00fps
-	//   原来是 2060x2865 = 24.99fps, 但那个行周期装不下 TX 的 16.98us, 只能跑 12.5fps
-	wire [11:0] S_vtc_v_frame  = (S_res_mode == 2'd2) ? 12'd2634
+	// 4K 场周期: 与 h_frame=2652 配套 -> 147.5MHz/(2652 x 2225) = 24.997fps
+	wire [11:0] S_vtc_v_frame  = (S_res_mode == 2'd2) ? 12'd2225
 	                           : (S_res_mode == 2'd1) ? 12'd2387
 	                                                  : (V_ACTIVE+V_FP+V_SA+V_BP);
 	//===============================================================
@@ -478,15 +479,16 @@ cam_param #(
 ) u_cam_param (
 	.clk        (I_sysclk_25m),
 	.rst_n      (S_pll_lock),
-	// V38c/d: 4K 传感器帧率配到 20.00fps 以匹配 VTC (4K20)。
-	//   实测: VMAX=3449 -> 24.83fps, 反推行时间 = 1/(24.83x3449) = 11.677us
-	//   20.00fps 需要帧长 50.00ms => VMAX = 50.00ms/11.677us = 4282
+	// V38e: 4K 传感器帧率配到 25.0fps 以匹配 VTC。
+	//   实测: VMAX=3449 -> 24.83fps, 反推行时间 = 1/(24.83x3449) = 11.679us
+	//   25.0fps 需要帧长 40.0ms => VMAX = 40.0ms/11.679us = 3425
+	//   取 3420 => 25.04fps (比 VTC 的 24.997 略快, 让读侧等写侧而不是读空)
 	//
 	//   ★★★ 这个 i_vmax 和 ui_imx415_reg.v 的 0x3024/0x3025 **必须同时改** ★★★
 	//   i_vmax 只用于算曝光(SHR0), 真正决定帧长的是传感器寄存器 0x3024/25。
 	//   V38c 我就只改了 i_vmax 忘了改寄存器, 结果传感器还是 24.83fps, 白烧一次。
-	//   当前两边都是 4282 = 0x10BA (0x3024=0xBA, 0x3025=0x10)
-	.i_vmax         (S_is_4k ? 20'd4282        : 20'd2283),
+	//   当前两边都是 3420 = 0x0D5C (0x3024=0x5C, 0x3025=0x0D)
+	.i_vmax         (S_is_4k ? 20'd3420        : 20'd2283),
 	.i_gain_default (S_is_4k ? 8'h10 : 8'h20   ),
 	.i_exp      (S_cam_exp),
 	.i_gain     (S_cam_gain),
@@ -959,10 +961,10 @@ cfg_ctrl_top #(
 	// ★ 构建版本号 (I2C 0xA9 低 / 0xAA 高 可读)。注意这里会覆盖 cfg_ctrl_top
 	//   的 parameter 默认值 —— 2026-10-17 就因为改错地方导致版本号一直读 0x0101,
 	//   白白多烧了一轮。以后改这个号只能改这里。
-	//   0x3804 = V38d (补上忘了改的 0x3024/0x3025: VMAX 3449->4282)
-	//   0x3803 = V38c (GAP 回退 200; h_frame 2060->2800, v_frame 2634 => 4K20)
-	//   0x3802 = V38b (GAP_LINE 200->40 —— 已验证会把 MIPI 时序弄坏, 已回退)
-	.CFG_VER  (16'h3804)
+	//   0x3805 = V38e (4K25: h_frame 2652 / v_frame 2225 / VMAX 3420)
+	//   0x3804 = V38d (补上 0x3024/0x3025: VMAX 3449->4282)
+	//   0x3803 = V38c (GAP 回退 200; h_frame 2060->2800 => 4K20)
+	.CFG_VER  (16'h3805)
 ) u_cfg_ctrl (
 	.i_sys_clk    (I_sysclk_25m),
 	.i_sys_rst_n  (1'b1),

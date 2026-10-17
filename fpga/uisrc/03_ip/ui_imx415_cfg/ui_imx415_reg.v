@@ -106,9 +106,9 @@ module ui_imx415reg (
         11:  REG_DATA = (MODE==2'd1) ? {16'h3021, 8'h00} : {16'h3021, 8'h01};// VADD: 0=no-add(4K), 1=2x2-binning
         12:  REG_DATA = (MODE==2'd1) ? {16'h3022, 8'h00} : {16'h3022, 8'h01};// ADDMODE[1:0]: 0=off(4K), 1=binning
       13:  REG_DATA = {16'h3023, 8'h01};// VCMODE
-        14:  REG_DATA = (MODE==2'd1) ? {16'h3024, 8'hBA} : {16'h3024, 8'hEB};// VMAX[7:0]: 4K=0xBA, binning=0xEB
-        15:  REG_DATA = (MODE==2'd1) ? {16'h3025, 8'h10} : {16'h3025, 8'h08};// VMAX[15:8]: 4K=0x10 => 4282(20.0fps@861clk), binning=0x08 => 2283
-        // ★★★ 上面这个 4282 必须与 system_top.v 里 cam_param 的 i_vmax 保持一致 ★★★
+        14:  REG_DATA = (MODE==2'd1) ? {16'h3024, 8'h5C} : {16'h3024, 8'hEB};// VMAX[7:0]: 4K=0x5C, binning=0xEB
+        15:  REG_DATA = (MODE==2'd1) ? {16'h3025, 8'h0D} : {16'h3025, 8'h08};// VMAX[15:8]: 4K=0x0D => 3420(25.04fps@861clk), binning=0x08 => 2283
+        // ★★★ 上面这个 3420 必须与 system_top.v 里 cam_param 的 i_vmax 保持一致 ★★★
         //   i_vmax 只用于算曝光(SHR0), 真正决定帧长的是这里。两处不一致的话
         //   帧率不会变(V38c 就这么翻的车)。
       16:  REG_DATA = {16'h3026, 8'h00};// VMAX[19:0]
