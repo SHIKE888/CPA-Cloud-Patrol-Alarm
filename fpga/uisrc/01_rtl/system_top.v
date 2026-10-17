@@ -469,17 +469,12 @@ cam_param #(
 ) u_cam_param (
 	.clk        (I_sysclk_25m),
 	.rst_n      (S_pll_lock),
-	// V37: 4K 完全用厂商原值 VMAX=4503, 一个字节都不改。
-	//
-	// 为什么要回到纯厂商值 (V36 上用新加的 CSI-2 帧首计数测出来的):
-	//   1080p : CSI-FS = 61.67 fps (仪表正常) 行组数 486  rkcif 59.26
-	//   4K    : CSI-FS = 0.00 fps (一个帧都没有!) 行组数 486  rkcif 12.51
-	//   => 4K 下传感器根本没有出帧。rkcif 那个 12.5fps 是 FPGA 从 dbuf
-	//      里反复吐出的陈旧数据, 不是真实画面。这就是"4K 撕裂/无法辨认"的真相。
-	//   => 之前"改 VMAX 对帧率无影响"也得到了解释: 传感器压根没在跑。
-	//   本版只做一个变量: VMAX 回到厂商的 4503, 看传感器会不会出帧。
-	//   (V35d 时的 2788 可能低于全像素模式的 VMAX 下限, 把传感器弄停了)
-	.i_vmax         (S_is_4k ? 20'd4503        : 20'd2283),
+	// V38: 4K 传感器表回退到 V27 的 891Mbps 方案 (已证明可用的速率档)。
+	//   V37b (厂商 1440Mbps + VMAX=4503) 实测: CSI-FS = 0.00 fps, 行组数停在 486
+	//   => 1440Mbps (MIPI 时钟 720MHz) 超出 PH1A90 LVDS 接收器能力, 一个帧都收不到。
+	//   1080p 的 891Mbps (445.5MHz) 已被证实可用。
+	//   本版只把 4K 的 HMAX/VMAX 配套改回 861/3449, 先验证传感器能否出帧。
+	.i_vmax         (S_is_4k ? 20'd3449        : 20'd2283),
 	.i_gain_default (S_is_4k ? 8'h10 : 8'h20   ),
 	.i_exp      (S_cam_exp),
 	.i_gain     (S_cam_gain),
@@ -952,9 +947,8 @@ cfg_ctrl_top #(
 	// ★ 构建版本号 (I2C 0xA9 低 / 0xAA 高 可读)。注意这里会覆盖 cfg_ctrl_top
 	//   的 parameter 默认值 —— 2026-10-17 就因为改错地方导致版本号一直读 0x0101,
 	//   白白多烧了一轮。以后改这个号只能改这里。
-	//   0x3702 = V37b (修 HDL-7225: st_corr_fc 隐式 1bit net, 0xD0/0xD1 只接了 bit0)
-	//   0x3701 = V37 第 1 次构建 (4K 纯厂商 VMAX=4503, 验证传感器是否出帧)
-	.CFG_VER  (16'h3702)
+	//   0x3801 = V38 (4K 回退 891Mbps; 修好 st_corr_fc 位宽)
+	.CFG_VER  (16'h3801)
 ) u_cfg_ctrl (
 	.i_sys_clk    (I_sysclk_25m),
 	.i_sys_rst_n  (1'b1),

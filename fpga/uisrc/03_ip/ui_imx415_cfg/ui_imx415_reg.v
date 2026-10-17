@@ -49,30 +49,29 @@
 //  与 1080p 不同的共 27 条, 其余 175 条两模式完全相同(已逐条 diff)。
 //  详见 docs/IMX415_4K_MODE.md
 //
-//  V27(已废弃): 曾把 4K 改成 891Mbps 档 (SYS_MODE=5, HMAX=861, VMAX=3449)
-//        => 这是自己拍脑袋的组合, 厂商表里【没有任何】全像素 4K 模式用 0x05 档。
-//           891Mbps 档只出现在 binning (1080p/720p) 里, 因为像素数减半。
+//  V27: 4K 改用 891Mbps 档 ->  SYS_MODE=5, HMAX=861(0x35D), VMAX=3449(0xD79)
+//        => 行周期 861/74.25MHz = 11.60us => VMAX=3449 时 40.0ms -> 25.0fps
+//        => cam_param.v 的 VMAX 也必须跟着模式变 (2283 <-> 3449)。
+//  另外 0x4004..0x4074 是 MIPI D-PHY 发送时序, 与 lane 速率绑定
+//  => V27 起 4K 与 1080p 同为 891Mbps 档, 这些寄存器两个模式用同一组值,
+//     只保留真正属于 all-pixel 的差异 (HADD/VADD/ADDMODE/HMAX/VMAX/DIG_CLP)。
 //
-//  V35(本版): 4K 完全照抄厂商已验证工程的全部差异, 不再自己拼:
-//        SYS_MODE=0x08 (1440Mbps/lane), HMAX=533(0x215)
-//        INCKSEL3=0xB4, INCKSEL4=0xFC, INCKSEL6=0x01, INCKSEL7=0x00
-//        BCWAIT=0x54, CPWAIT=0x3B
-//        0x4004/0x4018..0x4028 整组 D-PHY 发送时序换成 1440Mbps 那一套
-//        ADBIT 输出保持 10bit (0x3032=0x00) -> ui_raw10_unpacket_4lane 不用改
-//  ★ V37: 4K 完全回到厂商原值 (VMAX=4503), 不再自己算帧长。
-//     原因: V36 加上了可用的 CSI-2 帧首计数后测出 ——
-//       1080p: CSI-FS = 61.67 fps (仪表正常), 行组数 486, rkcif 59.26
-//       4K   : CSI-FS = 0.00 fps (一个帧都没有), 行组数 486, rkcif 12.51
-//     => 4K 下传感器根本没出帧。rkcif 那 12.5fps 是 FPGA 从 dbuf 反复
-//        吐出陈旧数据。这就是"4K 撕裂/无法辨认"的真相 —— 不是时序问题。
-//     => 本版只改一个变量 VMAX: 2788 -> 厂商原值 4503, 看能否出帧。
-//     (之前"VMAX 改了帧率不变"也解释得通了: 传感器压根没在跑)
-//  交叉验证: GitHub tipoman9/imx415_modes 的 3840x2160@30fps 表同样是
-//        SYS_MODE=0x08 + INCKSEL6=1 + INCKSEL7=0 + 同量级的 D-PHY 时序。
+//=============================================================================
+//  ★★ V38 (2026-10-17 深夜): 回退到本文件的 V27/891Mbps 版本。
 //
-//  ★ RX 侧不用改: rx_clk_gen 是从恢复出来的 MIPI 时钟 BUFIO 分频, 无速率参数,
-//    891Mbps -> 1440Mbps 会自动跟随 (MIPI clk 445.5MHz -> 720MHz)。
-//    cam_param.v 的 i_vmax 必须跟着模式变 (2283 <-> 4503)。
+//  V35~V37 我曾把 4K 改成厂商那套 1440Mbps (SYS_MODE=0x08, INCKSEL3=0xB4,
+//  整组 D-PHY 换成 1440 档), 理由是两个外部来源都那么写。但 V36 新增的
+//  CSI-2 帧首计数器把真相称了出来 (1080p 计数 61.67fps, 证明仪表准):
+//
+//    V37b (完全厂商原值, VMAX=4503): CSI-FS = 0.00 fps, 行组数停在 486
+//    => 1440Mbps 那套在本板一个帧都收不到。
+//
+//  最可能的原因: 1440Mbps 意味着 MIPI 时钟 720MHz, 超过 PH1A90 LVDS 接收器
+//  的能力。1080p 用的 891Mbps (445.5MHz) 在本板已被证实可用。
+//  所以 4K 必须跑在 891Mbps 这个已证明能用的速率档上。
+//
+//  本版只改一件事: 传感器表回到 V27 (891Mbps), 其余 (帧计数仪表/CFG_VER)
+//  全部保留。烧完先看 0xB8 有没有速率 —— 这一次仪器是可信的。
 //=============================================================================
 module ui_imx415reg (
     input      [1 : 0] MODE,       // 0=1080p(2x2 binning), 1=4K(all-pixel), 2=720p
@@ -97,9 +96,9 @@ module ui_imx415reg (
       1:   REG_DATA = {16'h3001, 8'h00};// REGHOLD
         2:   REG_DATA = {16'h3002, 8'h01};// XMSTA: 1=Master operation ready, 0=start ★先停主模式
       3:   REG_DATA = {16'h3003, 8'h00};// XMASTER
-      4:   REG_DATA = (MODE==2'd1) ? {16'h3008, 8'h54} : {16'h3008, 8'h5D};// BCWAIT_TIME: 4K=0x54(1440Mbps), binning=0x5D(891Mbps)
+        4:   REG_DATA = {16'h3008, 8'h5D};// BCWAIT_TIME[9:0]: 速率相关 -> 两模式同用 891Mbps 档
       5:   REG_DATA = {16'h3009, 8'h00};// BCWAIT_TIME[9:0]
-      6:   REG_DATA = (MODE==2'd1) ? {16'h300A, 8'h3B} : {16'h300A, 8'h42};// CPWAIT_TIME: 4K=0x3B, binning=0x42
+        6:   REG_DATA = {16'h300A, 8'h42};// CPWAIT_TIME[9:0]: 速率相关 -> 同上
       7:   REG_DATA = {16'h300B, 8'hA0};// CPWAIT_TIME[9:0]
       8:   REG_DATA = {16'h301C, 8'h00};// WINMODE[3:0]
       9:   REG_DATA = {16'h301D, 8'h08};// -
@@ -107,17 +106,17 @@ module ui_imx415reg (
         11:  REG_DATA = (MODE==2'd1) ? {16'h3021, 8'h00} : {16'h3021, 8'h01};// VADD: 0=no-add(4K), 1=2x2-binning
         12:  REG_DATA = (MODE==2'd1) ? {16'h3022, 8'h00} : {16'h3022, 8'h01};// ADDMODE[1:0]: 0=off(4K), 1=binning
       13:  REG_DATA = {16'h3023, 8'h01};// VCMODE
-      14:  REG_DATA = (MODE==2'd1) ? {16'h3024, 8'h97} : {16'h3024, 8'hEB};// VMAX[7:0]: 4K=0x97, binning=0xEB
-      15:  REG_DATA = (MODE==2'd1) ? {16'h3025, 8'h11} : {16'h3025, 8'h08};// VMAX[15:8]: 4K=0x11 => 4503 (厂商原值), binning=0x08 => 2283
+        14:  REG_DATA = (MODE==2'd1) ? {16'h3024, 8'h79} : {16'h3024, 8'hEB};// VMAX[7:0]: 4K=0x79, binning=0xEB
+        15:  REG_DATA = (MODE==2'd1) ? {16'h3025, 8'h0D} : {16'h3025, 8'h08};// VMAX[15:8]: 4K=0x0D => 3449(25.0fps@861clk), binning=0x08 => 2283
       16:  REG_DATA = {16'h3026, 8'h00};// VMAX[19:0]
-      17:  REG_DATA = (MODE==2'd1) ? {16'h3028, 8'h15} : {16'h3028, 8'h1E};// HMAX[7:0]: 4K=0x15(533), binning=0x1E(542)
-      18:  REG_DATA = {16'h3029, 8'h02};// HMAX[15:8]: 0x02 for all modes
+        17:  REG_DATA = (MODE==2'd1) ? {16'h3028, 8'h5D} : {16'h3028, 8'h1E};// HMAX[7:0]: 4K=0x5D, binning=0x1E(542)
+        18:  REG_DATA = (MODE==2'd1) ? {16'h3029, 8'h03} : {16'h3029, 8'h02};// HMAX[15:8]: 4K 861=0x35D -> 0x03
       19:  REG_DATA = {16'h302C, 8'h00};// WDMODE[1:0]
       20:  REG_DATA = {16'h302D, 8'h00};// WDSEL[1:0]
       21:  REG_DATA = {16'h3030, 8'h00};// HREVERSE
       22:  REG_DATA = {16'h3031, 8'h00};// ADBIT[1:0]
       23:  REG_DATA = {16'h3032, 8'h00};// MDBIT
-        24:  REG_DATA = (MODE==2'd1) ? {16'h3033, 8'h08} : {16'h3033, 8'h05};// SYS_MODE: 4K=0x08(1440Mbps), binning=0x05(891Mbps) ★★
+        24:  REG_DATA = {16'h3033, 8'h05};// SYS_MODE[3:0]=5 -> 891Mbps/lane ★★与 1080p 同速率, D-PHY 无需变速
       25:  REG_DATA = {16'h3040, 8'h00};// PIX_HST[12:0]
       26:  REG_DATA = {16'h3041, 8'h00};// PIX_HST[12:0]
       27:  REG_DATA = {16'h3042, 8'h18};// PIX_HWIDTH[12:0]
@@ -144,13 +143,13 @@ module ui_imx415reg (
       48:  REG_DATA = {16'h3064, 8'h4A};// RHS2[19:0]
       49:  REG_DATA = {16'h3065, 8'h00};// RHS2[19:0]
       50:  REG_DATA = {16'h3066, 8'h00};// RHS2[19:0]
-        51:  REG_DATA = (MODE==2'd1) ? {16'h3090, 8'h10} : {16'h3090, 8'h20};// GAIN_PGC_0: 4K=0x10(4.8dB), binning=0x20(9.6dB); 之后由 AE 通道覆盖
+        51:  REG_DATA = (MODE==2'd1) ? {16'h3090, 8'h10} : {16'h3090, 8'h20};// GAIN_PGC_0: 4K=0x10(4.8dB), binning=0x20(9.6dB); 之后由 AE 覆盖
       52:  REG_DATA = {16'h3091, 8'h00};// GAIN_PGC_0[8:0]
-      53:  REG_DATA = {16'h3092, 8'h00};// GAIN_PGC_1 (HDR only)
+      53:  REG_DATA = {16'h3092, 8'h00};// GAIN_PGC_1 (HDR 专用, 单帧模式清零)
       54:  REG_DATA = {16'h3093, 8'h00};// GAIN_PGC_1[8:0]
-      55:  REG_DATA = {16'h3094, 8'h00};// GAIN_PGC_2 (HDR only)
+      55:  REG_DATA = {16'h3094, 8'h00};// GAIN_PGC_2 (HDR 专用)
       56:  REG_DATA = {16'h3095, 8'h00};// GAIN_PGC_2[8:0]
-      57:  REG_DATA = {16'h3096, 8'h00};// GAIN_PGC_3 (HDR only)
+      57:  REG_DATA = {16'h3096, 8'h00};// GAIN_PGC_3 (HDR 专用)
       58:  REG_DATA = {16'h3097, 8'h00};// GAIN_PGC_3[8:0]
       59:  REG_DATA = {16'h30C0, 8'h2A};// XVSOUTSEL[1:0]
       60:  REG_DATA = {16'h30C1, 8'h00};// XVS_DRV[1:0]
@@ -163,9 +162,9 @@ module ui_imx415reg (
       67:  REG_DATA = {16'h30E3, 8'h00};// BLKELVEL[9:0]
       68:  REG_DATA = {16'h3115, 8'h00};// INCKSEL1[7:0]
       69:  REG_DATA = {16'h3116, 8'h23};// INCKSEL2[7:0]
-        70:  REG_DATA = (MODE==2'd1) ? {16'h3118, 8'hB4} : {16'h3118, 8'hC6};// INCKSEL3: 4K=0xB4, binning=0xC6 ★★
-        71:  REG_DATA = {16'h3119, 8'h00};// INCKSEL3[10:0]
-        72:  REG_DATA = (MODE==2'd1) ? {16'h311A, 8'hFC} : {16'h311A, 8'hE7};// INCKSEL4: 4K=0xFC, binning=0xE7 ★
+        70:  REG_DATA = {16'h3118, 8'hC6};// INCKSEL3[10:0]: 速率相关 -> 891Mbps 档
+      71:  REG_DATA = {16'h3119, 8'h00};// INCKSEL3[10:0]
+        72:  REG_DATA = {16'h311A, 8'hE7};// INCKSEL4[10:0]: 速率相关 -> 891Mbps 档
       73:  REG_DATA = {16'h311B, 8'h00};// INCKSEL4[10:0]
       74:  REG_DATA = {16'h311E, 8'h23};// INCKSEL5[7:0]
       75:  REG_DATA = {16'h3260, 8'h01};// GAIN_PGC_FIDMD
@@ -272,28 +271,28 @@ module ui_imx415reg (
       176: REG_DATA = {16'h3BCA, 8'hBD};
       177: REG_DATA = {16'h4000, 8'h10};
       178: REG_DATA = {16'h4001, 8'h03};//LANEMODE[2:0]
-        179: REG_DATA = (MODE==2'd1) ? {16'h4004, 8'h00} : {16'h4004, 8'hC0};//TXCLKESC_FREQ: 4K=0x00, binning=0xC0
+        179: REG_DATA = {16'h4004, 8'hC0};//TXCLKESC_FREQ[15:0]: 速率相关 -> 891Mbps 档
       180: REG_DATA = {16'h4005, 8'h06};//TXCLKESC_FREQ[15:0]
-        181: REG_DATA = (MODE==2'd1) ? {16'h400C, 8'h01} : {16'h400C, 8'h00};//INCKSEL6: 4K=0x01, binning=0x00 ★★
-        182: REG_DATA = (MODE==2'd1) ? {16'h4018, 8'h9F} : {16'h4018, 8'h7F};//TCLKPOST: 4K=0x9F, binning=0x7F
+        181: REG_DATA = {16'h400C, 8'h00};//INCKSEL6: 速率相关 -> 891Mbps 档
+        182: REG_DATA = {16'h4018, 8'h7F};//TCLKPOST[15:0]: 速率相关 -> 891Mbps 档
       183: REG_DATA = {16'h4019, 8'h00};//TCLKPOST[15:0]
-        184: REG_DATA = (MODE==2'd1) ? {16'h401A, 8'h57} : {16'h401A, 8'h37};//TCLKPREPARE: 4K=0x57, binning=0x37
+        184: REG_DATA = {16'h401A, 8'h37};//TCLKPREPARE[15:0]: 速率相关 -> 891Mbps 档
       185: REG_DATA = {16'h401B, 8'h00};//TCLKPREPARE[15:0]
-        186: REG_DATA = (MODE==2'd1) ? {16'h401C, 8'h57} : {16'h401C, 8'h37};//TCLKTRAIL: 4K=0x57, binning=0x37
+        186: REG_DATA = {16'h401C, 8'h37};//TCLKTRAIL[15:0]: 速率相关 -> 891Mbps 档
       187: REG_DATA = {16'h401D, 8'h00};//TCLKTRAIL[15:0]
-        188: REG_DATA = (MODE==2'd1) ? {16'h401E, 8'h87} : {16'h401E, 8'hF7};//TCLKZERO[7:0]: 4K=0x87, binning=0xF7
-        189: REG_DATA = (MODE==2'd1) ? {16'h401F, 8'h01} : {16'h401F, 8'h00};//TCLKZERO[15:8]: 4K=0x01, binning=0x00
-        190: REG_DATA = (MODE==2'd1) ? {16'h4020, 8'h5F} : {16'h4020, 8'h3F};//THSPREPARE: 4K=0x5F, binning=0x3F
+        188: REG_DATA = {16'h401E, 8'hF7};//TCLKZERO[7:0]: 速率相关 -> 891Mbps 档
+        189: REG_DATA = {16'h401F, 8'h00};//TCLKZERO[15:8]: 速率相关 -> 891Mbps 档
+        190: REG_DATA = {16'h4020, 8'h3F};//THSPREPARE[15:0]: 速率相关 -> 891Mbps 档
       191: REG_DATA = {16'h4021, 8'h00};//THSPREPARE[15:0]
-        192: REG_DATA = (MODE==2'd1) ? {16'h4022, 8'hA7} : {16'h4022, 8'h6F};//THSZERO: 4K=0xA7, binning=0x6F
+        192: REG_DATA = {16'h4022, 8'h6F};//THSZERO[15:0]: 速率相关 -> 891Mbps 档
       193: REG_DATA = {16'h4023, 8'h00};//THSZERO[15:0]
-        194: REG_DATA = (MODE==2'd1) ? {16'h4024, 8'h5F} : {16'h4024, 8'h3F};//THSTRAIL: 4K=0x5F, binning=0x3F
+        194: REG_DATA = {16'h4024, 8'h3F};//THSTRAIL[15:0]: 速率相关 -> 891Mbps 档
       195: REG_DATA = {16'h4025, 8'h00};//THSTRAIL[15:0]
-        196: REG_DATA = (MODE==2'd1) ? {16'h4026, 8'h97} : {16'h4026, 8'h5F};//THSEXIT: 4K=0x97, binning=0x5F
+        196: REG_DATA = {16'h4026, 8'h5F};//THSEXIT[15:0]: 速率相关 -> 891Mbps 档
       197: REG_DATA = {16'h4027, 8'h00};//THSEXIT[15:0]
-        198: REG_DATA = (MODE==2'd1) ? {16'h4028, 8'h4F} : {16'h4028, 8'h2F};//TLPX: 4K=0x4F, binning=0x2F
+        198: REG_DATA = {16'h4028, 8'h2F};//TLPX[15:0]: 速率相关 -> 891Mbps 档
       199: REG_DATA = {16'h4029, 8'h00};//TLPX[15:0]
-        200: REG_DATA = (MODE==2'd1) ? {16'h4074, 8'h00} : {16'h4074, 8'h01};//INCKSEL7: 4K=0x00, binning=0x01 ★★
+        200: REG_DATA = {16'h4074, 8'h01};//INCKSEL7[2:0]: 速率相关 -> 891Mbps 档
       default: REG_DATA = {16'h0000, 8'h00};
     endcase
   end
