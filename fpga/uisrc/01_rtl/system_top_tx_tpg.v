@@ -20,9 +20,10 @@
 // =============================================================================
 
 module system_top_tx_tpg #(
-    parameter integer H_ACTIVE    = 1920,
-    parameter integer V_ACTIVE    = 1080,
-    parameter [1:0]   TPG_PATTERN = 2'd1   // 0=color bars 1=gray ramp 2=checker 3=coord stamp
+    parameter integer H_ACTIVE    = 3840,
+    parameter integer V_ACTIVE    = 2160,
+    parameter [1:0]   TPG_PATTERN = 2'd2   // 0=color bars 1=gray ramp 2=checker 3=coord stamp
+                                           //   4K 几何/撕裂诊断用 checker(2): 重复/错位一眼可见
 )(
     input  wire        I_sysclk_25m,
     input  wire        I_dsi_en,
@@ -110,8 +111,7 @@ module system_top_tx_tpg #(
     csi2_frame_tx #(
         .DT        (6'h1E),   // YUV422-8bit
         .VC        (2'd0 ),
-        .H_ACTIVE  (H_ACTIVE),
-        .V_ACTIVE  (V_ACTIVE),
+        // V21 起尺寸是【运行时端口】, 不再是参数 -> 见下方 .I_h_active/.I_v_active
         .BPP_NUM   (2    ),
         .BPP_DEN   (1    ),
         .GAP_LINE  (32'd200 ),
@@ -120,6 +120,9 @@ module system_top_tx_tpg #(
         .clk         (S_dsi_byte_clk),
         .rst_n       (S_dphy_rst_n  ),
         .enable      (S_dsi_en_int  ),
+        // ★ 之前这里漏接了运行时尺寸端口, 导致 WC_INT=0, demo 根本跑不起来
+        .I_h_active  (H_ACTIVE[12:0]),
+        .I_v_active  (V_ACTIVE[11:0]),
         .s_tvalid    (S_tpg_tvalid  ),
         .s_tready    (S_tpg_tready  ),
         .s_tdata     (S_tpg_tdata   ),
