@@ -1400,7 +1400,11 @@ localparam JPEG_TEST_SRC = 1'b0;   // V33: 内置 TPG 关(下面 TX_SRC_SEL 直�
 //   packer 的 m_tuser_sof/m_tlast 语义一致(帧首/行尾), 可以直连。
 //   判定: 直连后画面干净 => 元凶是 csi2_pack (4K 一行 1920 word, A-FIFO 仅 2048)
 //         仍撕裂          => 在 ui_dbuf / ui_isp / preproc / RX解包, 继续前二分
-localparam [1:0] TX_SRC_SEL = 2'd1;
+// V33a: 2'd1 (dbuf 直连) 实测失败 —— ui_dbuf 的读输出在 S_pclkx1 域,
+//        而 csi2_frame_tx 在 S_dsi_byte_clk 域, csi2_pack 本来就在兼做 CDC。
+//        直接跨域灌进去的结果是 "csi size err, size 0x0" (一个包都没有)。
+//        => 这个 tap 点不成立, 改回正式通路。要测 csi2_pack 必须穿透一个 CDC。
+localparam [1:0] TX_SRC_SEL = 2'd0;
 
 wire        S_test_tvalid;
 wire [31:0] S_test_tdata;
