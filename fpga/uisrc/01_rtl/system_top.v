@@ -1385,7 +1385,22 @@ csi2_pack_yuv422_stream u_csi2_pack (
 //    不受 YUYV 字节序影响), 重得/镜像/上下绕回一眼可见。
 //    测完把本常量置回 1'b0 即恢复正式通路。
 //=============================================================================
-localparam JPEG_TEST_SRC = 1'b1;
+localparam JPEG_TEST_SRC = 1'b0;   // V33: 内置 TPG 关(下面 TX_SRC_SEL 直接选源)
+
+// ★ V33 (2026-10-17) TX 数据源三选一 —— 二分定位 4K 撕裂的上游归属
+//   已确定(V32 demo, 用户亲眼确认): 内置4K棋盘 -> frame_tx -> D-PHY -> RK 干净满帧,
+//     绿紫相间(与我算的 YUYV 解释一致) => TX/CSI-2/D-PHY/rkcif 接收段正常
+//   已排除: ui_image_correction (4K 下 h_cnt 1..960=3840px, 966->960 裁剪正确)
+//   已排除: 链路速率档 / 模式切换 / rkcif 不支持 3840 宽
+//   本参数把 csi2_frame_tx 的输入在三个点之间切:
+//     2'd0 = csi2_pack 输出      (正式通路)
+//     2'd1 = ui_dbuf.R 直连, 跳过 csi2_pack  <-- 本次隔离测试
+//     2'd2 = 内置 TPG            (已证明干净的基准)
+//   ui_dbuf 的读输出本身就是 32bit YUV422 word, O_R_tuser/O_R_tlast 与
+//   packer 的 m_tuser_sof/m_tlast 语义一致(帧首/行尾), 可以直连。
+//   判定: 直连后画面干净 => 元凶是 csi2_pack (4K 一行 1920 word, A-FIFO 仅 2048)
+//         仍撕裂          => 在 ui_dbuf / ui_isp / preproc / RX解包, 继续前二分
+localparam [1:0] TX_SRC_SEL = 2'd1;
 
 wire        S_test_tvalid;
 wire [31:0] S_test_tdata;
@@ -1415,11 +1430,16 @@ wire        S_hs_en;
 wire [31:0] S_hs_data;
 wire        S_hs_last;
 
-// 数据源二选一 (常量选择, 综合时只保留一路)
-wire        S_tx_tvalid = JPEG_TEST_SRC ? S_test_tvalid : S_pack_tvalid;
-wire [31:0] S_tx_tdata  = JPEG_TEST_SRC ? S_test_tdata  : S_pack_tdata;
-wire        S_tx_tsof   = JPEG_TEST_SRC ? S_test_tsof   : S_pack_tsof;
-wire        S_tx_tlast  = JPEG_TEST_SRC ? S_test_tlast  : S_pack_tlast;
+// 数据源三选一 (常量选择, 综合时只保留一路)
+//   TX_SRC_SEL: 0=packer 正式通路  1=ui_dbuf.R 直连(跳过packer)  2=内置TPG
+wire        S_tx_tvalid = (TX_SRC_SEL == 2'd2) ? S_test_tvalid :
+                          (TX_SRC_SEL == 2'd1) ? S_dsi_R_tvalid : S_pack_tvalid;
+wire [31:0] S_tx_tdata  = (TX_SRC_SEL == 2'd2) ? S_test_tdata  :
+                          (TX_SRC_SEL == 2'd1) ? S_dsi_R_tdata32: S_pack_tdata;
+wire        S_tx_tsof   = (TX_SRC_SEL == 2'd2) ? S_test_tsof   :
+                          (TX_SRC_SEL == 2'd1) ? S_dsi_R_tuser  : S_pack_tsof;
+wire        S_tx_tlast  = (TX_SRC_SEL == 2'd2) ? S_test_tlast  :
+                          (TX_SRC_SEL == 2'd1) ? S_dsi_R_tlast  : S_pack_tlast;
 
 csi2_frame_tx #(
 	.DT			(6'h1E),	// YUV422-8bit  (必须与 RK 驱动 MEDIA_BUS_FMT_YUYV8_2X8 一致)
