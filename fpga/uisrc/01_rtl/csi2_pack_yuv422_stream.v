@@ -46,7 +46,25 @@ module csi2_pack_yuv422_stream (
 
     // Stage-C output FIFO wr_data_count (forward-declared for gate)
     wire [10:0] b_wr_data_count;    // ADDR_WIDTH=11 → 11-bit count (depth 2048)
-    wire        b_near_full = (b_wr_data_count > 11'd1900);
+    //
+    // ★★ V28b (2026-10-16) 修 4K 下 TX 完全不出帧 —— 但【只动门限, 绝不动 DEPTH】★★
+    //
+    //   4K 一行 = I_h_active>>1 = 3840>>1 = 1920 word, 而 line_ready 要求
+    //   b_rd_data_count >= 1920。原门限写死 1900 < 1920 ⇒ a_rd_en 在占用 >1900 时
+    //   就被掐断 ⇒ 占用永远到不了 1920 ⇒ line_ready 永远为假 ⇒ line_priming 不触发
+    //   ⇒ m_tvalid 恒 0 ⇒ csi2_frame_tx 收不到一个 word ⇒ CIF 一帧都抓不到。
+    //
+    //   修法: 门限再与"一行 + 64"取与, 即实际门限 = max(1900, 一行+64)。
+    //     1080p: WORDS_PAYLOAD=960, 960+64=1024 < 1900 ⇒ 该项恒真
+    //            ⇒ 逻辑上等价于原来的 count > 1900, 1080p 行为逐位不变(相位不动) ✓
+    //     4K   : WORDS_PAYLOAD=1920, 1920+64=1984 > 1900 ⇒ 实际门限 1984
+    //            ⇒ FIFO 可以涨到 1984, line_ready(>=1920) 可达 ✓ (深度 2048 够用)
+    //
+    //   ⚠⚠ 千万不要用"加深 FIFO (ADDR_WIDTH/DEPTH)"的办法 —— 那会改变 FIFO 稳态
+    //       填充相位, 进而打乱 ui_dbuf 里 XDIV=2 的"一行分左右两半、各一次突发"
+    //       的顺序, 画面会变成【左右半边对调】(已实测踩过这个坑, 见 V28 回退)。
+    wire        b_near_full = (b_wr_data_count > 11'd1900) &&
+                              (b_wr_data_count > (WORDS_PAYLOAD[11:0] + 11'd64));
     wire        a_can_read  = enable & ~a_empty & ~b_near_full;
 
     always @(posedge dst_clk or negedge dst_rst_n) begin
