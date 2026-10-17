@@ -614,6 +614,55 @@ wire S_res_rstn_rx   = RES_RST_TX_SIDE ? ~S_res_win_rx[1]   : 1'b1;
 wire S_res_rstn_byte = ~S_res_win_byte[1];
 
 //=============================================================================
+//  V30 (2026-10-17): 模式切换时必须也复位 ui_dbuf + ui_FDMA
+//
+//  现场现象（用户实测）:
+//      刚上电 → 1080p 正常
+//      切 4K  → 画面撕裂
+//      再切回 1080p → 画面上下/左右错位, 或者直接死机
+//
+//  根因: `X_ui_dbuf.I_ui_rstn` 和 `X_ui_FDMA.M_AXI_ARESETN` 原来都只接
+//        `S_ddr_init_cal_done` —— 只在 DDR 校准完成那一次释放, 此后再也不复位。
+//        但它们的 `I_W_XSIZE / I_R_XSIZE / I_*_YSIZE / *_XSTRIDE` 是随
+//        RES_MODE 变的。切换后 FDMA 状态机 / `w_ycnt,r_ycnt` /
+//        `wdiv_cnt,rdiv_cnt` / 乒乓缓冲指针全保留旧模式的相位
+//        ⇒ 相位错(错位), 或 FSM 等一个永远不来的 burst 数(死机)。
+//
+//  做法: 切换时把这两个也复位。关键两点 ——
+//    (1) 【延后 2ms】再复位: 先让上游写侧和 VTC 读请求都停下来, 避免在
+//        AXI 突发中途复位 master, 那样 DDR 侧可能挂在等数据 -> 真死机。
+//    (2) dbuf 和 FDMA 必须【同时】进出一致(厂商注释就写了
+//        "和FDMA AXI复位一致"), 所以两者接同一个 S_ud_rstn。
+//        复位一直保持到 500ms 切换窗结束。
+//=============================================================================
+localparam [17:0] UD_RST_DLY = 18'd50_000;      // 2 ms @ 25MHz
+
+reg  [17:0] S_ud_dly;
+reg         S_ud_rst_win;                       // 1 = 正在复位 dbuf/FDMA
+always @(posedge I_sysclk_25m or negedge S_pll_lock) begin
+	if (!S_pll_lock)                     S_ud_dly <= 18'd0;
+	else if (S_res_chg_d == 2'b01)       S_ud_dly <= 18'd1;        // 从切换沿开始计时
+	else if (S_ud_dly == 18'd0)          S_ud_dly <= 18'd0;
+	else if (S_ud_dly <  UD_RST_DLY)     S_ud_dly <= S_ud_dly + 18'd1;
+	else                                 S_ud_dly <= 18'd0;        // 到点停
+end
+
+always @(posedge I_sysclk_25m or negedge S_pll_lock) begin
+	if (!S_pll_lock)                     S_ud_rst_win <= 1'b0;
+	else if (S_ud_dly == UD_RST_DLY)     S_ud_rst_win <= 1'b1;     // 2ms 后开始复位
+	else if (!S_res_win25)               S_ud_rst_win <= 1'b0;     // 500ms 窗结束释放
+end
+
+// 异步置位 / 同步释放 到 S_dfi_clk 域(标准做法, 避免释放沿亚稳态)
+wire S_ud_rstn_async = S_ddr_init_cal_done & ~S_ud_rst_win;
+reg  [2:0] S_ud_rstn_dfi;
+always @(posedge S_dfi_clk or negedge S_ud_rstn_async) begin
+	if (!S_ud_rstn_async) S_ud_rstn_dfi <= 3'b000;
+	else                  S_ud_rstn_dfi <= {S_ud_rstn_dfi[1:0], 1'b1};
+end
+wire S_ud_rstn = S_ud_rstn_dfi[2];
+
+//=============================================================================
 //  V24 (2026-10-16): 分辨率切换时还要做两件事 —— 否则 4K 根本出不来
 //
 //  (1) 让传感器换读出模式。1080p 跑的是 2x2 binning, 4K 要 all-pixel; 差的
@@ -957,7 +1006,7 @@ ui_dbuf# (
 X_ui_dbuf
 (
 	.I_ui_clk		(S_dfi_clk			),
-	.I_ui_rstn		(S_ddr_init_cal_done),
+	.I_ui_rstn		(S_ud_rstn			),   // V30: 原为 S_ddr_init_cal_done -> 模式切换永不复位
 	// ==== V21: 运行时尺寸 (帧内保持稳定) ====
 	.I_W_XSIZE		(S_w_beats			),
 	.I_W_XSTRIDE	(S_w_beats			),
@@ -1038,7 +1087,7 @@ X_ui_FDMA
 
 //以下为AXI总线信号		
 	.M_AXI_ACLK         (S_dfi_clk		),
-	.M_AXI_ARESETN      (S_ddr_init_cal_done),
+	.M_AXI_ARESETN      (S_ud_rstn),
 // Master Interface Write Address Ports
 	.M_AXI_AWID         (S_axi_awid		),
 	.M_AXI_AWADDR       (S_axi_awaddr	),

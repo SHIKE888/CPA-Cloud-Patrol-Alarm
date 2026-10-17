@@ -15,7 +15,10 @@ rename_clock -name {S_dsi_hs_x4}   [get_clocks {u_ui_pll_dsi/pll_inst.clkc[3]}]
 rename_clock -name {S_dsi_hs_x4_q} [get_clocks {u_ui_pll_dsi/pll_inst.clkc[4]}]
 rename_clock -name {S_dsi_lp}      [get_clocks {u_ui_pll_dsi/pll_inst.clkc[5]}]
 
-set_clock_groups -exclusive -group [get_clocks {X_ui_ddr/dfi_clk}] -group [get_clocks {S_clk_24m}] -group [get_clocks {S_clk_70m}] -group [get_clocks {S_pclkx1}] -group [get_clocks {S_pclkx5}]
+# V30: 这里原来是 -exclusive(互斥时钟), 但这些时钟是【异步并发】的。
+#   -exclusive 会让 STA 完全跳过这些域之间的所有路径, 是 STA 覆盖率只有 ~32% 的直接原因。
+#   改成 -asynchronous: 域间不查(有 async FIFO 隔离), 但各域内部照查。
+set_clock_groups -asynchronous -group [get_clocks {X_ui_ddr/dfi_clk}] -group [get_clocks {S_clk_24m}] -group [get_clocks {S_clk_70m}] -group [get_clocks {S_pclkx1}] -group [get_clocks {S_pclkx5}]
 
 # DSI 时钟域与系统/视频时钟域异步隔离
 # - sys_clk (S_dsi_en 同步寄存器, 输出 S_dphy_rst_n 走 async FIFO 异步复位端)
