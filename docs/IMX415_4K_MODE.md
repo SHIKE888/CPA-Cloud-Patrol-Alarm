@@ -1,5 +1,11 @@
 # IMX415 4K 模式配置（厂商参考 + 落地改动清单）
 
+> ⚠ **2026-10-18 V39 更正**：本文下面的寄存器表是厂商 **4K30** 参考（VMAX=4503/
+> HMAX=533/SYS_MODE=0x08）。本工程最终为了 1000Mbps 链路，实际采用的是
+> **4K25 参数：VMAX=3420 (0x5C/0x0D)、HMAX=861 (0x5D/0x03)、SYS_MODE=0x05**
+> （891Mbps），VTC 时序 2652×2225。阅读差异表时以 V39 的
+> `fpga/uisrc/03_ip/ui_imx415_cfg/ui_imx415_reg.v` 为准。
+
 > 来源：`07_异构方案/AFC03_IMX415_PCIE_X1/.../IMX415_PCIE_X1/uisrc/03_ip/ui_imx415_cfg/ui_imx415_reg.v`
 > （厂商 PCIe 方案的工程里带 `MODE` 参数，0=1080p binning / 1=4K all-pixel / 2=720p。
 > 工程目录名就叫 `imx415_pcie_4k_Runs`，说明 4K 是厂商验证过的。）

@@ -5,11 +5,12 @@
     ./gimbal_keyctrl.py --port /dev/ttyACM0 [--speed 10] [--accel 20] [--duration 0]
 
 按键:
-    ← / →        Yaw  反向 / 正向
+    ← / →        Yaw  正向 / 反向（已按实物观察反向；--yaw-sign -1 可再翻回来）
     ↑ / ↓        Pitch 正向 / 反向
-    a / d        Yaw  反向 / 正向（备用，方向键识别不了时用）
+    a / d        Yaw  正向 / 反向（备用，方向键识别不了时用）
     w / s        Pitch 正向 / 反向（备用）
     空格          两轴目标速度归零（保持使能，不退出）
+    e            切换匀加减速：开=按 accel/stop-accel 斜坡；关=目标速度阶跃直接生效
     双击空格      ctrl angle 0 0 回零点（运动中空格/方向键可接管）
     Ctrl+空格     把当前位置设为 Zero 点（config zero_pos，会写入 Flash）
                   固件要求先失能，脚本会自动 disable → 写零点 → 重新 enable
@@ -26,8 +27,9 @@
 
 注意: 串口被独占（TIOCEXCL），运行前请关掉其他串口客户端/网页上位机。
       方向键按住时终端会重复发送按键，脚本按“最后一次按键”计时；
-      超过 --release-ms（默认 700ms，需大于终端的 key repeat 初始延迟，
-      通常 500ms）没有新按键就把目标速度降为 0（按 --stop-accel 斜坡降落）。
+      起手用 --release-ms（默认 700ms，需大于终端的 key repeat 初始延迟，
+      通常 500ms），一旦检测到按键重复就改用 --repeat-release-ms（默认 250ms），
+      所以松手后能很快停住；超时后目标速度降为 0（按 --stop-accel 斜坡降落）。
       若你的终端仍出现“速度先降后升”，把 --release-ms 调大（如 1000）。
 """
 import argparse
@@ -45,9 +47,10 @@ PROMPT = re.compile(r'QGimbal:/\$\s*$')
 REJECT = re.compile(r'failed|Command not Found|STALE|\bnan\b|\binf\b', re.I)
 ANGLE = r'^\s+%s\s*:\s*yaw:([-+0-9.eE]+)\s+(?:rad|rpm),\s*pitch:([-+0-9.eE]+)'
 KEYMAP = {
-    'right': (0, +1), 'left': (0, -1),
+    # Yaw 按实物观察左右反向：按 → 发负速度，按 ← 发正速度
+    'left': (0, +1), 'right': (0, -1),
     'up': (1, +1), 'down': (1, -1),
-    'd': (0, +1), 'a': (0, -1),
+    'a': (0, +1), 'd': (0, -1),
     'w': (1, +1), 's': (1, -1),
 }
 
@@ -81,11 +84,24 @@ class Link:
         except BlockingIOError:
             return ''
         if not data:
-            raise OSError('USB 串口已断开')
+            # tty 在 VMIN=0 下 read() 返回 0 只表示“当前没有数据”，不是断开；
+            # 稍微让一下，避免 select 一直报可读时变成忙等。
+            time.sleep(0.001)
+            return ''
         return data.decode('ascii', errors='replace')
+
+    def _drain(self):
+        """丢掉设备已经发出、但还没被读走的残留字节，避免上一条命令的回显被误判。"""
+        while select.select([self.fd], [], [], 0)[0]:
+            try:
+                if not os.read(self.fd, 4096):
+                    break
+            except BlockingIOError:
+                break
 
     def command(self, cmd, expect=None):
         termios.tcflush(self.fd, termios.TCIFLUSH)
+        self._drain()
         payload = (cmd + '\n').encode('ascii')
         deadline = time.monotonic() + self.timeout
         while payload:
@@ -284,6 +300,13 @@ class Session:
         self.stop_accel = abs(args.stop_accel) or 3 * self.accel
         self.double_space = args.double_space_ms / 1000
         self.zero_confirm = args.zero_confirm_ms / 1000
+        self.sign = [args.yaw_sign, args.pitch_sign]
+        self.smooth = not args.no_ramp
+        self.repeat_release = args.repeat_release_ms / 1000
+        self.repeat_gap = args.repeat_gap_ms / 1000
+        self.busy_window = 0.4
+        self.last_key = [0.0, 0.0]
+        self.activity = 0.0
         self.target = [0.0, 0.0]
         self.hold = [0.0, 0.0]
         self.current = [0.0, 0.0]
@@ -319,13 +342,23 @@ class Session:
                     self.space_at = now if key == ' ' else 0.0
                     self.homing = False
                     self.stop_motion('已停止（保持使能）')
+            elif key in ('e', 'E'):
+                self.smooth = not self.smooth
+                self.note = '匀加减速: %s' % ('开' if self.smooth else '关（阶跃）')
             elif key in KEYMAP:
                 self.homing = False
                 axis, direction = KEYMAP[key]
+                direction *= self.sign[axis]
+                # 自适应松开窗口：终端刚开始重复发送时用长窗口，
+                # 已进入重复（间隔很短）后改用短窗口，松手就能很快停。
+                gap = now - self.last_key[axis] if self.last_key[axis] else 1.0
+                window = self.repeat_release if gap <= self.repeat_gap else self.release
+                self.last_key[axis] = now
+                self.activity = now
                 self.target[axis] = direction * self.speed
-                self.hold[axis] = now + self.release
+                self.hold[axis] = now + window
                 self.note = ('Yaw' if axis == 0 else 'Pitch') + \
-                            (' 正向' if direction > 0 else ' 反向')
+                            (' +' if direction > 0 else ' -')
         return False
 
     def start_home(self, now):
@@ -388,10 +421,11 @@ class Session:
 
     def line(self):
         angles, _ = self.telemetry
-        return (' Yaw %s  Pitch %s  |  cmd %+6.1f / %+6.1f rpm  |  %s '
+        return (' Yaw %s  Pitch %s  |  cmd %+6.1f / %+6.1f rpm  |  %s  |  %s '
                 % (fmt(math.degrees(angles[0]) if angles else None, '°'),
                    fmt(math.degrees(angles[1]) if angles else None, '°'),
-                   self.current[0], self.current[1], self.note))
+                   self.current[0], self.current[1],
+                   'ramp' if self.smooth else 'step', self.note))
 
     def show(self):
         if self.plain:
@@ -420,11 +454,16 @@ class Session:
                     if now > self.hold[axis]:
                         self.target[axis] = 0.0
                 for axis in (0, 1):
-                    self.current[axis] = ramp(self.current[axis], self.target[axis],
-                                              dt, self.accel, self.stop_accel)
+                    if self.smooth:
+                        self.current[axis] = ramp(self.current[axis], self.target[axis],
+                                                  dt, self.accel, self.stop_accel)
+                    else:
+                        self.current[axis] = self.target[axis]
                 self.gimbal.speed(self.current[0], self.current[1])
                 if refresh:
-                    self.next_telemetry = now + self.telemetry_period
+                    # 操作期间降低遥测频率（status 回显较长，会拖慢按键响应）
+                    busy = now - self.activity <= self.busy_window
+                    self.next_telemetry = now + self.telemetry_period * (1.5 if busy else 1.0)
                     self.telemetry = self.gimbal.telemetry()
             if refresh or not self.plain:
                 self.show()
@@ -435,13 +474,17 @@ def main():
         description='QGimbal 键盘控制（SSH 终端可用方向键、空格、Ctrl+空格）')
     parser.add_argument('--port', required=True, help='/dev/ttyACM0 或 /dev/serial/by-id/...')
     parser.add_argument('--speed', type=float, default=10.0, help='按键目标速度 rpm（默认 10）')
-    parser.add_argument('--accel', type=float, default=20.0, help='速度斜坡 rpm/s（默认 20）')
+    parser.add_argument('--accel', type=float, default=40.0, help='速度斜坡 rpm/s（默认 40）')
     parser.add_argument('--release-ms', type=float, default=700.0,
-                        help='松开判定时间（默认 700ms）。终端长按方向键时前约 500ms 不发送'
-                             '重复键，设小了会出现“速度先降后升”的抽动')
+                        help='按键“起手”后的松开判定窗口（默认 700ms）。终端长按方向键时'
+                             '前约 500ms 不发送重复键，设小了会出现“速度先降后升”的抽动')
+    parser.add_argument('--repeat-release-ms', type=float, default=200.0,
+                        help='已进入按键重复后使用的松开判定窗口（默认 200ms，越小停得越快）')
+    parser.add_argument('--repeat-gap-ms', type=float, default=150.0,
+                        help='两次按键间隔小于该值就认为终端在重复发送（默认 150ms）')
     parser.add_argument('--stop-accel', type=float, default=0.0,
                         help='松手减速斜坡 rpm/s，0=自动取 3×accel（默认 0）')
-    parser.add_argument('--poll-ms', type=float, default=20.0, help='控制周期（默认 20ms）')
+    parser.add_argument('--poll-ms', type=float, default=10.0, help='控制周期（默认 10ms）')
     parser.add_argument('--telemetry-ms', type=float, default=200.0, help='遥测刷新周期（默认 200ms）')
     parser.add_argument('--reply-timeout-ms', type=float, default=800.0, help='命令回复超时（默认 800ms）')
     parser.add_argument('--double-space-ms', type=float, default=400.0,
@@ -458,17 +501,26 @@ def main():
                         help='写 Flash 后恢复使能的重试次数（默认 10）')
     parser.add_argument('--store-retry-ms', type=float, default=300.0,
                         help='写 Flash 后恢复使能的重试间隔（默认 300ms）')
+    parser.add_argument('--yaw-sign', type=float, default=1.0,
+                        help='Yaw 方向系数，1=保持键位映射，-1=左右再翻一次（默认 1）')
+    parser.add_argument('--pitch-sign', type=float, default=1.0,
+                        help='Pitch 方向系数，1=保持键位映射，-1=上下再翻一次（默认 1）')
+    parser.add_argument('--no-ramp', action='store_true',
+                        help='启动时就关闭匀加减速（同按 e；目标速度阶跃生效）')
     parser.add_argument('--duration', type=float, default=0.0, help='运行秒数，0 表示直到手动退出')
     args = parser.parse_args()
     for name in ('speed', 'accel', 'release_ms', 'poll_ms', 'telemetry_ms',
                  'reply_timeout_ms', 'double_space_ms', 'home_tol_rad',
-                 'home_settled_rpm', 'home_timeout', 'store_attempts', 'store_retry_ms'):
+                 'home_settled_rpm', 'home_timeout', 'store_attempts', 'store_retry_ms',
+                 'repeat_release_ms', 'repeat_gap_ms'):
         if getattr(args, name) <= 0:
             parser.error('--%s 必须为正数' % name.replace('_', '-'))
     if args.zero_confirm_ms < 0:
         parser.error('--zero-confirm-ms 不能为负')
     if args.stop_accel < 0:
         parser.error('--stop-accel 不能为负')
+    if args.yaw_sign == 0 or args.pitch_sign == 0:
+        parser.error('--yaw-sign / --pitch-sign 不能为 0')
 
     link = gimbal = keyboard = None
     code = 0
@@ -481,10 +533,11 @@ def main():
         gimbal.disable()
         gimbal.diag(disabled=True)
         gimbal.enable()
-        gimbal.speed(0, 0)
+        if not re_enable(gimbal, args.poll_ms / 1000, args.store_attempts):
+            raise RuntimeError('启动时无法进入速度控制')
         keyboard = Keyboard(sys.stdin.isatty())
         print('就绪: ←→ Yaw，↑↓ Pitch，空格停止，双击空格回零，Ctrl+空格设零点，'
-              'q / Ctrl+C 退出并失能（备用键 a/d/w/s）', flush=True)
+              'e 匀加减速开关，q / Ctrl+C 退出并失能（备用键 a/d/w/s）', flush=True)
         Session(args, gimbal, keyboard).run()
     except (Exception, KeyboardInterrupt) as error:
         message = str(error) or type(error).__name__

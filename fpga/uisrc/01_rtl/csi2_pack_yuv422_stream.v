@@ -1,8 +1,8 @@
 /*==============================================================================
  *  csi2_pack_yuv422_stream.v  (Phase 1b)
  *  ui_dbuf.R (RGB32 AXIS @ src_clk)
- *      → async FIFO (33b, depth 2048) → YUV pipeline (5 stage)
- *      → output FIFO (34b, depth 1024) → AXIS to Layer-1 csi2_frame_tx 
+ *      → async FIFO (33b, depth 4096) → YUV pipeline (5 stage)
+ *      → output FIFO (34b, depth 4096) → 4-deep skid queue → AXIS to csi2_frame_tx 
  *============================================================================*/
 `timescale 1ns/1ps
 
@@ -30,7 +30,7 @@ module csi2_pack_yuv422_stream (
     wire [31:0] WORDS_PAYLOAD = I_h_active >> 1;   // V21: 运行时 (每行 32bit word 数)
     wire _unused_stlast = s_tlast;
 
-    // --- Stage-A: async FIFO 33b×2048 ---
+    // --- Stage-A: async FIFO 33b×4096 ---
     wire        a_full, a_empty;
     wire [32:0] a_dout;
     wire        a_rst_async = ~(src_rst_n & dst_rst_n);
@@ -45,7 +45,7 @@ module csi2_pack_yuv422_stream (
     reg         a_rd_en;
 
     // Stage-C output FIFO wr_data_count (forward-declared for gate)
-    wire [10:0] b_wr_data_count;    // ADDR_WIDTH=11 → 11-bit count (depth 2048)
+    wire [11:0] b_wr_data_count;    // V42: ADDR_WIDTH=12 → 12-bit count (depth 4096)
     //
     // ★★ V28b (2026-10-16) 修 4K 下 TX 完全不出帧 —— 但【只动门限, 绝不动 DEPTH】★★
     //
@@ -63,8 +63,8 @@ module csi2_pack_yuv422_stream (
     //   ⚠⚠ 千万不要用"加深 FIFO (ADDR_WIDTH/DEPTH)"的办法 —— 那会改变 FIFO 稳态
     //       填充相位, 进而打乱 ui_dbuf 里 XDIV=2 的"一行分左右两半、各一次突发"
     //       的顺序, 画面会变成【左右半边对调】(已实测踩过这个坑, 见 V28 回退)。
-    wire        b_near_full = (b_wr_data_count > 11'd1900) &&
-                              (b_wr_data_count > (WORDS_PAYLOAD[11:0] + 11'd64));
+    wire        b_near_full = (b_wr_data_count > 12'd1900) &&
+                              (b_wr_data_count > (WORDS_PAYLOAD[11:0] + 12'd64));
     wire        a_can_read  = enable & ~a_empty & ~b_near_full;
 
     always @(posedge dst_clk or negedge dst_rst_n) begin
@@ -74,7 +74,7 @@ module csi2_pack_yuv422_stream (
 
     fifo_32b_async_2 #(
         .DATA_WIDTH(33),
-        .ADDR_WIDTH(11)
+        .ADDR_WIDTH(12)     // V42: depth 4096
     ) u_async_fifo (
         .rst          (a_rst_async),
         .wr_clk       (src_clk    ),
@@ -92,10 +92,15 @@ module csi2_pack_yuv422_stream (
     );
 
    
+    // ★ V43: a_rd_en 只是【读请求】(寄存在 dst_clk), 真正是否读到要看 FIFO 内部的
+    //   do_read = rd_en & ~empty。原代码把 a_rd_en 直接当“少了一拍的有效”用,
+    //   在 FIFO 已经抽空的那一拍会凭空多出一个 word(内容是 dout 旧值) —— 4K 下
+    //   A-FIFO 会真的被抽空(1080p 不会), 于是每行尾部多 1~2 个重复 word。
+    //   这里用 `a_rd_en & ~a_empty` 精确对齐 FIFO 的 do_read。
     reg        a_rd_en_d1;      // 1-cycle-later rd_en, aligned to a_dout
     always @(posedge dst_clk or negedge dst_rst_n) begin
         if (!dst_rst_n) a_rd_en_d1 <= 1'b0;
-        else            a_rd_en_d1 <= a_rd_en;
+        else            a_rd_en_d1 <= a_rd_en & ~a_empty;
     end
 
     reg        pipe_in_valid;
@@ -192,69 +197,84 @@ module csi2_pack_yuv422_stream (
    
     wire        b_full, b_empty;
     wire [33:0] b_dout;
-    wire [10:0] b_rd_data_count;    // read-side fill (dst_clk domain)
+    wire [11:0] b_rd_data_count;    // 保留端口(不再用于门限)
 
     wire        b_wr_en = yuv_admit & ~b_full;
-    reg         line_priming;        // 1-cycle prime read so dout holds word0
-                                     // BEFORE m_tvalid (standard FIFO has 1-cycle
-                                     // registered-dout latency). Without it the
-                                     // first beat of every line is the stale
-                                     // previous word -> per-row word0 / first-
-                                     // column corruption.
-    reg         line_active;
-    reg         line_drain_done;     // accepted last word; close the line.
-    reg [15:0]  drain_cnt;           // 1..WORDS_PAYLOAD = which presented word
-    wire        line_ready = (b_rd_data_count >= WORDS_PAYLOAD[10:0]);
 
-    // Pop the NEXT word while presenting word[drain_cnt-1]; no pop on the last
-    // presented word (drain_cnt == WORDS_PAYLOAD).
-    wire        active_pop = m_tready & line_active & ~line_drain_done &
-                            (drain_cnt != WORDS_PAYLOAD[15:0]);
-    wire        b_rd_en    = ~b_empty & (line_priming | active_pop);
+    //==========================================================================
+    // V43 (2026-10-18): 修【4K 每行多 2 个 word -> 斜向撕裂】
+    //
+    //  现象(板上实测): 4K 静态帧相邻行相位相关恒为 +2 像素(3840 幅宽),
+    //                  2000 行 std=0; 用 k=+2 px/row 做软件反变换后画面完全正常。
+    //                  即每行数据多/少 1 个 32bit word, 2160 行累计 4320 像素
+    //                  > 一帧宽, 于是画面出现斜坡重复("扇型"/撕裂)。
+    //
+    //  iverilog 复现: 输出侧每行 1922 个 word, 行尾是 ...1918,1919,1919,1919。
+    //  两个成因(都在本模块):
+    //    (1) 写侧: a_rd_en 是【读请求】, 但 pipe_in_valid 直接拿它当"读到数据",
+    //        FIFO 已空那一拍没有真读, 仍然算进一个 word(dout 旧值)。
+    //        -> 已改为 a_rd_en_d1 <= a_rd_en & ~a_empty, 与 FIFO 内部 do_read 对齐。
+    //    (2) 读侧: 旧实现 `m_tvalid = line_active`, 与 FIFO 里是否真有数据无关;
+    //        4K 一行 1920 word 卸完刚好把 B-FIFO 抽空, drain_done 多挂一拍,
+    //        再加 prime 读在空 FIFO 上不生效, 就把最后一个 word 又送 1~2 次。
+    //        -> 已改为【4 深输出小队列】: m_tvalid 只在队列里真有 word 时有效。
+    //
+    //  为什么只有 4K 犯: 1080p 一行 960 word, B-FIFO 常驻近 1900 word, 抽不空;
+    //  4K 一行 1920 word 与门限 1984 几乎相等, 每行都会短暂抽空 -> V42 单纯加深
+    //  FIFO 无效(门限没变, 仍然抽空)。
+    //==========================================================================
+    // ★ b FIFO 的 empty 标志经过 2 拍指针同步, 实际空了之后还会晚 2 拍才置位,
+    //   直接用它判空会多弹 1~2 个旧数据(实测就是这么每行多 1 word)。
+    //   b FIFO 的读写都在 dst_clk, 所以自己维护一个【精确占用计数】。
+    reg  [12:0] b_occ;
+
+    // 输出小队列: FIFO 的 dout 比 rd_en 晚 1 拍, 用 4 深队列把这一拍消化掉,
+    // 稳态可达 1 word/cycle (4K 需要 1920word / 2123byte_clk ≈ 0.9),
+    // 又因为入队/出队都是真实寄存器, 绝不会把旧数据重复送出。
+    reg  [33:0] qmem [0:3];
+    reg  [1:0]  q_wp, q_rp;
+    reg  [2:0]  q_cnt;          // 队列中真实 word 数 (0..4)
+    reg         rd_inflight;    // 上一拍发了读, 本拍 b_dout 有效
+
+    wire q_wr = rd_inflight;
+    wire q_rd = (q_cnt != 3'd0) & m_tready;
+    // ~b_empty 必须一起看: FIFO 的写指针对称化滞后 2 拍, 刚写入的 word 可能还
+    // 没“看得到”, 那一拍 rd_en 会被 FIFO 忽略; 若仅按 b_occ 记账就会与真实
+    // 读操作失配(启动时凭空多出 1~2 个旧 word)。
+    wire do_pop = (b_occ != 13'd0) && ~b_empty &&
+                  ((q_cnt + {2'd0, rd_inflight}) < 3'd4);
 
     always @(posedge dst_clk or negedge dst_rst_n) begin
         if (!dst_rst_n) begin
-            line_priming    <= 1'b0;
-            line_active     <= 1'b0;
-            line_drain_done <= 1'b0;
-            drain_cnt       <= 16'd0;
-        end else if (!line_active && !line_priming) begin
-            // Wait for a full line queued, then issue ONE prime read.
-            if (line_ready) begin
-                line_priming    <= 1'b1;
-                line_drain_done <= 1'b0;
-                drain_cnt       <= 16'd0;
-            end
-        end else if (line_priming) begin
-            // prime read issued this cycle; word0 lands on dout next cycle.
-            line_priming <= 1'b0;
-            line_active  <= 1'b1;
-            drain_cnt    <= 16'd1;   // word0 is the 1st presented word
+            q_wp <= 2'd0;
+            q_rp <= 2'd0;
+            q_cnt <= 3'd0;
+            rd_inflight <= 1'b0;
+            b_occ <= 13'd0;
         end else begin
-            if (line_drain_done) begin
-                line_active     <= 1'b0;
-                line_drain_done <= 1'b0;
-                drain_cnt       <= 16'd0;
-            end else if (m_tready) begin
-                // consumer accepted word[drain_cnt-1] this cycle
-                if (drain_cnt == WORDS_PAYLOAD[15:0])
-                    line_drain_done <= 1'b1;   // accepted the last word
-                else
-                    drain_cnt <= drain_cnt + 16'd1;
+            rd_inflight <= do_pop;
+            b_occ <= b_occ + (b_wr_en ? 13'd1 : 13'd0) - (do_pop ? 13'd1 : 13'd0);
+            if (q_wr) begin
+                qmem[q_wp] <= b_dout;
+                q_wp <= q_wp + 2'd1;
             end
+            if (q_rd) begin
+                q_rp <= q_rp + 2'd1;
+            end
+            q_cnt <= q_cnt + (q_wr ? 3'd1 : 3'd0) - (q_rd ? 3'd1 : 3'd0);
         end
     end
 
     fifo_32b_async_2 #(
         .DATA_WIDTH(34),
-        .ADDR_WIDTH(11)     // depth 2048 (~2 lines @ 960 words)
+        .ADDR_WIDTH(12)     // V42: depth 4096, 4K 一行 1920 留出足够余量
     ) u_out_fifo (
         .rst          (~dst_rst_n),
         .wr_clk       (dst_clk   ),
         .rd_clk       (dst_clk   ),
         .din          ({yuv_sof, yuv_last, yuv_data}),
         .wr_en        (b_wr_en   ),
-        .rd_en        (b_rd_en   ),
+        .rd_en        (do_pop    ),
         .dout         (b_dout    ),
         .full         (b_full    ),
         .empty        (b_empty   ),
@@ -264,12 +284,10 @@ module csi2_pack_yuv422_stream (
         .rd_rst_busy  (          )
     );
 
-    // After the prime read, dout always holds a valid in-line word for the whole
-    // line_active window (line_ready guarantees the full line is queued), so do
-    // NOT gate with ~b_empty -- that could falsely drop the last word.
-    assign m_tvalid    = line_active;
-    assign m_tdata     = b_dout[31:0];
-    assign m_tlast     = b_dout[32];
-    assign m_tuser_sof = b_dout[33];
+    // m_tvalid 只在队列里确实有真实 word 时才拉高 —— 绝不会重复也不会丢
+    assign m_tvalid    = (q_cnt != 3'd0);
+    assign m_tdata     = qmem[q_rp][31:0];
+    assign m_tlast     = qmem[q_rp][32];
+    assign m_tuser_sof = qmem[q_rp][33];
 
 endmodule

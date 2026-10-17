@@ -54,3 +54,10 @@ desktop.ini
 
 # TD ±ÀÀ£×ª´¢
 fpga/*.dmp
+
+# ---- RK AI model weights / converter binaries (71.8 MB) ----
+rk/ai/models/
+rk/ai/dist/
+
+# ---- FPGA bitstream backups ----
+fpga/*.bit.bak*

@@ -179,12 +179,15 @@ parameter CS_WIDTH        = 1
 	wire [11:0] S_v_active     = S_is_4k ? 12'd2160 : V_ACTIVE[11:0];
 	wire [15:0] S_w_beats      = S_is_4k ? 16'd960  : 16'd480;
 	wire [15:0] S_r_beats      = S_is_4k ? 16'd1920 : 16'd960;
+	// V39: 传感器垂直裁剪起点。4K 录制区从第 36 行开始 (厂商 v_start=35)；
+	//      1080p 厂商参考 v_start=19。首行必须是偶数，否则 RGGB Bayer 相位错。
+	wire [12:0] S_v_start      = S_is_4k ? 13'd35  : 13'd19;
 
 	// ---- VTC 读取时序 (S_pclkx1 = 147.5MHz) ----
 	//  帧率 = 147.5e6 / (H_FrameSize * V_FrameSize)
 	//    1080p60: 2200 * 1125 = 2.475e6 -> 59.6 fps  (实测 59.4)
-	//    4K30   : 2060 * 2387 = 4.917e6 -> 30.0 fps  (99.5% 带宽, 跑不动)
-	//    4K25   : 2060 * 2865 = 5.901e6 -> 24.992 fps (82.9% 带宽, 可用)
+	//    4K30   : 2652 * 2387 = 6.330e6 -> 23.3 fps  (受 1000Mbps TX 带宽限制)
+	//    4K25   : 2652 * 2225 = 5.901e6 -> 24.997 fps (82.9% 带宽, 可用)
 	//  H_ActiveSize/SyncStart/SyncEnd 两种模式相同, 帧长只靠 H_FrameSize 调。
 	//  注: Verilog 不允许对括号表达式做位选 ((a+b)[12:0] 是语法错误), 靠 wire 位宽截断。
 	wire [12:0] S_vtc_h_active = H_ACTIVE[12:0];                            // 1920
@@ -456,12 +459,15 @@ wire       S_full_reload;
 // ---- 传感器读出模式 -> 24MHz 域 (ui_cfg_imx415 挂在 S_clk_24m) ----
 //   RES_MODE: 0=1080p60, 1=4K30, 2=4K25; 传感器的 MODE 只要 0=1080p / 1=4K
 wire [1:0] S_sensor_mode = S_is_4k ? 2'd1 : 2'd0;
+// V39: 真正的 2 级同步。原来的 {r[0], S_sensor_mode} 是 3bit 赋给 2bit，
+//      最高位被截断，实际只有 1 级寄存 (4K 时输出 1 纯属巧合)。
+//      这里只同步最低位 (MODE 只有 0/1)，输出固定高位为 0。
 reg  [1:0] S_cam_mode_24_r;
 always @(posedge S_clk_24m or negedge S_pll_lock) begin
 	if (!S_pll_lock) S_cam_mode_24_r <= 2'd0;
-	else             S_cam_mode_24_r <= {S_cam_mode_24_r[0], S_sensor_mode};
+	else             S_cam_mode_24_r <= {S_cam_mode_24_r[0], S_sensor_mode[0]};
 end
-assign S_cam_mode_24 = S_cam_mode_24_r;
+assign S_cam_mode_24 = {1'b0, S_cam_mode_24_r[1]};
 
 wire [19:0] S_cam_exp;
 wire [7:0]  S_cam_gain;
@@ -474,9 +480,7 @@ wire [7:0]  S_ae_gain;
 wire [19:0] S_rt_exp;
 wire        S_ae_cfg_done_25;   // 24MHz 域同步回来的“本轮写完”
 
-cam_param #(
-	.SHR0_DEFAULT (20'd8)       // 初始化表的 SHR0 (两个模式都是 8)
-) u_cam_param (
+cam_param u_cam_param (
 	.clk        (I_sysclk_25m),
 	.rst_n      (S_pll_lock),
 	// V38e: 4K 传感器帧率配到 25.0fps 以匹配 VTC。
@@ -490,6 +494,10 @@ cam_param #(
 	//   当前两边都是 3420 = 0x0D5C (0x3024=0x5C, 0x3025=0x0D)
 	.i_vmax         (S_is_4k ? 20'd3420        : 20'd2283),
 	.i_gain_default (S_is_4k ? 8'h10 : 8'h20   ),
+	// V39: 4K 默认曝光从「满帧 39.85ms」降到 15ms (3420-1284=2136)；
+	//      1080p 保持原来的 SHR0=8。注意 i_shr0_default 必须与
+	//      ui_imx415_reg.v 的 0x3050/51 初值一致。
+	.i_shr0_default (S_is_4k ? 20'd2136 : 20'd8),
 	.i_exp      (S_cam_exp),
 	.i_gain     (S_cam_gain),
 	.i_ev_bias  (S_cam_ev),
@@ -842,6 +850,8 @@ ui_image_correction #(
     // V21: 运行时宽高
     .I_img_width      (S_h_active		  ),
     .I_img_height     (S_v_active		  ),
+    // V39: 垂直起始裁剪 (4K=35, 1080p=19)
+    .I_v_start        (S_v_start		  ),
 	
     .I_raw_data       (S_raw10_data       ),       
     .I_raw_valid      (S_raw10_valid      ),     
@@ -864,6 +874,7 @@ ui_isp_top X_ui_isp_top (
 	.I_rst_n         (S_pll_lock & S_res_rstn_rx		),
 	.I_img_width     (S_h_active		),
 	.I_img_height    (S_v_active		),
+	.I_is_4k         (S_is_4k			),  // V40: 4K=RGGB, 1080p binning=GRBG
 	.I_tlast         (S_axis_tlast 		),
 	.I_tuser         (S_axis_tuser 		),
 	.I_tdata         (S_axis_tdata 		),
@@ -964,7 +975,11 @@ cfg_ctrl_top #(
 	//   0x3807 = V38g (撤销 V38f: GAP_LINE 100->200, 回到实测可用的 4K25)
 	//   0x3805 = V38e (4K25: h_frame 2652 / v_frame 2225 / VMAX 3420)
 	//   0x3804 = V38d (补上 0x3024/0x3025: VMAX 3449->4282)
-	.CFG_VER  (16'h3807)
+	//   0x4301 = V43a (修 4K 撕裂: packer 写侧幻影 word + 读侧重复送)
+	//           ⚠ 注意: 4:36 那次构建虽然已经是 V43 的 RTL, 但当时这里还是
+	//           0x3807, 所以板上读到的仍是 0x3807 —— 不能只凭版本号判断是否
+	//           烧了新 bit, 要看画面/相位相关。
+	.CFG_VER  (16'h4301)
 ) u_cfg_ctrl (
 	.i_sys_clk    (I_sysclk_25m),
 	.i_sys_rst_n  (1'b1),

@@ -185,9 +185,14 @@ do_start() {
 
     echo "[3/4] 启动 web + 集成 AI"
     cd "$WEB" || exit 1
+    # V39.1: 必须把当前模式对应的宽高传给 web。
+    # 否则 start.sh 4k 把 FPGA/media 设成 3840x2160，而 web 仍按默认
+    # 1920x1080 打开 /dev/video22 -> 画面被拉伸/错位。
+    local WW HH
+    if [ "$MODE" = "1080" ] || [ "$MODE" = "1080p" ]; then WW=1920; HH=1080; else WW=3840; HH=2160; fi
     AI=1 AI_FPS="$AI_FPS" AI_SRC="$AI_SRC" AI_INTERVAL="$AI_INTERVAL" \
-        nohup bash ./start_webstream.sh "$DEV" "$PORT" >"$LOG" 2>&1 &
-    echo "     后台启动中, 日志 $LOG"
+        nohup bash ./start_webstream.sh "$DEV" "$PORT" --width "$WW" --height "$HH" >"$LOG" 2>&1 &
+    echo "     后台启动中, 日志 $LOG (${WW}x${HH})"
 
     echo "[4/4] 等待就绪 (最多 25 秒)"
     local i ready=0

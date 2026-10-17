@@ -31,19 +31,21 @@
 //  2026-10-16 (V24): **VMAX 和增益初值改成运行时输入**, 因为传感器现在能切
 //  读出模式, 两个模式的帧长差很多:
 //      1080p (2x2 binning): VMAX = 2283 行, HMAX = 542, SYS_MODE=0x05 (891Mbps)
-//      4K    (all-pixel)  : VMAX = 3449 行, HMAX = 861, SYS_MODE=0x05 (891Mbps)  V38
+//      4K    (all-pixel)  : VMAX = 3420 行, HMAX = 861, SYS_MODE=0x05 (891Mbps)  V38g
+//      V39: 4K 默认 SHR0=2136 (≈15ms)，避免上电就是 39.85ms 满帧曝光。
 //  曝光行数 = VMAX - SHR0, 所以 VMAX 算错的话曝光会差一倍。
 //  增益初值也跟着变: 4K 灵敏度高, 初始化表只给 0x10 (4.8dB), binning 给 0x20。
 //==============================================================================
-module cam_param #(
-	parameter [19:0] SHR0_DEFAULT = 20'd8       // 初始化表的 SHR0 (两个模式都是 8)
-)(
+module cam_param (
 	input  wire        clk,
 	input  wire        rst_n,
 
 	// ---- V24: 跟传感器读出模式走的常量 ----
-	input  wire [19:0] i_vmax,       // 帧长(行): binning 2283, 4K 3449 (V38)
+	input  wire [19:0] i_vmax,       // 帧长(行): binning 2283, 4K 3420 (V38g)
 	input  wire [7:0]  i_gain_default,// 初始化表的 0x3090: binning 0x20, 4K 0x10
+	// V39: 默认 SHR0 必须按模式给 —— 4K 用 2136 (≈15ms)，
+	//      不能再沿用 8 (那是 39.85ms 的满帧曝光)。
+	input  wire [19:0] i_shr0_default,
 
 	// ---- 来自寄存器堆 (0xC0 起) ----
 	input  wire [19:0] i_exp,        // SHR0, 0 = 用初始化表的默认
@@ -63,7 +65,7 @@ module cam_param #(
 );
 
 	//------------------------------------------------------------------ 曝光换算
-	wire [19:0] exp_base = (i_exp == 20'd0) ? (i_vmax - SHR0_DEFAULT)
+	wire [19:0] exp_base = (i_exp == 20'd0) ? (i_vmax - i_shr0_default)
 	                                        : (i_vmax - i_exp);
 
 	// EV 倍数: 桶形移位, 不用动态移位量以免综合出大逻辑

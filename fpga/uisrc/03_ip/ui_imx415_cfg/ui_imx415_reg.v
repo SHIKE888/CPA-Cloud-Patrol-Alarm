@@ -128,9 +128,11 @@ module ui_imx415reg (
       30:  REG_DATA = {16'h3045, 8'h00};// PIX_VST[12:0]
       31:  REG_DATA = {16'h3046, 8'h20};// PIX_VWIDTH[12:0]
       32:  REG_DATA = {16'h3047, 8'h11};// PIX_VWIDTH[12:0]
-      33:  REG_DATA = {16'h3050, 8'h08};// SHR0[19:0]
-      34:  REG_DATA = {16'h3051, 8'h00};// SHR0[19:0]
-      35:  REG_DATA = {16'h3052, 8'h00};// SHR0[19:0]
+      // V39: 4K 初值 2136 (0x858 ≈ 15ms)，避免上电就是 39.85ms 满帧曝光。
+      //      必须与 cam_param 的 i_shr0_default / system_top 的 20'd2136 一致。
+      33:  REG_DATA = (MODE==2'd1) ? {16'h3050, 8'h58} : {16'h3050, 8'h08};// SHR0[7:0]
+      34:  REG_DATA = (MODE==2'd1) ? {16'h3051, 8'h08} : {16'h3051, 8'h00};// SHR0[15:8]
+      35:  REG_DATA = {16'h3052, 8'h00};// SHR0[19:16]
       36:  REG_DATA = {16'h3054, 8'h19};// SHR1[19:0]
       37:  REG_DATA = {16'h3055, 8'h00};// SHR1[19:0]
       38:  REG_DATA = {16'h3056, 8'h00};// SHR1[19:0]

@@ -76,9 +76,33 @@
   .grid4{display:grid; grid-template-columns:repeat(4,1fr); gap:8px}
   .sep{height:1px;background:var(--line);margin:14px 0}
   .hint{color:var(--dim); font-size:12px; margin:6px 0 0}
-  #status{font-size:12px; color:var(--dim); margin-top:10px; line-height:1.7}
-  #status b{color:var(--fg); font-weight:600}
   .kv{display:flex;justify-content:space-between;gap:8px}
+  /* 画面下方指标区: 等分网格 + 迷你占用条 */
+  .mgroup{display:flex; align-items:center; gap:7px; font-size:10.5px;
+    letter-spacing:.10em; color:var(--dim); margin:16px 0 7px}
+  .mgroup::before{content:""; width:3px; height:10px; border-radius:2px;
+    background:var(--accent, #1f6feb)}
+  .metrics{display:grid; gap:1px; background:var(--line);
+    border:1px solid var(--line); border-radius:10px; overflow:hidden}
+  #status.metrics{grid-template-columns:repeat(6,1fr)}
+  .metrics.load{grid-template-columns:repeat(8,1fr)}
+  @media (max-width:820px){
+    #status.metrics{grid-template-columns:repeat(3,1fr)}
+    .metrics.load{grid-template-columns:repeat(4,1fr)}
+  }
+  .metrics .m{background:#12151a; padding:9px 11px 10px; min-width:0;
+    transition:background .2s}
+  .metrics .m:hover{background:#171b21}
+  .metrics i{display:block; font-style:normal; font-size:10.5px; letter-spacing:.05em;
+    color:var(--dim); margin-bottom:5px; white-space:nowrap; overflow:hidden;
+    text-overflow:ellipsis}
+  .metrics b{display:block; font-size:14px; line-height:1.15; font-weight:600;
+    color:var(--fg); font-variant-numeric:tabular-nums; white-space:nowrap;
+    overflow:hidden; text-overflow:ellipsis}
+  .metrics u{display:block; height:3px; margin-top:7px; border-radius:2px;
+    background:rgba(255,255,255,.09); overflow:hidden; text-decoration:none}
+  .metrics u span{display:block; height:100%; width:0; border-radius:2px;
+    background:#3fb950; transition:width .35s ease, background .35s ease}
   #toast{
     position:fixed; left:50%; bottom:26px; transform:translateX(-50%) translateY(20px);
     background:#1f6feb; color:#fff; padding:9px 18px; border-radius:10px;
@@ -133,13 +157,27 @@
         </div>
         <img id="stream" alt="stream" style="display:none">
       </div>
-      <div id="status">
-        <div class="kv"><span>状态</span><b id="sState">—</b></div>
-        <div class="kv"><span>后端 / 设备</span><b id="sBackend">—</b></div>
-        <div class="kv"><span>分辨率</span><b id="sSize">—</b></div>
-        <div class="kv"><span>视频帧率</span><b id="sFps">—</b></div>
-        <div class="kv"><span>YOLO 帧率</span><b id="sAiFps">—</b></div>
-        <div class="kv"><span>检测结果</span><b id="sAiRes">—</b></div>
+      <!-- 画面下方指标区: 等分网格, 整齐对齐 -->
+      <div class="mgroup">运行</div>
+      <div id="status" class="metrics">
+        <div class="m"><i>状态</i><b id="sState">—</b></div>
+        <div class="m"><i>分辨率</i><b id="sSize">—</b></div>
+        <div class="m"><i>帧率</i><b id="sFps">—</b></div>
+        <div class="m"><i>YOLO</i><b id="sAiFps">—</b></div>
+        <div class="m"><i>检测</i><b id="sAiRes">—</b></div>
+        <div class="m"><i>后端</i><b id="sBackend">—</b></div>
+      </div>
+
+      <div class="mgroup">链路 / 负载</div>
+      <div class="metrics load">
+        <div class="m"><i>MIPI</i><b id="b_mipi">—</b><u><span id="p_mipi"></span></u></div>
+        <div class="m"><i>CPU</i><b id="b_cpu">—</b><u><span id="p_cpu"></span></u></div>
+        <div class="m"><i>GPU</i><b id="b_gpu">—</b><u><span id="p_gpu"></span></u></div>
+        <div class="m"><i>NPU</i><b id="b_npu">—</b><u><span id="p_npu"></span></u></div>
+        <div class="m"><i>RAM</i><b id="b_ram">—</b><u><span id="p_ram"></span></u></div>
+        <div class="m"><i>DDR</i><b id="b_ddr">—</b><u><span id="p_ddr"></span></u></div>
+        <div class="m"><i>延时</i><b id="b_lat">—</b></div>
+        <div class="m"><i>队列 / 帧号</i><b id="b_q">—</b></div>
       </div>
     </div>
   </div>
@@ -417,6 +455,46 @@ function setDot(ok, txt) {
 }
 
 /* ---------------- 连接 ---------------- */
+// 拉流自动重连：
+//   切分辨率时服务端会 execv 重启(监听 socket 被关), 浏览器的 MJPEG <img>
+//   连接挂掉后既不会报错也不会自己重连 —— 表现就是“画面卡住, 要刷新页面”。
+//   这里做三件事：onerror 重试、服务端 clients 变 0 时重连、切模式后主动重连。
+let streamTimer = null, streamTries = 0, zeroClientHits = 0, streamGen = 0;
+
+// 关键: 每次重连都【新建一个 <img>】再替换旧的。
+// 复用同一个元素改 src 时, 浏览器有时会保留那条已经半死的 multipart 请求,
+// 新请求发不出去 —— 表现就是“画面卡住不管怎么重连都没用”。新建元素能强制
+// 断旧请求 + 开新请求。
+function startStream() {
+  if (!base) return;
+  clearTimeout(streamTimer);
+  const old = $("stream");
+  const img = document.createElement("img");
+  img.id = "stream"; img.alt = "stream";
+  const gen = ++streamGen;
+  img.onload = () => {
+    if (gen !== streamGen) return;          // 旧元素的残留回调, 忽略
+    connected = true; zeroClientHits = 0; streamTries = 0;
+    setDot(true, "已连接");
+  };
+  img.onerror = () => {
+    if (gen !== streamGen) return;
+    connected = false;
+    setDot(false, "重连中…");
+    streamTries++;
+    if (streamTries <= 40) {
+      streamTimer = setTimeout(startStream, Math.min(2000, 400 + streamTries * 250));
+    } else {
+      setDot(false, "拉流失败");
+      toast("拉流失败, 尝试重新加载页面…", true);
+      setTimeout(() => location.reload(), 1200);
+    }
+  };
+  img.src = base + "/stream?t=" + Date.now();
+  if (old && old.parentNode) old.parentNode.replaceChild(img, old);
+  $("placeholder").style.display = "none";
+}
+
 function connect() {
   let a = $("addr").value.trim();
   if (!a) { toast("请填写服务器地址", true); return; }
@@ -424,19 +502,14 @@ function connect() {
   base = a.replace(/\/+$/, "");
   localStorage.setItem("mipi_addr", $("addr").value.trim());
 
-  const img = $("stream");
-  img.onload  = () => { connected = true; setDot(true, "已连接"); };
-  img.onerror = () => { connected = false; setDot(false, "拉流失败");
-                        toast("拉流失败，请检查地址/端口/服务是否在跑", true); };
-  img.src = base + "/stream?t=" + Date.now();
-  img.style.display = "block";
-  $("placeholder").style.display = "none";
-
+  streamTries = 0;
   setDot(true, "连接中…");
+  startStream();
   getParams().then(loadHw).then(loadFpga).then(() => loadModes());
   aiLoad(true);
   fpgaPoll();
   poll();
+  sysPoll();
 }
 
 /* ---------------- 参数 ---------------- */
@@ -509,22 +582,32 @@ $("btnReset").onclick = async () => {
 };
 
 /* ---------------- 抓拍 ---------------- */
-$("btnSnap").onclick = () => {
-  const img = $("stream");
-  if (!img.src || img.style.display === "none") { toast("还没连接", true); return; }
-  const c = document.createElement("canvas");
-  c.width = img.naturalWidth; c.height = img.naturalHeight;
+// 改由服务端按【采集原始分辨率】出图：推流帧被缩到 --stream-width(默认1920)，
+// 拿 <img> 画到 canvas 只能得到 1920 宽的图。
+$("btnSnap").onclick = async () => {
+  if (!base) { toast("还没连接", true); return; }
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   try {
-    c.getContext("2d").drawImage(img, 0, 0);
-    c.toBlob(b => {
-      const a = document.createElement("a");
-      a.href = URL.createObjectURL(b);
-      a.download = "mipi_" + new Date().toISOString().replace(/[:.]/g, "-") + ".png";
-      a.click();
-      setTimeout(() => URL.revokeObjectURL(a.href), 4000);
-      toast("已保存抓拍");
-    }, "image/png");
-  } catch (e) { toast("抓拍失败: " + e.message, true); }
+    const r = await fetch(base + "/snapshot.jpg?full=1&t=" + Date.now(),
+                          { cache: "no-store" });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const b = await r.blob();
+    // 读出真实像素尺寸, 顺便写进文件名
+    const size = await new Promise(res => {
+      const im = new Image();
+      im.onload = () => res(im.naturalWidth + "x" + im.naturalHeight);
+      im.onerror = () => res("");
+      im.src = URL.createObjectURL(b);
+    });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(b);
+    a.download = "mipi_" + stamp + (size ? "_" + size : "") + ".jpg";
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+    toast("已保存" + (size ? " " + size : ""));
+  } catch (e) {
+    toast("抓拍失败: " + e.message, true);
+  }
 };
 
 /* ---------------- FPGA 硬件参数 (I2C @0x40) ---------------- */
@@ -697,8 +780,107 @@ $("btnApplyMode").onclick = async () => {
     if (r.ok) toast((r.log || []).join("  |  ") || "已切换");
     else toast(r.error || (r.log || []).join("  |  ") || "切换失败", true);
   } catch (e) { toast("切换失败: " + e.message, true); }
-  setTimeout(async () => { await loadModes(true); await poll(); }, 2500);
+  // 服务端会 execv 重启(监听 socket 被关) -> 旧 MJPEG 连接必死。
+  // 这里主动重连 + 兜底：还不行就整页刷新(页面 load 时会自动 connect)。
+  streamTries = 0;
+  setTimeout(startStream, 2500);
+  setTimeout(() => { if (!connected) startStream(); }, 5000);
+  setTimeout(() => { if (!connected) location.reload(); }, 11000);
+  setTimeout(async () => { await loadModes(true); await poll(); }, 4500);
 };
+
+/* ---------------- 系统指标 ---------------- */
+let sysTimer = null;
+
+function fmtPct(v) { return (v === null || v === undefined) ? "—" : v + "%"; }
+
+async function sysPollOnce() {
+  if (!base) return;
+  let d;
+  try { d = await api("/api/sys"); }
+  catch (e) {
+    // 切模式期间服务端在重启, 请求会失败 —— 计数到两次就主动重连拉流
+    if (++zeroClientHits >= 2 && base) { zeroClientHits = 0; startStream(); }
+    return;
+  }
+  const set = (id, v) => { const el = $(id); if (el) el.textContent = v; };
+  // 迷你占用条: 绿<60% 黄<85% 红>=85%
+  const bar = (id, pct) => {
+    const el = $(id); if (!el) return;
+    const p = Math.max(0, Math.min(100, Number(pct) || 0));
+    el.style.width = p + "%";
+    el.style.background = p >= 85 ? "#f85149" : p >= 60 ? "#d29922" : "#3fb950";
+  };
+
+  if (d.mipi) {
+    set("b_mipi", d.mipi.used_mb_s + " MB/s");
+    bar("p_mipi", d.mipi.pct);
+    const el = $("b_mipi");
+    if (el) el.title = d.mipi.used_mb_s + " / " + d.mipi.link_mb_s +
+                       " MB/s（" + d.mipi.pct + "%）";
+  }
+  if (d.cpu) {
+    set("b_cpu", fmtPct(d.cpu.total));
+    bar("p_cpu", d.cpu.total);
+    const el = $("b_cpu");
+    if (el) el.title = "各核: " + ((d.cpu.cores || []).map(v => v + "%").join(" / ") || "—");
+  }
+  // 空闲时显示“空闲”，比一个恒为 0 的百分比更好读
+  const loadTxt = v => (v === null || v === undefined) ? "—" :
+                       (Number(v) === 0 ? "空闲" : v + "%");
+  if (d.gpu) {
+    set("b_gpu", loadTxt(d.gpu.load_pct));
+    bar("p_gpu", d.gpu.load_pct || 0);
+    const el = $("b_gpu");
+    if (el) el.title = (d.gpu.model || "GPU") +
+      " · 占用 " + (d.gpu.load_pct === null ? "—" : d.gpu.load_pct + "%") +
+      (d.gpu.freq_mhz ? " · " + d.gpu.freq_mhz + "MHz" : "");
+  }
+  if (d.npu) {
+    set("b_npu", loadTxt(d.npu.load_pct));
+    bar("p_npu", d.npu.load_pct || 0);
+    const el = $("b_npu");
+    if (el) el.title = "RKNN NPU · 占用 " +
+      (d.npu.load_pct === null ? "—" : d.npu.load_pct + "%") +
+      (d.npu.freq_mhz ? " · " + d.npu.freq_mhz + "MHz" : "");
+  }
+  if (d.ram) {
+    set("b_ram", d.ram.used_mb + "M·" + d.ram.pct + "%");
+    bar("p_ram", d.ram.pct);
+    const el = $("b_ram");
+    if (el) el.title = d.ram.used_mb + " / " + d.ram.total_mb + " MB（" +
+                       d.ram.pct + "%）";
+  }
+  if (d.ddr) { set("b_ddr", fmtPct(d.ddr.load_pct)); bar("p_ddr", d.ddr.load_pct); }
+  if (d.latency_ms && d.latency_ms.capture_to_ready !== null) {
+    set("b_lat", d.latency_ms.capture_to_ready + " ms");
+    const el = $("b_lat");
+    if (el) el.title = "采集→可推流 " + d.latency_ms.capture_to_ready +
+                       " ms；最新帧已等待 " + d.latency_ms.newest_frame_age + " ms";
+  }
+  let q = "—";
+  if (d.frame_id !== undefined) q = "#" + d.frame_id;
+  if (d.clients !== undefined) q += " · " + d.clients + "路";
+  set("b_q", q);
+  {
+    const el = $("b_q");
+    if (el && d.queues) el.title = "队列 raw " + d.queues.raw + " / bgr " +
+      d.queues.bgr + "；帧号 " + d.frame_id + "；推流客户端 " + d.clients;
+  }
+
+  // 页面认为已连上, 但服务端一个推流客户端都没有 -> 连接已断, 重连
+  if (d.clients === 0 && connected) {
+    if (++zeroClientHits >= 2) { zeroClientHits = 0; startStream(); }
+  } else {
+    zeroClientHits = 0;
+  }
+}
+
+function sysPoll() {
+  clearInterval(sysTimer);
+  sysTimer = setInterval(sysPollOnce, 1000);
+  sysPollOnce();
+}
 
 function fpgaPoll() {
   clearInterval(fpgaTimer);
@@ -1062,6 +1244,10 @@ $("addr").addEventListener("keydown", e => { if (e.key === "Enter") connect(); }
   if (location.protocol.startsWith("http")) {
     // 直接由 RK 上 / 页面打开时, 自动使用当前地址
     $("addr").value = location.host;
+    connect();
+  } else if (saved) {
+    // 本地 file:// 打开时, 只要有上次地址也自动连 —— 这样切模式后
+    // 自动 reload 也能自己恢复, 不需要手动点“连接”。
     connect();
   }
 })();

@@ -38,8 +38,11 @@ module ui_image_correction #(
     input                          		I_clk   			,
     input                          		I_rst_n 			,
     input    [12:0]                    	I_img_width 		,   // V21: 运行时图像宽度
-    input    [12:0]                    	I_img_height		,   // V21: 运行时图像高度
-
+    input    [12:0]                     I_img_height		,   // V21: 运行时图像高度
+    // V39: 垂直起始裁剪(要跳过的原始行数)。IMX415 4K 录制区从第 36 行开始
+    //      (v_start=35)，1080p 厂商参考 v_start=19。缺这个参数会把顶部
+    //      OB/EBD 当图像，并把最后 35/19 行有效像素切掉；Bayer 相位也会错。
+    input    [12:0]                    	I_v_start  		,
     input    [DATA_WIDTH - 1:0]       	I_raw_data			,       
     input                             	I_raw_valid 		,     
     input                             	I_raw_frame_start	,
@@ -66,10 +69,15 @@ module ui_image_correction #(
 // V21: 运行时宽高 (4 像素/时钟)
     wire [14:0] img_width_4x  = (I_img_width >> 2);
     wire [14:0] img_height_rt = I_img_height;
+    // V39: 垂直裁剪窗口 = (v_start, v_start + height]
+    wire [14:0] v_start_rt    = {2'b00, I_v_start};
+    wire [14:0] v_end_rt      = v_start_rt + img_height_rt;
 
     assign H_valid 		= (h_cnt <= img_width_4x) && (h_cnt > 0);
     
-    assign tuser 		= (h_cnt == 1) && (v_cnt == 1) && I_raw_tvalid_d;
+    // tuser 必须落在第一个有效行 (v_start+1)，否则 ISP/AWB/去马赛克的
+    // 行计数与 Bayer 相位仍会从 OB/EBD 行开始。
+    assign tuser 		= (h_cnt == 1) && (v_cnt == v_start_rt + 15'd1) && I_raw_tvalid_d;
     
     assign O_raw_tdata  = V_valid && H_valid? I_raw_tdata_r:0;
     assign I_raw_tready = O_raw_tready;
@@ -109,7 +117,7 @@ module ui_image_correction #(
             v_cnt  <=  v_cnt + 1;
     end
 
-    assign V_valid = (v_cnt > 0) && (v_cnt <= img_height_rt);
+    assign V_valid = (v_cnt > v_start_rt) && (v_cnt <= v_end_rt);
 
     // 计算每行像素个数
     always @(posedge I_clk or negedge I_rst_n) begin

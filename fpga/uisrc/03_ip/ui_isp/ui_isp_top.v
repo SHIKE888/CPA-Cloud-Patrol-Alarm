@@ -10,6 +10,7 @@ module ui_isp_top (
     input           I_rst_n,
     input  [12:0]   I_img_width ,   // V21: 运行时图像宽度 (替代硬编码 1920)
     input  [12:0]   I_img_height,   // V21: 运行时图像高度 (替代硬编码 1080)
+    input           I_is_4k     ,   // V40: 1=4K(RGGB) 0=1080p(binning, GRBG)
     input           I_tlast,
     input           I_tuser,
     input  [39:0]   I_tdata,
@@ -115,26 +116,60 @@ ui_BLC #(
 );
 
 // ------------------ demosaic ------------------
+// V40: 1080p 是 2x2 binning，Bayer 相位与 4K all-pixel 不同。
+//      这里并行例化两套 demosaic：4K 用 RGGB，1080p 用 GRBG，
+//      输出按 I_is_4k 选择。行缓冲/DSP 资源翻倍，但当前利用率足够。
+wire [127:0] dem_rggb_tdata;
+wire         dem_rggb_tlast, dem_rggb_tuser, dem_rggb_tvalid;
+wire [127:0] dem_grbg_tdata;
+wire         dem_grbg_tlast, dem_grbg_tuser, dem_grbg_tvalid;
+
 ui_top_demosaic #(
     .data_complete_delay (50),
     .BAYER_MODE          ("RGGB")
-) X_ui_top_demosaic (
+) X_ui_top_demosaic_rggb (
     .I_clk        (I_clk),
     .I_rst_n      (I_rst_n),
-    .I_img_width  (I_img_width ),     // V21: 运行时
-    .I_img_height (I_img_height),     // V21: 运行时
+    .I_img_width  (I_img_width ),
+    .I_img_height (I_img_height),
     .I_axi4s_tdata(BLC_O_tdata),
     .I_axi4s_tdest(BLC_O_tdest),
     .I_axi4s_tlast(BLC_O_tlast),
     .I_axi4s_tvalid(BLC_O_tvalid),
     .I_axi4s_tuser(BLC_O_tuser),
     .I_axi4s_tready(BLC_O_tready),
-    .O_tlast      (m_aixs_tlast),
-    .O_tuser      (m_aixs_tuser),
-    .O_tdata      (m_aixs_tdata),
-    .O_tvalid     (m_aixs_tvalid),
+    .O_tlast      (dem_rggb_tlast),
+    .O_tuser      (dem_rggb_tuser),
+    .O_tdata      (dem_rggb_tdata),
+    .O_tvalid     (dem_rggb_tvalid),
     .O_tready     (m_aixs_tready)
 );
+
+ui_top_demosaic #(
+    .data_complete_delay (50),
+    .BAYER_MODE          ("GBRG")
+) X_ui_top_demosaic_grbg (
+    .I_clk        (I_clk),
+    .I_rst_n      (I_rst_n),
+    .I_img_width  (I_img_width ),
+    .I_img_height (I_img_height),
+    .I_axi4s_tdata(BLC_O_tdata),
+    .I_axi4s_tdest(BLC_O_tdest),
+    .I_axi4s_tlast(BLC_O_tlast),
+    .I_axi4s_tvalid(BLC_O_tvalid),
+    .I_axi4s_tuser(BLC_O_tuser),
+    .I_axi4s_tready(BLC_O_tready),
+    .O_tlast      (dem_grbg_tlast),
+    .O_tuser      (dem_grbg_tuser),
+    .O_tdata      (dem_grbg_tdata),
+    .O_tvalid     (dem_grbg_tvalid),
+    .O_tready     (m_aixs_tready)
+);
+
+assign m_aixs_tdata  = I_is_4k ? dem_rggb_tdata  : dem_grbg_tdata;
+assign m_aixs_tlast  = I_is_4k ? dem_rggb_tlast  : dem_grbg_tlast;
+assign m_aixs_tuser  = I_is_4k ? dem_rggb_tuser  : dem_grbg_tuser;
+assign m_aixs_tvalid = I_is_4k ? dem_rggb_tvalid : dem_grbg_tvalid;
 
 // ------------------ width conversion ------------------
 ui_data128_96 X_ui_data128_96(

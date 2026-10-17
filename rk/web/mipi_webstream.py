@@ -39,6 +39,36 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+
+def _schedule_self_restart(width, height, delay=1.2):
+    """模式切换后干净地重启自己。
+
+    OpenCV 的 cap.read() 在 FPGA 500ms 复位窗内会卡在 select()，
+    同一线程里根本无法处理 request_reopen 标志 —— 这就是“切 4K 卡死”。
+    这里把新的 --width/--height 写回 argv，然后 execv 自己；
+    新进程用新分辨率重新枚举/打开 /dev/video22。
+    """
+    argv = list(sys.argv)
+    for key, val in (("--width", str(int(width))),
+                     ("--height", str(int(height)))):
+        if key in argv:
+            argv[argv.index(key) + 1] = val
+        else:
+            argv += [key, val]
+
+    def _do():
+        time.sleep(delay)
+        try:
+            # cv2.VideoCapture 的 /dev/video22 fd 不是 CLOEXEC，execv 后会
+            # 被新进程继承，rkcif 一直报 "queue busy"。必须先把 3 以上的
+            # 所有 fd 关掉（包括监听 socket 和 V4L2 fd），再 execv。
+            os.closerange(3, 256)
+            os.execv(sys.executable, [sys.executable] + argv)
+        except Exception:                                              # noqa: BLE001
+            os._exit(1)
+
+    threading.Thread(target=_do, daemon=True).start()
+
 # ------------------------------------------------------------------ 依赖
 try:
     import cv2
@@ -303,9 +333,9 @@ def yuv_to_bgr(buf, w, h, fmt="NV16", matrix="709", rng="limited",
         c = buf[n:n + n].reshape(h, w // 2, 2)
         if target and (target[0] != w or target[1] != h):
             tw, th = int(target[0]), int(target[1])
-            y = cv2.resize(y, (tw, th), interpolation=cv2.INTER_AREA)
+            y = cv2.resize(y, (tw, th), interpolation=cv2.INTER_LINEAR)
             c = cv2.resize(c, (max(1, tw // 2), th),
-                           interpolation=cv2.INTER_AREA)
+                           interpolation=cv2.INTER_LINEAR)
             w, h = tw, th
         is422 = True
     else:                                  # NV12 / NV21
@@ -313,9 +343,9 @@ def yuv_to_bgr(buf, w, h, fmt="NV16", matrix="709", rng="limited",
         c = buf[n:n + n // 2].reshape(h // 2, w // 2, 2)
         if target and (target[0] != w or target[1] != h):
             tw, th = int(target[0]), int(target[1])
-            y = cv2.resize(y, (tw, th), interpolation=cv2.INTER_AREA)
+            y = cv2.resize(y, (tw, th), interpolation=cv2.INTER_LINEAR)
             c = cv2.resize(c, (max(1, tw // 2), max(1, th // 2)),
-                           interpolation=cv2.INTER_AREA)
+                           interpolation=cv2.INTER_LINEAR)
             w, h = tw, th
         is422 = False
 
@@ -483,12 +513,22 @@ class FrameHub:
         self._clients = 0
         self._fps_t0 = time.time()
         self._fps_cnt = 0
+        # V43: 延时统计 —— t_cap 采集时刻, t_pub 推入 hub 时刻
+        self._t_cap = None
+        self._t_pub = None
+        self._lat = []                 # 最近 N 帧 “采集->可推流”耗时(ms)
 
-    def publish(self, jpeg, info=None):
+    def publish(self, jpeg, info=None, ts=None):
         now = time.time()
         with self._cond:
             self._jpeg = jpeg
             self._frame_id += 1
+            if jpeg is not None and ts is not None:
+                self._t_cap = ts
+                self._t_pub = now
+                self._lat.append((now - ts) * 1000.0)
+                if len(self._lat) > 60:
+                    del self._lat[:30]
             if info:
                 self._info = info
             # 每满 1 秒统计一次真实帧率
@@ -519,6 +559,197 @@ class FrameHub:
             d["frame_id"] = self._frame_id
             d["clients"] = self._clients
             return d
+
+    def latency(self):
+        """返回 (采集->可推流 ms 平均, 最新帧已等待 ms)。"""
+        with self._cond:
+            if self._t_cap is None:
+                return None, None
+            avg = sum(self._lat) / len(self._lat) if self._lat else None
+            age = (time.time() - self._t_cap) * 1000.0
+            return (round(avg, 1) if avg is not None else None,
+                    round(age, 1))
+
+
+# ============================================================================
+#  系统指标: CPU / GPU / NPU / RAM / DDR / MIPI 带宽 / 传输延时
+# ============================================================================
+class SysMonitor:
+    """全部指标都从 /proc 或 /sys 直接读, 不依赖第三方库。
+
+    每次 sample() 调用都会重新算一次 CPU 占比(需要与上一次的差值),
+    所以前端按 1s 轮询即可。
+    """
+
+    GPU_LOAD = "/sys/class/devfreq/27800000.gpu/load"
+    # Mali kbase 直接给出 0..100 的 GPU 占用（devfreq 的 load 在空闲时恒为 0,
+    # 而且有时不会被 governor 更新, 所以优先读这个）
+    GPU_UTIL = "/sys/class/misc/mali0/device/utilisation"
+    GPU_INFO = "/sys/class/misc/mali0/device/gpuinfo"
+    NPU_LOAD = "/sys/kernel/debug/rknpu/load"
+    NPU_FREQ = "/sys/class/devfreq/27700000.npu/cur_freq"
+    DMC_LOAD = "/sys/class/devfreq/dmc/load"
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._prev = None
+
+    @staticmethod
+    def _rd(path):
+        try:
+            with open(path, "r") as f:
+                return f.read().strip()
+        except Exception:                                          # noqa: BLE001
+            return None
+
+    def _cpu(self):
+        """返回 {'total': %, 'cores': [%...]}；首次调用返回 None。"""
+        txt = self._rd("/proc/stat")
+        if not txt:
+            return None
+        cur = []
+        for line in txt.splitlines():
+            if not line.startswith("cpu"):
+                continue
+            parts = line.split()
+            name = parts[0]
+            v = [int(x) for x in parts[1:]]
+            if len(v) < 4:
+                continue
+            idle = v[3] + (v[4] if len(v) > 4 else 0)      # idle + iowait
+            total = sum(v)
+            cur.append((name, total, idle))
+        if not cur:
+            return None
+        out = {"total": None, "cores": []}
+        if self._prev and len(self._prev) == len(cur):
+            dtot = cur[0][1] - self._prev[0][1]
+            didle = cur[0][2] - self._prev[0][2]
+            if dtot > 0:
+                out["total"] = round(100.0 * (dtot - didle) / dtot, 1)
+            for i in range(1, len(cur)):
+                dt = cur[i][1] - self._prev[i][1]
+                di = cur[i][2] - self._prev[i][2]
+                if dt > 0:
+                    out["cores"].append(round(100.0 * (dt - di) / dt, 1))
+        self._prev = cur
+        return out
+
+    def _devfreq(self, path):
+        """解析 rockchip devfreq 的 \"22@2112000000Hz\"。"""
+        s = self._rd(path)
+        if not s:
+            return None, None
+        pct = freq = None
+        try:
+            a, b = s.split("@", 1)
+            pct = int(a.strip())
+            freq = int(b.strip().lower().replace("hz", ""))
+        except Exception:                                          # noqa: BLE001
+            return None, None
+        return pct, freq
+
+    def _gpu(self):
+        """返回 (占用%, 频率Hz, 型号字符串)。
+
+        优先用 Mali 的 utilisation（直接是百分比）；拿不到再退回 devfreq load。
+        """
+        pct = None
+        s = self._rd(self.GPU_UTIL)
+        if s is not None:
+            try:
+                pct = int(float(s.strip()))
+            except Exception:                                      # noqa: BLE001
+                pct = None
+        _, freq = self._devfreq(self.GPU_LOAD)
+        if pct is None:
+            pct, _ = self._devfreq(self.GPU_LOAD)
+        info = (self._rd(self.GPU_INFO) or "").strip()
+        return pct, freq, info
+
+    def _npu(self):
+        """解析 \"NPU load:  Core0:  12%, Core1:  0%,\" -> (平均占用%, 频率)"""
+        s = self._rd(self.NPU_LOAD)
+        pct = None
+        if s:
+            vals = [int(x) for x in re.findall(r"(\d+)%", s)]
+            if vals:
+                pct = round(sum(vals) / float(len(vals)), 1)
+        f = self._rd(self.NPU_FREQ)
+        try:
+            freq = int(f)
+        except Exception:                                          # noqa: BLE001
+            freq = None
+        return pct, freq
+
+    def _mem(self):
+        info = {}
+        txt = self._rd("/proc/meminfo")
+        if not txt:
+            return None
+        for line in txt.splitlines():
+            k, _, rest = line.partition(":")
+            rest = rest.strip().split()
+            if rest and rest[0].isdigit():
+                info[k] = int(rest[0])
+        total = info.get("MemTotal")
+        avail = info.get("MemAvailable", info.get("MemFree"))
+        if not total or avail is None:
+            return None
+        used = total - avail
+        return {"total_mb": round(total / 1024.0),
+                "used_mb": round(used / 1024.0),
+                "pct": round(100.0 * used / total, 1)}
+
+    def sample(self, hub, cap=None, width=None, height=None):
+        with self._lock:
+            cpu = self._cpu()
+        gpu_pct, gpu_freq, gpu_info = self._gpu()
+        npu_pct, npu_freq = self._npu()
+        ddr_pct, ddr_freq = self._devfreq(self.DMC_LOAD)
+        mem = self._mem()
+
+        st = hub.status()
+        fps = st.get("fps") or 0.0
+        lat_avg, lat_age = hub.latency()
+
+        out = {
+            "cpu": cpu,
+            "gpu": {"load_pct": gpu_pct,
+                    "freq_mhz": round(gpu_freq / 1e6) if gpu_freq else None,
+                    "model": gpu_info or None},
+            "npu": {"load_pct": npu_pct,
+                    "freq_mhz": round(npu_freq / 1e6) if npu_freq else None},
+            "ddr": {"load_pct": ddr_pct,
+                    "freq_mhz": round(ddr_freq / 1e6) if ddr_freq else None},
+            "ram": mem,
+            "fps": fps,
+            "latency_ms": {"capture_to_ready": lat_avg,
+                           "newest_frame_age": lat_age},
+        }
+
+        # MIPI: 4 lane x 1000Mbps = 500MB/s 原始带宽; 有效负载 = W*H*2B*fps
+        if width and height and fps:
+            used = float(width) * float(height) * 2.0 * fps
+            link = LINK_BYTES_PER_SEC
+            out["mipi"] = {
+                "used_mb_s": round(used / 1e6, 1),
+                "link_mb_s": round(link / 1e6, 1),
+                "pct": round(100.0 * used / link, 1),
+                "usable_pct": round(100.0 * used / (link * LINK_USABLE_RATIO), 1),
+            }
+            out["capture"] = {"width": width, "height": height, "fps": fps}
+        elif width and height:
+            out["capture"] = {"width": width, "height": height, "fps": fps}
+
+        # 处理队列深度: 持续积压说明编码跟不上
+        if cap is not None:
+            try:
+                out["queues"] = {"raw": cap._raw_q.qsize(),
+                                 "bgr": cap._bgr_q.qsize()}
+            except Exception:                                      # noqa: BLE001
+                pass
+        return out
 
 
 # ============================================================================
@@ -721,7 +952,13 @@ class OpenCVCapture(threading.Thread):
             self.fail_count = 0
 
             seq += 1
-            self._put(self._raw_q, (seq, frame))
+            # V43: 留一份【原始缓冲】引用给抓拍用。推流为了省 CPU 会缩到
+            #       --stream-width(默认1920), 所以 /snapshot.jpg 拿到的永远是
+            #       缩小图 —— 4K 模式下抓拍只有 1920x1080 就是这个原因。
+            #       这里不 copy、只存引用, 转换线程只读不写, 开销为零。
+            self._last_raw = (seq, frame)
+            # t_cap: 这一帧从 V4L2 拿到的时刻, 一路传到发布, 用来算传输延时
+            self._put(self._raw_q, (seq, frame, time.time()))
 
             # 限帧: 只补足"剩余"时间。默认 60 (链路上限), 可在网页上往下调。
             target = max(1.0, float(self.params.get()["fps"]))
@@ -737,7 +974,7 @@ class OpenCVCapture(threading.Thread):
         """中间级: 原始 YUV -> BGR (含缩放/几何/颜色参数)。"""
         while not self.stop_flag.is_set():
             try:
-                seq, raw = self._raw_q.get(timeout=0.5)
+                seq, raw, t_cap = self._raw_q.get(timeout=0.5)
             except queue.Empty:
                 continue
             p = self.params.get()
@@ -749,13 +986,13 @@ class OpenCVCapture(threading.Thread):
             if frame is None:
                 continue
             frame = self._process(frame, p)
-            self._put(self._bgr_q, (seq, frame))
+            self._put(self._bgr_q, (seq, frame, t_cap))
 
     def _enc_loop(self):
         """末级: JPEG 编码。多个线程跑同一段代码, 靠 GIL 释放真正并行。"""
         while not self.stop_flag.is_set():
             try:
-                seq, frame = self._bgr_q.get(timeout=0.5)
+                seq, frame, t_cap = self._bgr_q.get(timeout=0.5)
             except queue.Empty:
                 continue
             p = self.params.get()
@@ -785,7 +1022,7 @@ class OpenCVCapture(threading.Thread):
                     j = self._results.pop(self._next_pub)
                     self._next_pub += 1
                     if j is not None:
-                        self.hub.publish(j)
+                        self.hub.publish(j, ts=t_cap)
                 self._seq_cond.notify_all()
 
 
@@ -847,9 +1084,13 @@ class OpenCVCapture(threading.Thread):
             tw, th = target
             y = buf[:wh].reshape(self._h, self._w)
             c = buf[wh:wh * 2].reshape(self._h, self._w // 2, 2)
-            ys = cv2.resize(y, (tw, th), interpolation=cv2.INTER_AREA)
-            cs = cv2.resize(c, (max(1, tw // 2), th),
-                            interpolation=cv2.INTER_AREA)
+            # ★ 插值必须用 INTER_LINEAR: RK3576 上 INTER_AREA 没有跑 SIMD 路径,
+            #   实测 3840x2160->1728x972 要 51ms(1920->1728 也要 22ms),
+            #   而 INTER_LINEAR 只要 2.9ms / 2.3ms —— 快 17~20 倍。
+            #   改前 4K 光这一条就把帧率卡在 13~18fps, 1080p 卡在 35fps。
+            interp = cv2.INTER_LINEAR
+            ys = cv2.resize(y, (tw, th), interpolation=interp)
+            cs = cv2.resize(c, (max(1, tw // 2), th), interpolation=interp)
             need = tw * th
             if self._stage is None or self._stage.size != need * 2:
                 self._stage = np.empty(need * 2, np.uint8)
@@ -868,8 +1109,35 @@ class OpenCVCapture(threading.Thread):
                              target=target)
         return out
 
-    def _process(self, frame, p):
-        """几何变换 -> 缩放 -> 颜色处理。放到缩放之后做颜色, 省 CPU。"""
+    def snapshot_full(self, quality=92):
+        """用最近一帧原始缓冲, 按【采集原始分辨率】生成 JPEG (抓拍用)。
+
+        不在推流路径上, 只在点“抓拍”时跑一次, 所以慢一点无所谓。
+        """
+        item = getattr(self, "_last_raw", None)
+        if item is None or not HAVE_CV2:
+            return None
+        _seq, raw = item
+        p = self.params.get()
+        try:
+            self._last_snap_size = (self._w, self._h)
+            frame = self._to_bgr(raw, None)      # p=None -> 不预缩放
+            if frame is None:
+                return None
+            frame = self._process(frame, p, scale_to_stream=False)
+            ok, buf = cv2.imencode(
+                ".jpg", frame,
+                [int(cv2.IMWRITE_JPEG_QUALITY), int(quality)])
+            return buf.tobytes() if ok else None
+        except Exception as e:                                    # noqa: BLE001
+            print("[opencv] 抓拍失败: %s" % e, file=sys.stderr)
+            return None
+
+    def _process(self, frame, p, scale_to_stream=True):
+        """几何变换 -> 缩放 -> 颜色处理。放到缩放之后做颜色, 省 CPU。
+
+        scale_to_stream=False 时不缩到 --stream-width (抓拍走原始分辨率)。
+        """
         rot = int(p["rotate"])
         if rot == 90:
             frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
@@ -888,13 +1156,13 @@ class OpenCVCapture(threading.Thread):
             frame = cv2.flip(frame, 0)
 
         # 缩放: 以 --stream-width 为基准; _to_bgr 已经缩好的就跳过
-        if not getattr(self, "_pre_scaled", False):
+        if scale_to_stream and not getattr(self, "_pre_scaled", False):
             scale = float(p["scale"])
             tw = max(64, int(round(self.args.stream_width * scale / 2) * 2))
             th = max(64, int(round(tw * frame.shape[0] / float(frame.shape[1]) / 2) * 2))
             if tw != frame.shape[1]:
-                interp = cv2.INTER_AREA if tw < frame.shape[1] else cv2.INTER_LINEAR
-                frame = cv2.resize(frame, (tw, th), interpolation=interp)
+                # 同上: 本平台上 INTER_AREA 慢约 20 倍, 统一用 INTER_LINEAR
+                frame = cv2.resize(frame, (tw, th), interpolation=cv2.INTER_LINEAR)
 
         # 饱和度 / 色相
         sat, hue = float(p["saturation"]), float(p["hue"])
@@ -1498,6 +1766,11 @@ for _m in MODES:
     if _m["id"].startswith("720p"):
         _m["impl"] = False
         _m["note"] = "FPGA RTL 未实现 720p / 90fps"
+    elif _m["id"] == "4k30":
+        # 当前 RTL 的 4K h_frame 是 2652（为 25fps/每行 TX 预算定的），
+        # mode1 的 v_frame=2387 => 147.514M/(2652*2387)=23.3fps，不是 30。
+        _m["impl"] = False
+        _m["note"] = "当前 VTC 4K h_frame=2652 -> 实际 23.3fps；1000Mbps 下 4K30 跑不动"
 MODES_BY_ID = {m["id"]: m for m in MODES}
 
 
@@ -1613,12 +1886,13 @@ def pipeline_set_fmt(w, h, media_dev=MEDIA_DEV, media_ctl="media-ctl"):
 # V24(2026-10-16): VMAX / 行周期跟传感器读出模式走。
 #   曝光行数 = VMAX - SHR0, VMAX 用错曝光就差一倍。
 #     1080p (2x2 binning): VMAX=2283, 行周期 542/74.25MHz = 7.30us
-# V27: 4K    (all-pixel)  : VMAX=3449, 行周期 861/74.25MHz = 11.60us (891Mbps 档)
+# V38g/V39: 4K (all-pixel) : VMAX=3420, 实测行周期约 11.679us (891Mbps 档)
 #   （对应 ui_imx415_reg.v 的 0x3024/25 与 0x3028, 由 RES_MODE 选表）
+#   ⚠ 以前这里写 3449/11.60，和 RTL 的 3420/11.679 不一致，4K 曝光会偏大。
 CAM_VMAX_1080      = 2283
 CAM_T_LINE_US_1080 = 7.30
-CAM_VMAX_4K        = 3449
-CAM_T_LINE_US_4K   = 11.60
+CAM_VMAX_4K        = 3420
+CAM_T_LINE_US_4K   = 11.679
 
 # 兼容旧引用 (默认按 1080p)
 CAM_VMAX      = CAM_VMAX_1080
@@ -1676,16 +1950,22 @@ def cam_phys(regs, status=None):
         shr0 = (pick("CAM_EXP_L", 0, 255, 0) |
                 (pick("CAM_EXP_M", 0, 255, 0) << 8) |
                 (pick("CAM_EXP_H", 0, 15, 0) << 16))
-        # V24/V27: 曝光换算要跟传感器读出模式走 (4K 的 VMAX 是 3449, 不是 2283)
+        # V24/V27: 曝光换算要跟传感器读出模式走 (4K 的 VMAX 是 3420, 不是 2283)
         vmax, t_line = cam_mode_params(regs)
-        # SHR0 = 0 表示“保持初始化表的值”, 按默认 8 报
+        try:
+            rm = int(regs.get("RES_MODE", 0) or 0)
+        except Exception:
+            rm = 0
+        # SHR0 = 0 表示“保持初始化表的值”：4K 现在默认 2136 (≈15ms)，
+        # 1080p 仍是 8 (≈16.6ms)。
+        default_shr0 = 2136 if rm in (1, 2) else 8
         if not (1 <= shr0 <= vmax - 1):
-            shr0 = 8
+            shr0 = default_shr0
         ms = cam_ms_from_shr0(shr0, vmax, t_line)
 
-        # CAM_GAIN = 0 表示“保持初始化表的值” (0x30 -> 14.4dB)
+        # CAM_GAIN = 0 表示“保持初始化表的值”：1080p 0x20 (9.6dB)，4K 0x10 (4.8dB)
         gain = pick("CAM_GAIN", 1, 100, 0)
-        gain_db = (gain * 0.3) if gain else 14.4
+        gain_db = (gain * 0.3) if gain else (4.8 if rm in (1, 2) else 9.6)
 
         return {
             "cam_exp_ms":  round(ms, 2),
@@ -1815,10 +2095,16 @@ class FpgaI2C(object):
             kl = str(k).strip().lower()
             # ---- 物理量 -> 寄存器 (网页用的是物理量, 更好懂) ----
             if kl in ("cam_exp_ms", "exp_ms"):
-                # V24/V27: 曝光换算要跟模式走 —— 4K 的 VMAX=3449/行周期11.60us,
+                # V24/V27: 曝光换算要跟模式走 —— 4K 的 VMAX=3420/行周期11.679us,
                 #      1080p 是 2283/7.30us。用错的话设 16ms 实际只得到 8ms。
+                # V39.1: FpgaI2C 没有 args, 直接从硬件读 RES_MODE(0xE0)，
+                #        避免用 self.args.height 触发 AttributeError。
+                try:
+                    _rm = self.read(0xE0)
+                except Exception:
+                    _rm = 0
                 _vm, _tl = ((CAM_VMAX_4K, CAM_T_LINE_US_4K)
-                            if int(self.args.height) > 1080
+                            if _rm in (1, 2)
                             else (CAM_VMAX_1080, CAM_T_LINE_US_1080))
                 s = cam_shr0_from_ms(v, _vm, _tl)
                 flat["CAM_EXP_L"] = s & 0xFF
@@ -2014,13 +2300,35 @@ class Handler(BaseHTTPRequestHandler):
                     "capture": {"width": self.args.width,
                                 "height": self.args.height},
                 })
+            if path == "/api/sys":
+                # 实时系统指标: CPU/GPU/NPU/RAM/DDR/MIPI 带宽/传输延时
+                mon = getattr(Handler, "sysmon", None) or SysMonitor()
+                cap = Handler.capture
+                w = getattr(cap, "_w", None) or self.args.width
+                h = getattr(cap, "_h", None) or self.args.height
+                out = mon.sample(self.hub, cap, w, h)
+                st = self.hub.status()
+                out["clients"] = st.get("clients")
+                out["frame_id"] = st.get("frame_id")
+                return self._json(out)
             if path in ("/snapshot.jpg", "/snapshot"):
-                jpeg, _ = self.hub.snapshot()
+                # V43: 默认按【采集原始分辨率】抓拍 (4K 模式 = 3840x2160)。
+                #      推流帧是缩到 --stream-width 的, 用它抓拍只能得到 1920。
+                #      ?full=0 可回到“直接取推流帧”。
+                qs = self.path.split("?", 1)[1] if "?" in self.path else ""
+                want_full = ("full=0" not in qs)
+                jpeg = None
+                cap = Handler.capture
+                if want_full and cap is not None and hasattr(cap, "snapshot_full"):
+                    jpeg = cap.snapshot_full()
+                if not jpeg:
+                    jpeg, _ = self.hub.snapshot()
                 if not jpeg:
                     return self._json({"error": "no frame"}, 503)
                 self.send_response(200)
                 self.send_header("Content-Type", "image/jpeg")
                 self.send_header("Content-Length", str(len(jpeg)))
+                self.send_header("Cache-Control", "no-store")
                 self._cors()
                 self.end_headers()
                 self.wfile.write(jpeg)
@@ -2135,11 +2443,40 @@ class Handler(BaseHTTPRequestHandler):
         if self.fpga is None:
             return {"ok": False, "error": "FPGA I2C 未启用 (--fpga-bus -1)", "log": log}
         try:
+            # V39: 切模式前先把“当前曝光”按旧模式读成毫秒。
+            # 传感器里存的是 SHR0(行)，VMAX/行周期一换，同一个 SHR0 的曝光时间
+            # 会差 3 倍多；必须按 ms 重新换算，否则 1080p->4K 会突然过曝。
+            old_regs = {}
+            try:
+                _ok, _snap = self.fpga.snapshot()
+                old_regs = _snap.get("regs", {}) or {}
+            except Exception:
+                old_regs = {}
+            old_shr0 = (int(old_regs.get("CAM_EXP_L", 0) or 0) |
+                        (int(old_regs.get("CAM_EXP_M", 0) or 0) << 8) |
+                        (int(old_regs.get("CAM_EXP_H", 0) or 0) << 16))
+            old_rm = int(old_regs.get("RES_MODE", 0) or 0)
+            old_vm, old_tl = ((CAM_VMAX_4K, CAM_T_LINE_US_4K) if old_rm in (1, 2)
+                              else (CAM_VMAX_1080, CAM_T_LINE_US_1080))
+            old_ms = (cam_ms_from_shr0(old_shr0, old_vm, old_tl)
+                      if 1 <= old_shr0 <= old_vm - 1 else None)
+
             # FPS_DIV 先写; RES_MODE 后写 —— 写它会产生 VTC 复位窗口,
             # 让它作为最后一步, 免得复位后帧率又被改一次。
             self.fpga.write(0xC7, int(mode["fps_div"]))
             self.fpga.write(0xE0, int(mode["res_mode"]))
             log.append("FPGA: FPS_DIV=%d RES_MODE=%d" % (mode["fps_div"], mode["res_mode"]))
+
+            # 按新模式把 ms 换回 SHR0，保证切模式前后“曝光时间”不变。
+            if old_ms is not None:
+                nvm, ntl = ((CAM_VMAX_4K, CAM_T_LINE_US_4K)
+                            if int(mode["res_mode"]) in (1, 2)
+                            else (CAM_VMAX_1080, CAM_T_LINE_US_1080))
+                ns = cam_shr0_from_ms(old_ms, nvm, ntl)
+                self.fpga.write(0xC0, ns & 0xFF)
+                self.fpga.write(0xC1, (ns >> 8) & 0xFF)
+                self.fpga.write(0xC2, (ns >> 16) & 0x0F)
+                log.append("曝光保持 %.2fms -> SHR0=%d" % (old_ms, ns))
         except Exception as e:
             return {"ok": False, "log": log,
                     "error": "FPGA 写入失败: %s: %s" % (type(e).__name__, e)}
@@ -2147,8 +2484,9 @@ class Handler(BaseHTTPRequestHandler):
         # ---- RK 侧: 整条 media pipeline 改成新尺寸 ----
         #   必须改! 只写 FPGA 寄存器的话 rkcif 还按旧尺寸收, 画面是一团错位。
         #   也必须从 sensor subdev 设起 (见 pipeline_set_fmt 的注释)。
-        #   等一小会儿让 FPGA 的复位窗(80ms)过去, 免得刚设完就被切一刀。
-        time.sleep(0.25)
+        #   V39: FPGA 协同复位窗现在是 500ms (RES_RST_CYCLES=12.5M@25MHz)，
+        #        原来只等 250ms，会在复位中途重开采集 -> csi size err/黑帧。
+        time.sleep(0.70)
         try:
             res = pipeline_set_fmt(int(mode["w"]), int(mode["h"]))
             bad = [(s, e) for (s, ok, e) in res if not ok]
@@ -2162,16 +2500,14 @@ class Handler(BaseHTTPRequestHandler):
         #    采集线程重开前(设备空闲)会自己跑一遍, 见 _capture_loop。
         self.args.width = int(mode["w"])
         self.args.height = int(mode["h"])
-        cap = Handler.capture
-        reopened = False
-        if cap is not None and hasattr(cap, "request_reopen"):
-            cap.request_reopen()
-            reopened = True
-            log.append("已请求采集线程按 %dx%d 重开" % (mode["w"], mode["h"]))
-        else:
-            log.append("警告: 未找到采集对象, 可能要手动重启服务")
-        return {"ok": reopened, "mode": mode, "log": log,
-                "note": "画面会在 1~2 秒内按新模式重建"}
+        # V39.2: 不再依赖 request_reopen —— cap.read() 卡在 select() 时
+        #        采集线程无法处理标志。直接把新宽高写回 argv 并 execv 自己，
+        #        新进程会干净地重新打开设备。
+        _schedule_self_restart(mode["w"], mode["h"])
+        log.append("服务将在 1.2s 后自动重启，按 %dx%d 重新打开采集"
+                   % (mode["w"], mode["h"]))
+        return {"ok": True, "mode": mode, "log": log,
+                "note": "服务自动重启中，约 2 秒后恢复"}
 
     # ---------- 具体响应 ----------
     def _serve_viewer(self):
@@ -2386,6 +2722,7 @@ def main():
     Handler.params = params
     Handler.args = args
     Handler.capture = cap
+    Handler.sysmon = SysMonitor()
 
     # FPGA 预处理参数走 I2C 从机 (RK I2C9 <-> FPGA L18/M18, 底板直连不用飞线)
     if args.fpga_bus is not None and args.fpga_bus >= 0:

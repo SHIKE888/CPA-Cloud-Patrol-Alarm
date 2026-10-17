@@ -28,8 +28,9 @@ module cfg_ctrl_top #(
 	//    白分析了一轮"VMAX 不生效")
 	//   编码: 高字节 = 大版本(hex), 低字节 = 该版本内的构建序号
 	//     0x3504 = V35 第 4 次构建 (V35d: 4K VMAX=2788 想拿 25fps)
+	//     0x4301 = V43 第 1 次构建 (修 4K 每行多 1~2 个 word 导致的斜向撕裂)
 	//=========================================================================
-	parameter [15:0] CFG_VER  = 16'h3504
+	parameter [15:0] CFG_VER  = 16'h4301
 )(
 	// ---- 系统时钟域 (25MHz 常开) ----
 	input  wire        i_sys_clk,
@@ -268,6 +269,21 @@ module cfg_ctrl_top #(
 		end
 	end
 
+	// V39: RES_MODE 之前是"直接透传"，25MHz 寄存器直接进 147.5MHz 的 VTC/裁剪/
+	//      dbuf 尺寸组合逻辑，是 STA 里 sys_clk -> clk4 的最差路径 (-4.949ns)。
+	//      现在在像素域做 2 级同步，顶层拿到的 S_res_mode 已经是像素域寄存器；
+	//      模式切换仍由 500ms 复位窗兜底。
+	reg [1:0] res_mode_s1, res_mode_s2;
+	always @(posedge i_pix_clk or negedge i_pix_rst_n) begin
+		if (!i_pix_rst_n) begin
+			res_mode_s1 <= 2'd0;
+			res_mode_s2 <= 2'd0;
+		end else begin
+			res_mode_s1 <= cfg_res_mode;
+			res_mode_s2 <= res_mode_s1;
+		end
+	end
+
 	assign o_pp_mode        = mode_s2;
 	assign o_pp_sobel_shift = sh_s2;
 	assign o_pp_thresh      = th_s2;
@@ -277,20 +293,31 @@ module cfg_ctrl_top #(
 	assign o_wb_b    = wbb_s2;
 	// V21 诊断: i_line_groups 来自 S_hs_rx_clk 域, 2 级同步到 i_sys_clk 后取历史最大值。
 	// 取最大值可自动滤掉跨时钟采样时可能出现的瞬时撕裂值, 读数稳定。
+	// V39: 切模式时清空 400ms，避免 0xD4/0xD5 保留上一个模式的 966，
+	//      导致切回 1080p 后仍显示 966。
+	reg [23:0] lg_blank;
 	always @(posedge i_sys_clk or negedge sys_rst_n) begin
 		if (!sys_rst_n) begin
-			lg_s1 <= 16'd0; lg_s2 <= 16'd0; lg_max <= 16'd0;
+			lg_s1 <= 16'd0; lg_s2 <= 16'd0; lg_max <= 16'd0; lg_blank <= 24'd0;
 		end else begin
 			lg_s1 <= i_line_groups;
 			lg_s2 <= lg_s1;
-			if (lg_s2 > lg_max) lg_max <= lg_s2;
+			// 400ms @25MHz：覆盖 D-PHY RX 复位(约 250ms)+传感器全表重写，
+			// 否则 RX 时钟停住期间 i_line_groups 会冻结在旧模式的 966。
+			if (cfg_res_chg)          lg_blank <= 24'd10_000_000;
+			else if (lg_blank != 0)   lg_blank <= lg_blank - 24'd1;
+
+			if (cfg_res_chg || lg_blank != 0)
+				lg_max <= 16'd0;
+			else if (lg_s2 > lg_max)
+				lg_max <= lg_s2;
 		end
 	end
 
 	assign o_roi_pct = roi_s2;
 	assign o_fps_div = fps_s2;
-	// V21: RES_MODE 属静态配置, 直接透传; 顶层在 o_res_chg 时拉长一个复位窗
-	assign o_res_mode = cfg_res_mode;
+	// V39: 使用像素域 2 级同步后的 mode (见上面的 res_mode_s1/s2)
+	assign o_res_mode = res_mode_s2;
 	assign o_res_chg  = cfg_res_chg;
 
 	// 摄像头参数仍在 25MHz 域 (cam_param 也挂这个域), 不用同步

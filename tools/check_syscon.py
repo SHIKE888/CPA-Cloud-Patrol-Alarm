@@ -61,17 +61,19 @@ _EXTRA_SIG_NAMES = ('H_ACTIVE', 'V_ACTIVE', 'S_h_active', 'S_v_active')
 
 
 def extract_inst(text, mod, inst):
-    """从 text 中抽出 "<mod> #( ... ) <inst> ( ... );" 整块"""
-    pat = re.compile(re.escape(mod) + r'\s*#?\s*\(', re.M)
+    """从 text 中抽出 "<mod> [#( ... )] <inst> ( ... );" 整块
+
+    V39: 支持没有参数列表的例化 (如 `cam_param u_cam_param (`)，
+    以及参数列表里有换行/注释的情况。
+    """
+    pat = re.compile(
+        re.escape(mod) + r'\s*(?:#\s*\([^;]*?\)\s*)?' + re.escape(inst) + r'\s*\(',
+        re.S)
     m = pat.search(text)
     if not m:
-        return None, "找不到模块例化 %s" % mod
+        return None, "找不到模块例化 %s/%s" % (mod, inst)
     start = m.start()
-    # 从 start 往后找 "<inst> (" 再匹配到配对的 ");"
-    mi = re.compile(r'\b' + re.escape(inst) + r'\s*\(').search(text, m.end())
-    if not mi:
-        return None, "找不到实例名 %s" % inst
-    i = mi.end()
+    i = m.end()
     depth = 1
     while i < len(text) and depth:
         if text[i] == '(':
