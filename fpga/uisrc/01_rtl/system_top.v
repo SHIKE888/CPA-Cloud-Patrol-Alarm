@@ -961,10 +961,10 @@ cfg_ctrl_top #(
 	// ★ 构建版本号 (I2C 0xA9 低 / 0xAA 高 可读)。注意这里会覆盖 cfg_ctrl_top
 	//   的 parameter 默认值 —— 2026-10-17 就因为改错地方导致版本号一直读 0x0101,
 	//   白白多烧了一轮。以后改这个号只能改这里。
+	//   0x3806 = V38f (GAP_LINE 200->100: 每行余量 5.9%->10%, 治逐行偏移/斜切)
 	//   0x3805 = V38e (4K25: h_frame 2652 / v_frame 2225 / VMAX 3420)
 	//   0x3804 = V38d (补上 0x3024/0x3025: VMAX 3449->4282)
-	//   0x3803 = V38c (GAP 回退 200; h_frame 2060->2800 => 4K20)
-	.CFG_VER  (16'h3805)
+	.CFG_VER  (16'h3806)
 ) u_cfg_ctrl (
 	.i_sys_clk    (I_sysclk_25m),
 	.i_sys_rst_n  (1'b1),
@@ -1476,10 +1476,16 @@ csi2_frame_tx #(
 	.VC			(2'd0 ),
 	.BPP_NUM	(2    ),
 	.BPP_DEN	(1    ),
-	// V38c: GAP_LINE 改回 200 —— GAP=40 时 dmesg 刷满 MIPI_CSI2 ERR1/ERR2
-	//   (crc/ecc, VC 0/1/2 全中), rkcif 一帧都凑不齐。200 clk = 1.6us 是 RK 端
-	//   可靠解码必需的, 不能当"浪费"砍。
-	.GAP_LINE	(32'd200 ),
+	// V38f: GAP_LINE 200 -> 100。
+	//   症状: 用户描述"整幅拉升倾斜" + "以左上到右下为界斜向上下错位"。
+	//   = 每行横向偏 1 个 beat(2 像素), 2160 行累积 4320 像素, 绕过 3840 一次
+	//     => 正好出现一条对角分界线。
+	//   根因: uidbuf 读侧 r_xcnt 必须在 VTC 有效窗口内数到 I_R_XSIZE-1 才产生行尾,
+	//         窗口内少一个 beat 就不进位, 行边界永久错开且无法自愈。
+	//   而少 beat 是因为余量只有 5.9%: TX 每行 16.98us vs VTC 17.98us。
+	//   GAP 200->100 后 TX 每行 16.18us, 余量 10.0%。
+	//   ★ GAP 不能小于 ~800ns: 40 clk(320ns) 实测会报 MIPI_CSI2 CRC/ECC 错。
+	.GAP_LINE	(32'd100 ),
 	.GAP_FRAME	(32'd4000)
 ) u_csi2_frame_tx (
 	.clk			(S_dsi_byte_clk	),
