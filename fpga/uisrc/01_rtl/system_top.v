@@ -947,8 +947,9 @@ cfg_ctrl_top #(
 	// ★ 构建版本号 (I2C 0xA9 低 / 0xAA 高 可读)。注意这里会覆盖 cfg_ctrl_top
 	//   的 parameter 默认值 —— 2026-10-17 就因为改错地方导致版本号一直读 0x0101,
 	//   白白多烧了一轮。以后改这个号只能改这里。
-	//   0x3801 = V38 (4K 回退 891Mbps; 修好 st_corr_fc 位宽)
-	.CFG_VER  (16'h3801)
+	//   0x3802 = V38b (GAP_LINE 200->40, GAP_FRAME 4000->1000; 试解决输出只有 12.5fps)
+	//   0x3801 = V38   (4K 回退 891Mbps — 确认传感器真出帧 24.83fps)
+	.CFG_VER  (16'h3802)
 ) u_cfg_ctrl (
 	.i_sys_clk    (I_sysclk_25m),
 	.i_sys_rst_n  (1'b1),
@@ -1460,8 +1461,18 @@ csi2_frame_tx #(
 	.VC			(2'd0 ),
 	.BPP_NUM	(2    ),
 	.BPP_DEN	(1    ),
-	.GAP_LINE	(32'd200 ),
-	.GAP_FRAME	(32'd4000)
+	// V38b: GAP_LINE 原 200 byte_clk = 1.6us/行, 远超 MIPI 实际需要的行间隙(~100ns)。
+	//   实测 (V38, 4K): 传感器 CSI-FS 24.83fps, 但 rkcif 只收到 12.52fps。
+	//   TX 每行 = 1920(payload) + 200(gap) + 3(header/CRC) = 2123 clk
+	//           = 2123/125MHz = 16.98us
+	//   而 VTC 每行只给 2060/147.5MHz = 13.97us
+	//   => TX 比允许值慢 22%, 读侧一帧跨不过一个 VTC 周期, 只能隔一个 vsync 出帧
+	//      => 输出正好是 VTC 的一半 (12.5fps), 而写侧 24.83fps 不同步
+	//      => 相位持续漂移, 表现为"画面一直扭曲流动"
+	//   收到 40 clk(0.32us) 后 TX 每行 = 1963 clk = 15.70us, 仍略大于 13.97us,
+	//   所以帧率不会再翻倍, 但加上 GAP 收缩后一帧的总耗时降下来了, 再实测验证。
+	.GAP_LINE	(32'd40  ),
+	.GAP_FRAME	(32'd1000)
 ) u_csi2_frame_tx (
 	.clk			(S_dsi_byte_clk	),
 	// V22: 同 csi2_pack —— 包/帧状态机必须在模式切换时一起复位,
