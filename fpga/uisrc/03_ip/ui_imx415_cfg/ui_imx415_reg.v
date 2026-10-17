@@ -59,11 +59,13 @@
 //        BCWAIT=0x54, CPWAIT=0x3B
 //        0x4004/0x4018..0x4028 整组 D-PHY 发送时序换成 1440Mbps 那一套
 //        ADBIT 输出保持 10bit (0x3032=0x00) -> ui_raw10_unpacket_4lane 不用改
-//  帧率: 行时间 = HMAX/74.25MHz = 533/74.25MHz = 7.178us (与厂商 4K30 一致)
-//        厂商 VMAX=4503 => 30.9fps;  本版 VMAX=5572 => 40.0ms => 25.00fps
-//        为什么不是 30fps: FPGA 输出端 ui_vtc 固定 25fps
-//        (4K30 需要 3840x2160x2Bx30 = 497.7MB/s, 占 4lane x1000Mbps 的 99.5%, 跑不动)
-//        写侧必须跟读侧同频, 否则 dbuf 溢出/欠载 -> 画面撕裂。
+//  帧长取 5574 (厂商原值 4503 = 30.9fps) 是为了跟 FPGA 输出端帧率对齐:
+//        写侧 = 74.25MHz / (533 x 5574)  = 24.992073 fps
+//        读侧 = 147.5MHz / (2060 x 2865) = 24.991952 fps   (ui_vtc)
+//        两者相差 4.8ppm -> 约 139 分钟才滑一帧。
+//        为什么不用 30fps: 输出链路 4lane x 1000Mbps = 500MB/s,
+//        4K30 需 497.7MB/s = 99.5%, 加上 MIPI 包头开销物理上跑不动;
+//        4K25 只需 414.7MB/s = 82.9%。写/读帧率必须对上, 否则 dbuf 溢出/欠载 -> 撕裂。
 //  交叉验证: GitHub tipoman9/imx415_modes 的 3840x2160@30fps 表同样是
 //        SYS_MODE=0x08 + INCKSEL6=1 + INCKSEL7=0 + 同量级的 D-PHY 时序。
 //
@@ -104,8 +106,8 @@ module ui_imx415reg (
         11:  REG_DATA = (MODE==2'd1) ? {16'h3021, 8'h00} : {16'h3021, 8'h01};// VADD: 0=no-add(4K), 1=2x2-binning
         12:  REG_DATA = (MODE==2'd1) ? {16'h3022, 8'h00} : {16'h3022, 8'h01};// ADDMODE[1:0]: 0=off(4K), 1=binning
       13:  REG_DATA = {16'h3023, 8'h01};// VCMODE
-      14:  REG_DATA = (MODE==2'd1) ? {16'h3024, 8'hC4} : {16'h3024, 8'hEB};// VMAX[7:0]: 4K=0xC4, binning=0xEB
-      15:  REG_DATA = (MODE==2'd1) ? {16'h3025, 8'h15} : {16'h3025, 8'h08};// VMAX[15:8]: 4K=0x15 => 5572(25.00fps@533clk), binning=0x08 => 2283
+      14:  REG_DATA = (MODE==2'd1) ? {16'h3024, 8'hC6} : {16'h3024, 8'hEB};// VMAX[7:0]: 4K=0xC6, binning=0xEB
+      15:  REG_DATA = (MODE==2'd1) ? {16'h3025, 8'h15} : {16'h3025, 8'h08};// VMAX[15:8]: 4K=0x15 => 5574(24.9921fps@533clk), binning=0x08 => 2283
       16:  REG_DATA = {16'h3026, 8'h00};// VMAX[19:0]
       17:  REG_DATA = (MODE==2'd1) ? {16'h3028, 8'h15} : {16'h3028, 8'h1E};// HMAX[7:0]: 4K=0x15(533), binning=0x1E(542)
       18:  REG_DATA = {16'h3029, 8'h02};// HMAX[15:8]: 0x02 for all modes

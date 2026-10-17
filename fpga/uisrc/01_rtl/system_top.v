@@ -184,7 +184,7 @@ parameter CS_WIDTH        = 1
 	//  帧率 = 147.5e6 / (H_FrameSize * V_FrameSize)
 	//    1080p60: 2200 * 1125 = 2.475e6 -> 59.6 fps  (实测 59.4)
 	//    4K30   : 2060 * 2387 = 4.917e6 -> 30.0 fps  (99.5% 带宽, 跑不动)
-	//    4K25   : 2060 * 2864 = 5.900e6 -> 25.0 fps  (82.9% 带宽, 可用)
+	//    4K25   : 2060 * 2865 = 5.901e6 -> 24.992 fps (82.9% 带宽, 可用)
 	//  H_ActiveSize/SyncStart/SyncEnd 两种模式相同, 帧长只靠 H_FrameSize 调。
 	//  注: Verilog 不允许对括号表达式做位选 ((a+b)[12:0] 是语法错误), 靠 wire 位宽截断。
 	wire [12:0] S_vtc_h_active = H_ACTIVE[12:0];                            // 1920
@@ -195,8 +195,9 @@ parameter CS_WIDTH        = 1
 	wire [11:0] S_vtc_v_active = S_is_4k ? 12'd2160 : V_ACTIVE[11:0];
 	wire [11:0] S_vtc_v_start  = S_is_4k ? 12'd2164 : (V_ACTIVE+V_FP);
 	wire [11:0] S_vtc_v_end    = S_is_4k ? 12'd2169 : (V_ACTIVE+V_FP+V_SA);
-	// 4K 两个档只差场周期: 2387 -> 30fps(99.5% 跑不动), 2864 -> 25fps(82.9% 可用)
-	wire [11:0] S_vtc_v_frame  = (S_res_mode == 2'd2) ? 12'd2864
+	// 4K 场周期: 2387 -> 30fps(99.5% 带宽, 跑不动), 2865 -> 24.992fps(82.9% 可用)
+	// V35c: 2865 不是随便取的 —— 见下方 i_vmax 处的推导
+	wire [11:0] S_vtc_v_frame  = (S_res_mode == 2'd2) ? 12'd2865
 	                           : (S_res_mode == 2'd1) ? 12'd2387
 	                                                  : (V_ACTIVE+V_FP+V_SA+V_BP);
 	//===============================================================
@@ -469,11 +470,17 @@ cam_param #(
 	.clk        (I_sysclk_25m),
 	.rst_n      (S_pll_lock),
 	// V35: 4K 改回厂商验证配置(SYS_MODE=8, 1440Mbps), HMAX=533 不动
-	//      行时间 = 533/74.25MHz = 7.178us (与厂商 4K30 完全一致)
-	//      只把 VMAX 从厂商的 4503(30.9fps) 拉到 5572 => 40.0ms => 25.00fps,
-	//      因为 FPGA 输出端 VTC 固定 25fps (4K30 需要 99.5% 带宽, 跑不动)。
-	//      写侧/读侧帧率必须对得上, 否则 dbuf 溢出或欠载 -> 画面撕裂。
-	.i_vmax         (S_is_4k ? 20'd5572        : 20'd2283),
+	//      行时间 = 533/74.25MHz = 7.17845us (与厂商 4K30 完全一致)
+	//
+	// V35c 帧率匹配 (写侧 = 传感器, 读侧 = VTC):
+	//   读侧: 147.5MHz / (2060 x 2865) = 24.991952 fps   (ui_pll VCO 1475/10)
+	//   写侧: 74.25MHz / (533 x 5574)  = 24.992073 fps   (HMAX 时钟 74.25MHz)
+	//   失配 4.8ppm => 1 帧滑移 / 约 139 分钟, 可以忽略。
+	//   穷举 5500..5650 x 2850..2880, 这组是最优整数解。
+	//   精确 25.000 做不到: 533 x VMAX = 2970000 则需要 VMAX = 5572.23(非整数)。
+	//   为什么不用 30fps: 4lane x 1000Mbps = 500MB/s, 4K30 需要 497.7MB/s = 99.5%,
+	//   加了 MIPI 包头开销物理上跑不动; 4K25 只需 414.7MB/s = 82.9%。
+	.i_vmax         (S_is_4k ? 20'd5574        : 20'd2283),
 	.i_gain_default (S_is_4k ? 8'h10 : 8'h20   ),
 	.i_exp      (S_cam_exp),
 	.i_gain     (S_cam_gain),
