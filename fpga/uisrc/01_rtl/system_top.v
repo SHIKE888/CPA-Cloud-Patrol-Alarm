@@ -478,9 +478,14 @@ cam_param #(
 ) u_cam_param (
 	.clk        (I_sysclk_25m),
 	.rst_n      (S_pll_lock),
-	// V38c: 4K 传感器帧率配到 20.00fps 以匹配 VTC (4K20)。
+	// V38c/d: 4K 传感器帧率配到 20.00fps 以匹配 VTC (4K20)。
 	//   实测: VMAX=3449 -> 24.83fps, 反推行时间 = 1/(24.83x3449) = 11.677us
 	//   20.00fps 需要帧长 50.00ms => VMAX = 50.00ms/11.677us = 4282
+	//
+	//   ★★★ 这个 i_vmax 和 ui_imx415_reg.v 的 0x3024/0x3025 **必须同时改** ★★★
+	//   i_vmax 只用于算曝光(SHR0), 真正决定帧长的是传感器寄存器 0x3024/25。
+	//   V38c 我就只改了 i_vmax 忘了改寄存器, 结果传感器还是 24.83fps, 白烧一次。
+	//   当前两边都是 4282 = 0x10BA (0x3024=0xBA, 0x3025=0x10)
 	.i_vmax         (S_is_4k ? 20'd4282        : 20'd2283),
 	.i_gain_default (S_is_4k ? 8'h10 : 8'h20   ),
 	.i_exp      (S_cam_exp),
@@ -954,9 +959,10 @@ cfg_ctrl_top #(
 	// ★ 构建版本号 (I2C 0xA9 低 / 0xAA 高 可读)。注意这里会覆盖 cfg_ctrl_top
 	//   的 parameter 默认值 —— 2026-10-17 就因为改错地方导致版本号一直读 0x0101,
 	//   白白多烧了一轮。以后改这个号只能改这里。
+	//   0x3804 = V38d (补上忘了改的 0x3024/0x3025: VMAX 3449->4282)
 	//   0x3803 = V38c (GAP 回退 200; h_frame 2060->2800, v_frame 2634 => 4K20)
 	//   0x3802 = V38b (GAP_LINE 200->40 —— 已验证会把 MIPI 时序弄坏, 已回退)
-	.CFG_VER  (16'h3803)
+	.CFG_VER  (16'h3804)
 ) u_cfg_ctrl (
 	.i_sys_clk    (I_sysclk_25m),
 	.i_sys_rst_n  (1'b1),

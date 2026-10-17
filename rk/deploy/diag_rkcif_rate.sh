@@ -15,13 +15,20 @@ c1=$(rd_csi); sleep 6; c2=$(rd_csi)
 echo "  Δ$((c2-c1))/6s = $(awk "BEGIN{printf \"%.2f\",($c2-$c1)/6}") fps"
 
 echo ""
-echo "=== rkcif 侧 (v4l2-ctl 实收) ==="
+echo "=== rkcif 侧 (v4l2-ctl 实收, 墙钟计算) ==="
 v4l2-ctl -d $DEV --set-fmt-video=width=3840,height=2160,pixelformat=NV16 >/dev/null 2>&1
-for n in 50 100; do
+for n in 40 80; do
+  T0=$(date +%s%N)
   timeout 60 v4l2-ctl -d $DEV --stream-mmap=4 --stream-count=$n --stream-to=/dev/null > /tmp/q.txt 2>&1
   RC=$?
-  V=$(grep -oE '[0-9]+\.[0-9]+ fps' /tmp/q.txt 2>/dev/null | tail -1)
-  echo "  ${n}帧 rc=$RC => $V"
+  T1=$(date +%s%N)
+  MS=$(( (T1-T0)/1000000 ))
+  if [ "$RC" = "0" ]; then
+    echo "  ${n}帧 墙钟 ${MS}ms => $(awk "BEGIN{printf \"%.2f\", $n*1000/$MS}") fps"
+  else
+    echo "  ${n}帧 rc=$RC (超时/失败) 墙钟 ${MS}ms"
+  fi
+  grep -oE '[0-9]+\.[0-9]+ fps' /tmp/q.txt 2>/dev/null | tail -1 | sed 's/^/      v4l2自报 /'
 done
 
 echo ""
