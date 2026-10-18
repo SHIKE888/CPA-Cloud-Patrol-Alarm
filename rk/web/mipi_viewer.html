@@ -343,10 +343,6 @@
           <button class="ghost" id="btnPpAllOff">全部关闭</button>
           <button id="btnPpRefresh">刷新</button>
         </div>
-        <div class="row" style="margin:0 0 10px">
-          <button class="ghost" id="btnLineFix" style="flex:1"
-            title="每行左旋 16 像素，用来消除画面左侧彩条（需 V45.5 及以后固件）">行首校正（去左侧彩条）</button>
-        </div>
 
         <p class="hint" style="margin:0 0 6px"><b>初级预处理（多选）</b><br>
           三套算法在 FPGA 内同时运行，固定顺序：高斯 → 直方图均衡 → 灰度 → 对比度 → 反色。</p>
@@ -994,6 +990,7 @@ function fpgaSyncUI() {
   const blf = $("btnLineFix");
   if (blf) blf.classList.toggle("on", Number(r.BASIC_LINEFIX || 0) === 1);
 
+
   // ---- 高级 (单选按钮 + 只显示选中项的滑条) ----
   const advOn = Number(r.PP_EN) === 1;
   const advMode = Number(r.ADV_MODE || 0);
@@ -1027,9 +1024,9 @@ function fpgaShowSt(d) {
       ? "0x" + st.VER.toString(16).toUpperCase().padStart(4, "0") : "—";
   // V45.2 起 Sobel/拉普拉斯/Prewitt/锐化 的参数语义从“右移”改成“增益”
   const ver = (st.VER !== undefined) ? Number(st.VER) : null;
-  if (ver !== null && ver < 0x4505 && !ppVerWarned) {
+  if (ver !== null && ver < 0x4506 && !ppVerWarned) {
     ppVerWarned = true;
-    toast("FPGA 固件低于 V45.5：三通道高斯 / 防频闪 / 行首校正需要 V45.5 bit 才生效", true);
+    toast("FPGA 固件低于 V45.6：三通道高斯 / 防频闪需要 V45.6 bit 才生效", true);
   }
   if ($("fsCamWr")) {
     $("fsCamWr").textContent = (st.CAM_WR_CNT !== undefined)
@@ -1119,10 +1116,6 @@ document.querySelectorAll("[data-adv]").forEach(b => {
   };
 });
 $("btnPpAllOff").onclick  = () => { if (ppClickOK($("btnPpAllOff")))  scheduleFpgaPush({ PP_EN: 0, BASIC_EN: 0 }); };
-$("btnLineFix").onclick   = () => {
-  if (!ppClickOK($("btnLineFix"))) return;
-  scheduleFpgaPush({ BASIC_LINEFIX: Number(fpgaRegs.BASIC_LINEFIX || 0) ? 0 : 1 });
-};
 $("btnMorph0").onclick    = () => { if (ppClickOK($("btnMorph0")))    scheduleFpgaPush({ ADV_MORPH_SEL: 0 }); };
 $("btnMorph1").onclick    = () => { if (ppClickOK($("btnMorph1")))    scheduleFpgaPush({ ADV_MORPH_SEL: 1 }); };
 $("btnPpRefresh").onclick = async () => { await loadFpga(); toast("已刷新 FPGA 参数"); };
