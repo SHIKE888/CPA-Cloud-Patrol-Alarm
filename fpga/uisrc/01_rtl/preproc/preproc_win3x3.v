@@ -169,22 +169,27 @@ module preproc_win3x3 #(
 	reg [31:0] a_p1, a_p2;    // 上上上行组: 1 拍前 / 2 拍前
 	reg [31:0] b_p1, b_p2;
 	reg [31:0] c_p1, c_p2;
-	reg        v_d3, u_d3, t_d3;
-	reg [127:0] rgb_d1, rgb_d2, rgb_d3;      // RGB 三级延迟, 与窗口对齐
+	// ⚠ 与 preproc_win3x3_rgb 同一处修正: WIN 再寄存一级 -> 像素/标志要多 1 拍(d4)
+	reg        v_d3, v_d4, u_d3, u_d4, t_d3, t_d4;
+	reg [127:0] rgb_d1, rgb_d2, rgb_d3, rgb_d4;
 
 	always @(posedge clk or negedge rst_n) begin
 		if (!rst_n) begin
 			a_p1 <= 32'd0; a_p2 <= 32'd0;
 			b_p1 <= 32'd0; b_p2 <= 32'd0;
 			c_p1 <= 32'd0; c_p2 <= 32'd0;
-			rgb_d1 <= 128'd0; rgb_d2 <= 128'd0; rgb_d3 <= 128'd0;
-			v_d3 <= 1'b0; u_d3 <= 1'b0; t_d3 <= 1'b0;
+			rgb_d1 <= 128'd0; rgb_d2 <= 128'd0; rgb_d3 <= 128'd0; rgb_d4 <= 128'd0;
+			v_d3 <= 1'b0; v_d4 <= 1'b0;
+			u_d3 <= 1'b0; u_d4 <= 1'b0;
+			t_d3 <= 1'b0; t_d4 <= 1'b0;
 		end else begin
 			a_p1 <= wA;  a_p2 <= a_p1;
 			b_p1 <= wB;  b_p2 <= b_p1;
 			c_p1 <= wC;  c_p2 <= c_p1;
-			rgb_d1 <= i_rgb; rgb_d2 <= rgb_d1; rgb_d3 <= rgb_d2;
-			v_d3 <= v_d2; u_d3 <= u_d2; t_d3 <= t_d2;
+			rgb_d1 <= i_rgb; rgb_d2 <= rgb_d1; rgb_d3 <= rgb_d2; rgb_d4 <= rgb_d3;
+			v_d3 <= v_d2; v_d4 <= v_d3;
+			u_d3 <= u_d2; u_d4 <= u_d3;
+			t_d3 <= t_d2; t_d4 <= t_d3;
 		end
 	end
 
@@ -197,6 +202,11 @@ module preproc_win3x3 #(
 	//   (这里曾写反过 —— 现象是窗口数据完全颠倒, Sobel 结果落到错误像素上。)
 	`define WIN(pp, cu, nx) {nx[7:0], cu[31:24], cu[23:16], cu[15:8], cu[7:0], pp[31:24]}
 
+	// 行首组左邻钳位到本组(不用上一行最后一组)
+	wire [31:0] a_pp = (lcnt_d3 == 12'd0) ? a_p1 : a_p2;
+	wire [31:0] b_pp = (lcnt_d3 == 12'd0) ? b_p1 : b_p2;
+	wire [31:0] c_pp = (lcnt_d3 == 12'd0) ? c_p1 : c_p2;
+
 	always @(posedge clk or negedge rst_n) begin
 		if (!rst_n) begin
 			o_tvalid  <= 1'b0;
@@ -208,13 +218,13 @@ module preproc_win3x3 #(
 			o_winC    <= 48'd0;
 			o_rgb     <= 128'd0;
 		end else begin
-			o_tvalid <= v_d3;
-			o_tuser  <= u_d3;
-			o_tlast  <= t_d3;
-			o_winA   <= `WIN(a_p2, a_p1, wA);
-			o_winB   <= `WIN(b_p2, b_p1, wB);
-			o_winC   <= `WIN(c_p2, c_p1, wC);
-			o_rgb     <= rgb_d3;
+			o_tvalid <= v_d4;
+			o_tuser  <= u_d4;
+			o_tlast  <= t_d4;
+			o_winA   <= `WIN(a_pp, a_p1, wA);
+			o_winB   <= `WIN(b_pp, b_p1, wB);
+			o_winC   <= `WIN(c_pp, c_p1, wC);
+			o_rgb     <= rgb_d4;
 			// lcnt_d3 = 本拍输出这一行(当前行 C)的行号
 			o_rowmask <= {(lcnt_d3 >= 12'd2), (lcnt_d3 >= 12'd1), 1'b1};
 		end

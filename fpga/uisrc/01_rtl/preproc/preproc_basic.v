@@ -636,7 +636,7 @@ module preproc_basic #(
 	//-------------------------------------------------------------------------
 	reg [127:0] rgb_d1, rgb_d2, rgb_d3, rgb_d4, rgb_d5, rgb_d6, rgb_d7, rgb_d8;
 	reg [31:0]  cl_d1,  cl_d2,  cl_d3,  cl_d4,  cl_d5,  cl_d6,  cl_d7,  cl_d8;
-	reg [31:0]  lq_d1,  lq_d2,  lq_d3,  lq_d4,  lq_d5,  lq_d6,  lq_d7;
+	reg [31:0]  lq_d1,  lq_d2,  lq_d3,  lq_d4,  lq_d5,  lq_d6,  lq_d7,  lq_d8;
 	reg [95:0]  p1_d1,  p1_d2,  p1_d3,  p1_d4,  p1_d5,  p1_d6,  p1_d7,  p1_d8;
 	reg [95:0]  p2_d1,  p2_d2,  p2_d3,  p2_d4;
 	reg         v_d1, v_d2, v_d3, v_d4, v_d5, v_d6, v_d7, v_d8;
@@ -645,7 +645,6 @@ module preproc_basic #(
 
 	wire [31:0] lq_pack = {lq3, lq2, lq1, lq0};
 	wire [31:0] cl_pack = {c_l3, c_l2, c_l1, c_l0};
-
 	always @(posedge clk or negedge rst_n) begin
 		if (!rst_n) begin
 			rgb_d1 <= 128'd0; rgb_d2 <= 128'd0; rgb_d3 <= 128'd0; rgb_d4 <= 128'd0;
@@ -653,7 +652,7 @@ module preproc_basic #(
 			cl_d1 <= 32'd0; cl_d2 <= 32'd0; cl_d3 <= 32'd0; cl_d4 <= 32'd0;
 			cl_d5 <= 32'd0; cl_d6 <= 32'd0; cl_d7 <= 32'd0; cl_d8 <= 32'd0;
 			lq_d1 <= 32'd0; lq_d2 <= 32'd0; lq_d3 <= 32'd0; lq_d4 <= 32'd0;
-			lq_d5 <= 32'd0; lq_d6 <= 32'd0; lq_d7 <= 32'd0;
+			lq_d5 <= 32'd0; lq_d6 <= 32'd0; lq_d7 <= 32'd0; lq_d8 <= 32'd0;
 			p1_d1 <= 96'd0; p1_d2 <= 96'd0; p1_d3 <= 96'd0; p1_d4 <= 96'd0;
 			p1_d5 <= 96'd0; p1_d6 <= 96'd0; p1_d7 <= 96'd0; p1_d8 <= 96'd0;
 			p2_d1 <= 96'd0; p2_d2 <= 96'd0; p2_d3 <= 96'd0; p2_d4 <= 96'd0;
@@ -669,7 +668,7 @@ module preproc_basic #(
 			cl_d1  <= cl_pack;  cl_d2  <= cl_d1;  cl_d3  <= cl_d2;  cl_d4  <= cl_d3;
 			cl_d5  <= cl_d4;    cl_d6  <= cl_d5;  cl_d7  <= cl_d6;  cl_d8  <= cl_d7;
 			lq_d1  <= lq_pack;  lq_d2  <= lq_d1;  lq_d3  <= lq_d2;  lq_d4  <= lq_d3;
-			lq_d5  <= lq_d4;    lq_d6  <= lq_d5;  lq_d7  <= lq_d6;
+			lq_d5  <= lq_d4;    lq_d6  <= lq_d5;  lq_d7  <= lq_d6;  lq_d8  <= lq_d7;
 			p1_d1  <= p1_pack;  p1_d2  <= p1_d1;  p1_d3  <= p1_d2;  p1_d4  <= p1_d3;
 			p1_d5  <= p1_d4;    p1_d6  <= p1_d5;  p1_d7  <= p1_d6;  p1_d8  <= p1_d7;
 			p2_d1  <= p2_pack;  p2_d2  <= p2_d1;  p2_d3  <= p2_d2;  p2_d4  <= p2_d3;
@@ -694,7 +693,7 @@ module preproc_basic #(
 	generate
 	for (j = 0; j < 4; j = j + 1) begin : g_blend
 		wire [7:0]  cl  = cl_d8[(8*j) +: 8];      // 原始亮度 (BT.601, 与直方图同定义)
-		wire [7:0]  lqv = lq_d7[(8*j) +: 8];      // HE LUT 查表结果
+		wire [7:0]  lqv = lq_d8[(8*j) +: 8];      // HE LUT 查表结果
 
 		// 三遍滤波结果(每像素 {R,G,B})与原图都在同一拍
 		wire [7:0] f1_r = p1_d8[(24*j) + 16 +: 8];

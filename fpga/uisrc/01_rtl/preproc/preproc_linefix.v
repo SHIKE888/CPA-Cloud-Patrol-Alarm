@@ -37,8 +37,8 @@ module preproc_linefix #(
 	input  wire [127:0] i_rgb,
 
 	output wire         o_tvalid,
-	output reg          o_tuser,
-	output reg          o_tlast,
+	output wire         o_tuser,
+	output wire         o_tlast,
 	output wire [127:0] o_rgb
 );
 
@@ -48,25 +48,22 @@ module preproc_linefix #(
 
 	always @(posedge clk or negedge rst_n) begin
 		if (!rst_n) begin
-			u_sr    <= {SH{1'b0}};
-			t_sr    <= {SH{1'b0}};
-			o_tuser <= 1'b0;
-			o_tlast <= 1'b0;
+			u_sr <= {SH{1'b0}};
+			t_sr <= {SH{1'b0}};
 		end else if (i_tvalid) begin
-			u_sr    <= {u_sr[SH-2:0], i_tuser};
-			t_sr    <= {t_sr[SH-2:0], i_tlast};
-			o_tuser <= i_en ? u_sr[SH-1] : i_tuser;
-			o_tlast <= i_en ? t_sr[SH-1] : i_tlast;
-		end else begin
-			u_sr    <= {SH{1'b0}};
-			t_sr    <= {SH{1'b0}};
-			o_tuser <= 1'b0;
-			o_tlast <= 1'b0;
+			u_sr <= {u_sr[SH-2:0], i_tuser};
+			t_sr <= {t_sr[SH-2:0], i_tlast};
 		end
+		// ⚠ 行消隐(i_tvalid=0)时必须**保持**，不能清零 ——
+		//   清零会把移位链打断，tuser 延迟失效，下游按错误边界分行(密集黑条)。
 	end
 
-	// 数据与 tvalid 直通（不改内容、不加延迟）
+	// 数据与 tvalid 直通；tuser/tlast 也必须是**组合**输出：
+	// 旧版把 o_tuser/o_tlast 写成寄存器，使它们比数据晚 1 拍，
+	// 每行行尾会混入下一行 1 组、行首丢 1 组 -> 整屏周期性错位。
 	assign o_tvalid = i_tvalid;
 	assign o_rgb    = i_rgb;
+	assign o_tuser  = i_en ? u_sr[SH-1] : i_tuser;
+	assign o_tlast  = i_en ? t_sr[SH-1] : i_tlast;
 
 endmodule

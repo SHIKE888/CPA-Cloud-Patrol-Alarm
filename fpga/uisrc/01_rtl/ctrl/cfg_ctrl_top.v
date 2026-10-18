@@ -30,7 +30,7 @@ module cfg_ctrl_top #(
 	//     0x3504 = V35 第 4 次构建 (V35d: 4K VMAX=2788 想拿 25fps)
 	//     0x4301 = V43 第 1 次构建 (修 4K 每行多 1~2 个 word 导致的斜向撕裂)
 	//=========================================================================
-	parameter [15:0] CFG_VER  = 16'h4506
+	parameter [15:0] CFG_VER  = 16'h4507
 )(
 	// ---- 系统时钟域 (25MHz 常开) ----
 	input  wire        i_sys_clk,
@@ -326,7 +326,7 @@ module cfg_ctrl_top #(
 			bhe_s1<= 8'd255; bhe_s2<= 8'd255;
 			bhc_s1<= 8'd255; bhc_s2<= 8'd255;
 			bht_s1<= 4'd2;   bht_s2<= 4'd2;
-			blf_s1<= 1'b1;   blf_s2<= 1'b1;
+			blf_s1<= 1'b0;   blf_s2<= 1'b0;
 			bct_s1<= 4'd4;   bct_s2<= 4'd4;
 			wbr_s1 <= 8'd128; wbr_s2 <= 8'd128;
 			wbb_s1 <= 8'd128; wbb_s2 <= 8'd128;

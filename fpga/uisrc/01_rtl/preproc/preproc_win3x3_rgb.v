@@ -130,22 +130,29 @@ module preproc_win3x3_rgb #(
 	// 4. 横向窗口：需要"上一组第 4 像素"和"下一组第 1 像素"
 	//-------------------------------------------------------------------------
 	reg [95:0] a_p1, a_p2, b_p1, b_p2, c_p1, c_p2;
-	reg        v_d3, u_d3, t_d3;
-	reg [127:0] rgb_d1, rgb_d2, rgb_d3;
+	// ⚠ 窗口输出比旧版 rgb_d3 多 1 拍: WINR 用到 c_p1(=本组) 且再寄存一级,
+	//   所以像素/标志必须走 d4 才与 o_win* 同拍。旧版差 1 组(4 像素),
+	//   3 级 basic + 1 级 edge 累计 = 16 像素 -> 每行开头 16 像素错位。
+	reg        v_d3, v_d4, u_d3, u_d4, t_d3, t_d4;
+	reg [127:0] rgb_d1, rgb_d2, rgb_d3, rgb_d4;
 
 	always @(posedge clk or negedge rst_n) begin
 		if (!rst_n) begin
 			a_p1 <= 96'd0; a_p2 <= 96'd0;
 			b_p1 <= 96'd0; b_p2 <= 96'd0;
 			c_p1 <= 96'd0; c_p2 <= 96'd0;
-			rgb_d1 <= 128'd0; rgb_d2 <= 128'd0; rgb_d3 <= 128'd0;
-			v_d3 <= 1'b0; u_d3 <= 1'b0; t_d3 <= 1'b0;
+			rgb_d1 <= 128'd0; rgb_d2 <= 128'd0; rgb_d3 <= 128'd0; rgb_d4 <= 128'd0;
+			v_d3 <= 1'b0; v_d4 <= 1'b0;
+			u_d3 <= 1'b0; u_d4 <= 1'b0;
+			t_d3 <= 1'b0; t_d4 <= 1'b0;
 		end else begin
 			a_p1 <= wA;  a_p2 <= a_p1;
 			b_p1 <= wB;  b_p2 <= b_p1;
 			c_p1 <= wC;  c_p2 <= c_p1;
-			rgb_d1 <= i_rgb; rgb_d2 <= rgb_d1; rgb_d3 <= rgb_d2;
-			v_d3 <= v_d2; u_d3 <= u_d2; t_d3 <= t_d2;
+			rgb_d1 <= i_rgb; rgb_d2 <= rgb_d1; rgb_d3 <= rgb_d2; rgb_d4 <= rgb_d3;
+			v_d3 <= v_d2; v_d4 <= v_d3;
+			u_d3 <= u_d2; u_d4 <= u_d3;
+			t_d3 <= t_d2; t_d4 <= t_d3;
 		end
 	end
 
@@ -153,6 +160,12 @@ module preproc_win3x3_rgb #(
 	//   前邻 = c_p2 的第 4 像素 [95:72]，后邻 = wC 的第 1 像素 [23:0]
 	//   拼接 MSB=最右列, LSB=最左列
 	`define WINR(pp, cu, nx) {nx[23:0], cu[95:72], cu[71:48], cu[47:24], cu[23:0], pp[95:72]}
+
+	// 行首组(第 0 组)的左邻钳位到本组: 否则会用上一行最后一组的数据
+	// (这就是"行首 16 像素是上一行行尾"的另一半原因, 单靠 mask 不够)
+	wire [95:0] a_pp = (lcnt_d3 == 12'd0) ? a_p1 : a_p2;
+	wire [95:0] b_pp = (lcnt_d3 == 12'd0) ? b_p1 : b_p2;
+	wire [95:0] c_pp = (lcnt_d3 == 12'd0) ? c_p1 : c_p2;
 
 	always @(posedge clk or negedge rst_n) begin
 		if (!rst_n) begin
@@ -165,13 +178,13 @@ module preproc_win3x3_rgb #(
 			o_winC    <= 144'd0;
 			o_rgb     <= 128'd0;
 		end else begin
-			o_tvalid  <= v_d3;
-			o_tuser   <= u_d3;
-			o_tlast   <= t_d3;
-			o_winA    <= `WINR(a_p2, a_p1, wA);
-			o_winB    <= `WINR(b_p2, b_p1, wB);
-			o_winC    <= `WINR(c_p2, c_p1, wC);
-			o_rgb     <= rgb_d3;
+			o_tvalid  <= v_d4;
+			o_tuser   <= u_d4;
+			o_tlast   <= t_d4;
+			o_winA    <= `WINR(a_pp, a_p1, wA);
+			o_winB    <= `WINR(b_pp, b_p1, wB);
+			o_winC    <= `WINR(c_pp, c_p1, wC);
+			o_rgb     <= rgb_d4;
 			o_rowmask <= {(lcnt_d3 >= 12'd2), (lcnt_d3 >= 12'd1), 1'b1};
 		end
 	end

@@ -43,7 +43,8 @@
 //    0xF8 BASIC_KER     高斯核尺寸 0=3x3 1=5x5 2=7x7 (默认 1)
 //    0xF9 BASIC_HE_CLIP 直方图桶上限 *64 (0=不限, 默认 255)
 //    0xFA BASIC_HE_TEMP LUT 时间平滑 0..8 (0=不平滑, 默认 2)
-//    0xFB BASIC_LINEFIX [0] 1=行边界后移 16 像素（默认 1）
+//    0xFB BASIC_LINEFIX [0] 1=行边界后移 16 像素（默认 0: V45.7 已直接从窗口
+//                            模块根源修好 16 像素错位，本项仅留作 A/B 调试）
 //    ---- 高级预处理 (V45, 单选, 硬件并行) ----
 //    0xB0 PP_EN         总使能 [0]  (0 -> 强制直通原图)
 //    0xB1 ADV_MODE      [3:0] 0=关 1=Sobel 2=阈值 3=形态 4=中值
@@ -270,7 +271,7 @@ module jpeg_regfile #(
             r_basic_he     <= 8'd255;
             r_basic_he_clip<= 8'd255;
             r_basic_he_temp<= 4'd2;
-            r_basic_linefix<= 1'b1;
+            r_basic_linefix<= 1'b0;
             r_basic_contrast <= 4'd4;
             r_cam_exp    <= 20'd0;     // 0 = 不动初始化表里的曝光
             r_cam_gain   <= 8'd0;      // 0 = 不动
