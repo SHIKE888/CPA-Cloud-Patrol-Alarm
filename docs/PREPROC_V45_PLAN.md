@@ -498,25 +498,32 @@ lossless、headers、rate_ctrl、encoder_top），是本方案工作量最大的
 
 ---
 
-## 13. 当前改动与回退
+## 13. 实施状态与回退
 
-此前按旧理解（初级三选一）写过初版 RTL，**未编译、未仿真**，与新方案不一致，需要重做：
+V45 已按本方案实现并提交在分支 `feature/v45-preproc`，详见
+`docs/WORKLOG_2026-10-18_V45.md`（含寄存器表、仿真数据、踩坑记录）。
+
+提交节点：
 
 ```
-M fpga/uisrc/01_rtl/ctrl/cfg_ctrl_top.v
-M fpga/uisrc/01_rtl/jpeg/jpeg_regfile.v
-M fpga/uisrc/01_rtl/preproc/preproc_edge.v
-M fpga/uisrc/01_rtl/preproc/preproc_top.v
-?? fpga/uisrc/01_rtl/preproc/preproc_basic.v
+69ba5bb V45: add preprocessing and compression design doc
+d3d0643 V45: add parallel basic preprocessing and extended advanced modes
+291ea6d V45: add preprocessing config registers and top-level wiring
+7cda15d V45: web UI for multiselect basic and single-select advanced preprocessing
 ```
 
-回退到干净状态：
+回退到 V45 之前（master）：
 
 ```bash
 cd 08_csi2rk_mipi_imx415
-git checkout -- fpga/uisrc/01_rtl/ctrl/cfg_ctrl_top.v \
-                fpga/uisrc/01_rtl/jpeg/jpeg_regfile.v \
-                fpga/uisrc/01_rtl/preproc/preproc_edge.v \
-                fpga/uisrc/01_rtl/preproc/preproc_top.v
-rm fpga/uisrc/01_rtl/preproc/preproc_basic.v
+git checkout master
 ```
+
+只临时回看某一文件：
+
+```bash
+git checkout 69ba5bb -- fpga/uisrc/01_rtl/preproc/preproc_basic.v
+```
+
+> 板上回退：烧回 `fpga/fpga_prj_compress.bit` 的 V43 版本（`CFG_VER=0x4301`），
+> 通过 `0xA9/0xAA` 回读确认版本。

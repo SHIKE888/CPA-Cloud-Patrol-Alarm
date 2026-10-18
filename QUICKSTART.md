@@ -32,7 +32,7 @@
 | 3 | 网页 MJPEG 推流 **1920x1080@59.6fps** | ✅ | `rk/web/start_webstream.sh`（:9012） |
 | 4 | 软件画面调参（亮度/对比度/饱和度/色相/伽马/镜像/翻转/旋转/缩放/JPEG 质量/帧率上限） | ✅ | 网页「画面」页签 ↔ `/api/params` |
 | 5 | **IMX415 摄像头参数**（曝光 0.05~16ms / 增益 0~30dB(0.3dB/step) / EV -3~+3 / 白平衡 R、B / ROI） | ✅ | 网页「摄像头」页签 ↔ `/api/fpga` |
-| 6 | **FPGA 预处理**（原图 / Sobel / 阈值二值 / 形态学） | ✅ | 网页「预处理」页签 ↔ `/api/fpga` |
+| 6 | **FPGA 预处理**（初级多选：灰度/高斯/直方图均衡/对比度/反色；高级单选：Sobel/阈值/形态/中值/拉普拉斯/浮雕/Prewitt/锐化） | ✅ | 网页「预处理」页签 ↔ `/api/fpga` |
 | 7 | 输出格式切换 **1080P@60 / 4K@25 / 4K@30**（同时写 FPGA + 重设 media pipeline） | ✅（4K@30 带宽 99.5% 实测跑不动） | 网页「摄像头」页签下拉框 ↔ `/api/mode` |
 | 8 | 720P@90 | ❌ FPGA RTL 未实现 | 页面标注并拦截 |
 | 9 | **AI 人体检测 → 17 关节姿态 → 8 类危险动作**（RK3576 NPU） | ✅ | `AI=1 ./start_webstream.sh`（集成进 9012） |
@@ -164,7 +164,7 @@ ssh afc03 "curl -s -X POST http://127.0.0.1:9012/api/mode -H 'Content-Type: appl
 > 只改 `/dev/video22` 会被 rkcif 拉回）。`switch_res_mode.sh` 已封装好这两步。
 > 4K 排障用 `ssh afc03 "cd /root/rk/deploy && ./diag_4k25.sh"`。
 
-### 3.6 FPGA 预处理（Sobel / 阈值 / 形态学）
+### 3.6 FPGA 预处理（初级多选 + 高级单选）
 
 网页「预处理」页签；命令行：
 
@@ -172,21 +172,34 @@ ssh afc03 "curl -s -X POST http://127.0.0.1:9012/api/mode -H 'Content-Type: appl
 # 板端工具（直写 I2C，不需要 web 服务在跑）
 ssh afc03 "python3 /root/rk/deploy/fpga_cfg.py dump"        # 打印全部寄存器
 ssh afc03 "python3 /root/rk/deploy/fpga_cfg.py heartbeat"   # 连读心跳，验证 I2C 通路活着
-ssh afc03 "python3 /root/rk/deploy/fpga_cfg.py mode 1"      # 1=Sobel, 2=阈值二值, 3=形态学, 0=原图
-ssh afc03 "python3 /root/rk/deploy/fpga_cfg.py set 0xB3 100" # 写任意寄存器（这里是二值化阈值）
-ssh afc03 "python3 /root/rk/deploy/fpga_cfg.py demo"        # 依次切 4 种模式（配着画面看）
+
+# 初级（多选位图 0xF0）：bit0 灰度 bit1 高斯 bit2 直方图均衡 bit3 对比度 bit4 反色
+ssh afc03 "python3 /root/rk/deploy/fpga_cfg.py set 0xF0 1"  # 只开灰度
+ssh afc03 "python3 /root/rk/deploy/fpga_cfg.py set 0xF0 6"  # 高斯 + 直方图均衡
+ssh afc03 "python3 /root/rk/deploy/fpga_cfg.py set 0xF0 31" # 五项全开
+
+# 高级（单选 0xB1）：0=关 1=Sobel 2=阈值 3=形态 4=中值 5=拉普拉斯 6=浮雕 7=Prewitt 8=锐化
+ssh afc03 "python3 /root/rk/deploy/fpga_cfg.py set 0xB0 1"
+ssh afc03 "python3 /root/rk/deploy/fpga_cfg.py set 0xB1 4"  # 中值
+ssh afc03 "python3 /root/rk/deploy/fpga_cfg.py set 0xB3 100" # 阈值分割阈值
 
 # 经网页接口（服务在跑时）
 ssh afc03 "curl -s -X POST http://127.0.0.1:9012/api/fpga -H 'Content-Type: application/json' \
-  -d '{\"PP_EN\":1,\"PP_MODE\":1,\"PP_SOBEL_SH\":2}'"
-
-# 4 种模式的实际画面逐个验证
-ssh afc03 "sh /root/rk/deploy/test_preproc.sh"
+  -d '{\"PP_EN\":1,\"ADV_MODE\":1,\"ADV_SOBEL_SH\":2}'"
+ssh afc03 "curl -s -X POST http://127.0.0.1:9012/api/fpga -H 'Content-Type: application/json' \
+  -d '{\"BASIC_EN\":6,\"BASIC_GAUSS\":8,\"BASIC_HE\":255}'"
 ```
 
-> 寄存器：`0xB0`=PP_EN、`0xB1`=PP_MODE、`0xB2`=Sobel 右移、`0xB3`=阈值、`0xB4`=0 腐蚀/1 膨胀、
-> `0xB8~0xBB`=帧计数（只读）、`0xBC`=心跳（只读）。
-> 注意：**打开预处理会自动把 AI 画面源切回原图**（两者互斥，双向联动）。
+> **寄存器**
+> - 初级：`0xF0`=BASIC_EN（5 位位图）、`0xF1`=灰度系数档（0=601/1=709）、`0xF2`=高斯强度、
+>   `0xF3`=直方图均衡强度、`0xF4`=对比度强度
+> - 高级：`0xB0`=PP_EN、`0xB1`=ADV_MODE（0..8）、`0xB2`=Sobel 位移、`0xB3`=阈值、
+>   `0xB4`=0 腐蚀/1 膨胀、`0xB5`=形态学阈值、`0xB6`=拉普拉斯位移、`0xB7`=Prewitt 位移、
+>   `0xF5`=浮雕增益、`0xF6`=浮雕偏置、`0xF7`=锐化强度
+> - 状态：`0xB8~0xBB`=帧计数、`0xBC`=心跳（只读）、`0xA9/0xAA`=版本号（V45=`0x4501`）
+>
+> 初级固定串联顺序：**高斯 → 直方图均衡 → 灰度 → 对比度 → 反色**；两级可同时生效。
+> 注意：**打开任意一级预处理会自动把 AI 画面源切回原图**（双向联动）。
 
 ### 3.7 AI 人体检测 / 姿态 / 危险动作（NPU）
 
@@ -272,7 +285,7 @@ ssh afc03 "reboot"                        # 重启板子
 | GET | `/snapshot.jpg` | 抓当前一帧 |
 | GET / POST | `/api/params` | 软件画面参数（亮度/对比度/饱和度/色相/伽马/镜像/翻转/旋转/缩放/质量/帧率） |
 | GET | `/api/status` | 后端 / 设备 / 分辨率 / 实际帧率 / 客户端数 |
-| GET / POST | `/api/fpga` | **FPGA 寄存器**：摄像头物理量、PP_* 预处理、回读快照 |
+| GET / POST | `/api/fpga` | **FPGA 寄存器**：摄像头物理量、初级/高级预处理、回读快照 |
 | GET / POST | `/api/ai` | AI 状态与调参（需 `--ai` 启动） |
 | GET | `/api/modes` | 可用输出格式表（含 `impl` RTL 是否实现、`ok` 带宽是否 ≤85%） |
 | POST | `/api/mode` | 切输出格式 `{"id":"4k25"}`（返回逐步执行 log） |
