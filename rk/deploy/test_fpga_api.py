@@ -30,7 +30,7 @@ print("   status  = %s" % d.get("status"))
 print("   可写寄存器 = %s" % [m["name"] for m in d.get("meta", {}).get("writable", [])])
 
 print("\n== 2) POST 切到 Sobel + 阈值 100 ==")
-d = api("/api/fpga", {"PP_EN": 1, "PP_MODE": 1, "PP_THRESH": 100})
+d = api("/api/fpga", {"PP_EN": 1, "ADV_MODE": 1, "ADV_THRESH": 100})
 print("   write_ok= %s  msg= %s" % (d.get("write_ok"), d.get("message")))
 print("   回读    = %s" % d.get("regs"))
 
@@ -38,9 +38,9 @@ print("\n== 3) POST 预设 preset=morph ==")
 d = api("/api/fpga", {"preset": "morph"})
 print("   回读    = %s" % d.get("regs"))
 
-print("\n== 4) POST 越界值 PP_THRESH=999 (应夹到 255) ==")
-d = api("/api/fpga", {"PP_THRESH": 999})
-print("   回读 PP_THRESH = %s" % d.get("regs", {}).get("PP_THRESH"))
+print("\n== 4) POST 越界值 ADV_THRESH=999 (应夹到 255) ==")
+d = api("/api/fpga", {"ADV_THRESH": 999})
+print("   回读 ADV_THRESH = %s" % d.get("regs", {}).get("ADV_THRESH"))
 
 print("\n== 5) POST 未知寄存器 (应报错) ==")
 try:
@@ -52,7 +52,8 @@ except urllib.error.HTTPError as e:
           % (e.code, body.get("write_ok"), body.get("message")))
 
 print("\n== 6) 恢复: 关闭预处理, 其余回默认 ==")
-d = api("/api/fpga", {"PP_EN": 0, "PP_THRESH": 128,
-                      "PP_SOBEL_SH": 3, "PP_MORPH": 1})
+d = api("/api/fpga", {"PP_EN": 0, "ADV_THRESH": 128,
+                      "ADV_SOBEL_SH": 3, "ADV_MORPH_SEL": 1,
+                      "BASIC_EN": 0})
 print("   回读    = %s" % d.get("regs"))
 print("\n完成。")

@@ -1,10 +1,12 @@
 #!/bin/bash
 #=============================================================================
-# test_preproc.sh —— 验证 FPGA 预处理流水线 4 种模式的实际画面
+# test_preproc.sh —— 验证 FPGA 预处理（高级 8 种 + 初级 4 种组合）的实际画面
 #
-# 对每种模式: 通过 I2C 写 PP_MODE -> 抓若干帧 -> 存 PNG -> 自动分析特征。
+# 对每种模式: 通过 I2C 写 ADV_MODE / BASIC_EN -> 抓若干帧 -> 存 PNG -> 自动分析特征。
 #
 # 用法: sh /root/rk/deploy/test_preproc.sh
+#   KEEP=1 保留图片（默认测完会删掉临时目录）
+#   OUT_DIR=/xxx 指定输出目录（默认 /tmp/preproc_test）
 #
 # 注意:
 #   · 预处理配置走 I2C (0x40), 与视频流互不干扰, 可以边出图边切模式。
@@ -15,7 +17,7 @@
 set -u
 
 DEV=/dev/video22
-OUT=/root/preproc
+OUT=${OUT_DIR:-/tmp/preproc_test}
 CFG="/usr/bin/python3 /root/rk/deploy/fpga_cfg.py"
 PY=/opt/miniforge3/envs/mlk-ov/bin/python
 
@@ -30,9 +32,9 @@ echo ""
 echo "== 确认 PP_EN 打开 =="
 $CFG set 0xB0 1
 
-for m in 0 1 2 3; do
+for m in 0 1 2 3 4 5 6 7 8; do
     echo ""
-    echo "=================== PP_MODE = $m ==================="
+    echo "=================== ADV_MODE = $m ==================="
     $CFG mode "$m" || true
     sleep 1
 
@@ -56,6 +58,13 @@ done
 echo ""
 echo "== 恢复: 关闭预处理, 直通原图 =="
 $CFG set 0xB0 0
+$CFG set 0xF0 0
 $CFG get 0xB0
+$CFG get 0xF0
 echo ""
-echo "结果图片: $OUT/mode0.png .. mode3.png"
+if [ "${KEEP:-0}" = "1" ]; then
+    echo "结果图片保留在: $OUT"
+else
+    rm -rf "$OUT"
+    echo "临时图片已删除 (KEEP=1 可保留)"
+fi
