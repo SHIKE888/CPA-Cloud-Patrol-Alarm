@@ -139,6 +139,8 @@ def _acquire_single_instance():
 SWITCH_SH = "/tmp/mode_switch.sh"
 SWITCH_RETRY = "/tmp/switch_retry"
 SWITCH_PHASE = ""          # 进程内切换的当前阶段(日志/诊断用)
+# 切换刚拉起的新进程：18s 无帧就自动再切一次（实测偶发首轮失败，再切一次 13s 就好）
+SWITCH_PENDING = "/tmp/switch_pending"
 
 # ---- 运行日志大小上限 -------------------------------------------------------
 # 板上存储很宝贵: 运行日志超过 200KB 就直接截断。
@@ -254,15 +256,42 @@ def _launch_start_script(want, res_mode):
                 "pkill -9 -f 'mipi_webstream\\.py' 2>/dev/null\n"
                 "sleep 0.2\n"
                 "python3 /root/rk/deploy/fpga_cfg.py set 0xE0 %d\n"
-                "sleep 5\n"
+                "sleep %d\n"
+                # ★ 启动 web 之前先探测链路: 用 v4l2-ctl 抓 1 帧。
+                #   抓到 = rkcif/dphy 已经完整初始化并锁链，web 再打开就是
+                #   “热”状态，不会出现打开成功却永远 select() timeout。
+                #   抓不到就重写 0xE0 再来一轮（最多 3 次）。
+                "i=0\n"
+                "while [ $i -lt 3 ]; do\n"
+                "  if timeout 8 v4l2-ctl -d /dev/video22 --stream-mmap "
+                "--stream-count=1 --stream-to=/dev/null >/dev/null 2>&1; then\n"
+                "    echo '[probe] link ready'\n"
+                "    break\n"
+                "  fi\n"
+                "  echo '[probe] no frame, reset fpga'\n"
+                "  python3 /root/rk/deploy/fpga_cfg.py set 0xE0 %d\n"
+                "  sleep %d\n"
+                "  i=$((i+1))\n"
+                "done\n"
                 "SKIP_RESET=1 bash %s %s\n"
-                % (int(res_mode), START_SH, want))
+                % (int(res_mode),
+                   8 if int(res_mode) in (1, 2) else 5,
+                   int(res_mode),
+                   8 if int(res_mode) in (1, 2) else 5,
+                   START_SH, want))
         os.chmod(SWITCH_SH, 0o755)
         # 每次切换覆盖写，不追加 —— 旧日志累积是板上存储的无谓消耗。
         log = open("/tmp/mode_switch.log", "wb")
         subprocess.Popen(["/bin/sh", SWITCH_SH],
                          stdout=log, stderr=log,
                          start_new_session=True, close_fds=True)
+        # 告诉下一个进程“你是切换拉起的”：自愈等待从 35s 缩到 18s，
+        # 且允许重试 2 次 —— 实测首轮偶发 select() timeout，再切一次就好。
+        try:
+            with open(SWITCH_PENDING, "w") as f:
+                f.write(str(int(res_mode)))
+        except Exception:                                          # noqa: BLE001
+            pass
         return True
     except Exception:                                              # noqa: BLE001
         return False
@@ -3615,7 +3644,17 @@ def main():
     # 如果这次是 start.sh 因为切分辨率重启起来的, 把用户原来的曝光补回去
     _restore_exp_after_switch()
     # 启动后 35 秒仍无帧 -> 自动重试一次切换(切分辨率偶发失败)
-    _capture_selfheal()
+    _heal_delay, _heal_retry = 35.0, 1
+    if os.path.exists(SWITCH_PENDING):
+        # 切换拉起: 4K 初始化更慢(实测 8s 复位 + 启动), 等 25s 再判死,
+        # 太早重试会打断正在进行的 rkcif 锁链。
+        _heal_delay, _heal_retry = 25.0, 1
+        try:
+            os.remove(SWITCH_PENDING)
+        except OSError:
+            pass
+        print("[heal] 本次由切换拉起: 25s 无帧将自动再切一次")
+    _capture_selfheal(delay=_heal_delay, max_retry=_heal_retry)
     Handler.sysmon = SysMonitor()
 
     # FPGA 预处理参数走 I2C 从机 (RK I2C9 <-> FPGA L18/M18, 底板直连不用飞线)
