@@ -881,6 +881,7 @@ $("btnSnap").onclick = async () => {
 let fpgaRegs = {};
 let fpgaPushTimer = null;
 let fpgaTimer = null;
+let ppVerWarned = false;
 
 const BASIC_BITS = [1, 2, 4, 8, 16];   // data-basic 0..4
 
@@ -936,6 +937,12 @@ function fpgaShowSt(d) {
   $("fsBeat").textContent   = (st.HEARTBEAT !== undefined) ? st.HEARTBEAT : "—";
   $("fsVer").textContent    = (st.VER !== undefined)
       ? "0x" + st.VER.toString(16).toUpperCase().padStart(4, "0") : "—";
+  // V45.2 起 Sobel/拉普拉斯/Prewitt/锐化 的参数语义从“右移”改成“增益”
+  const ver = (st.VER !== undefined) ? Number(st.VER) : null;
+  if (ver !== null && ver < 0x4502 && !ppVerWarned) {
+    ppVerWarned = true;
+    toast("FPGA 固件为 V45.1：边缘/锐化增益需要 V45.2 bit 才准确", true);
+  }
   if ($("fsCamWr")) {
     $("fsCamWr").textContent = (st.CAM_WR_CNT !== undefined)
       ? (st.CAM_WR_CNT + (Number(st.CAM_BUSY) ? "  (下发中)" : "")) : "—";
