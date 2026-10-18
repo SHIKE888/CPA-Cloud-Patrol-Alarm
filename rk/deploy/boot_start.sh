@@ -41,12 +41,21 @@ if [ ! -e "$DEV" ]; then
     log "警告: $DEV 不存在，仍然尝试启动（采集线程会自己重试）"
 fi
 
-# ---- 2. 复位 FPGA：写 0xE0 会让 sensor 重下整张初始化表并重新锁相 ----
+# ---- 2. 复位 FPGA：只有当模式不是目标值时才写 0xE0 ----
+#   ⚠ 开机时 FPGA 刚加载 bit，0xE0 本来就是默认值(0)。
+#     这时再写一次同值会触发 res_chg 复位窗(500ms + sensor 重下整表)，
+#     把 sensor 的**上电初始化时序**打乱 -> MIPI_CSI2 ECC 刷屏、收不到帧。
+#     start.sh 的做法是“已是目标模式就跳过”，这里必须一致。
 if [ -f "$FPGA" ]; then
-    log "复位 FPGA: RES_MODE=$RES"
-    python3 "$FPGA" set 0xE0 "$RES" || log "写 0xE0 失败（继续）"
-    # 1080p 仍需 5s；4K 的 sensor 初始化更慢，给 8s
-    if [ "$RES" = "2" ] || [ "$RES" = "1" ]; then sleep 8; else sleep 5; fi
+    CUR=$(python3 "$FPGA" get 0xE0 2>/dev/null | sed 's/.*(\([0-9][0-9]*\)).*/\1/')
+    if [ "${CUR:-x}" = "$RES" ]; then
+        log "FPGA 已是 RES_MODE=$RES，跳过复位（保持上电时序）"
+    else
+        log "复位 FPGA: RES_MODE=$CUR -> $RES"
+        python3 "$FPGA" set 0xE0 "$RES" || log "写 0xE0 失败（继续）"
+        # 4K 的 sensor 初始化更慢
+        if [ "$RES" = "2" ] || [ "$RES" = "1" ]; then sleep 8; else sleep 5; fi
+    fi
 else
     log "找不到 $FPGA，跳过 FPGA 复位"
 fi
