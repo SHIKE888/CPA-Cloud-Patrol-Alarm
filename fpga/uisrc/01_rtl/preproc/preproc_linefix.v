@@ -1,21 +1,25 @@
 //=============================================================================
-//  preproc_linefix.v —— 行首 16 像素校正（可开关，寄存器 0xFB）
+//  preproc_linefix.v —— 行边界后移 16 像素（修"行首 16 像素是上一行行尾"）
 //
-//  ── 板上实测现象（原始 NV16）────────────────────────────────────────────
-//  预处理链（4 级 3x3 窗口）每行输出的前 16 个像素不是本行内容：
-//      x=0..11  : 同一组 4 像素重复 3 遍（上一行行尾）
-//      x=12..15 : Y=22 / Cb=Cr=128（limited 黑）
-//  行长度仍是 1920（相邻行位移实测 0），所以真实内容被顶到下一行行首，
-//  画面左侧就出现彩条。
+//  ── 现象本质（板上实测）──────────────────────────────────────────────────
+//  预处理链每级 3x3 需要"下一组像素"才能组窗口，4 级串联后**内容比行边界晚
+//  16 个像素**：
+//      out_line(L) = C(L-1)[1904..1919] ++ C(L)[0..1903]
+//  所以每行开头的 16 个像素是上一行的行尾（画面左侧红/黑竖条），
+//  而每行总像素仍是 1920（相邻行位移实测为 0）。
 //
-//  ── 本模块做什么 ───────────────────────────────────────────────────────
-//  每行做一次"左旋 4 个字（16 像素）"：
-//      out_line = in_line[4..479] ++ in_line[0..3]
-//  行长度、拍数完全不变，只改行内顺序；行首从本行第 5 个字开始，
-//  行首那组脏数据被搬到行尾（它本来就是上一行行尾，看起来接近正常内容）。
+//  ── 修法：只挪边界，不搬数据 ─────────────────────────────────────────────
+//  把 tuser / tlast（行/帧边界标记）往后延迟 4 个字 = 16 像素，
+//  数据与 tvalid 完全不动。于是：
+//      out_line(L) = C(L)[0..1919]            ← 正好是本行内容
+//  上一行行尾那 16 个像素仍然输出，只是归到上一行末尾：
+//  不丢像素、不加像素、行长度不变、不需要行同步信号。
 //
-//  ⚠ 默认关闭（i_en=0 时纯直通，只多 1 拍延迟）。因为"左旋"的方向是否正好
-//    对，取决于脏数据来自哪一级，必须在板上用 0xFB 实测确认再默认打开。
+//  ── 为什么不是"删掉多余像素" ────────────────────────────────────────────
+//  那 16 个像素不是多余的，是上一行真实的行尾；删掉会丢数据且每行变 1904
+//  像素（行长度错 → 整屏斜）。
+//
+//  ⚠ i_en = 0 时完全直通（0 延迟），便于 A/B；由 0xFB 控制，默认开。
 //=============================================================================
 `timescale 1ns / 1ps
 
@@ -24,65 +28,45 @@ module preproc_linefix #(
 )(
 	input  wire         clk,
 	input  wire         rst_n,
-	input  wire [12:0]  i_h_active,
-	input  wire         i_en,               // 0 = 直通, 1 = 行首左旋 16 像素
+	input  wire [12:0]  i_h_active,     // 保留端口(本方案不用)
+	input  wire         i_en,           // 1 = 边界后移 16 像素
 
 	input  wire         i_tvalid,
 	input  wire         i_tuser,
 	input  wire         i_tlast,
 	input  wire [127:0] i_rgb,
 
-	output reg          o_tvalid,
+	output wire         o_tvalid,
 	output reg          o_tuser,
 	output reg          o_tlast,
-	output reg  [127:0] o_rgb
+	output wire [127:0] o_rgb
 );
 
-	localparam integer LT = 4;              // 旋掉的字数 = 16 像素 / 4
+	localparam integer SH = 4;          // 后移字数 = 16 像素 / 4
 
-	wire [12:0] nw = i_h_active >> 2;       // 每行字数
-
-	reg [12:0]  grp;                        // 行内字序号 0..nw-1
-	reg [127:0] h0, h1, h2, h3;             // 行首 4 个字
-	reg         u_d, t_d;
-
-	wire [127:0] hsel = (grp == 13'd0) ? h0 :
-	                    (grp == 13'd1) ? h1 :
-	                    (grp == 13'd2) ? h2 : h3;
-
-	wire in_head = i_en && (grp < LT);
+	reg [SH-1:0] u_sr, t_sr;
 
 	always @(posedge clk or negedge rst_n) begin
 		if (!rst_n) begin
-			grp <= 13'd0;
-			h0 <= 128'd0; h1 <= 128'd0; h2 <= 128'd0; h3 <= 128'd0;
-			u_d <= 1'b0; t_d <= 1'b0;
-			o_tvalid <= 1'b0; o_tuser <= 1'b0; o_tlast <= 1'b0;
-			o_rgb <= 128'd0;
+			u_sr    <= {SH{1'b0}};
+			t_sr    <= {SH{1'b0}};
+			o_tuser <= 1'b0;
+			o_tlast <= 1'b0;
+		end else if (i_tvalid) begin
+			u_sr    <= {u_sr[SH-2:0], i_tuser};
+			t_sr    <= {t_sr[SH-2:0], i_tlast};
+			o_tuser <= i_en ? u_sr[SH-1] : i_tuser;
+			o_tlast <= i_en ? t_sr[SH-1] : i_tlast;
 		end else begin
-			o_tvalid <= i_tvalid;
-			o_tuser  <= u_d;
-			o_tlast  <= t_d;
-			u_d      <= i_tuser;
-			t_d      <= i_tlast;
-
-			if (i_tvalid) begin
-				if (in_head) begin
-					o_rgb <= hsel;              // 上一行行首存的 4 个字 → 本行行尾
-					case (grp)
-						13'd0: h0 <= i_rgb;
-						13'd1: h1 <= i_rgb;
-						13'd2: h2 <= i_rgb;
-						default: h3 <= i_rgb;
-					endcase
-				end else begin
-					o_rgb <= i_rgb;
-				end
-
-				if (nw != 13'd0 && grp == (nw - 13'd1)) grp <= 13'd0;
-				else                                    grp <= grp + 13'd1;
-			end
+			u_sr    <= {SH{1'b0}};
+			t_sr    <= {SH{1'b0}};
+			o_tuser <= 1'b0;
+			o_tlast <= 1'b0;
 		end
 	end
+
+	// 数据与 tvalid 直通（不改内容、不加延迟）
+	assign o_tvalid = i_tvalid;
+	assign o_rgb    = i_rgb;
 
 endmodule

@@ -151,7 +151,7 @@ module preproc_top #(
 		.clk        (clk),
 		.rst_n      (rst_n),
 		.i_h_active (i_h_active),
-		.i_en       (1'b0),          // ★ 行首校正已停用(实测会产生横向黑线), 纯直通
+		.i_en       (i_linefix),     // 0xFB: 1 = 行边界后移 16 像素(默认开)
 		.i_tvalid   (e_tvalid),
 		.i_tuser    (e_tuser),
 		.i_tlast    (e_tlast),

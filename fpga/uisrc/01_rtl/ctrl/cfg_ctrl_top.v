@@ -326,7 +326,7 @@ module cfg_ctrl_top #(
 			bhe_s1<= 8'd255; bhe_s2<= 8'd255;
 			bhc_s1<= 8'd255; bhc_s2<= 8'd255;
 			bht_s1<= 4'd2;   bht_s2<= 4'd2;
-			blf_s1<= 1'b0;   blf_s2<= 1'b0;
+			blf_s1<= 1'b1;   blf_s2<= 1'b1;
 			bct_s1<= 4'd4;   bct_s2<= 4'd4;
 			wbr_s1 <= 8'd128; wbr_s2 <= 8'd128;
 			wbb_s1 <= 8'd128; wbb_s2 <= 8'd128;
