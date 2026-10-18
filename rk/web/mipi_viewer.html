@@ -1261,16 +1261,9 @@ async function waitModeReady(label) {
   streamTries = 0; deadStrikes = 0; zeroClientHits = 0;
   if (ok) {
     await loadModes(true).catch(() => {});
-    // ★ 进程内切换未重启服务, 原来那条 MJPEG 连接基本还活着 —— 不重建;
-    //   只有连接真的没了(元素被移除)才建一条新的。
-    if (!document.querySelector('img[id="stream"]')) {
-      lastForceAt = 0;
-      startStream(true);
-    } else {
-      connected = true;
-      setDot(true, "已连接");
-      lastFrameId = null; lastFrameAdvAt = Date.now();
-    }
+    // 切模式走 start.sh 重启进程 -> 旧 MJPEG 连接必死，必须重建。
+    lastForceAt = 0;                     // 绕过 startStream 的 5s 限频
+    startStream(true);
     toast("切换完成: " + (label || ""));
   } else {
     // 真的起不来才让用户刷新（兜底）

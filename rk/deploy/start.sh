@@ -77,19 +77,19 @@ stop_all() {
     if pkill -f 'ai_webstream\.py' 2>/dev/null; then
         echo "  已停 9013 独立版 AI"
     fi
-    # V45.8: 原来固定 sleep 2 —— 但进程已死时没有任何意义。
-    #        改成先查一次，还活着才等（切换耗时直接少 2 秒）。
+    # ★ 等旧进程自己退：SIGTERM handler 要等采集线程从 cap.read() 返回并
+    #   release 设备（select 超时上限 10s）。直接 kill -9 会让 V4L2 停流
+    #   不完整，rkcif/dphy 变脏 -> 新进程 MIPI_CSI2 ECC 刷屏、黑屏。
+    for i in $(seq 1 30); do
+        pgrep -f 'mipi_webstream\.py' >/dev/null 2>&1 || break
+        sleep 0.5
+    done
     n=$(pgrep -f 'mipi_webstream\.py' 2>/dev/null | wc -l)
     n=${n:-0}
     if [ "$n" -gt 0 ]; then
-        sleep 0.4
-        n=$(pgrep -f 'mipi_webstream\.py' 2>/dev/null | wc -l)
-        n=${n:-0}
-    fi
-    if [ "$n" -gt 0 ]; then
-        c_warn "  仍有 $n 个残留, 强制 kill"
+        c_warn "  等待 15s 仍不退, 强制 kill"
         pkill -9 -f 'mipi_webstream\.py' 2>/dev/null
-        sleep 0.4
+        sleep 0.5
     fi
     return 0
 }
@@ -143,21 +143,25 @@ set_mode() {
     echo "  当前 RES_MODE = ${m:-?}"
     case "$want" in
         1080|1080p)
-            if [ "${m:-x}" != "0" ]; then
-                echo "  -> 切 1080p60 (写 0xE0=0)"
+            # ★ 即使是目标模式也要重新写 0xE0：重启 web 会让 RK 侧重新初始化
+            #   D-PHY/rkcif，而 FPGA/sensor 不复位就会两边不同步 ->
+            #   MIPI_CSI2 ECC/CRC 刷屏 + 永远 select() timeout（黑屏）。
+            #   切换脚本自己已经写过 0xE0，用 SKIP_RESET=1 跳过，避免多等 5 秒。
+            if [ "${m:-x}" != "0" ] || [ "${SKIP_RESET:-0}" != "1" ]; then
+                echo "  -> 复位 1080p60 (写 0xE0=0)"
                 python3 "$FPGA" set 0xE0 0 2>&1 | sed 's/^/     /'
-                sleep 3
+                sleep 5
             else
-                echo "  -> 已是 1080p60"
+                echo "  -> 已是 1080p60 (切换脚本已复位，跳过)"
             fi
             ;;
         4k|4K)
-            if [ "${m:-x}" != "2" ]; then
-                echo "  -> 切 4K25 (写 0xE0=2)"
+            if [ "${m:-x}" != "2" ] || [ "${SKIP_RESET:-0}" != "1" ]; then
+                echo "  -> 复位 4K25 (写 0xE0=2)"
                 python3 "$FPGA" set 0xE0 2 2>&1 | sed 's/^/     /'
-                sleep 4
+                sleep 5
             else
-                echo "  -> 已是 4K25"
+                echo "  -> 已是 4K25 (切换脚本已复位，跳过)"
             fi
             ;;
         *)  c_err "  未知模式: $want (可用: 1080 / 4k)"; return 1;;

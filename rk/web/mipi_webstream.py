@@ -140,6 +140,38 @@ SWITCH_SH = "/tmp/mode_switch.sh"
 SWITCH_RETRY = "/tmp/switch_retry"
 SWITCH_PHASE = ""          # 进程内切换的当前阶段(日志/诊断用)
 
+# ---- 运行日志大小上限 -------------------------------------------------------
+# 板上存储很宝贵: 运行日志超过 200KB 就直接截断。
+LOG_PATH = os.environ.get("MIPI_LOG", "/tmp/mipi_start.log")
+LOG_MAX_BYTES = 200 * 1024
+
+
+def _trim_log_once():
+    """日志超限时原地截断。
+
+    ⚠ 不能用 truncate(0): 进程 stdout 的写偏移还在原处，文件会立刻又变成
+      原来的大小(空洞)。必须 dup2 一个 O_TRUNC 的新 fd，把偏移也归零。
+    """
+    try:
+        if not os.path.exists(LOG_PATH):
+            return
+        if os.path.getsize(LOG_PATH) <= LOG_MAX_BYTES:
+            return
+        fd = os.open(LOG_PATH, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+        os.dup2(fd, 1)
+        os.dup2(fd, 2)
+        os.close(fd)
+    except Exception:                                              # noqa: BLE001
+        pass
+
+
+def _log_trim_watch(delay=60.0):
+    def _w():
+        while True:
+            time.sleep(delay)
+            _trim_log_once()
+    threading.Thread(target=_w, daemon=True, name="logtrim").start()
+
 # ---- 推流并发: 按客户端 IP 限流 -------------------------------------------------
 # 为什么需要: 浏览器每次重新挂 <img src=/stream> 都会新建一条 multipart 长连接,
 # 旧连接在服务端是阻塞在 wait_next 里的, 只有下一次写失败才知道对面没了。
@@ -213,14 +245,21 @@ def _launch_start_script(want, res_mode):
                 "fi\n"
                 "echo $$ > \"$PIDF\"\n"
                 "trap 'rm -f \"$PIDF\"' EXIT\n"
+                "pkill -f 'mipi_webstream\\.py' 2>/dev/null\n"
+                # 等旧进程自己退：TERM handler 要等采集线程 release 设备(<=10s)
+                "for i in $(seq 1 30); do\n"
+                "  pgrep -f 'mipi_webstream\\.py' >/dev/null 2>&1 || break\n"
+                "  sleep 0.5\n"
+                "done\n"
                 "pkill -9 -f 'mipi_webstream\\.py' 2>/dev/null\n"
-                "sleep 0.4\n"
+                "sleep 0.2\n"
                 "python3 /root/rk/deploy/fpga_cfg.py set 0xE0 %d\n"
                 "sleep 5\n"
-                "bash %s %s\n"
+                "SKIP_RESET=1 bash %s %s\n"
                 % (int(res_mode), START_SH, want))
         os.chmod(SWITCH_SH, 0o755)
-        log = open("/tmp/mode_switch.log", "ab")
+        # 每次切换覆盖写，不追加 —— 旧日志累积是板上存储的无谓消耗。
+        log = open("/tmp/mode_switch.log", "wb")
         subprocess.Popen(["/bin/sh", SWITCH_SH],
                          stdout=log, stderr=log,
                          start_new_session=True, close_fds=True)
@@ -1472,15 +1511,12 @@ class OpenCVCapture(threading.Thread):
         """
         self.stop_flag.set()
         try:
-            self.join(timeout=1.0)
+            self.join(timeout=3.0)
         except Exception:                                          # noqa: BLE001
             pass
-        if self.is_alive():
-            self._force_release()
-            try:
-                self.join(timeout=1.5)
-            except Exception:                                      # noqa: BLE001
-                pass
+        # ⚠ 不再调 _force_release(): 从其它线程 release 一个正阻塞在 select()
+        #   的 VideoCapture 会让 VIDIOC_STREAMOFF 不完整，rkcif 状态变脏，
+        #   下一个进程打开后永远 select() timeout（已实测，只能 reboot）。
 
     def _force_release(self):
         """从其它线程把底层 VideoCapture 放掉, 用于打断阻塞的 read()。"""
@@ -3116,13 +3152,14 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---------- 分辨率/帧率切换 ----------
     def _switch_inplace(self, mode, old_ms, want):
-        """进程内切分辨率：停采集 -> 写 FPGA -> 等重锁 -> 配 media -> 重开采集。
+        """【已禁用】进程内切分辨率。
 
-        相比整进程重启的好处：
-          · 前端页面 / MJPEG 客户端连接不断（只断流，前端自动续）
-          · AI 模型不用重新加载（每次重加载 10~20s）
-          · 不用重新探测 I2C、重建线程池
-        失败兜底：20 秒还没帧就交回 start.sh（已验证稳定的整条重启）。
+        ⚠ 2026-10-18 板上实测：反复用这条路切换后 dmesg 出现
+          MIPI_CSI2 ERR (ecc/crc)，rkcif 永久 select() timeout，
+          连 start.sh 也救不回来，必须 reboot。
+          根因是从外部线程 _force_release() 打断阻塞的 cap.read()，
+          V4L2 STREAMOFF 没完整执行，D-PHY/rkcif 状态错乱。
+        保留代码仅作参考，正常路径走 _launch_start_script()。
         """
         global SWITCH_PHASE
         try:
@@ -3233,20 +3270,23 @@ class Handler(BaseHTTPRequestHandler):
             #   它自己会：停 web(释放 /dev/video22) -> 写 0xE0 -> 等 4s
             #   -> 配 media 三个 pad -> 按新尺寸启 web。
             #   我们只要把“曝光多少 ms”交接给新进程就行。
-            # ★ V45.8 进程内切换：只重开采集，不重启 web。
-            #   实测每次重启 web 都要重新加载 AI 模型（10~20s），那才是
-            #   “切换慢”的主因；前端连接和模型都不该为换格式买单。
-            if int(mode["fps_div"]) == 1:
+            # ⚠ V45.10: 不要用进程内切换。
+            #   实测在板上反复切几次后 dmesg 出现 MIPI_CSI2 ERR (ecc/crc)，
+            #   rkcif 永远 select() timeout，连 start.sh 也救不回来，只能 reboot。
+            #   根因：从外部线程 _force_release() 打断阻塞的 cap.read()，
+            #   VIDIOC_STREAMOFF 没完整执行，D-PHY/rkcif 状态错乱。
+            #   所以回到已验证的“整进程重启”——代价是 AI 模型要重载一次。
+            if int(mode["fps_div"]) == 1 and os.path.isfile(START_SH):
                 want = "4k" if int(mode["res_mode"]) in (1, 2) else "1080"
                 _bump_rev("mode")
                 _reset_retry()          # 用户主动切换 -> 重试计数清零
-                threading.Thread(target=self._switch_inplace,
-                                 args=(mode, old_ms, want),
-                                 daemon=True, name="switch").start()
+                # 先把响应发回去, 再让切换脚本把本进程 kill 掉
+                threading.Timer(0.25, _launch_start_script,
+                                args=(want, int(mode["res_mode"]))).start()
                 return {"ok": True, "mode": mode,
                         "log": ["切换中 -> %s (RES_MODE=%d)"
                                 % (want, int(mode["res_mode"]))],
-                        "note": "只断流，页面与 AI 模型不受影响，约 6~9 秒恢复"}
+                        "note": "采集通路重新配置中，约 8~12 秒后自动恢复（页面无需刷新）"}
 
             # ---- 没有 start.sh 时的回退流程 ----
 
@@ -3625,6 +3665,41 @@ def main():
     print("   本地 HTML 请在 PC 上打开 mipi_viewer.html,")
     print("   把服务器地址填成  %s:%d" % (ip, args.port))
     print("=" * 66)
+
+    try:
+        # ★ SIGTERM 必须自己处理：直接被杀掉的话 /dev/video22 的 fd 会带着
+        #   未完成的 VIDIOC_STREAMOFF 关闭，rkcif 内部状态变脏；下一个进程
+        #   打开后永远 select() timeout（表现就是切完分辨率黑屏）。
+        #   这里先 release 再退出，让内核完整地停流。
+        import signal as _signal
+
+        def _on_term(_signum, _frame):
+            # ⚠ 不能立即 os._exit()，也不能从别的线程 release：
+            #   采集线程正卡在 cap.read() 的 select() 里，直接杀进程会让
+            #   VIDIOC_STREAMOFF 不完整 -> rkcif/dphy 脏状态 -> 下一个进程
+            #   打开后 MIPI_CSI2 ECC 刷屏、永远 select() timeout（黑屏）。
+            #   正确做法：置停止标志，等采集线程自己从 read() 返回并
+            #   cap.release()（select 超时上限 10s），再退出。
+            try:
+                cap.stop_flag.set()
+            except Exception:                                      # noqa: BLE001
+                pass
+            t0 = time.time()
+            while time.time() - t0 < 12.0:
+                try:
+                    if cap is None or not cap.is_alive():
+                        break
+                except Exception:                                  # noqa: BLE001
+                    break
+                time.sleep(0.1)
+            os._exit(0)
+
+        _signal.signal(_signal.SIGTERM, _on_term)
+        _signal.signal(_signal.SIGINT, _on_term)
+    except Exception:                                              # noqa: BLE001
+        pass
+
+    _log_trim_watch()          # 运行日志超过 200KB 自动截断
 
     try:
         srv.serve_forever()
