@@ -378,6 +378,9 @@
             <div class="row"><label title="限制单个亮度桶的最大计数（x64）。调小可以抑制“大面积背景被硬拉伸成噪点”，0 = 不限制">对比限制</label>
               <input type="range" id="f_BASIC_HE_CLIP" min="0" max="255" step="1" value="255">
               <span class="val" id="fv_BASIC_HE_CLIP">255</span></div>
+            <div class="row"><label title="LUT 跨帧平滑强度。深色区直方图每帧都在抖，不平滑就会频闪；调大更稳但响应更慢，0 = 不平滑">防频闪</label>
+              <input type="range" id="f_BASIC_HE_TEMP" min="0" max="8" step="1" value="2">
+              <span class="val" id="fv_BASIC_HE_TEMP">2</span></div>
           </div>
 
           <button class="ghost ppbtn" data-basic="3">对比度拉伸</button>
@@ -973,7 +976,7 @@ function fpgaSyncUI() {
   if ($("s_gray_mode") && r.BASIC_GRAY !== undefined) {
     $("s_gray_mode").value = String(Number(r.BASIC_GRAY));
   }
-  ["BASIC_GAUSS", "BASIC_HE", "BASIC_HE_CLIP", "BASIC_CONTRAST"].forEach(k => {
+  ["BASIC_GAUSS", "BASIC_HE", "BASIC_HE_CLIP", "BASIC_HE_TEMP", "BASIC_CONTRAST"].forEach(k => {
     const el = $("f_" + k);
     if (el && r[k] !== undefined && document.activeElement !== el) el.value = r[k];
     if (el && $("fv_" + k)) $("fv_" + k).textContent = el.value;
@@ -1018,9 +1021,9 @@ function fpgaShowSt(d) {
       ? "0x" + st.VER.toString(16).toUpperCase().padStart(4, "0") : "—";
   // V45.2 起 Sobel/拉普拉斯/Prewitt/锐化 的参数语义从“右移”改成“增益”
   const ver = (st.VER !== undefined) ? Number(st.VER) : null;
-  if (ver !== null && ver < 0x4503 && !ppVerWarned) {
+  if (ver !== null && ver < 0x4504 && !ppVerWarned) {
     ppVerWarned = true;
-    toast("FPGA 固件为 V45.2 或更早：核尺寸/对比限制需要 V45.3 bit 才生效", true);
+    toast("FPGA 固件低于 V45.4：三通道高斯 / 防频闪需要 V45.4 bit 才生效", true);
   }
   if ($("fsCamWr")) {
     $("fsCamWr").textContent = (st.CAM_WR_CNT !== undefined)
@@ -1089,7 +1092,7 @@ $("s_gray_mode").onchange = () =>
 });
 
 /* 初级滑条: 动一下顺便把对应算法打开 */
-const BASIC_SLIDER_BIT = {BASIC_GAUSS: 2, BASIC_KER: 2, BASIC_HE: 4, BASIC_HE_CLIP: 4, BASIC_CONTRAST: 8};
+const BASIC_SLIDER_BIT = {BASIC_GAUSS: 2, BASIC_KER: 2, BASIC_HE: 4, BASIC_HE_CLIP: 4, BASIC_HE_TEMP: 4, BASIC_CONTRAST: 8};
 Object.keys(BASIC_SLIDER_BIT).forEach(k => {
   const el = $("f_" + k);
   if (!el) return;

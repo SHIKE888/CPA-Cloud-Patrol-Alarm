@@ -33,6 +33,7 @@ module preproc_top #(
 	input  wire [1:0]   i_gauss_ker,     // 0=3x3 1=5x5 2=7x7
 	input  wire [7:0]   i_he_str,        // 0..255
 	input  wire [7:0]   i_he_clip,       // 直方图桶上限(*64), 0=不限
+	input  wire [3:0]   i_he_temp,       // LUT 时间平滑 0..8
 	input  wire [3:0]   i_contrast,      // 0..8
 
 	// ---- 高级预处理配置 (0xB1~0xB7, 0xF5~0xF7, 单选) ----
@@ -75,6 +76,7 @@ module preproc_top #(
 		.i_gauss_ker (i_gauss_ker),
 		.i_he_str    (i_he_str),
 		.i_he_clip   (i_he_clip),
+		.i_he_temp   (i_he_temp),
 		.i_contrast  (i_contrast),
 		.o_tvalid    (b_tvalid),
 		.o_tuser     (b_tuser),

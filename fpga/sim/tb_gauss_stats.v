@@ -52,6 +52,7 @@ module tb_gauss_stats;
 		.i_gauss_ker (KER[1:0]),
 		.i_he_str    (8'd255),
 		.i_he_clip   (8'd255),
+		.i_he_temp   (4'd4),
 		.i_contrast  (4'd4),
 		.o_tvalid    (o_tvalid),
 		.o_tuser     (o_tuser),
@@ -122,15 +123,21 @@ module tb_gauss_stats;
 						v    = ($signed({1'b0, lfsr[4:0]}) - 16);   // -16..+15
 						if (COLOR == 0) begin
 							vr = v + 128; vg = vr; vb = vr;
-						end else begin
+						end else if (COLOR == 1) begin
 							vr = v + 180; vg = v + 100; vb = v + 60;
+						end else begin
+							// COLOR=2: 三通道各自独立噪声 (模拟彩色噪点)
+							vr = ($signed({1'b0, lfsr[4:0]})   - 16) + 180;
+							vg = ($signed({1'b0, lfsr[9:5]})   - 16) + 100;
+							vb = ($signed({1'b0, lfsr[14:10]}) - 16) + 60;
 						end
 						rgb[32*k +: 32] = {8'h00, vr, vg, vb};
 						if (frame == 3 && line >= SKIP) begin
 							in_n = in_n + 1;
 							for (ch = 0; ch < 3; ch = ch + 1) begin
-								if (COLOR == 0) ov = v + 128;
-								else            ov = (ch == 0) ? (v + 60) : (ch == 1) ? (v + 100) : (v + 180);
+								if (COLOR == 0)      ov = v + 128;
+								else if (COLOR == 1) ov = (ch == 0) ? (v + 60) : (ch == 1) ? (v + 100) : (v + 180);
+								else                 ov = (ch == 0) ? vb : (ch == 1) ? vg : vr;
 								isum[ch]  = isum[ch]  + ov;
 								isum2[ch] = isum2[ch] + ov * ov;
 							end

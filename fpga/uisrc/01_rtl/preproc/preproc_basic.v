@@ -55,6 +55,7 @@ module preproc_basic #(
 	input  wire [1:0]   i_gauss_ker,    // 0=3x3  1=5x5  2=7x7 (级联 1/2/3 遍 3x3)
 	input  wire [7:0]   i_he_str,       // 0..255
 	input  wire [7:0]   i_he_clip,      // 直方图裁上限 = i_he_clip*64, 0=不限制
+	input  wire [3:0]   i_he_temp,      // LUT 时间平滑 0..8 (0=不平滑)
 	input  wire [3:0]   i_contrast,     // 0..8
 
 	// ---- 视频输出 ----
@@ -100,17 +101,30 @@ module preproc_basic #(
 		end
 	endfunction
 
+	// 逐通道混合: s=0 -> 原图, s=8 -> 完全用滤波结果 (单调, 不会过冲)
+	function [7:0] mix8;
+		input [7:0] orig;
+		input [7:0] filt;
+		input [3:0] s;
+		reg signed [15:0] d;
+		begin
+			d = $signed({8'd0, filt}) - $signed({8'd0, orig});
+			d = (d * $signed({12'd0, s})) >>> 3;
+			mix8 = clamp8($signed({8'd0, orig}) + d);
+		end
+	endfunction
+
 	//-------------------------------------------------------------------------
 	// 1. 第一遍 3x3 亮度窗口
 	//-------------------------------------------------------------------------
 	wire         w_tvalid, w_tuser, w_tlast;
 	wire [2:0]   w_rowmask;
-	wire [47:0]  w_winA, w_winB, w_winC;
+	wire [143:0] w_winA, w_winB, w_winC;
 	wire [127:0] w_rgb;
 
 	wire [15:0] nw16 = {3'd0, (i_h_active >> 2)};
 
-	preproc_win3x3 #(
+	preproc_win3x3_rgb #(
 		.PX_PER_CLK (PX_PER_CLK)
 	) u_win1 (
 		.clk       (clk),
@@ -130,14 +144,15 @@ module preproc_basic #(
 		.o_rgb     (w_rgb)
 	);
 
-	wire [47:0] eA = w_rowmask[2] ? w_winA : w_winC;
-	wire [47:0] eB = w_rowmask[1] ? w_winB : w_winC;
-	wire [47:0] eC = w_winC;
+	wire [143:0] eA = w_rowmask[2] ? w_winA : w_winC;
+	wire [143:0] eB = w_rowmask[1] ? w_winB : w_winC;
+	wire [143:0] eC = w_winC;
 
-	wire [7:0] c_l0 = w_winC[15: 8];
-	wire [7:0] c_l1 = w_winC[23:16];
-	wire [7:0] c_l2 = w_winC[31:24];
-	wire [7:0] c_l3 = w_winC[39:32];
+	// 亮度统一用 BT.601, 从**对齐后的原始 RGB** 算 (与直方图/查表一致)
+	wire [7:0] c_l0 = lum_sel(w_rgb[23:16], w_rgb[15:8], w_rgb[7:0], 1'b0);
+	wire [7:0] c_l1 = lum_sel(w_rgb[55:48], w_rgb[47:40], w_rgb[39:32], 1'b0);
+	wire [7:0] c_l2 = lum_sel(w_rgb[87:80], w_rgb[79:72], w_rgb[71:64], 1'b0);
+	wire [7:0] c_l3 = lum_sel(w_rgb[119:112], w_rgb[111:104], w_rgb[103:96], 1'b0);
 
 	//-------------------------------------------------------------------------
 	// 2. 直方图统计 (4 bank 轮转, 每拍 1 个 lane)
@@ -173,6 +188,9 @@ module preproc_basic #(
 	reg [7:0] lut1 [0:255];
 	reg [7:0] lut2 [0:255];
 	reg [7:0] lut3 [0:255];
+	// 上一帧的 LUT（只做时间平滑用，四个 bank 内容相同，只存一份）
+	reg [7:0] lutp [0:255];
+	reg [7:0] lqp;
 
 	reg [7:0] lq0, lq1, lq2, lq3;
 
@@ -218,6 +236,11 @@ module preproc_basic #(
 	wire [51:0] lut_prod = lut_rel * scale + 52'd2048;   // +0.5 四舍五入
 	wire [25:0] lut_div  = lut_prod >> 12;
 	wire [7:0]  lutv_n   = (lut_div > 26'd255) ? 8'hFF : lut_div[7:0];
+
+	// LUT 时间平滑: new = (cur*(8-w) + prev*w + 4) >> 3
+	// 深色区直方图每帧都在抖, 不平滑时 LUT 逐帧跳变 -> 画面频闪。
+	wire [11:0] lutv_mix = lutv_n * (12'd8 - {8'd0, i_he_temp}) + lqp * {8'd0, i_he_temp};
+	wire [7:0]  lutv_t   = (i_he_temp == 4'd0) ? lutv_n : ((lutv_mix + 12'd4) >> 3);
 
 	//-------------------------------------------------------------------------
 	// 5. 分帧: 按像素组计数 (不能用 tlast —— ISP 的 tlast 是帧尾脉冲)
@@ -299,17 +322,20 @@ module preproc_basic #(
 			lq1 <= lut1[c_l1];
 			lq2 <= lut2[c_l2];
 			lq3 <= lut3[c_l3];
+			lqp <= lutp[raddr];
 
 			if (st == S_INIT) begin
 				lut0[bin] <= bin;
 				lut1[bin] <= bin;
 				lut2[bin] <= bin;
 				lut3[bin] <= bin;
+				lutp[bin] <= bin;
 			end else if ((st == S_LUT) && phase) begin
-				lut0[bin] <= lutv_n;
-				lut1[bin] <= lutv_n;
-				lut2[bin] <= lutv_n;
-				lut3[bin] <= lutv_n;
+				lut0[bin] <= lutv_t;
+				lut1[bin] <= lutv_t;
+				lut2[bin] <= lutv_t;
+				lut3[bin] <= lutv_t;
+				lutp[bin] <= lutv_t;
 			end
 		end
 	end
@@ -450,48 +476,48 @@ module preproc_basic #(
 	end
 
 	//-------------------------------------------------------------------------
-	// 9. 第一遍高斯: 只算亮度 (不做混合), 同时把 p1 打包成第二遍的输入流
+	// 9. 高斯第 1 遍: R / G / B **各自独立** 3x3 二项式 [1 2 1]/4
+	//    (只滤亮度再把差值加到 RGB 会把 R/G 的噪声注进 B —— 仿真实测 B 通道
+	//     方差 88->109, 这就是"强度越高噪点越重"的根因)
 	//-------------------------------------------------------------------------
-	wire [7:0] p1_lane [0:3];
+	wire [95:0] p1_pack;                // 每像素 {R,G,B}
 
-	genvar j;
+	genvar j, c;
 	generate
 	for (j = 0; j < 4; j = j + 1) begin : g_p1
-		wire [7:0] a0 = eA[(8*j)     +: 8];
-		wire [7:0] a1 = eA[(8*(j+1)) +: 8];
-		wire [7:0] a2 = eA[(8*(j+2)) +: 8];
-		wire [7:0] b0 = eB[(8*j)     +: 8];
-		wire [7:0] b1 = eB[(8*(j+1)) +: 8];
-		wire [7:0] b2 = eB[(8*(j+2)) +: 8];
-		wire [7:0] c0 = eC[(8*j)     +: 8];
-		wire [7:0] c1 = eC[(8*(j+1)) +: 8];
-		wire [7:0] c2 = eC[(8*(j+2)) +: 8];
+		for (c = 0; c < 3; c = c + 1) begin : g_p1c
+			wire [7:0] a0 = eA[(24*j)     + 8*c +: 8];
+			wire [7:0] a1 = eA[(24*(j+1)) + 8*c +: 8];
+			wire [7:0] a2 = eA[(24*(j+2)) + 8*c +: 8];
+			wire [7:0] b0 = eB[(24*j)     + 8*c +: 8];
+			wire [7:0] b1 = eB[(24*(j+1)) + 8*c +: 8];
+			wire [7:0] b2 = eB[(24*(j+2)) + 8*c +: 8];
+			wire [7:0] c0 = eC[(24*j)     + 8*c +: 8];
+			wire [7:0] c1 = eC[(24*(j+1)) + 8*c +: 8];
+			wire [7:0] c2 = eC[(24*(j+2)) + 8*c +: 8];
 
-		wire [11:0] gsum = {4'b0, a0} + {3'b0, a1, 1'b0} + {4'b0, a2}
-		                 + {3'b0, b0, 1'b0} + {2'b0, b1, 2'b0} + {3'b0, b2, 1'b0}
-		                 + {4'b0, c0} + {3'b0, c1, 1'b0} + {4'b0, c2};
-		// 四舍五入(原来直接截断, 两遍级联后最多差 -2 LSB, 平缓区域会出台阶)
-		wire [7:0]  p1v = (gsum + 12'd8) >> 4;
-		assign p1_lane[j] = p1v;
+			wire [11:0] gsum = {4'b0, a0} + {3'b0, a1, 1'b0} + {4'b0, a2}
+			                 + {3'b0, b0, 1'b0} + {2'b0, b1, 2'b0} + {3'b0, b2, 1'b0}
+			                 + {4'b0, c0} + {3'b0, c1, 1'b0} + {4'b0, c2};
+			assign p1_pack[(24*j) + 8*c +: 8] = (gsum + 12'd8) >> 4;   // 四舍五入
+		end
 	end
 	endgenerate
 
-	wire [31:0] p1_pack = {p1_lane[3], p1_lane[2], p1_lane[1], p1_lane[0]};
-
-	// 第二遍窗口: 输入是"亮度复制成 RGB"的流 (lum() 会还原成 p1)
+	// 第 2 遍的输入流 (128bit: 每 lane {8'h00,R,G,B})
 	wire [127:0] g1_rgb = {
-		{8'h00, p1_lane[3], p1_lane[3], p1_lane[3]},
-		{8'h00, p1_lane[2], p1_lane[2], p1_lane[2]},
-		{8'h00, p1_lane[1], p1_lane[1], p1_lane[1]},
-		{8'h00, p1_lane[0], p1_lane[0], p1_lane[0]}
+		{8'h00, p1_pack[95:88], p1_pack[87:80],  p1_pack[79:72]},
+		{8'h00, p1_pack[71:64], p1_pack[63:56],  p1_pack[55:48]},
+		{8'h00, p1_pack[47:40], p1_pack[39:32],  p1_pack[31:24]},
+		{8'h00, p1_pack[23:16], p1_pack[15:8],   p1_pack[7:0]}
 	};
 
 	wire         w2_tvalid, w2_tuser, w2_tlast;
 	wire [2:0]   w2_rowmask;
-	wire [47:0]  w2_winA, w2_winB, w2_winC;
+	wire [143:0] w2_winA, w2_winB, w2_winC;
 	wire [127:0] w2_rgb;
 
-	preproc_win3x3 #(
+	preproc_win3x3_rgb #(
 		.PX_PER_CLK (PX_PER_CLK)
 	) u_win2 (
 		.clk       (clk),
@@ -514,33 +540,32 @@ module preproc_basic #(
 	//-------------------------------------------------------------------------
 	// 10. 第 2 遍 3x3 (w2 窗口, 已在上面的 u_win2 给出)
 	//-------------------------------------------------------------------------
-	wire [47:0] f2A = w2_rowmask[2] ? w2_winA : w2_winC;
-	wire [47:0] f2B = w2_rowmask[1] ? w2_winB : w2_winC;
-	wire [47:0] f2C = w2_winC;
+	wire [143:0] f2A = w2_rowmask[2] ? w2_winA : w2_winC;
+	wire [143:0] f2B = w2_rowmask[1] ? w2_winB : w2_winC;
+	wire [143:0] f2C = w2_winC;
 
-	wire [7:0] p2_lane [0:3];
+	wire [95:0] p2_pack;
 
 	generate
 	for (j = 0; j < 4; j = j + 1) begin : g_p2
-		wire [7:0] a0 = f2A[(8*j)     +: 8];
-		wire [7:0] a1 = f2A[(8*(j+1)) +: 8];
-		wire [7:0] a2 = f2A[(8*(j+2)) +: 8];
-		wire [7:0] b0 = f2B[(8*j)     +: 8];
-		wire [7:0] b1 = f2B[(8*(j+1)) +: 8];
-		wire [7:0] b2 = f2B[(8*(j+2)) +: 8];
-		wire [7:0] c0 = f2C[(8*j)     +: 8];
-		wire [7:0] c1 = f2C[(8*(j+1)) +: 8];
-		wire [7:0] c2 = f2C[(8*(j+2)) +: 8];
+		for (c = 0; c < 3; c = c + 1) begin : g_p2c
+			wire [7:0] a0 = f2A[(24*j)     + 8*c +: 8];
+			wire [7:0] a1 = f2A[(24*(j+1)) + 8*c +: 8];
+			wire [7:0] a2 = f2A[(24*(j+2)) + 8*c +: 8];
+			wire [7:0] b0 = f2B[(24*j)     + 8*c +: 8];
+			wire [7:0] b1 = f2B[(24*(j+1)) + 8*c +: 8];
+			wire [7:0] b2 = f2B[(24*(j+2)) + 8*c +: 8];
+			wire [7:0] c0 = f2C[(24*j)     + 8*c +: 8];
+			wire [7:0] c1 = f2C[(24*(j+1)) + 8*c +: 8];
+			wire [7:0] c2 = f2C[(24*(j+2)) + 8*c +: 8];
 
-		wire [11:0] gsum2 = {4'b0, a0} + {3'b0, a1, 1'b0} + {4'b0, a2}
-		                  + {3'b0, b0, 1'b0} + {2'b0, b1, 2'b0} + {3'b0, b2, 1'b0}
-		                  + {4'b0, c0} + {3'b0, c1, 1'b0} + {4'b0, c2};
-		wire [7:0]  p2v = (gsum2 + 12'd8) >> 4;
-		assign p2_lane[j] = p2v;
+			wire [11:0] gsum2 = {4'b0, a0} + {3'b0, a1, 1'b0} + {4'b0, a2}
+			                  + {3'b0, b0, 1'b0} + {2'b0, b1, 2'b0} + {3'b0, b2, 1'b0}
+			                  + {4'b0, c0} + {3'b0, c1, 1'b0} + {4'b0, c2};
+			assign p2_pack[(24*j) + 8*c +: 8] = (gsum2 + 12'd8) >> 4;
+		end
 	end
 	endgenerate
-
-	wire [31:0] p2_pack = {p2_lane[3], p2_lane[2], p2_lane[1], p2_lane[0]};
 
 	//-------------------------------------------------------------------------
 	// 10b. 第 3 遍 3x3 —— 级联 3 遍 3x3 二项式 = 7x7 二项式核
@@ -548,18 +573,18 @@ module preproc_basic #(
 	//      硬件恒在跑; 选 3x3/5x5 时只取前 1/2 遍的结果, 不影响"并行实现"。
 	//-------------------------------------------------------------------------
 	wire [127:0] g2_rgb = {
-		{8'h00, p2_lane[3], p2_lane[3], p2_lane[3]},
-		{8'h00, p2_lane[2], p2_lane[2], p2_lane[2]},
-		{8'h00, p2_lane[1], p2_lane[1], p2_lane[1]},
-		{8'h00, p2_lane[0], p2_lane[0], p2_lane[0]}
+		{8'h00, p2_pack[95:88], p2_pack[87:80], p2_pack[79:72]},
+		{8'h00, p2_pack[71:64], p2_pack[63:56], p2_pack[55:48]},
+		{8'h00, p2_pack[47:40], p2_pack[39:32], p2_pack[31:24]},
+		{8'h00, p2_pack[23:16], p2_pack[15:8],  p2_pack[7:0]}
 	};
 
 	wire         w3_tvalid, w3_tuser, w3_tlast;
 	wire [2:0]   w3_rowmask;
-	wire [47:0]  w3_winA, w3_winB, w3_winC;
+	wire [143:0] w3_winA, w3_winB, w3_winC;
 	wire [127:0] w3_rgb;
 
-	preproc_win3x3 #(
+	preproc_win3x3_rgb #(
 		.PX_PER_CLK (PX_PER_CLK)
 	) u_win3 (
 		.clk       (clk),
@@ -579,29 +604,30 @@ module preproc_basic #(
 		.o_rgb     (w3_rgb)
 	);
 
-	wire [47:0] f3A = w3_rowmask[2] ? w3_winA : w3_winC;
-	wire [47:0] f3B = w3_rowmask[1] ? w3_winB : w3_winC;
-	wire [47:0] f3C = w3_winC;
+	wire [143:0] f3A = w3_rowmask[2] ? w3_winA : w3_winC;
+	wire [143:0] f3B = w3_rowmask[1] ? w3_winB : w3_winC;
+	wire [143:0] f3C = w3_winC;
 
-	wire [7:0] p3_lane [0:3];
+	wire [95:0] p3_pack;
 
 	generate
 	for (j = 0; j < 4; j = j + 1) begin : g_p3
-		wire [7:0] a0 = f3A[(8*j)     +: 8];
-		wire [7:0] a1 = f3A[(8*(j+1)) +: 8];
-		wire [7:0] a2 = f3A[(8*(j+2)) +: 8];
-		wire [7:0] b0 = f3B[(8*j)     +: 8];
-		wire [7:0] b1 = f3B[(8*(j+1)) +: 8];
-		wire [7:0] b2 = f3B[(8*(j+2)) +: 8];
-		wire [7:0] c0 = f3C[(8*j)     +: 8];
-		wire [7:0] c1 = f3C[(8*(j+1)) +: 8];
-		wire [7:0] c2 = f3C[(8*(j+2)) +: 8];
+		for (c = 0; c < 3; c = c + 1) begin : g_p3c
+			wire [7:0] a0 = f3A[(24*j)     + 8*c +: 8];
+			wire [7:0] a1 = f3A[(24*(j+1)) + 8*c +: 8];
+			wire [7:0] a2 = f3A[(24*(j+2)) + 8*c +: 8];
+			wire [7:0] b0 = f3B[(24*j)     + 8*c +: 8];
+			wire [7:0] b1 = f3B[(24*(j+1)) + 8*c +: 8];
+			wire [7:0] b2 = f3B[(24*(j+2)) + 8*c +: 8];
+			wire [7:0] c0 = f3C[(24*j)     + 8*c +: 8];
+			wire [7:0] c1 = f3C[(24*(j+1)) + 8*c +: 8];
+			wire [7:0] c2 = f3C[(24*(j+2)) + 8*c +: 8];
 
-		wire [11:0] gsum3 = {4'b0, a0} + {3'b0, a1, 1'b0} + {4'b0, a2}
-		                  + {3'b0, b0, 1'b0} + {2'b0, b1, 2'b0} + {3'b0, b2, 1'b0}
-		                  + {4'b0, c0} + {3'b0, c1, 1'b0} + {4'b0, c2};
-		wire [7:0]  p3v = (gsum3 + 12'd8) >> 4;
-		assign p3_lane[j] = p3v;
+			wire [11:0] gsum3 = {4'b0, a0} + {3'b0, a1, 1'b0} + {4'b0, a2}
+			                  + {3'b0, b0, 1'b0} + {2'b0, b1, 2'b0} + {3'b0, b2, 1'b0}
+			                  + {4'b0, c0} + {3'b0, c1, 1'b0} + {4'b0, c2};
+			assign p3_pack[(24*j) + 8*c +: 8] = (gsum3 + 12'd8) >> 4;
+		end
 	end
 	endgenerate
 
@@ -611,8 +637,8 @@ module preproc_basic #(
 	reg [127:0] rgb_d1, rgb_d2, rgb_d3, rgb_d4, rgb_d5, rgb_d6, rgb_d7, rgb_d8;
 	reg [31:0]  cl_d1,  cl_d2,  cl_d3,  cl_d4,  cl_d5,  cl_d6,  cl_d7,  cl_d8;
 	reg [31:0]  lq_d1,  lq_d2,  lq_d3,  lq_d4,  lq_d5,  lq_d6,  lq_d7;
-	reg [31:0]  p1_d1,  p1_d2,  p1_d3,  p1_d4,  p1_d5,  p1_d6,  p1_d7,  p1_d8;
-	reg [31:0]  p2_d1,  p2_d2,  p2_d3,  p2_d4;
+	reg [95:0]  p1_d1,  p1_d2,  p1_d3,  p1_d4,  p1_d5,  p1_d6,  p1_d7,  p1_d8;
+	reg [95:0]  p2_d1,  p2_d2,  p2_d3,  p2_d4;
 	reg         v_d1, v_d2, v_d3, v_d4, v_d5, v_d6, v_d7, v_d8;
 	reg         u_d1, u_d2, u_d3, u_d4, u_d5, u_d6, u_d7, u_d8;
 	reg         t_d1, t_d2, t_d3, t_d4, t_d5, t_d6, t_d7, t_d8;
@@ -628,9 +654,9 @@ module preproc_basic #(
 			cl_d5 <= 32'd0; cl_d6 <= 32'd0; cl_d7 <= 32'd0; cl_d8 <= 32'd0;
 			lq_d1 <= 32'd0; lq_d2 <= 32'd0; lq_d3 <= 32'd0; lq_d4 <= 32'd0;
 			lq_d5 <= 32'd0; lq_d6 <= 32'd0; lq_d7 <= 32'd0;
-			p1_d1 <= 32'd0; p1_d2 <= 32'd0; p1_d3 <= 32'd0; p1_d4 <= 32'd0;
-			p1_d5 <= 32'd0; p1_d6 <= 32'd0; p1_d7 <= 32'd0; p1_d8 <= 32'd0;
-			p2_d1 <= 32'd0; p2_d2 <= 32'd0; p2_d3 <= 32'd0; p2_d4 <= 32'd0;
+			p1_d1 <= 96'd0; p1_d2 <= 96'd0; p1_d3 <= 96'd0; p1_d4 <= 96'd0;
+			p1_d5 <= 96'd0; p1_d6 <= 96'd0; p1_d7 <= 96'd0; p1_d8 <= 96'd0;
+			p2_d1 <= 96'd0; p2_d2 <= 96'd0; p2_d3 <= 96'd0; p2_d4 <= 96'd0;
 			v_d1 <= 1'b0; v_d2 <= 1'b0; v_d3 <= 1'b0; v_d4 <= 1'b0;
 			v_d5 <= 1'b0; v_d6 <= 1'b0; v_d7 <= 1'b0; v_d8 <= 1'b0;
 			u_d1 <= 1'b0; u_d2 <= 1'b0; u_d3 <= 1'b0; u_d4 <= 1'b0;
@@ -667,26 +693,35 @@ module preproc_basic #(
 
 	generate
 	for (j = 0; j < 4; j = j + 1) begin : g_blend
-		wire [7:0]  cl  = cl_d8[(8*j) +: 8];      // 原始亮度 (BT.601, 与滤波同定义)
-		wire [7:0]  p1v = p1_d8[(8*j) +: 8];      // 第 1 遍结果
-		wire [7:0]  p2v = p2_d4[(8*j) +: 8];      // 第 2 遍结果
-		wire [7:0]  p3v = p3_lane[j];             // 第 3 遍结果
+		wire [7:0]  cl  = cl_d8[(8*j) +: 8];      // 原始亮度 (BT.601, 与直方图同定义)
 		wire [7:0]  lqv = lq_d7[(8*j) +: 8];      // HE LUT 查表结果
 
-		wire [7:0]  pfil = (i_gauss_ker == 2'd0) ? p1v :
-		                   (i_gauss_ker == 2'd1) ? p2v : p3v;
-
-		// 亮度差值, 按强度线性混合 (>>>3: 8/8 即完全采用)
-		wire signed [15:0] dg    = $signed({8'd0, pfil}) - $signed({8'd0, cl});
-		wire signed [15:0] delta = (dg * $signed({12'd0, i_gauss_str})) >>> 3;
+		// 三遍滤波结果(每像素 {R,G,B})与原图都在同一拍
+		wire [7:0] f1_r = p1_d8[(24*j) + 16 +: 8];
+		wire [7:0] f1_g = p1_d8[(24*j) +  8 +: 8];
+		wire [7:0] f1_b = p1_d8[(24*j)      +: 8];
+		wire [7:0] f2_r = p2_d4[(24*j) + 16 +: 8];
+		wire [7:0] f2_g = p2_d4[(24*j) +  8 +: 8];
+		wire [7:0] f2_b = p2_d4[(24*j)      +: 8];
+		wire [7:0] f3_r = p3_pack[(24*j) + 16 +: 8];
+		wire [7:0] f3_g = p3_pack[(24*j) +  8 +: 8];
+		wire [7:0] f3_b = p3_pack[(24*j)      +: 8];
 
 		wire [7:0] rp = rgb_d8[(32*j) + 16 +: 8];
 		wire [7:0] gp = rgb_d8[(32*j) +  8 +: 8];
 		wire [7:0] bp = rgb_d8[(32*j)      +: 8];
 
-		wire [7:0] rg = i_en[1] ? clamp8($signed({8'd0, rp}) + delta) : rp;
-		wire [7:0] gg = i_en[1] ? clamp8($signed({8'd0, gp}) + delta) : gp;
-		wire [7:0] bg = i_en[1] ? clamp8($signed({8'd0, bp}) + delta) : bp;
+		wire [7:0] pr = (i_gauss_ker == 2'd0) ? f1_r :
+		                (i_gauss_ker == 2'd1) ? f2_r : f3_r;
+		wire [7:0] pg = (i_gauss_ker == 2'd0) ? f1_g :
+		                (i_gauss_ker == 2'd1) ? f2_g : f3_g;
+		wire [7:0] pb = (i_gauss_ker == 2'd0) ? f1_b :
+		                (i_gauss_ker == 2'd1) ? f2_b : f3_b;
+
+		// 逐通道混合 (0=原图, 8=完全用滤波结果)
+		wire [7:0] rg = i_en[1] ? mix8(rp, pr, i_gauss_str) : rp;
+		wire [7:0] gg = i_en[1] ? mix8(gp, pg, i_gauss_str) : gp;
+		wire [7:0] bg = i_en[1] ? mix8(bp, pb, i_gauss_str) : bp;
 
 		// ---- 直方图均衡 (在原亮度上查表, 差值加到当前 RGB) ----
 		wire [8:0]  he_inv = 9'd256 - {1'b0, i_he_str};
@@ -717,9 +752,9 @@ module preproc_basic #(
 			rgb_s <= 128'd0;
 			lum_s <= 32'd0;
 		end else begin
-			vb    <= v_d4;
-			ub    <= u_d4;
-			tb    <= t_d4;
+			vb    <= v_d8;
+			ub    <= u_d8;
+			tb    <= t_d8;
 			rgb_s <= rgb_b;
 			lum_s <= lum_b;
 		end

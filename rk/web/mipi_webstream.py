@@ -2218,6 +2218,7 @@ FPGA_REGS = [
     ("BASIC_CONTRAST",0xF4, 0,    8, False, "对比度强度 0..8"),
     ("BASIC_KER",   0xF8,   0,    2, False, "高斯核尺寸 0=3x3 1=5x5 2=7x7"),
     ("BASIC_HE_CLIP",0xF9,  0,  255, False, "直方图桶上限 x64 (0=不限)"),
+    ("BASIC_HE_TEMP",0xFA,  0,    8, False, "LUT 时间平滑 0..8 (0=不平滑)"),
     ("ADV_EMBOSS_GAIN",0xF5,0,    8, False, "浮雕增益 0..8"),
     ("ADV_EMBOSS_BIAS",0xF6,0,  255, False, "浮雕偏置 0..255"),
     ("ADV_SHARP_GAIN",0xF7, 1,   16, False, "锐化增益 1..16"),

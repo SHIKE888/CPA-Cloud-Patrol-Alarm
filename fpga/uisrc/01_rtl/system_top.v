@@ -401,6 +401,7 @@ wire [3:0]   S_basic_gauss;
 wire [1:0]   S_basic_ker;
 wire [7:0]   S_basic_he;
 wire [7:0]   S_basic_he_clip;
+wire [3:0]   S_basic_he_temp;
 wire [3:0]   S_basic_contrast;
 
 // 后级: 数字白平衡 + ROI 裁剪
@@ -933,6 +934,7 @@ preproc_top #(
 	.i_gauss_ker    (S_basic_ker),
 	.i_he_str       (S_basic_he),
 	.i_he_clip      (S_basic_he_clip),
+	.i_he_temp      (S_basic_he_temp),
 	.i_contrast     (S_basic_contrast),
 	.i_mode         (S_pp_mode),
 	.i_sobel_gain   (S_pp_sobel_sh),
@@ -1006,7 +1008,7 @@ cfg_ctrl_top #(
 	//           ⚠ 注意: 4:36 那次构建虽然已经是 V43 的 RTL, 但当时这里还是
 	//           0x3807, 所以板上读到的仍是 0x3807 —— 不能只凭版本号判断是否
 	//           烧了新 bit, 要看画面/相位相关。
-	.CFG_VER  (16'h4503)
+	.CFG_VER  (16'h4504)
 ) u_cfg_ctrl (
 	.i_sys_clk    (I_sysclk_25m),
 	.i_sys_rst_n  (1'b1),
@@ -1036,6 +1038,7 @@ cfg_ctrl_top #(
 	.o_basic_ker     (S_basic_ker),
 	.o_basic_he      (S_basic_he),
 	.o_basic_he_clip (S_basic_he_clip),
+	.o_basic_he_temp (S_basic_he_temp),
 	.o_basic_contrast(S_basic_contrast),
 	.o_cam_exp    (S_cam_exp),
 	.o_cam_gain   (S_cam_gain),
