@@ -2201,11 +2201,24 @@ FPGA_I2C_SLAVE = 0x0703          # linux/i2c-dev.h 里的 I2C_SLAVE
 
 #  name, addr, min, max, 只读, 说明
 FPGA_REGS = [
-    ("PP_EN",       0xB0,   0,    1, False, "预处理总使能 (0=直通原图)"),
-    ("PP_MODE",     0xB1,   0,    3, False, "0=原图 1=Sobel 2=阈值分割 3=形态学"),
-    ("PP_SOBEL_SH", 0xB2,   0,    8, False, "Sobel 幅度右移 (3 -> 满量程)"),
-    ("PP_THRESH",   0xB3,   0,  255, False, "二值化阈值"),
-    ("PP_MORPH",    0xB4,   0,    1, False, "0=腐蚀(&) 1=膨胀(|)"),
+    # ---- 高级预处理 (单选) ----
+    ("PP_EN",       0xB0,   0,    1, False, "高级预处理总使能 (0=直通原图)"),
+    ("ADV_MODE",    0xB1,   0,    8, False, "0=关 1=Sobel 2=阈值 3=形态 4=中值 5=拉普拉斯 6=浮雕 7=Prewitt 8=锐化"),
+    ("ADV_SOBEL_SH",0xB2,   0,    8, False, "Sobel 幅度右移"),
+    ("ADV_THRESH",  0xB3,   0,  255, False, "阈值分割阈值"),
+    ("ADV_MORPH_SEL",0xB4,  0,    1, False, "0=腐蚀 1=膨胀"),
+    ("ADV_MORPH_TH",0xB5,   0,  255, False, "形态学阈值"),
+    ("ADV_LAP_SH",  0xB6,   0,    8, False, "拉普拉斯幅度右移"),
+    ("ADV_PREW_SH", 0xB7,   0,    8, False, "Prewitt 幅度右移"),
+    # ---- 初级预处理 (多选位图) ----
+    ("BASIC_EN",    0xF0,   0,   31, False, "bit0 灰度 bit1 高斯 bit2 HE bit3 对比度 bit4 反色"),
+    ("BASIC_GRAY",  0xF1,   0,    1, False, "灰度系数 0=BT.601 1=BT.709"),
+    ("BASIC_GAUSS", 0xF2,   0,    8, False, "高斯强度 0..8"),
+    ("BASIC_HE",    0xF3,   0,  255, False, "直方图均衡强度 0..255"),
+    ("BASIC_CONTRAST",0xF4, 0,    8, False, "对比度强度 0..8"),
+    ("ADV_EMBOSS_GAIN",0xF5,0,    8, False, "浮雕增益 0..8"),
+    ("ADV_EMBOSS_BIAS",0xF6,0,  255, False, "浮雕偏置 0..255"),
+    ("ADV_SHARP_GAIN",0xF7, 0,    8, False, "锐化强度 0..8"),
     # ---- 摄像头 / 画质 (0xC0 起) ----
     # 曝光是 20 位, 拆 3 字节; UI 不直接用它们, 而是用 CAM_EXP_MS 物理量
     ("CAM_EXP_L",   0xC0,   0,  255, False, "曝光 SHR0[7:0]"),
@@ -2521,24 +2534,37 @@ def cam_phys(regs, status=None):
         return {}
 
 FPGA_PRESETS = {
-    "off":    {"PP_EN": 0},
-    "orig":   {"PP_EN": 1, "PP_MODE": 0},
-    "sobel":  {"PP_EN": 1, "PP_MODE": 1},
-    "thresh": {"PP_EN": 1, "PP_MODE": 2},
-    "morph":  {"PP_EN": 1, "PP_MODE": 3},
+    # 高级 (单选)
+    "off":     {"PP_EN": 0},
+    "orig":    {"PP_EN": 1, "ADV_MODE": 0},
+    "sobel":   {"PP_EN": 1, "ADV_MODE": 1},
+    "thresh":  {"PP_EN": 1, "ADV_MODE": 2},
+    "morph":   {"PP_EN": 1, "ADV_MODE": 3},
+    "median":  {"PP_EN": 1, "ADV_MODE": 4},
+    "lap":     {"PP_EN": 1, "ADV_MODE": 5},
+    "emboss":  {"PP_EN": 1, "ADV_MODE": 6},
+    "prewitt": {"PP_EN": 1, "ADV_MODE": 7},
+    "sharpen": {"PP_EN": 1, "ADV_MODE": 8},
+    # 初级 (多选位图; 这里给常用组合)
+    "gray":      {"BASIC_EN": 1},
+    "gauss":     {"BASIC_EN": 2},
+    "he":        {"BASIC_EN": 4},
+    "gray_gauss":{"BASIC_EN": 3},
+    "gauss_he":  {"BASIC_EN": 6},
+    "negative":  {"BASIC_EN": 16},
 }
 
 
 def _fpga_pp_off(fpga):
-    """关掉 FPGA 预处理（PP_EN=0），返回一句给页面看的描述。
+    """关闭 FPGA 两级预处理，返回一句给页面看的描述。
 
-    预处理（Sobel/阈值/形态学）是给人看的艺术效果，AI 拿那种画面去检测
-    只会瞎猜，所以一旦要用 AI 标注就自动把预处理关掉。
+    初级 (灰度/高斯/HE/对比度/反色) 和高级 (Sobel 等) 都会改变画面，
+    AI 拿处理过的画面去检测只会瞎猜，所以切到 AI 标注时一起关掉。
     """
     if fpga is None:
         return "跳过(FPGA I2C 未启用)"
     try:
-        ok, msg = fpga.apply({"PP_EN": 0})
+        ok, msg = fpga.apply({"PP_EN": 0, "BASIC_EN": 0})
         return "已关闭" if ok else ("失败: %s" % msg)
     except Exception as e:                                   # noqa: BLE001
         return "失败: %s" % e
@@ -2981,12 +3007,13 @@ class Handler(BaseHTTPRequestHandler):
                 wok, msg = self.fpga.apply(body)
                 # 写完立刻回读 —— FPGA 侧可能把值夹过, 前端以回读为准
                 _ok, snap = self.fpga.snapshot()
-                # 打开预处理（PP_EN=1 且真的在做 Sobel/阈值/形态学，即 PP_MODE≠0）时，
-                # 自动把 AI 标注切回原图 —— 反过来“切到 AI 标注会自动关预处理”，两边对称。
-                # PP_MODE=0（直通原图）不影响 AI，不触发。
+                # 打开预处理（高级 PP_EN=1 且 ADV_MODE≠0，或初级 BASIC_EN≠0）时，
+                # 自动把 AI 标注切回原图 —— 反过来"切到 AI 标注会自动关预处理"，两边对称。
                 _regs = snap.get("regs") or {}
-                if (int(_regs.get("PP_EN", 0)) == 1 and int(_regs.get("PP_MODE", 0)) != 0
-                        and AI_OVERLAY is not None and AI_OVERLAY.active):
+                _pp_on = ((int(_regs.get("PP_EN", 0)) == 1
+                           and int(_regs.get("ADV_MODE", 0)) != 0)
+                          or int(_regs.get("BASIC_EN", 0)) != 0)
+                if (_pp_on and AI_OVERLAY is not None and AI_OVERLAY.active):
                     try:
                         AI_OVERLAY.apply({"source": "raw"})
                         snap["ai_off"] = "已切回原图"

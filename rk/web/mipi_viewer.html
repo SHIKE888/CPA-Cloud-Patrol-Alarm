@@ -316,32 +316,89 @@
       <!-- ======== 预处理 ======== -->
       <div class="tabbody" id="tab-pp" hidden>
         <div class="grid2" style="margin-bottom:8px">
-          <button class="ghost" id="btnPpOff">关闭预处理</button>
+          <button class="ghost" id="btnPpAllOff">全部关闭</button>
           <button id="btnPpRefresh">刷新</button>
         </div>
 
-        <div class="grid4" style="margin-bottom:10px">
-          <button class="ghost" data-pp="0">原图</button>
-          <button class="ghost" data-pp="1">Sobel</button>
-          <button class="ghost" data-pp="2">阈值</button>
-          <button class="ghost" data-pp="3">形态学</button>
+        <p class="hint" style="margin:0 0 6px"><b>初级预处理（多选，可全不选）</b><br>
+          三套算法在 FPGA 内同时运行，按固定顺序串联：高斯 → 直方图均衡 → 灰度 → 对比度 → 反色。</p>
+
+        <div style="display:flex;align-items:center;gap:8px;margin:6px 0">
+          <label style="flex:0 0 96px"><input type="checkbox" id="c_basic_gray"> 灰度化</label>
+          <select id="s_gray_mode" style="flex:1">
+            <option value="0">BT.601</option>
+            <option value="1">BT.709</option>
+          </select>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;margin:6px 0">
+          <label style="flex:0 0 96px"><input type="checkbox" id="c_basic_gauss"> 高斯滤波</label>
+          <input type="range" id="f_BASIC_GAUSS" min="0" max="8" step="1" value="8">
+          <span class="val" id="fv_BASIC_GAUSS">8</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;margin:6px 0">
+          <label style="flex:0 0 96px"><input type="checkbox" id="c_basic_he"> 直方图均衡</label>
+          <input type="range" id="f_BASIC_HE" min="0" max="255" step="1" value="255">
+          <span class="val" id="fv_BASIC_HE">255</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;margin:6px 0">
+          <label style="flex:0 0 96px"><input type="checkbox" id="c_basic_contrast"> 对比度拉伸</label>
+          <input type="range" id="f_BASIC_CONTRAST" min="0" max="8" step="1" value="4">
+          <span class="val" id="fv_BASIC_CONTRAST">4</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;margin:6px 0">
+          <label style="flex:0 0 96px"><input type="checkbox" id="c_basic_invert"> 反色</label>
         </div>
 
-        <div class="row"><label>二值阈值</label>
-          <input type="range" id="f_PP_THRESH" min="0" max="255" step="1" value="128">
-          <span class="val" id="fv_PP_THRESH">128</span></div>
+        <div class="sep" style="margin:10px 0"></div>
 
+        <p class="hint" style="margin:0 0 6px"><b>高级预处理（单选）</b></p>
+        <div class="grid4" style="margin-bottom:8px">
+          <button class="ghost" data-adv="0">关闭</button>
+          <button class="ghost" data-adv="1">Sobel</button>
+          <button class="ghost" data-adv="2">阈值</button>
+          <button class="ghost" data-adv="3">形态学</button>
+          <button class="ghost" data-adv="4">中值</button>
+          <button class="ghost" data-adv="5">拉普拉斯</button>
+          <button class="ghost" data-adv="6">浮雕</button>
+          <button class="ghost" data-adv="7">Prewitt</button>
+        </div>
+        <div class="grid2" style="margin-bottom:8px">
+          <button class="ghost" data-adv="8">锐化</button>
+          <button class="ghost" id="btnOrig">原图直通</button>
+        </div>
+
+        <div class="row"><label>阈值分割</label>
+          <input type="range" id="f_ADV_THRESH" min="0" max="255" step="1" value="128">
+          <span class="val" id="fv_ADV_THRESH">128</span></div>
+        <div class="row"><label>形态学阈值</label>
+          <input type="range" id="f_ADV_MORPH_TH" min="0" max="255" step="1" value="128">
+          <span class="val" id="fv_ADV_MORPH_TH">128</span></div>
         <div class="row"><label>Sobel 位移</label>
-          <input type="range" id="f_PP_SOBEL_SH" min="0" max="8" step="1" value="3">
-          <span class="val" id="fv_PP_SOBEL_SH">3</span></div>
+          <input type="range" id="f_ADV_SOBEL_SH" min="0" max="8" step="1" value="3">
+          <span class="val" id="fv_ADV_SOBEL_SH">3</span></div>
+        <div class="row"><label>拉普拉斯位移</label>
+          <input type="range" id="f_ADV_LAP_SH" min="0" max="8" step="1" value="3">
+          <span class="val" id="fv_ADV_LAP_SH">3</span></div>
+        <div class="row"><label>Prewitt 位移</label>
+          <input type="range" id="f_ADV_PREW_SH" min="0" max="8" step="1" value="3">
+          <span class="val" id="fv_ADV_PREW_SH">3</span></div>
+        <div class="row"><label>浮雕增益</label>
+          <input type="range" id="f_ADV_EMBOSS_GAIN" min="0" max="8" step="1" value="4">
+          <span class="val" id="fv_ADV_EMBOSS_GAIN">4</span></div>
+        <div class="row"><label>浮雕偏置</label>
+          <input type="range" id="f_ADV_EMBOSS_BIAS" min="0" max="255" step="1" value="128">
+          <span class="val" id="fv_ADV_EMBOSS_BIAS">128</span></div>
+        <div class="row"><label>锐化强度</label>
+          <input type="range" id="f_ADV_SHARP_GAIN" min="0" max="8" step="1" value="4">
+          <span class="val" id="fv_ADV_SHARP_GAIN">4</span></div>
 
         <div class="grid2" style="margin-top:6px">
           <button class="ghost" id="btnMorph0">腐蚀 (&amp;)</button>
           <button class="ghost" id="btnMorph1">膨胀 (|)</button>
         </div>
 
-        <p class="hint">直接写 FPGA 寄存器堆（I2C 从机 @0x40），改完立即生效，
-          <b>不占用 RK 的 CPU</b>。阈值只对「阈值/形态学」有效，Sobel 位移只对「Sobel」有效。</p>
+        <p class="hint">初级多选、高级单选，两级可同时生效。所有算法都在 FPGA 内并行实现，
+          <b>不占用 RK 的 CPU</b>；每个算法都有独立参数。</p>
       </div>
 
       <!-- ======== 画面（软件） ======== -->
@@ -793,24 +850,49 @@ let fpgaRegs = {};
 let fpgaPushTimer = null;
 let fpgaTimer = null;
 
-function fpgaSyncUI() {
-  const th = $("f_PP_THRESH"), sh = $("f_PP_SOBEL_SH");
-  if (th && fpgaRegs.PP_THRESH !== undefined
-         && document.activeElement !== th) { th.value = fpgaRegs.PP_THRESH; }
-  if (sh && fpgaRegs.PP_SOBEL_SH !== undefined
-         && document.activeElement !== sh) { sh.value = fpgaRegs.PP_SOBEL_SH; }
-  if (th) $("fv_PP_THRESH").textContent = th.value;
-  if (sh) $("fv_PP_SOBEL_SH").textContent = sh.value;
+const BASIC_BITS = {gray: 1, gauss: 2, he: 4, contrast: 8, invert: 16};
 
-  // 模式按钮：只有 PP_EN=1 时才算“选中”
-  document.querySelectorAll("[data-pp]").forEach(b => {
-    b.classList.toggle("on", Number(fpgaRegs.PP_EN) === 1 &&
-                            Number(b.dataset.pp) === Number(fpgaRegs.PP_MODE));
+function basicMaskFromUI() {
+  let m = 0;
+  Object.keys(BASIC_BITS).forEach(k => {
+    const c = $("c_basic_" + k);
+    if (c && c.checked) m |= BASIC_BITS[k];
   });
-  $("btnMorph0").classList.toggle("on", Number(fpgaRegs.PP_MORPH) === 0 &&
-                                        Number(fpgaRegs.PP_EN) === 1);
-  $("btnMorph1").classList.toggle("on", Number(fpgaRegs.PP_MORPH) === 1 &&
-                                        Number(fpgaRegs.PP_EN) === 1);
+  return m;
+}
+
+function fpgaSyncUI() {
+  const r = fpgaRegs;
+  // ---- 初级 (多选位图) ----
+  const ben = Number(r.BASIC_EN || 0);
+  Object.keys(BASIC_BITS).forEach(k => {
+    const c = $("c_basic_" + k);
+    if (c) c.checked = !!(ben & BASIC_BITS[k]);
+  });
+  if ($("s_gray_mode") && r.BASIC_GRAY !== undefined) {
+    $("s_gray_mode").value = String(Number(r.BASIC_GRAY));
+  }
+  ["BASIC_GAUSS", "BASIC_HE", "BASIC_CONTRAST"].forEach(k => {
+    const el = $("f_" + k);
+    if (el && r[k] !== undefined && document.activeElement !== el) el.value = r[k];
+    if (el && $("fv_" + k)) $("fv_" + k).textContent = el.value;
+  });
+
+  // ---- 高级 (单选) ----
+  document.querySelectorAll("[data-adv]").forEach(b => {
+    b.classList.toggle("on", Number(r.PP_EN) === 1 &&
+                            Number(b.dataset.adv) === Number(r.ADV_MODE));
+  });
+  ["ADV_THRESH", "ADV_MORPH_TH", "ADV_SOBEL_SH", "ADV_LAP_SH", "ADV_PREW_SH",
+   "ADV_EMBOSS_GAIN", "ADV_EMBOSS_BIAS", "ADV_SHARP_GAIN"].forEach(k => {
+    const el = $("f_" + k);
+    if (el && r[k] !== undefined && document.activeElement !== el) el.value = r[k];
+    if (el && $("fv_" + k)) $("fv_" + k).textContent = el.value;
+  });
+  $("btnMorph0").classList.toggle("on", Number(r.ADV_MORPH_SEL) === 0 &&
+                                        Number(r.PP_EN) === 1);
+  $("btnMorph1").classList.toggle("on", Number(r.ADV_MORPH_SEL) === 1 &&
+                                        Number(r.PP_EN) === 1);
 }
 
 function fpgaShowSt(d) {
@@ -858,15 +940,46 @@ function scheduleFpgaPush(patch) {
   }, 60);
 }
 
-document.querySelectorAll("[data-pp]").forEach(b => {
-  b.onclick = () => scheduleFpgaPush({ PP_EN: 1, PP_MODE: Number(b.dataset.pp) });
+/* 初级: 复选框直接映射到位图; 滑块动一下顺便把对应算法打开 */
+const BASIC_SLIDER_ALGO = {
+  BASIC_GAUSS: "gauss",
+  BASIC_HE: "he",
+  BASIC_CONTRAST: "contrast"
+};
+
+Object.keys(BASIC_BITS).forEach(k => {
+  const c = $("c_basic_" + k);
+  if (c) c.onchange = () => scheduleFpgaPush({ BASIC_EN: basicMaskFromUI() });
 });
-$("btnPpOff").onclick     = () => scheduleFpgaPush({ PP_EN: 0 });
-$("btnMorph0").onclick   = () => scheduleFpgaPush({ PP_MORPH: 0 });
-$("btnMorph1").onclick   = () => scheduleFpgaPush({ PP_MORPH: 1 });
+
+$("s_gray_mode").onchange = () =>
+  scheduleFpgaPush({ BASIC_GRAY: parseInt($("s_gray_mode").value, 10) });
+
+Object.keys(BASIC_SLIDER_ALGO).forEach(k => {
+  const el = $("f_" + k);
+  if (!el) return;
+  el.addEventListener("input", () => {
+    $("fv_" + k).textContent = el.value;
+    const cb = $("c_basic_" + BASIC_SLIDER_ALGO[k]);
+    if (cb) cb.checked = true;
+    const patch = { BASIC_EN: basicMaskFromUI() };
+    patch[k] = parseInt(el.value, 10);
+    scheduleFpgaPush(patch);
+  });
+});
+
+/* 高级: 单选 + 各自参数 */
+document.querySelectorAll("[data-adv]").forEach(b => {
+  b.onclick = () => scheduleFpgaPush({ PP_EN: 1, ADV_MODE: Number(b.dataset.adv) });
+});
+$("btnOrig").onclick      = () => scheduleFpgaPush({ PP_EN: 1, ADV_MODE: 0 });
+$("btnPpAllOff").onclick  = () => scheduleFpgaPush({ PP_EN: 0, BASIC_EN: 0 });
+$("btnMorph0").onclick    = () => scheduleFpgaPush({ ADV_MORPH_SEL: 0 });
+$("btnMorph1").onclick    = () => scheduleFpgaPush({ ADV_MORPH_SEL: 1 });
 $("btnPpRefresh").onclick = async () => { await loadFpga(); toast("已刷新 FPGA 参数"); };
 
-["PP_THRESH", "PP_SOBEL_SH"].forEach(k => {
+["ADV_THRESH", "ADV_MORPH_TH", "ADV_SOBEL_SH", "ADV_LAP_SH", "ADV_PREW_SH",
+ "ADV_EMBOSS_GAIN", "ADV_EMBOSS_BIAS", "ADV_SHARP_GAIN"].forEach(k => {
   const el = $("f_" + k);
   if (!el) return;
   el.addEventListener("input", () => {
