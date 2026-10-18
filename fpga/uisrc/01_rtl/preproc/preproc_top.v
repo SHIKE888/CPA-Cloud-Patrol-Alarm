@@ -34,6 +34,7 @@ module preproc_top #(
 	input  wire [7:0]   i_he_str,        // 0..255
 	input  wire [7:0]   i_he_clip,       // 直方图桶上限(*64), 0=不限
 	input  wire [3:0]   i_he_temp,       // LUT 时间平滑 0..8
+	input  wire         i_linefix,       // 1 = 行首左旋 16 像素（0xFB）
 	input  wire [3:0]   i_contrast,      // 0..8
 
 	// ---- 高级预处理配置 (0xB1~0xB7, 0xF5~0xF7, 单选) ----
@@ -85,6 +86,9 @@ module preproc_top #(
 	);
 
 	//--------------------------------------------------------------- 高级层
+	wire         e_tvalid, e_tuser, e_tlast;
+	wire [127:0] e_rgb;
+
 	wire         w_tvalid, w_tuser, w_tlast;
 	wire [2:0]   w_rowmask;
 	wire [47:0]  w_winA, w_winB, w_winC;
@@ -131,10 +135,31 @@ module preproc_top #(
 		.i_emboss_gain  (i_emboss_gain),
 		.i_emboss_bias  (i_emboss_bias),
 		.i_sharp_gain   (i_sharp_gain),
-		.o_tvalid       (o_tvalid),
-		.o_tuser        (o_tuser),
-		.o_tlast        (o_tlast),
-		.o_rgb          (o_rgb)
+		.o_tvalid       (e_tvalid),
+		.o_tuser        (e_tuser),
+		.o_tlast        (e_tlast),
+		.o_rgb          (e_rgb)
+	);
+
+	//--------------------------------------------------------------- 行首校正
+	// 预处理链每级 3x3 会多吐 4 拍, 4 级累积后每行开头 16 个像素是上一行残留/黑。
+	// 本模块把行首 4 个字左旋到行尾（行长度不变）。i_linefix=0 时纯直通。
+	// 注意: 无论开关, 这段都多 1 拍延迟（已计入下游行计数）。
+	preproc_linefix #(
+		.PX_PER_CLK (PX_PER_CLK)
+	) u_linefix (
+		.clk        (clk),
+		.rst_n      (rst_n),
+		.i_h_active (i_h_active),
+		.i_en       (i_linefix),
+		.i_tvalid   (e_tvalid),
+		.i_tuser    (e_tuser),
+		.i_tlast    (e_tlast),
+		.i_rgb      (e_rgb),
+		.o_tvalid   (o_tvalid),
+		.o_tuser    (o_tuser),
+		.o_tlast    (o_tlast),
+		.o_rgb      (o_rgb)
 	);
 
 endmodule
