@@ -140,6 +140,45 @@ SWITCH_SH = "/tmp/mode_switch.sh"
 SWITCH_RETRY = "/tmp/switch_retry"
 SWITCH_PHASE = ""          # 进程内切换的当前阶段(日志/诊断用)
 
+# ---- 推流并发: 按客户端 IP 限流 -------------------------------------------------
+# 为什么需要: 浏览器每次重新挂 <img src=/stream> 都会新建一条 multipart 长连接,
+# 旧连接在服务端是阻塞在 wait_next 里的, 只有下一次写失败才知道对面没了。
+# 切换分辨率 / 点“连接”时若旧连接还在, clients 就会一路 +1 直到顶上上限。
+# 这里改成【单设备(单 IP)只允许 1 路流】, 新连接到达时把旧连接顶掉。
+STREAM_IP = {}              # ip -> {"n": 当前路数, "gen": 代次}
+STREAM_IP_LOCK = threading.Lock()
+MAX_STREAMS_PER_IP = 1
+
+
+def _stream_acquire(ip, limit=MAX_STREAMS_PER_IP):
+    """登记一路流。
+
+    ★ 不论当前已有几路, 新连接一律把 gen +1 —— 旧连接看到 gen 变了就退出。
+      早期写法用 `if n >= limit 才 ++gen`, 并发到达时会漏顶(两个都以为没超限),
+      表现为 clients 卡在 2。
+    """
+    with STREAM_IP_LOCK:
+        ent = STREAM_IP.setdefault(ip, {"n": 0, "gen": 0})
+        ent["gen"] += 1
+        ent["n"] += 1
+        return ent["gen"]
+
+
+def _stream_release(ip):
+    with STREAM_IP_LOCK:
+        ent = STREAM_IP.get(ip)
+        if ent is None:
+            return
+        ent["n"] = max(0, ent["n"] - 1)
+        if ent["n"] <= 0:
+            STREAM_IP.pop(ip, None)
+
+
+def _stream_gen(ip):
+    with STREAM_IP_LOCK:
+        ent = STREAM_IP.get(ip)
+        return None if ent is None else ent["gen"]
+
 
 def _launch_start_script(want, res_mode):
     """切模式：停 web -> 写 0xE0 -> 等 sensor 重锁 -> start.sh 重新拉起。
@@ -3310,6 +3349,12 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(
                 {"error": "推流连接数已达上限(%d), 请先关掉其它页面"
                           % MAX_STREAM_CLIENTS}, 503)
+
+        # ★ 单设备限流: 同一 IP 只保留最新一路流, 旧的自动退场。
+        #   否则每次重连都多挂一个线程, clients 只涨不跌。
+        ip = self.client_address[0] if self.client_address else "?"
+        gen = _stream_acquire(ip)
+
         self.send_response(200)
         self.send_header("Content-Type",
                          "multipart/x-mixed-replace; boundary=%s" % BOUNDARY)
@@ -3323,11 +3368,19 @@ class Handler(BaseHTTPRequestHandler):
         last = -1
         try:
             while True:
+                # 被同 IP 的新连接顶掉 -> 主动退出
+                if _stream_gen(ip) != gen:
+                    break
                 # 超时不能太长: 客户端断开后这里回收不到,
                 # 连接数会一直挂在旧值上
-                jpeg, last = self.hub.wait_next(last, timeout=3.0)
+                jpeg, last = self.hub.wait_next(last, timeout=1.5)
                 if jpeg is None:
-                    continue
+                    # ★ 超时也要写一次最后一帧:
+                    #   否则客户端已经断开了这里也不会报错, 僵尸连接永远不退出。
+                    #   重发同一帧在浏览器侧无损(只是多一次解码)。
+                    jpeg, _ = self.hub.snapshot()
+                    if jpeg is None:
+                        continue
                 self.wfile.write(b"--" + BOUNDARY.encode() + b"\r\n")
                 self.wfile.write(b"Content-Type: image/jpeg\r\n")
                 self.wfile.write(b"Content-Length: %d\r\n\r\n" % len(jpeg))
@@ -3337,6 +3390,7 @@ class Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError, OSError):
             pass
         finally:
+            _stream_release(ip)
             self.hub.del_client()
 
 

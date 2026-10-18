@@ -793,12 +793,21 @@ function connect() {
   let a = $("addr").value.trim();
   if (!a) { toast("请填写服务器地址", true); return; }
   if (!/^https?:\/\//i.test(a)) a = "http://" + a;
-  base = a.replace(/\/+$/, "");
+  const nb = a.replace(/\/+$/, "");
+  const same = (nb === base);
+  base = nb;
   localStorage.setItem("mipi_addr", $("addr").value.trim());
 
   streamTries = 0;
-  setDot(true, "连接中…");
-  startStream();
+  // ★ 已连接且地址没变时不要重建流：每次重建都会在服务端多挂一路，
+  //   旧连接要等下一次写失败才释放，表现为“路数一直 +1”。
+  const alive = connected && !!document.querySelector('img[id="stream"]') && !needReload;
+  if (same && alive) {
+    setDot(true, "已连接");
+  } else {
+    setDot(true, "连接中…");
+    startStream(true);
+  }
   getParams().then(loadFpga).then(() => loadModes());
   loadNet();
   aiLoad(true);
@@ -1250,10 +1259,18 @@ async function waitModeReady(label) {
   if (gen !== modeWaitGen) return;
   switchUntil = 0;
   streamTries = 0; deadStrikes = 0; zeroClientHits = 0;
-  lastForceAt = 0;                     // 绕过 startStream 的 5s 限频
   if (ok) {
     await loadModes(true).catch(() => {});
-    startStream(true);
+    // ★ 进程内切换未重启服务, 原来那条 MJPEG 连接基本还活着 —— 不重建;
+    //   只有连接真的没了(元素被移除)才建一条新的。
+    if (!document.querySelector('img[id="stream"]')) {
+      lastForceAt = 0;
+      startStream(true);
+    } else {
+      connected = true;
+      setDot(true, "已连接");
+      lastFrameId = null; lastFrameAdvAt = Date.now();
+    }
     toast("切换完成: " + (label || ""));
   } else {
     // 真的起不来才让用户刷新（兜底）
