@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 mipi_webstream.py
@@ -139,6 +139,45 @@ def _acquire_single_instance():
 SWITCH_SH = "/tmp/mode_switch.sh"
 SWITCH_RETRY = "/tmp/switch_retry"
 SWITCH_PHASE = ""          # 进程内切换的当前阶段(日志/诊断用)
+
+# ---- 分辨率切换：写配置 + 重启 ---------------------------------------------
+# 实测这块板的 D-PHY/rkcif 只在【上电首次 STREAMON】时完整初始化；
+# 运行中重新打开设备会自动失锁（MIPI_CSI2 ECC 刷屏，只能断电），
+# 而 reboot 后首次启动实测 0 错误。所以切换就老老实实改配置再重启。
+MODE_ENV = "/root/rk/deploy/mode.env"
+
+
+def _read_mode_env():
+    """读当前配置（默认 1080p60）。"""
+    d = {"RES": 0, "W": 1920, "H": 1080}
+    try:
+        with open(MODE_ENV) as f:
+            for line in f:
+                line = line.strip()
+                if "=" in line:
+                    k, v = line.split("=", 1)
+                    if k in d:
+                        d[k] = int(v)
+    except Exception:                                              # noqa: BLE001
+        pass
+    return d
+
+
+def _write_mode_env(mode):
+    with open(MODE_ENV, "w") as f:
+        f.write("RES=%d\nW=%d\nH=%d\n"
+                % (int(mode["res_mode"]), int(mode["w"]), int(mode["h"])))
+
+
+def _do_reboot(delay=1.0):
+    def _r():
+        time.sleep(delay)
+        try:
+            subprocess.Popen(["/bin/sh", "-c", "sync; systemctl reboot"],
+                             start_new_session=True, close_fds=True)
+        except Exception:                                          # noqa: BLE001
+            os._exit(1)
+    threading.Thread(target=_r, daemon=True, name="reboot").start()
 # 切换刚拉起的新进程：18s 无帧就自动再切一次（实测偶发首轮失败，再切一次 13s 就好）
 SWITCH_PENDING = "/tmp/switch_pending"
 
@@ -3246,6 +3285,28 @@ class Handler(BaseHTTPRequestHandler):
                                 LINK_USABLE_RATIO * 100)}
         if self.fpga is None:
             return {"ok": False, "error": "FPGA I2C 未启用 (--fpga-bus -1)", "log": log}
+
+        # ===== V45.14: 切分辨率 = 改 mode.env + 重启 =====
+        # 不在这里碰 V4L2/FPGA：运行中重新打开设备会自动失锁，
+        # 而重启后首次启动（systemd 自动拉起）实测 0 错误。
+        cur = _read_mode_env()
+        if (int(cur.get("W", 0)) == int(mode["w"])
+                and int(cur.get("H", 0)) == int(mode["h"])
+                and int(cur.get("RES", -1)) == int(mode["res_mode"])):
+            return {"ok": True, "mode": mode, "already": True, "log": log,
+                    "note": "当前已是 %s，无需重启" % mode["label"]}
+        try:
+            _write_mode_env(mode)
+        except Exception as e:                                     # noqa: BLE001
+            return {"ok": False, "log": log,
+                    "error": "写 %s 失败: %s" % (MODE_ENV, e)}
+        log.append("已记录模式 -> %dx%d (RES_MODE=%d)"
+                   % (mode["w"], mode["h"], mode["res_mode"]))
+        _bump_rev("mode")
+        _reset_retry()
+        _do_reboot(1.2)
+        return {"ok": True, "mode": mode, "reboot": True, "log": log,
+                "note": "板子重启中，约 70~90 秒后自动恢复（页面会自己重连）"}
         try:
             # V39: 切模式前先把“当前曝光”按旧模式读成毫秒。
             # 传感器里存的是 SHR0(行)，VMAX/行周期一换，同一个 SHR0 的曝光时间

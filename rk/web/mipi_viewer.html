@@ -1218,8 +1218,9 @@ $("btnApplyMode").onclick = async () => {
   if (!m) return;
   if (!confirm(
       "切换到 " + m.label + " ?\n\n" +
-      "· 采集通路会重新配置：停采集 → 写 FPGA 模式 → 等 sensor 重锁 → 配 media → 重启服务\n" +
-      "· 画面会中断约 6~10 秒，**页面不用刷新**，恢复后自动续流\n\n" +
+      "· 切分辨率需要**重启板子**（运行中直接切会导致 MIPI 链路失锁、黑屏且只能断电）\n" +
+      "· 重启约 70~90 秒，期间所有页面都看不到画面\n" +
+      "· **页面不用刷新**，恢复后自动续流\n\n" +
       "采集格式将变为 " + m.w + " x " + m.h + "。")) return;
   toast("正在切换到 " + m.id + " …");
   let r = null;
@@ -1243,13 +1244,13 @@ async function waitModeReady(label) {
   const gen = ++modeWaitGen;
   clearTimeout(streamTimer);
   needReload = false;
-  switchUntil = Date.now() + 45000;    // 静默期: 看门狗/重连都别插手
+  switchUntil = Date.now() + 150000;   // 整个板子在重启，约 70~90 秒
   connected = false; streamPending = false;
-  setDot(false, "切换中…");
+  setDot(false, "板子重启中…");
   const t0 = Date.now();
   let ok = false;
-  while (gen === modeWaitGen && Date.now() - t0 < 45000) {
-    await new Promise(r => setTimeout(r, 700));
+  while (gen === modeWaitGen && Date.now() - t0 < 150000) {
+    await new Promise(r => setTimeout(r, 1200));
     try {
       const d = await api("/api/sys");
       const fps = (d.capture && d.capture.fps) || 0;

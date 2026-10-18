@@ -7,8 +7,8 @@ After=network.target
 Type=simple
 # 不要和旧的手工实例打架（ExecStartPre 必须在 [Service] 段）
 ExecStartPre=-/usr/bin/pkill -9 -f mipi_webstream\.py
-# 1080p60 是稳定档；要 4K 改成 RES=2 并把 W/H 换成 3840/2160
-Environment=RES=0 W=1920 H=1080
+# 分辨率档位从 mode.env 读（网页切换会改写它）
+EnvironmentFile=-/root/rk/deploy/mode.env
 Environment=AI=1 AI_FPS=30 AI_INTERVAL=2 AI_SRC=ai
 Environment=DEV=/dev/video22 PORT=9012
 ExecStart=/root/rk/deploy/boot_start.sh
