@@ -33,12 +33,26 @@
 //    0xA7 ST_SCALE    当前量化缩放 (随码率控制变化)
 //    0xA8 ST_STATUS   [0]忙 [1]上一帧结束 [2]溢出 [3]无损模式回读
 //    0xA9~0xAA ST_VER 版本号 (默认 0x0100)
-//    ---- 预处理 P4/P5/P6 (Sobel / 阈值分割 / 形态学) ----
-//    0xB0 PP_EN       总使能 [0]  (0 -> 强制直通原图)
-//    0xB1 PP_MODE     [2:0] 0=原图 1=Sobel 2=阈值分割 3=形态学
-//    0xB2 PP_SOBEL_SH 幅度右移 0..8 (默认 3, 使幅度满 0..255)
-//    0xB3 PP_THRESH   二值化阈值 0..255 (默认 128)
-//    0xB4 PP_MORPH    [0] 0=腐蚀(&) 1=膨胀(|)  (默认 1)
+//    ---- 初级预处理 (V45, 多选位图, 硬件并行) ----
+//    0xF0 BASIC_EN      [4:0] bit0 灰度 bit1 高斯 bit2 直方图均衡
+//                             bit3 对比度 bit4 反色   (0 = 直通)
+//    0xF1 BASIC_GRAY    灰度系数档 [0] 0=BT.601 1=BT.709
+//    0xF2 BASIC_GAUSS   高斯强度 0..8 (8=完全高斯, 默认 8)
+//    0xF3 BASIC_HE      直方图均衡强度 0..255 (255=完全, 默认 255)
+//    0xF4 BASIC_CONTRAST 对比度强度 0..8 (默认 4)
+//    ---- 高级预处理 (V45, 单选, 硬件并行) ----
+//    0xB0 PP_EN         总使能 [0]  (0 -> 强制直通原图)
+//    0xB1 ADV_MODE      [3:0] 0=关 1=Sobel 2=阈值 3=形态 4=中值
+//                             5=拉普拉斯 6=浮雕 7=Prewitt 8=锐化
+//    0xB2 ADV_SOBEL_SH  Sobel 幅度右移 0..8
+//    0xB3 ADV_THRESH    阈值分割阈值 0..255
+//    0xB4 ADV_MORPH_SEL [0] 0=腐蚀 1=膨胀
+//    0xB5 ADV_MORPH_TH  形态学自己的阈值 0..255
+//    0xB6 ADV_LAP_SH    拉普拉斯幅度右移 0..8
+//    0xB7 ADV_PREW_SH   Prewitt 幅度右移 0..8
+//    0xF5 ADV_EMBOSS_GAIN 浮雕增益 0..8
+//    0xF6 ADV_EMBOSS_BIAS 浮雕偏置 0..255 (默认 128)
+//    0xF7 ADV_SHARP_GAIN  锐化强度 0..8
 //    0xB8~0xBB ST_FRAME_CNT  已接收帧计数 (只读, RISC 可读回验证链路)
 //    0xBC ST_HEARTBEAT       心跳计数 (只读, 每 256 读时钟 +1, 证明 FPGA 活着)
 //
@@ -88,12 +102,24 @@ module jpeg_regfile #(
     // 在 6 位宽下做 (addr[5:0] - 6'h10) 正好回绕得到 0..63, 不会越界。
     input  wire [7:0]   I_qtable_rd_data,
 
-    // ---------------- 预处理 P4/P5/P6 配置输出 ----------------
+    // ---------------- 预处理配置输出 ----------------
     output wire         O_cfg_pp_en,
-    output wire [2:0]   O_cfg_pp_mode,
+    output wire [3:0]   O_cfg_pp_mode,
     output wire [3:0]   O_cfg_pp_sobel_shift,
     output wire [7:0]   O_cfg_pp_thresh,
     output wire         O_cfg_pp_morph_sel,
+    output wire [7:0]   O_cfg_pp_morph_th,
+    output wire [3:0]   O_cfg_pp_lap_shift,
+    output wire [3:0]   O_cfg_pp_prew_shift,
+    output wire [3:0]   O_cfg_pp_emboss_gain,
+    output wire [7:0]   O_cfg_pp_emboss_bias,
+    output wire [3:0]   O_cfg_pp_sharp_gain,
+    // 初级预处理 (多选位图)
+    output wire [4:0]   O_cfg_basic_en,
+    output wire         O_cfg_basic_gray,
+    output wire [3:0]   O_cfg_basic_gauss,
+    output wire [7:0]   O_cfg_basic_he,
+    output wire [3:0]   O_cfg_basic_contrast,
 
     // ---------------- 补充状态输入 ----------------
     input  wire [31:0]  I_st_frame_cnt,     // 已接收帧计数 (供回读验证链路)
@@ -133,10 +159,22 @@ module jpeg_regfile #(
 
     // 预处理寄存器
     reg        r_pp_en;
-    reg [2:0]  r_pp_mode;
+    reg [3:0]  r_pp_mode;
     reg [3:0]  r_pp_sobel_sh;
     reg [7:0]  r_pp_thresh;
     reg        r_pp_morph_sel;
+    reg [7:0]  r_pp_morph_th;
+    reg [3:0]  r_pp_lap_sh;
+    reg [3:0]  r_pp_prew_sh;
+    reg [3:0]  r_pp_emboss_gain;
+    reg [7:0]  r_pp_emboss_bias;
+    reg [3:0]  r_pp_sharp_gain;
+    // 初级预处理 (V45)
+    reg [4:0]  r_basic_en;
+    reg        r_basic_gray;
+    reg [3:0]  r_basic_gauss;
+    reg [7:0]  r_basic_he;
+    reg [3:0]  r_basic_contrast;
     reg [7:0]  r_heartbeat;
     reg [31:0] s_frame_cnt;
 
@@ -202,10 +240,22 @@ module jpeg_regfile #(
             r_predictor  <= 3'd0;      // 0 = MED
             r_soft_rst   <= 1'b0;
             r_pp_en      <= 1'b0;
-            r_pp_mode    <= 3'd0;      // 默认直通原图
-            r_pp_sobel_sh<= 4'd3;      // 幅度右移 3 -> 满 0..255
+            r_pp_mode    <= 4'd0;      // 默认关闭高级预处理
+            r_pp_sobel_sh<= 4'd3;
             r_pp_thresh  <= 8'd128;
             r_pp_morph_sel <= 1'b1;    // 默认膨胀
+            r_pp_morph_th  <= 8'd128;
+            r_pp_lap_sh    <= 4'd3;
+            r_pp_prew_sh   <= 4'd3;
+            r_pp_emboss_gain <= 4'd4;
+            r_pp_emboss_bias <= 8'd128;
+            r_pp_sharp_gain  <= 4'd4;
+            // 初级: 默认全关 (位图 = 0), 参数给常用默认值
+            r_basic_en     <= 5'd0;
+            r_basic_gray   <= 1'b0;    // BT.601
+            r_basic_gauss  <= 4'd8;
+            r_basic_he     <= 8'd255;
+            r_basic_contrast <= 4'd4;
             r_cam_exp    <= 20'd0;     // 0 = 不动初始化表里的曝光
             r_cam_gain   <= 8'd0;      // 0 = 不动
             r_ev_bias    <= 4'd8;      // 8 = 0EV
@@ -247,12 +297,24 @@ module jpeg_regfile #(
                     8'h08: r_restart   <= I_wr_data;
                     8'h09: r_predictor <= I_wr_data[2:0];
                     8'h0A: r_soft_rst  <= I_wr_data[0];
-                    // ---- 预处理 P4/P5/P6 ----
+                    // ---- 高级预处理 (单选) ----
                     8'hB0: r_pp_en      <= I_wr_data[0];
-                    8'hB1: r_pp_mode    <= I_wr_data[2:0];
-                    8'hB2: r_pp_sobel_sh<= I_wr_data[3:0];
+                    8'hB1: r_pp_mode    <= (I_wr_data[3:0] > 4'd8) ? 4'd8 : I_wr_data[3:0];
+                    8'hB2: r_pp_sobel_sh<= (I_wr_data[3:0] > 4'd8) ? 4'd8 : I_wr_data[3:0];
                     8'hB3: r_pp_thresh  <= I_wr_data;
                     8'hB4: r_pp_morph_sel <= I_wr_data[0];
+                    8'hB5: r_pp_morph_th  <= I_wr_data;
+                    8'hB6: r_pp_lap_sh    <= (I_wr_data[3:0] > 4'd8) ? 4'd8 : I_wr_data[3:0];
+                    8'hB7: r_pp_prew_sh   <= (I_wr_data[3:0] > 4'd8) ? 4'd8 : I_wr_data[3:0];
+                    // ---- 初级预处理 (多选位图) ----
+                    8'hF0: r_basic_en     <= I_wr_data[4:0];
+                    8'hF1: r_basic_gray   <= I_wr_data[0];
+                    8'hF2: r_basic_gauss  <= (I_wr_data[3:0] > 4'd8) ? 4'd8 : I_wr_data[3:0];
+                    8'hF3: r_basic_he     <= I_wr_data;
+                    8'hF4: r_basic_contrast <= (I_wr_data[3:0] > 4'd8) ? 4'd8 : I_wr_data[3:0];
+                    8'hF5: r_pp_emboss_gain <= (I_wr_data[3:0] > 4'd8) ? 4'd8 : I_wr_data[3:0];
+                    8'hF6: r_pp_emboss_bias <= I_wr_data;
+                    8'hF7: r_pp_sharp_gain  <= (I_wr_data[3:0] > 4'd8) ? 4'd8 : I_wr_data[3:0];
                     // ---- 摄像头 / 画质参数 (0xC0 起) ----
                     8'hC0: r_cam_exp[ 7:0] <= I_wr_data;
                     8'hC1: r_cam_exp[15:8] <= I_wr_data;
@@ -315,10 +377,21 @@ module jpeg_regfile #(
                 8'hAA: O_rd_data <= JPEG_VER[15:8];
 
                 8'hB0: O_rd_data <= {7'b0, r_pp_en};
-                8'hB1: O_rd_data <= {5'b0, r_pp_mode};
+                8'hB1: O_rd_data <= {4'b0, r_pp_mode};
                 8'hB2: O_rd_data <= {4'b0, r_pp_sobel_sh};
                 8'hB3: O_rd_data <= r_pp_thresh;
                 8'hB4: O_rd_data <= {7'b0, r_pp_morph_sel};
+                8'hB5: O_rd_data <= r_pp_morph_th;
+                8'hB6: O_rd_data <= {4'b0, r_pp_lap_sh};
+                8'hB7: O_rd_data <= {4'b0, r_pp_prew_sh};
+                8'hF0: O_rd_data <= {3'b0, r_basic_en};
+                8'hF1: O_rd_data <= {7'b0, r_basic_gray};
+                8'hF2: O_rd_data <= {4'b0, r_basic_gauss};
+                8'hF3: O_rd_data <= r_basic_he;
+                8'hF4: O_rd_data <= {4'b0, r_basic_contrast};
+                8'hF5: O_rd_data <= {4'b0, r_pp_emboss_gain};
+                8'hF6: O_rd_data <= r_pp_emboss_bias;
+                8'hF7: O_rd_data <= {4'b0, r_pp_sharp_gain};
                 8'hB8: O_rd_data <= s_frame_cnt[ 7:0];
                 8'hB9: O_rd_data <= s_frame_cnt[15:8];
                 8'hBA: O_rd_data <= s_frame_cnt[23:16];
@@ -371,10 +444,22 @@ module jpeg_regfile #(
 
     // 预处理: PP_EN=0 时强制直通原图
     assign O_cfg_pp_en         = r_pp_en;
-    assign O_cfg_pp_mode       = r_pp_en ? r_pp_mode : 3'd0;
-    assign O_cfg_pp_sobel_shift= (r_pp_sobel_sh > 4'd8) ? 4'd8 : r_pp_sobel_sh;
+    assign O_cfg_pp_mode       = r_pp_en ? r_pp_mode : 4'd0;
+    assign O_cfg_pp_sobel_shift= r_pp_sobel_sh;
     assign O_cfg_pp_thresh     = r_pp_thresh;
     assign O_cfg_pp_morph_sel  = r_pp_morph_sel;
+    assign O_cfg_pp_morph_th   = r_pp_morph_th;
+    assign O_cfg_pp_lap_shift  = r_pp_lap_sh;
+    assign O_cfg_pp_prew_shift = r_pp_prew_sh;
+    assign O_cfg_pp_emboss_gain= r_pp_emboss_gain;
+    assign O_cfg_pp_emboss_bias= r_pp_emboss_bias;
+    assign O_cfg_pp_sharp_gain = r_pp_sharp_gain;
+    // 初级预处理 (独立于高级 PP_EN, 两级可同时生效)
+    assign O_cfg_basic_en      = r_basic_en;
+    assign O_cfg_basic_gray    = r_basic_gray;
+    assign O_cfg_basic_gauss   = r_basic_gauss;
+    assign O_cfg_basic_he      = r_basic_he;
+    assign O_cfg_basic_contrast= r_basic_contrast;
 
     // 摄像头 / 画质参数
     assign O_cfg_cam_exp   = r_cam_exp;

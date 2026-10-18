@@ -30,7 +30,7 @@ module cfg_ctrl_top #(
 	//     0x3504 = V35 第 4 次构建 (V35d: 4K VMAX=2788 想拿 25fps)
 	//     0x4301 = V43 第 1 次构建 (修 4K 每行多 1~2 个 word 导致的斜向撕裂)
 	//=========================================================================
-	parameter [15:0] CFG_VER  = 16'h4301
+	parameter [15:0] CFG_VER  = 16'h4501
 )(
 	// ---- 系统时钟域 (25MHz 常开) ----
 	input  wire        i_sys_clk,
@@ -53,10 +53,22 @@ module cfg_ctrl_top #(
 	input  wire [15:0] i_line_groups,
 
 	// ---- 同步到像素域的配置输出 ----
-	output wire [2:0]  o_pp_mode,
+	output wire [3:0]  o_pp_mode,          // 高级单选 0..8
 	output wire [3:0]  o_pp_sobel_shift,
 	output wire [7:0]  o_pp_thresh,
 	output wire        o_pp_morph_sel,
+	output wire [7:0]  o_pp_morph_th,
+	output wire [3:0]  o_pp_lap_shift,
+	output wire [3:0]  o_pp_prew_shift,
+	output wire [3:0]  o_pp_emboss_gain,
+	output wire [7:0]  o_pp_emboss_bias,
+	output wire [3:0]  o_pp_sharp_gain,
+	// 初级预处理 (V45, 多选位图)
+	output wire [4:0]  o_basic_en,
+	output wire        o_basic_gray,
+	output wire [3:0]  o_basic_gauss,
+	output wire [7:0]  o_basic_he,
+	output wire [3:0]  o_basic_contrast,
 
 	// ---- 摄像头参数 (直接给 system_top 里的 cam_param, 同在 25MHz 域) ----
 	output wire [19:0] o_cam_exp,
@@ -92,10 +104,21 @@ module cfg_ctrl_top #(
 	wire [7:0]  rd_addr, rd_data;
 
 	wire        cfg_pp_en;
-	wire [2:0]  cfg_pp_mode;
+	wire [3:0]  cfg_pp_mode;
 	wire [3:0]  cfg_pp_sh;
 	wire [7:0]  cfg_pp_th;
 	wire        cfg_pp_ms;
+	wire [7:0]  cfg_pp_morph_th;
+	wire [3:0]  cfg_pp_lap_sh;
+	wire [3:0]  cfg_pp_prew_sh;
+	wire [3:0]  cfg_pp_emboss_gain;
+	wire [7:0]  cfg_pp_emboss_bias;
+	wire [3:0]  cfg_pp_sharp_gain;
+	wire [4:0]  cfg_basic_en;
+	wire        cfg_basic_gray;
+	wire [3:0]  cfg_basic_gauss;
+	wire [7:0]  cfg_basic_he;
+	wire [3:0]  cfg_basic_contrast;
 	wire        cfg_soft_rst;
 	wire        cfg_lossless, cfg_bypass, cfg_single, cfg_rc_en;
 	wire [6:0]  cfg_quality;
@@ -160,6 +183,17 @@ module cfg_ctrl_top #(
 		.O_cfg_pp_sobel_shift (cfg_pp_sh),
 		.O_cfg_pp_thresh (cfg_pp_th),
 		.O_cfg_pp_morph_sel (cfg_pp_ms),
+		.O_cfg_pp_morph_th  (cfg_pp_morph_th),
+		.O_cfg_pp_lap_shift (cfg_pp_lap_sh),
+		.O_cfg_pp_prew_shift(cfg_pp_prew_sh),
+		.O_cfg_pp_emboss_gain(cfg_pp_emboss_gain),
+		.O_cfg_pp_emboss_bias(cfg_pp_emboss_bias),
+		.O_cfg_pp_sharp_gain (cfg_pp_sharp_gain),
+		.O_cfg_basic_en      (cfg_basic_en),
+		.O_cfg_basic_gray    (cfg_basic_gray),
+		.O_cfg_basic_gauss   (cfg_basic_gauss),
+		.O_cfg_basic_he      (cfg_basic_he),
+		.O_cfg_basic_contrast(cfg_basic_contrast),
 		.I_st_frame_cnt  (cnt_s2),
 		.O_cfg_cam_exp   (cfg_cam_exp),
 		.O_cfg_cam_gain  (cfg_cam_gain),
@@ -235,10 +269,23 @@ module cfg_ctrl_top #(
 	//-------------------------------------------------------------------------
 	// 配置信号: 系统域 -> 像素域 (2 级同步)
 	//-------------------------------------------------------------------------
-	reg [2:0] mode_s1, mode_s2;
+	reg [3:0] mode_s1, mode_s2;
 	reg [3:0] sh_s1,   sh_s2;
 	reg [7:0] th_s1,   th_s2;
 	reg       ms_s1,   ms_s2;
+	// V45 高级新增参数
+	reg [7:0] mth_s1,  mth_s2;
+	reg [3:0] lap_s1,  lap_s2;
+	reg [3:0] pre_s1,  pre_s2;
+	reg [3:0] embg_s1, embg_s2;
+	reg [7:0] embb_s1, embb_s2;
+	reg [3:0] shp_s1,  shp_s2;
+	// V45 初级
+	reg [4:0] ben_s1,  ben_s2;
+	reg       bgm_s1,  bgm_s2;
+	reg [3:0] bga_s1,  bga_s2;
+	reg [7:0] bhe_s1,  bhe_s2;
+	reg [3:0] bct_s1,  bct_s2;
 	reg [7:0] wbr_s1,  wbr_s2;
 	reg [7:0] wbb_s1,  wbb_s2;
 	reg [6:0] roi_s1,  roi_s2;
@@ -246,10 +293,21 @@ module cfg_ctrl_top #(
 
 	always @(posedge i_pix_clk or negedge i_pix_rst_n) begin
 		if (!i_pix_rst_n) begin
-			mode_s1 <= 3'd0; mode_s2 <= 3'd0;
+			mode_s1 <= 4'd0; mode_s2 <= 4'd0;
 			sh_s1 <= 4'd3;   sh_s2 <= 4'd3;
 			th_s1 <= 8'd128; th_s2 <= 8'd128;
 			ms_s1 <= 1'b1;   ms_s2 <= 1'b1;
+			mth_s1<= 8'd128; mth_s2<= 8'd128;
+			lap_s1<= 4'd3;   lap_s2<= 4'd3;
+			pre_s1<= 4'd3;   pre_s2<= 4'd3;
+			embg_s1 <= 4'd4; embg_s2 <= 4'd4;
+			embb_s1 <= 8'd128; embb_s2 <= 8'd128;
+			shp_s1<= 4'd4;   shp_s2<= 4'd4;
+			ben_s1<= 5'd0;   ben_s2<= 5'd0;
+			bgm_s1<= 1'b0;   bgm_s2<= 1'b0;
+			bga_s1<= 4'd8;   bga_s2<= 4'd8;
+			bhe_s1<= 8'd255; bhe_s2<= 8'd255;
+			bct_s1<= 4'd4;   bct_s2<= 4'd4;
 			wbr_s1 <= 8'd128; wbr_s2 <= 8'd128;
 			wbb_s1 <= 8'd128; wbb_s2 <= 8'd128;
 			roi_s1 <= 7'd100; roi_s2 <= 7'd100;
@@ -259,6 +317,17 @@ module cfg_ctrl_top #(
 			sh_s1   <= cfg_pp_sh;   sh_s2   <= sh_s1;
 			th_s1   <= cfg_pp_th;   th_s2   <= th_s1;
 			ms_s1   <= cfg_pp_ms;   ms_s2   <= ms_s1;
+			mth_s1  <= cfg_pp_morph_th;  mth_s2  <= mth_s1;
+			lap_s1  <= cfg_pp_lap_sh;    lap_s2  <= lap_s1;
+			pre_s1  <= cfg_pp_prew_sh;   pre_s2  <= pre_s1;
+			embg_s1 <= cfg_pp_emboss_gain; embg_s2 <= embg_s1;
+			embb_s1 <= cfg_pp_emboss_bias; embb_s2 <= embb_s1;
+			shp_s1  <= cfg_pp_sharp_gain;  shp_s2  <= shp_s1;
+			ben_s1  <= cfg_basic_en;      ben_s2  <= ben_s1;
+			bgm_s1  <= cfg_basic_gray;    bgm_s2  <= bgm_s1;
+			bga_s1  <= cfg_basic_gauss;   bga_s2  <= bga_s1;
+			bhe_s1  <= cfg_basic_he;      bhe_s2  <= bhe_s1;
+			bct_s1  <= cfg_basic_contrast;bct_s2  <= bct_s1;
 			// 这几个是慢变参数 (人手改的), 2 级同步足够;
 			// 注意多比特跨域本应加握手, 但它们在“使用时”已经稳定了几十万个
 			// 像素时钟, 不存在采样到中间态的实际窗口。
@@ -288,6 +357,17 @@ module cfg_ctrl_top #(
 	assign o_pp_sobel_shift = sh_s2;
 	assign o_pp_thresh      = th_s2;
 	assign o_pp_morph_sel   = ms_s2;
+	assign o_pp_morph_th    = mth_s2;
+	assign o_pp_lap_shift   = lap_s2;
+	assign o_pp_prew_shift  = pre_s2;
+	assign o_pp_emboss_gain = embg_s2;
+	assign o_pp_emboss_bias = embb_s2;
+	assign o_pp_sharp_gain  = shp_s2;
+	assign o_basic_en       = ben_s2;
+	assign o_basic_gray     = bgm_s2;
+	assign o_basic_gauss    = bga_s2;
+	assign o_basic_he       = bhe_s2;
+	assign o_basic_contrast = bct_s2;
 
 	assign o_wb_r    = wbr_s2;
 	assign o_wb_b    = wbb_s2;

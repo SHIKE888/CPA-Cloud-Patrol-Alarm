@@ -385,10 +385,21 @@ wire         S_pp_tvalid;
 wire         S_pp_tuser;
 wire         S_pp_tlast;
 wire [127:0] S_pp_tdata;
-wire [2:0]   S_pp_mode;
+wire [3:0]   S_pp_mode;
 wire [3:0]   S_pp_sobel_sh;
 wire [7:0]   S_pp_thresh;
 wire         S_pp_morph_sel;
+wire [7:0]   S_pp_morph_th;
+wire [3:0]   S_pp_lap_sh;
+wire [3:0]   S_pp_prew_sh;
+wire [3:0]   S_pp_emboss_gain;
+wire [7:0]   S_pp_emboss_bias;
+wire [3:0]   S_pp_sharp_gain;
+wire [4:0]   S_basic_en;
+wire         S_basic_gray;
+wire [3:0]   S_basic_gauss;
+wire [7:0]   S_basic_he;
+wire [3:0]   S_basic_contrast;
 
 // 后级: 数字白平衡 + ROI 裁剪
 wire         S_post_tvalid;
@@ -909,14 +920,26 @@ preproc_top #(
 	.clk            (S_hs_rx_clk),
 	.rst_n          (S_pll_lock & S_res_rstn_rx),
 	.i_h_active     (S_h_active),
+	.i_v_active     (S_v_active),
 	.i_tvalid       (S_ISP_O_tvalid),
 	.i_tuser        (S_ISP_O_tuser),
 	.i_tlast        (S_ISP_O_tlast),
 	.i_rgb          (S_ISP_O_tdata),
+	.i_basic_en     (S_basic_en),
+	.i_gray_mode    (S_basic_gray),
+	.i_gauss_str    (S_basic_gauss),
+	.i_he_str       (S_basic_he),
+	.i_contrast     (S_basic_contrast),
 	.i_mode         (S_pp_mode),
 	.i_sobel_shift  (S_pp_sobel_sh),
 	.i_thresh       (S_pp_thresh),
 	.i_morph_sel    (S_pp_morph_sel),
+	.i_morph_th     (S_pp_morph_th),
+	.i_lap_shift    (S_pp_lap_sh),
+	.i_prew_shift   (S_pp_prew_sh),
+	.i_emboss_gain  (S_pp_emboss_gain),
+	.i_emboss_bias  (S_pp_emboss_bias),
+	.i_sharp_gain   (S_pp_sharp_gain),
 	.o_tvalid       (S_pp_tvalid),
 	.o_tuser        (S_pp_tuser),
 	.o_tlast        (S_pp_tlast),
@@ -979,7 +1002,7 @@ cfg_ctrl_top #(
 	//           ⚠ 注意: 4:36 那次构建虽然已经是 V43 的 RTL, 但当时这里还是
 	//           0x3807, 所以板上读到的仍是 0x3807 —— 不能只凭版本号判断是否
 	//           烧了新 bit, 要看画面/相位相关。
-	.CFG_VER  (16'h4301)
+	.CFG_VER  (16'h4501)
 ) u_cfg_ctrl (
 	.i_sys_clk    (I_sysclk_25m),
 	.i_sys_rst_n  (1'b1),
@@ -997,6 +1020,17 @@ cfg_ctrl_top #(
 	.o_pp_sobel_shift (S_pp_sobel_sh),
 	.o_pp_thresh  (S_pp_thresh),
 	.o_pp_morph_sel (S_pp_morph_sel),
+	.o_pp_morph_th  (S_pp_morph_th),
+	.o_pp_lap_shift (S_pp_lap_sh),
+	.o_pp_prew_shift(S_pp_prew_sh),
+	.o_pp_emboss_gain(S_pp_emboss_gain),
+	.o_pp_emboss_bias(S_pp_emboss_bias),
+	.o_pp_sharp_gain (S_pp_sharp_gain),
+	.o_basic_en      (S_basic_en),
+	.o_basic_gray    (S_basic_gray),
+	.o_basic_gauss   (S_basic_gauss),
+	.o_basic_he      (S_basic_he),
+	.o_basic_contrast(S_basic_contrast),
 	.o_cam_exp    (S_cam_exp),
 	.o_cam_gain   (S_cam_gain),
 	.o_cam_ev     (S_cam_ev),
