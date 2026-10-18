@@ -11,6 +11,11 @@
     --warn:#d29922; --err:#f85149;
   }
   *{box-sizing:border-box}
+  /* hidden 属性会被 .foo{display:flex} 这类作者样式覆盖 ——
+     横幅、局域网 chip 都踩过这个坑, 这里统一兜底 */
+  [hidden]{display:none !important}
+  /* hidden 属性会被 .foo{display:flex} 这类作者样式覆盖, 这里统一兜底 */
+  [hidden]{display:none !important}
   body{
     margin:0; background:var(--bg); color:var(--fg);
     font:14px/1.5 "Segoe UI","Microsoft YaHei",system-ui,sans-serif;
@@ -52,20 +57,59 @@
   .dot.ok{background:var(--acc); box-shadow:0 0 8px var(--acc)}
   .dot.bad{background:var(--err); box-shadow:0 0 8px var(--err)}
 
-  main{display:grid; grid-template-columns:1fr 360px; gap:14px; padding:14px; align-items:start}
-  @media(max-width:1100px){ main{grid-template-columns:1fr} }
+  main{display:grid; grid-template-columns:minmax(0,1fr) 360px; gap:14px;
+       padding:14px; align-items:start}
+  @media(max-width:1100px){ main{grid-template-columns:minmax(0,1fr)} }
+
+  /* 左列占满整个第一列, 限宽只作用在画面上 —— 这样卡片左右边
+     与横幅、右列完全对齐, 不会在中间留一条缝 */
+  #colLeft{
+    width:100%;
+    max-width:100%;
+    margin:0;
+  }
+  /* 右列: 左右布局时高度跟随左列(JS 同步), 超出部分在本栏内滚动 */
+  @media(min-width:1101px){
+    #colRight{
+      max-height:calc(100vh - 84px);
+      overflow-y:auto; overscroll-behavior:contain;
+      padding-right:6px;
+      scrollbar-width:thin; scrollbar-color:#30363d transparent;
+    }
+    #colRight::-webkit-scrollbar{width:8px}
+    #colRight::-webkit-scrollbar-thumb{background:#30363d;border-radius:4px}
+    #colRight::-webkit-scrollbar-track{background:transparent}
+  }
+  /* 底部对齐: 右列容器高度由 JS 钉在左侧实测高度上,
+     卡片撑满它, 选项卡内容超出时在卡片内部滚(顶/底都不动) */
+  #colRight{display:flex; flex-direction:column}
+  #colRight > .card{
+    flex:1 1 auto; min-height:0;
+    display:flex; flex-direction:column;
+  }
+  #colRight > .card > .tabbody{
+    flex:1 1 auto; min-height:0;
+  }
+  /* 已经在滚动的栏目再给个上限, 否则里面的短列表会撑破卡片 */
+  @media(min-width:1101px){
+    #colRight > .card > .tabbody{overflow-y:auto; padding-right:4px}
+  }
 
   .card{background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:14px}
   .card h2{font-size:13px; margin:0 0 10px; color:var(--dim); font-weight:600;
            letter-spacing:.05em; text-transform:uppercase}
 
+  /* 无流时也保持 16:9 的黑框（aspect-ratio 由 JS 按实际分辨率覆写） */
   #stage{
     background:#000; border:1px solid var(--line); border-radius:12px;
-    min-height:280px; display:flex; align-items:center; justify-content:center;
+    width:100%; aspect-ratio:16 / 9;
+    margin:0 auto;
+    display:flex; align-items:center; justify-content:center;
     overflow:hidden; position:relative;
   }
-  #stream{max-width:100%; max-height:76vh; display:block}
-  #placeholder{color:var(--dim); text-align:center; padding:40px 16px; font-size:13px}
+  #stream{width:100%; height:100%; object-fit:contain; display:block}
+  #placeholder{color:var(--dim); text-align:center; padding:0 16px; font-size:13px;
+               line-height:1.9}
 
   .row{display:flex; align-items:center; gap:10px; margin:9px 0}
   .row label{flex:0 0 84px; color:var(--dim); font-size:13px}
@@ -73,6 +117,7 @@
   .row .val{flex:0 0 54px; text-align:right; font-variant-numeric:tabular-nums;
             color:var(--fg); font-size:12.5px}
   .grid2{display:grid; grid-template-columns:1fr 1fr; gap:8px}
+  .grid3{display:grid; grid-template-columns:repeat(3,1fr); gap:8px}
   .grid4{display:grid; grid-template-columns:repeat(4,1fr); gap:8px}
   .sep{height:1px;background:var(--line);margin:14px 0}
   .hint{color:var(--dim); font-size:12px; margin:6px 0 0}
@@ -122,6 +167,30 @@
   .tab.on{color:var(--acc2); border-bottom-color:var(--acc2); font-weight:600}
   .tabbody{padding-top:2px}
   .tabs + .tabbody .hint:first-child{margin-top:0}
+  /* 局域网分享地址: 点一下复制, 方便手机/平板直接打开 */
+  #lanChip{
+    display:flex; align-items:center; gap:5px;
+    font-size:11.5px; color:var(--dim); cursor:pointer; user-select:none;
+    border:1px solid var(--line); border-radius:7px; padding:4px 9px;
+    white-space:nowrap; transition:.15s;
+  }
+  #lanChip:hover{color:var(--fg); border-color:var(--acc2)}
+
+  /* 输出格式变更提示条: 别人切了分辨率时, 本页只能刷新才能继续拉流 */
+  #reloadBar{
+    grid-column:1 / -1;
+    display:flex; align-items:center; gap:12px;
+    margin:0; padding:11px 14px;
+    background:#3d2b00; border:1px solid #9e6a03; border-radius:10px;
+    color:#f0d58c; font-size:13px;
+  }
+  #reloadBar b{color:#ffd75f}
+  #reloadBar button{
+    margin-left:auto; background:#9e6a03; border-color:#9e6a03;
+    color:#fff; font-weight:600; padding:6px 14px;
+  }
+  #reloadBar button:hover{filter:brightness(1.15)}
+  #reloadBar .cnt{opacity:.75; font-variant-numeric:tabular-nums}
 </style>
 </head>
 <body>
@@ -132,7 +201,6 @@
          title="RK3576 上 mipi_webstream.py 的地址:端口">
   <button class="primary" id="btnConn">连接</button>
   <button id="btnSnap">抓拍</button>
-  <button id="btnReset">重置参数</button>
   <span style="display:flex;gap:4px;align-items:center;margin-left:6px">
     <span style="color:var(--dim);font-size:12px">画面源</span>
     <button class="ghost srcbtn on" data-src="raw"
@@ -141,14 +209,21 @@
             title="叠加人体框 / 姿态骨架 / 危险动作标签">AI 标注</button>
     <span class="dot" id="aiDot" title="AI 状态"></span>
   </span>
-  <span style="margin-left:auto">
-    <span class="dot" id="dot"></span><span id="connTxt">未连接</span>
+  <span style="margin-left:auto;display:flex;align-items:center;gap:12px">
+    <span id="lanChip" hidden
+          title="同一 WiFi / 局域网内的手机、平板用这个地址打开">局域网 —</span>
+    <span><span class="dot" id="dot"></span><span id="connTxt">未连接</span></span>
   </span>
 </header>
 
 <main>
+  <div id="reloadBar" hidden style="grid-column:1/-1">
+    <span>输出格式已切换为 <b id="reloadMode">—</b>，本页的画面连接已失效，刷新后自动恢复。</span>
+    <span class="cnt" id="reloadCnt"></span>
+    <button id="btnReloadNow">立即刷新</button>
+  </div>
   <!-- ---------------- 画面 ---------------- -->
-  <div>
+  <div id="colLeft">
     <div class="card">
       <h2>实时画面</h2>
       <div id="stage">
@@ -172,31 +247,30 @@
       <div class="metrics load">
         <div class="m"><i>MIPI</i><b id="b_mipi">—</b><u><span id="p_mipi"></span></u></div>
         <div class="m"><i>CPU</i><b id="b_cpu">—</b><u><span id="p_cpu"></span></u></div>
-        <div class="m"><i>GPU</i><b id="b_gpu">—</b><u><span id="p_gpu"></span></u></div>
-        <div class="m"><i>NPU</i><b id="b_npu">—</b><u><span id="p_npu"></span></u></div>
+        <div class="m"><i id="l_npu">NPU</i><b id="b_npu">—</b><u><span id="p_npu"></span></u></div>
         <div class="m"><i>RAM</i><b id="b_ram">—</b><u><span id="p_ram"></span></u></div>
         <div class="m"><i>DDR</i><b id="b_ddr">—</b><u><span id="p_ddr"></span></u></div>
-        <div class="m"><i>延时</i><b id="b_lat">—</b></div>
+        <div class="m"><i>传输延时</i><b id="b_lat">—</b></div>
+        <div class="m"><i>网络延时</i><b id="b_net">—</b><u><span id="p_net"></span></u></div>
         <div class="m"><i>队列 / 帧号</i><b id="b_q">—</b></div>
       </div>
     </div>
   </div>
 
   <!-- ---------------- 右列: 选项卡 ---------------- -->
-  <div>
+  <div id="colRight">
     <div class="card">
       <div class="tabs">
         <button class="tab on" data-tab="cam">摄像头</button>
         <button class="tab" data-tab="pp">预处理</button>
         <button class="tab" data-tab="sw">画面</button>
-        <button class="tab" data-tab="hw">V4L2</button>
         <button class="tab" data-tab="ai">AI 标注</button>
       </div>
 
       <!-- ======== 摄像头 / 输出 ======== -->
       <div class="tabbody" id="tab-cam">
         <div class="row"><label>曝光时间</label>
-          <input type="range" id="f_cam_exp" min="0.05" max="16" step="0.05" value="16">
+          <input type="range" id="f_cam_exp" min="0.05" max="16.7" step="0.05" value="16">
           <span class="val" id="fv_cam_exp">16.0 ms</span></div>
 
         <div class="row"><label>增益</label>
@@ -301,7 +375,7 @@
           <span class="val" id="v_quality">80</span></div>
 
         <div class="row"><label>帧率上限</label>
-          <input type="range" id="p_fps" min="1" max="120" step="1" value="60">
+          <input type="range" id="p_fps" min="1" max="90" step="1" value="60">
           <span class="val" id="v_fps">60</span></div>
 
         <div class="sep"></div>
@@ -318,15 +392,8 @@
         </div>
         <p class="hint">这些是 RK 侧的软件处理（CPU 完成），与 FPGA 侧参数互不干涉。
           帧率上限填 60 以上等于不限速；缩放/质量调小可明显降低 CPU 占用。</p>
-      </div>
-
-      <!-- ======== V4L2 ======== -->
-      <div class="tabbody" id="tab-hw" hidden>
-        <div class="scroll" id="hwBox">
-          <p class="hint">连接后自动读取 <code>/api/controls</code>。</p>
-        </div>
-        <button id="btnReloadHw" style="margin-top:10px">刷新硬件参数</button>
-        <p class="hint">部分采集节点（如 rkcif mainpath）没有可调硬件参数，此时为空列表属正常现象。</p>
+        <div class="sep"></div>
+        <button id="btnReset" style="width:100%">重置画面参数</button>
       </div>
 
       <!-- ======== AI 标注（人体检测 / 姿态骨架 / 危险动作） ======== -->
@@ -379,13 +446,13 @@
 
         <div class="sep"></div>
 
-        <div class="grid4">
-          <button class="ghost on" id="btnAiSk">骨架</button>
+        <div class="grid3">
           <button class="ghost on" id="btnAiScore">置信度</button>
           <button class="ghost on" id="btnAiLabel">动作标签</button>
           <button class="ghost" id="btnAiHud">角标</button>
         </div>
         <div class="grid2" style="margin-top:8px">
+          <button class="ghost on" id="btnAiSk">骨架</button>
           <button class="ghost" id="btnAiSkOnly">纯骨骼（黑底）</button>
         </div>
 
@@ -424,8 +491,6 @@
         <div class="kv"><span>版本</span><b id="fsVer">—</b></div>
         <div class="kv"><span>摄像头下发</span><b id="fsCamWr">—</b></div>
       </div>
-      <p class="hint">帧计数持续增长 = 链路在跑。「摄像头下发」是 IMX415 寄存器被成功写入的次数，
-        改曝光/增益后它应该 +1。</p>
     </div>
   </div>
 </main>
@@ -454,31 +519,141 @@ function setDot(ok, txt) {
   $("connTxt").textContent = txt;
 }
 
+/* ---------------- 左右两列底部对齐 ---------------- */
+// 目标: 左列底边 = 右列底边, 且整体不超一屏。
+//   1) 先量“画面以外的固定高度”(卡片内边距/标题/两组指标);
+//   2) 用一屏减去它, 得到画面应有的高度 -> 反推宽度;
+//   3) 再把右列高度钉在左列实测高度上, 超出部分在右列内滚。
+// 不写死常数: 指标行数/字号/窗口缩放变了也能对上。
+const _colL = document.getElementById("colLeft");
+const _colR = document.getElementById("colRight");
+const _stage = document.getElementById("stage");
+
+function _stageAR() {
+  const v = getComputedStyle(_stage).aspectRatio || "16 / 9";
+  const p = v.split("/");
+  const a = parseFloat(p[0]), b = parseFloat(p[1] || 1);
+  return (a > 0 && b > 0) ? a / b : 16 / 9;
+}
+
+function syncColHeight() {
+  if (!_colL || !_colR || !_stage) return;
+  if (window.innerWidth <= 1100) {          // 单列: 不限制
+    _stage.style.maxWidth = "";
+    _colR.style.height = "";
+    return;
+  }
+  const avail = window.innerHeight - 84;    // 顶部 header + 上下 padding 留白
+  const ar = _stageAR();
+  const stageH = _stage.getBoundingClientRect().height;
+  const leftH = _colL.getBoundingClientRect().height;
+  const extra = Math.max(60, leftH - stageH);   // 画面以外的固定高度
+  const wantH = Math.max(240, avail - extra);
+  const wantW = Math.round(wantH * ar);
+  // 注意 parseFloat("") === NaN, 而 NaN 参与比较恒为 false,
+  // 会静默跳过赋值 —— 必须显式判 NaN。
+  const cur = parseFloat(_stage.style.maxWidth);
+  if (isNaN(cur) || Math.abs(cur - wantW) > 1) {
+    _stage.style.maxWidth = wantW + "px";
+  }
+  const finalH = Math.round(_colL.getBoundingClientRect().height);
+  _colR.style.height = finalH + "px";
+}
+
+if (window.ResizeObserver) new ResizeObserver(syncColHeight).observe(_stage);
+window.addEventListener("resize", syncColHeight);
+syncColHeight();
+
 /* ---------------- 连接 ---------------- */
 // 拉流自动重连：
 //   切分辨率时服务端会 execv 重启(监听 socket 被关), 浏览器的 MJPEG <img>
 //   连接挂掉后既不会报错也不会自己重连 —— 表现就是“画面卡住, 要刷新页面”。
 //   这里做三件事：onerror 重试、服务端 clients 变 0 时重连、切模式后主动重连。
 let streamTimer = null, streamTries = 0, zeroClientHits = 0, streamGen = 0;
+let streamPending = false;      // 正在重连(避免重复发起)
+let streamPendingAt = 0;        // 本次重连发起时刻
+let lastForceAt = 0;            // 上次强制重建时刻(限频, 否则风暴)
+// 流看门狗: 服务端发布的 frame_id 不再增长 = 画面已经死了。
+// 切分辨率时服务端 execv 重启, <img> 那条 multipart 连接会半死 ——
+// 既不报错也不会自己恢复, streamPending 还卡在 true, 于是永远重连不了。
+let lastFrameId = null, lastFrameAdvAt = 0;
+let switchUntil = 0;            // 切模式静默期(这期间由切换流程自己重连)
+let deadStrikes = 0;            // 连续“强制重连也没用”的次数
+let needReload = false;         // 别人切了格式 -> 只能刷新, 不再无憩重连
+let reloadTimer = null;
+
+function showReloadBar(modeText) {
+  needReload = true;
+  clearTimeout(streamTimer);          // 停止自动重连, 否则会把连接堆爆
+  const bar = $("reloadBar");
+  if (!bar) return;
+  if (modeText && $("reloadMode")) $("reloadMode").textContent = modeText;
+  bar.hidden = false;
+  setDot(false, "需刷新才能继续");
+  let left = 10;
+  const cnt = $("reloadCnt");
+  const tick = () => {
+    if (cnt) cnt.textContent = left + " 秒后自动刷新";
+    if (left-- <= 0) { location.reload(); return; }
+    reloadTimer = setTimeout(tick, 1000);
+  };
+  clearTimeout(reloadTimer);
+  tick();
+}
+
+$("btnReloadNow").onclick = () => {
+  clearTimeout(reloadTimer);
+  location.reload();
+};
 
 // 关键: 每次重连都【新建一个 <img>】再替换旧的。
 // 复用同一个元素改 src 时, 浏览器有时会保留那条已经半死的 multipart 请求,
 // 新请求发不出去 —— 表现就是“画面卡住不管怎么重连都没用”。新建元素能强制
 // 断旧请求 + 开新请求。
-function startStream() {
+function startStream(force) {
   if (!base) return;
+  if (needReload) return;                  // 等用户刷新, 不再重连
   clearTimeout(streamTimer);
-  const old = $("stream");
+  if (streamPending && !force) return;     // 已有请求在跑, 不重复发
+  if (force) {
+    // ★ 限频: 服务端采集挂了的时候, 无限重连会把连接堆爆(实测堆到 22 个)
+    if (Date.now() - lastForceAt < 5000) return;
+    lastForceAt = Date.now();
+    // 作废旧一轮的所有回调, 把挂死的 <img> 真的断开再清掉
+    streamGen++;
+    const imgs = document.querySelectorAll('img[id="stream"]');
+    for (let i = 1; i < imgs.length; i++) imgs[i].remove();
+    const cur = $("stream");
+    if (cur && cur.parentNode) { try { cur.src = ""; } catch (e) {} }
+  }
+  streamPending = true;
+  streamPendingAt = Date.now();
+
+  // ★ 每次重连都先把旧的 <img> 从 DOM 里拿掉。
+  //   只把 src 置空不够 —— 浏览器有时会继续持有那条 multipart 请求,
+  //   服务端就多挂一个客户端名额。实测一个页面重连几次就能把并发上限顶满,
+  //   进而把采集线程饿死(fps 直接 0)。宁可闪一下黑, 也不要连接泄漏。
+  document.querySelectorAll('img[id="stream"]').forEach(el => {
+    try { el.src = ""; } catch (e) {}
+    el.remove();
+  });
+
   const img = document.createElement("img");
   img.id = "stream"; img.alt = "stream";
+
   const gen = ++streamGen;
   img.onload = () => {
-    if (gen !== streamGen) return;          // 旧元素的残留回调, 忽略
+    if (gen !== streamGen) { img.remove(); return; }
+    streamPending = false;
     connected = true; zeroClientHits = 0; streamTries = 0;
+    deadStrikes = 0;
+    lastFrameId = null; lastFrameAdvAt = Date.now();   // 重新开始看门狗计时
     setDot(true, "已连接");
   };
   img.onerror = () => {
     if (gen !== streamGen) return;
+    streamPending = false;
+    img.remove();
     connected = false;
     setDot(false, "重连中…");
     streamTries++;
@@ -491,7 +666,7 @@ function startStream() {
     }
   };
   img.src = base + "/stream?t=" + Date.now();
-  if (old && old.parentNode) old.parentNode.replaceChild(img, old);
+  $("stage").appendChild(img);
   $("placeholder").style.display = "none";
 }
 
@@ -505,7 +680,8 @@ function connect() {
   streamTries = 0;
   setDot(true, "连接中…");
   startStream();
-  getParams().then(loadHw).then(loadFpga).then(() => loadModes());
+  getParams().then(loadFpga).then(() => loadModes());
+  loadNet();
   aiLoad(true);
   fpgaPoll();
   poll();
@@ -527,6 +703,8 @@ async function getParams() {
     params = await api("/api/params");
     Object.keys(params).forEach(k => {
       const el = $("p_" + k); if (!el) return;
+      // 正在拖这个滑块时不要被别人改的值打断
+      if (document.activeElement === el) return;
       el.value = params[k];
       syncLabel(k);
     });
@@ -617,8 +795,10 @@ let fpgaTimer = null;
 
 function fpgaSyncUI() {
   const th = $("f_PP_THRESH"), sh = $("f_PP_SOBEL_SH");
-  if (th && fpgaRegs.PP_THRESH  !== undefined) { th.value = fpgaRegs.PP_THRESH; }
-  if (sh && fpgaRegs.PP_SOBEL_SH !== undefined) { sh.value = fpgaRegs.PP_SOBEL_SH; }
+  if (th && fpgaRegs.PP_THRESH !== undefined
+         && document.activeElement !== th) { th.value = fpgaRegs.PP_THRESH; }
+  if (sh && fpgaRegs.PP_SOBEL_SH !== undefined
+         && document.activeElement !== sh) { sh.value = fpgaRegs.PP_SOBEL_SH; }
   if (th) $("fv_PP_THRESH").textContent = th.value;
   if (sh) $("fv_PP_SOBEL_SH").textContent = sh.value;
 
@@ -771,8 +951,12 @@ $("btnReloadMode").onclick = () => loadModes(true);
 $("btnApplyMode").onclick = async () => {
   const m = curModeObj();
   if (!m) return;
-  if (!confirm("切换到 " + m.label + " ?\n\n画面会中断 1~2 秒；" +
-               "采集格式会一起改成 " + m.w + "x" + m.h + "。")) return;
+  if (!confirm(
+      "切换到 " + m.label + " ?\n\n" +
+      "· 采集通路会重新配置：停采集 → 写 FPGA 模式 → 等 5 秒复位 → 配 media → 重启服务\n" +
+      "· 画面会中断约 40 秒（期间所有设备都看不到画面）\n" +
+      "· 完成后本页会提示「请刷新页面」，刷新后自动恢复拉流\n\n" +
+      "采集格式将变为 " + m.w + " x " + m.h + "。")) return;
   toast("正在切换到 " + m.id + " …");
   try {
     const r = await api("/api/mode",
@@ -780,13 +964,13 @@ $("btnApplyMode").onclick = async () => {
     if (r.ok) toast((r.log || []).join("  |  ") || "已切换");
     else toast(r.error || (r.log || []).join("  |  ") || "切换失败", true);
   } catch (e) { toast("切换失败: " + e.message, true); }
-  // 服务端会 execv 重启(监听 socket 被关) -> 旧 MJPEG 连接必死。
-  // 这里主动重连 + 兜底：还不行就整页刷新(页面 load 时会自动 connect)。
+  // 服务端会重启 web(监听 socket 被关) -> 旧 MJPEG 连接必死。
+  // 实测在这块板上“自动重连”经常把采集撞挂(clients 堆满 -> fps 0),
+  // 所以统一改成明确提示刷新 —— 两次点击换来稳定。
+  // 实测完整切换要 ~40 秒(含 start.sh 自己的等待), 这期间别让看门狗插手
+  switchUntil = Date.now() + 45000;
   streamTries = 0;
-  setTimeout(startStream, 2500);
-  setTimeout(() => { if (!connected) startStream(); }, 5000);
-  setTimeout(() => { if (!connected) location.reload(); }, 11000);
-  setTimeout(async () => { await loadModes(true); await poll(); }, 4500);
+  showReloadBar(m.label);
 };
 
 /* ---------------- 系统指标 ---------------- */
@@ -794,23 +978,26 @@ let sysTimer = null;
 
 function fmtPct(v) { return (v === null || v === undefined) ? "—" : v + "%"; }
 
+/* 迷你占用条: 绿<60% 黄<85% 红>=85% (模块级, 网络延时也用) */
+function bar(id, pct) {
+  const el = $(id); if (!el) return;
+  const p = Math.max(0, Math.min(100, Number(pct) || 0));
+  el.style.width = p + "%";
+  el.style.background = p >= 85 ? "#f85149" : p >= 60 ? "#d29922" : "#3fb950";
+}
+
 async function sysPollOnce() {
   if (!base) return;
   let d;
   try { d = await api("/api/sys"); }
   catch (e) {
-    // 切模式期间服务端在重启, 请求会失败 —— 计数到两次就主动重连拉流
-    if (++zeroClientHits >= 2 && base) { zeroClientHits = 0; startStream(); }
+    // 切模式期间服务端在重启, 请求会失败 —— 连续失败就主动重连拉流
+    if (!streamPending || Date.now() - streamPendingAt > 6000) {
+      if (++zeroClientHits >= 5) { zeroClientHits = 0; startStream(true); }
+    }
     return;
   }
   const set = (id, v) => { const el = $(id); if (el) el.textContent = v; };
-  // 迷你占用条: 绿<60% 黄<85% 红>=85%
-  const bar = (id, pct) => {
-    const el = $(id); if (!el) return;
-    const p = Math.max(0, Math.min(100, Number(pct) || 0));
-    el.style.width = p + "%";
-    el.style.background = p >= 85 ? "#f85149" : p >= 60 ? "#d29922" : "#3fb950";
-  };
 
   if (d.mipi) {
     set("b_mipi", d.mipi.used_mb_s + " MB/s");
@@ -828,17 +1015,10 @@ async function sysPollOnce() {
   // 空闲时显示“空闲”，比一个恒为 0 的百分比更好读
   const loadTxt = v => (v === null || v === undefined) ? "—" :
                        (Number(v) === 0 ? "空闲" : v + "%");
-  if (d.gpu) {
-    set("b_gpu", loadTxt(d.gpu.load_pct));
-    bar("p_gpu", d.gpu.load_pct || 0);
-    const el = $("b_gpu");
-    if (el) el.title = (d.gpu.model || "GPU") +
-      " · 占用 " + (d.gpu.load_pct === null ? "—" : d.gpu.load_pct + "%") +
-      (d.gpu.freq_mhz ? " · " + d.gpu.freq_mhz + "MHz" : "");
-  }
   if (d.npu) {
     set("b_npu", loadTxt(d.npu.load_pct));
     bar("p_npu", d.npu.load_pct || 0);
+    set("l_npu", d.npu.freq_mhz ? "NPU " + d.npu.freq_mhz + "M" : "NPU");
     const el = $("b_npu");
     if (el) el.title = "RKNN NPU · 占用 " +
       (d.npu.load_pct === null ? "—" : d.npu.load_pct + "%") +
@@ -862,17 +1042,123 @@ async function sysPollOnce() {
   if (d.frame_id !== undefined) q = "#" + d.frame_id;
   if (d.clients !== undefined) q += " · " + d.clients + "路";
   set("b_q", q);
-  {
+
+  // ★ 流看门狗: 服务端帧号不再增长 = 这条 multipart 已经死了。
+  //   （切分辨率后服务端 execv 重启, 旧的 <img> 连接会半死: 不报错、不重连）
+  if (d.frame_id !== undefined) {
+    if (lastFrameId === null || d.frame_id !== lastFrameId) {
+      lastFrameId = d.frame_id; lastFrameAdvAt = Date.now();
+    } else if (Date.now() - lastFrameAdvAt > 8000) {
+      lastFrameAdvAt = Date.now();
+      if (Date.now() < switchUntil) return;      // 正在切模式, 别捣乱
+      // ★ 服务端自己就没在出帧(fps=0): 重连再多次也没用, 只会把并发名额堆满
+      //   进而把采集线程饿死。这种情况只提示, 不重连。
+      const capFps = d.capture && d.capture.fps;
+      if (capFps !== undefined && capFps !== null && capFps <= 0.01) {
+        setDot(false, "采集无数据（需重启服务）");
+        return;
+      }
+      if (deadStrikes >= 3) {
+        // 连着重连三次都拿不到帧 -> 是服务端采集挂了, 再重连也没用
+        setDot(false, "采集无数据, 请重启服务");
+        return;
+      }
+      deadStrikes++;
+      setDot(false, "流已断, 重连中…");
+      startStream(true);
+    }
+  }
+  // 服务端重启期间, /api/sys 能通但帧号不动, 这也能兜住
+  if (d.clients === 0 && connected && !streamPending) {
+    if (++zeroClientHits >= 3) { zeroClientHits = 0; startStream(true); }
+  } else {
+    zeroClientHits = 0;
+  }  {
     const el = $("b_q");
     if (el && d.queues) el.title = "队列 raw " + d.queues.raw + " / bgr " +
       d.queues.bgr + "；帧号 " + d.frame_id + "；推流客户端 " + d.clients;
   }
 
-  // 页面认为已连上, 但服务端一个推流客户端都没有 -> 连接已断, 重连
-  if (d.clients === 0 && connected) {
-    if (++zeroClientHits >= 2) { zeroClientHits = 0; startStream(); }
+  // 硬件编码实际生效状态（参数非默认或开了 AI 时会自动回落）
+
+  // 网络延时: 浏览器 <-> 板子的 HTTP 往返。异步跑, 不阻塞本帧指标
+  pingNet();
+
+  // 多前端同步: 任何一处改了参数就把版本号 +1, 其它页面轮询到变化后
+  // 自己拉一次对应接口。首次只记录不下手, 避免刚连上就白拉三遍。
+  if (d.rev) {
+    ["params", "fpga", "ai", "mode"].forEach(async k => {
+      const r = d.rev[k];
+      if (r === undefined || r === null) return;
+      if (revSeen[k] < 0 && revSeen[k] !== -999) { revSeen[k] = r; return; }
+      if (r === revSeen[k]) return;
+      revSeen[k] = r;                     // 先占位, 防止同一轮重复拉
+      const ok = await applyRemote(k);
+      if (!ok) revSeen[k] = -999;          // 拉失败了(服务端正在重启) -> 下轮重试
+    });
+  }
+}
+
+/* ---------------- 多前端参数同步 ---------------- */
+// 同一 WiFi 下可能同时开着好几台设备页面。谁改了参数, 服务端就把对应
+// 版本号 +1, 这里轮询发现变化就补拉一次, 保证大家的 UI 一致。
+let revSeen = { params: -1, fpga: -1, ai: -1, mode: -1 };
+
+async function applyRemote(kind) {
+  try {
+    if (kind === "params") { await getParams(); return true; }
+    if (kind === "fpga") { await loadFpga(); return true; }
+    if (kind === "ai") { await aiLoad(); return true; }
+    if (kind === "mode") {
+      // ★ 分辨率/格式变了, 已有的 MJPEG 连接已经失效。
+      //   实测在这个板子上自动重连很容易把采集搞挂(clients 堆满 -> fps 0),
+      //   所以这里只给一个明确的“请刷新”提示。
+      try { await loadModes(); } catch (e) {}
+      const m = curModeObj();
+      showReloadBar(m ? m.label : "新模式");
+      return true;
+    }
+  } catch (e) { return false; }
+  return true;
+}
+
+/* ---------------- 网络延时 (浏览器 <-> 板子) ---------------- */
+// 打一个极小的 /api/ping 量往返。连打 3 次取最小的那个:
+// 最小的最接近真实 RTT, 被浏览器排队/垃圾回收拖慢的那几次剔掉。
+// 跨 WiFi / 手机接入时这个值会明显变大, 是排查“卡”的第一看指标。
+let netMs = null;
+let netBusy = false;
+
+async function pingNet() {
+  if (!base || netBusy) return;
+  netBusy = true;
+  let best = Infinity;
+  try {
+    for (let i = 0; i < 3; i++) {
+      const t0 = performance.now();
+      const r = await fetch(base + "/api/ping?t=" + Date.now(),
+                            { cache: "no-store" });
+      await r.text();
+      best = Math.min(best, performance.now() - t0);
+    }
+    netMs = isFinite(best) ? Math.round(best * 10) / 10 : null;
+  } catch (e) {
+    netMs = null;
+  } finally {
+    netBusy = false;
+  }
+  const el = $("b_net");
+  if (!el) return;
+  if (netMs === null) {
+    el.textContent = "—";
+    bar("p_net", 0);
+    el.title = "测不到（连接断开？）";
   } else {
-    zeroClientHits = 0;
+    el.textContent = netMs + " ms";
+    bar("p_net", Math.min(100, netMs));   // 0~100ms 直接当百分比
+    el.title = "浏览器 → 板子 HTTP 往返 " + netMs + " ms" +
+      "\n(<20 局域网优秀, 20~60 一般, >60 偏慢/信号差)" +
+      "\n注意: 这是控制通道的 RTT, 画面延时看左边「传输延时」格";
   }
 }
 
@@ -881,7 +1167,6 @@ function sysPoll() {
   sysTimer = setInterval(sysPollOnce, 1000);
   sysPollOnce();
 }
-
 function fpgaPoll() {
   clearInterval(fpgaTimer);
   fpgaTimer = setInterval(async () => {
@@ -899,12 +1184,37 @@ document.querySelectorAll("[data-tab]").forEach(b => {
   b.onclick = () => {
     document.querySelectorAll("[data-tab]").forEach(x =>
       x.classList.toggle("on", x === b));
-    ["cam", "pp", "sw", "hw", "ai"].forEach(t => {
+    ["cam", "pp", "sw", "ai"].forEach(t => {
       const el = $("tab-" + t);
       if (el) el.hidden = (t !== b.dataset.tab);
     });
   };
 });
+
+/* ---------------- 局域网推流地址 ---------------- */
+// 板子同时挂着有线(end0=192.168.137.x, 只对直连的 PC 有效) 和
+// USB WiFi(wlx*=192.168.1.x)。同一 WiFi 下的手机/平板要用 WiFi 那个。
+async function loadNet() {
+  const chip = $("lanChip");
+  if (!chip) return;
+  try {    const d = await api("/api/net");
+    const nets = (d.nets || []).filter(n => n.ip && !n.ip.startsWith("127."));
+    const ips = nets.map(n => n.ip);
+    if (!ips.length) return;
+    const cur = (base.split("//")[1] || "").split(":")[0];
+    // 优先选无线网卡: 有线(192.168.137.x)只有直连的 PC 能访问,
+    // 同一 WiFi 下的手机/平板必须用 wl* 那块网卡的地址。
+    const wifi = nets.find(n =>/^wl/i.test(n.iface));
+    const pick = wifi ? wifi.ip
+               : (ips.includes(cur) ? cur : ips[0]);
+    const addr = "http://" + pick + ":" + (d.port || 9012) + "/";
+    chip.dataset.addr = addr;
+    chip.textContent = "局域网 " + pick + ":" + (d.port || 9012);
+    chip.title = "同一 WiFi / 局域网内的手机、平板用这个地址打开：" + addr
+               + (ips.length > 1 ? "\n全部地址：" + ips.map(a => "\n  " + a).join("") : "");
+    chip.hidden = false;
+  } catch (e) { /* 老服务端没这个接口 */ }
+}
 
 /* ---------------- 摄像头 / 输出参数（物理量） ----------------
    网页用物理量（曝光 ms / 增益 dB / 白平衡 % / 帧率 fps），后端再换算成
@@ -923,11 +1233,20 @@ function camLab(c) { return $("fv_" + c.id.slice(2)); }
 
 function camSyncUI(phys) {
   if (!phys) return;
+  // 曝光上限跟分辨率模式走(4K≈39.9ms / 1080p≈16.7ms)。
+  // 不同步 max 的话, 4K 下后端回读 20 多 ms 时会超出滑块范围 ——
+  // 滑块被 clamp 在 16, 但数字显示 20 多, 既看不见也拖不回去。
+  const expEl = $("f_cam_exp");
+  if (expEl && phys.cam_exp_max_ms > 0) {
+    expEl.max = phys.cam_exp_max_ms;
+    expEl.step = 0.05;
+  }
   CAM_CTRL.forEach(c => {
     const el = $(c.id), lab = camLab(c);
     if (!el || phys[c.key] === undefined) return;
+    if (document.activeElement === el) return;   // 别打断本地拖动
     el.value = phys[c.key];
-    if (lab) lab.textContent = c.fmt(parseFloat(phys[c.key]));
+    if (lab) lab.textContent = c.fmt(parseFloat(el.value));
   });
 }
 
@@ -972,43 +1291,6 @@ $("btnCamPush").onclick = () => {
     toast("已重新下发摄像头参数");
   }).catch(e => toast("下发失败: " + e.message, true));
 };
-
-/* ---------------- 硬件参数 ---------------- */
-async function loadHw() {
-  const box = $("hwBox");
-  box.innerHTML = '<p class="hint">读取中…</p>';
-  let list = [];
-  try { list = await api("/api/controls"); }
-  catch (e) { box.innerHTML = '<p class="hint">读取失败: ' + e.message + '</p>'; return; }
-
-  if (!list.length) {
-    box.innerHTML = '<p class="hint">该节点没有可调硬件参数（正常现象），请用软件参数。</p>';
-    return;
-  }
-  box.innerHTML = "";
-  list.forEach(c => {
-    const row = document.createElement("div");
-    row.className = "row";
-    const step = c.step || 1;
-    row.innerHTML =
-      '<label title="' + c.name + '">' + c.name + '</label>' +
-      '<input type="range" min="' + c.min + '" max="' + c.max + '" step="' + step +
-      '" value="' + (c.value ?? c.default ?? c.min) + '">' +
-      '<span class="val">' + (c.value ?? "") + '</span>';
-    const inp = row.querySelector("input"), lab = row.querySelector(".val");
-    inp.addEventListener("input", () => { lab.textContent = inp.value; });
-    inp.addEventListener("change", async () => {
-      try {
-        const r = await api("/api/ctrl", { method: "POST",
-          body: JSON.stringify({ name: c.name, value: Number(inp.value) }) });
-        if (!r.ok) toast("设置 " + c.name + " 失败: " + r.message, true);
-        else toast(c.name + " = " + inp.value);
-      } catch (e) { toast("设置失败: " + e.message, true); }
-    });
-    box.appendChild(row);
-  });
-}
-$("btnReloadHw").onclick = loadHw;
 
 /* ---------------- AI 标注（人体框 / 骨架 / 危险动作） --------------
    画面源切换是“服务端换内容”：hub 只推一路 JPEG，切到 AI 后编码线程
@@ -1216,6 +1498,9 @@ async function poll() {
     $("sState").textContent   = "运行中";
     $("sBackend").textContent = (st.backend || "?") + " / " + (st.device || "?");
     $("sSize").textContent    = (st.width || "?") + " × " + (st.height || "?");
+    // 黑框比例跟着实际分辨率走, 换模式时不会突然变形
+    const _aw = +st.width, _ah = +st.height;
+    if (_aw > 0 && _ah > 0) $("stage").style.aspectRatio = _aw + " / " + _ah;
     $("sFps").textContent     = (st.fps ?? "?") + " fps";
     if (st.ai) {
       ai = st.ai;
@@ -1235,6 +1520,15 @@ async function poll() {
 
 /* ---------------- 启动 ---------------- */
 $("btnConn").onclick = connect;
+$("lanChip").onclick = () => {
+  const a = $("lanChip").dataset.addr;
+  if (!a) return;
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(a)
+      .then(() => toast("已复制 " + a))
+      .catch(() => toast(a));
+  } else { toast(a); }
+};
 $("addr").addEventListener("keydown", e => { if (e.key === "Enter") connect(); });
 (function init(){
   const saved = localStorage.getItem("mipi_addr");

@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 mipi_webstream.py
@@ -56,6 +56,8 @@ def _schedule_self_restart(width, height, delay=1.2):
         else:
             argv += [key, val]
 
+
+
     def _do():
         time.sleep(delay)
         try:
@@ -101,6 +103,173 @@ except Exception as _e:                                   # pragma: no cover
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 BOUNDARY = "frame"
+
+# 推流并发上限。每个客户端独占一个线程并阻塞在 wait_next 里。
+# 实测 10 个客户端时把采集线程饿死(rkcif 队列溢出 -> 采不到帧);
+# 1 个 4K 客户端约 5MB/s, 5 个已经接近这条链路的舒适区。
+MAX_STREAM_CLIENTS = 5
+
+# 切分辨率时把曝光(ms)写到这里, 新进程启动后自己恢复。
+# 因为切模式交给 start.sh 了 —— 它会重启 web 进程, 我们没法在复位之后
+# 再写 SHR0(sensor 重下初始化表会把之前写的覆盖掉)。
+MODE_KEEP_EXP = "/tmp/mode_keep_exp"
+START_SH = "/root/start.sh"
+SINGLE_LOCK = "/tmp/mipi_webstream.lock"
+
+
+def _acquire_single_instance():
+    """拿单实例锁; 拿不到说明已有另一个本程序在跑, 返回 None。
+
+    两个实例同时开同一个 V4L2 设备时, 两者都读不到帧(select timeout),
+    从外部看就像“采集卡死”—— 之前切模/并发跑 start.sh 确实撞上过。
+    ★ 注意: execv 重启时会在 os.closerange(3,256) 里把这个 fd 关掉,
+      锁随之释放, 新进程能重新拿到 —— 这正是我们要的行为。
+    """
+    try:
+        import fcntl
+        f = open(SINGLE_LOCK, "w")
+        fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        f.write("%d\n" % os.getpid())
+        f.flush()
+        return f
+    except Exception:                                              # noqa: BLE001
+        return None
+
+
+SWITCH_SH = "/tmp/mode_switch.sh"
+SWITCH_RETRY = "/tmp/switch_retry"
+
+
+def _launch_start_script(want, res_mode):
+    """切模式：停 web -> 写 0xE0 -> 等 5 秒 -> start.sh 重新拉起。
+
+    为什么不让 start.sh 自己去写 0xE0：它内部 1080p 分支只等 3 秒，
+    而从 4K 退出时 sensor 重下初始化表 + VTC 重锁要更久 —— 实测
+    “4K 切回 1080p” 会卡死（media 配好了但 rkcif 收不到数据）。
+    自己写完先等够 5 秒，再叫 start.sh（它看到已是目标模式就跳过写+等待，
+    直接配 media 并启动），时序就稳定了。
+    本进程会被脚本 pkill 掉，所以必须先发响应、再异步跑。
+    """
+    if not os.path.isfile(START_SH):
+        return False
+    try:
+        with open(SWITCH_SH, "w") as f:
+            f.write(
+                "#!/bin/sh\n"
+                "# 互斥: 上一次切换还没跑完就不要再开一轮(否则两个 start.sh 互踩,\n"
+                "# 表现为“切了但没生效/反过来回到旧模式”)\n"
+                "PIDF=/tmp/mode_switch.pid\n"
+                "if [ -f \"$PIDF\" ]; then\n"
+                "  old=$(cat \"$PIDF\" 2>/dev/null)\n"
+                "  if [ -n \"$old\" ] && kill -0 \"$old\" 2>/dev/null; then\n"
+                "    echo \"[switch] 已有切换在进行(pid $old), 本次跳过\"\n"
+                "    exit 0\n"
+                "  fi\n"
+                "fi\n"
+                "echo $$ > \"$PIDF\"\n"
+                "trap 'rm -f \"$PIDF\"' EXIT\n"
+                "pkill -9 -f 'mipi_webstream\\.py' 2>/dev/null\n"
+                "sleep 2\n"
+                "python3 /root/rk/deploy/fpga_cfg.py set 0xE0 %d\n"
+                "sleep 5\n"
+                "bash %s %s\n"
+                % (int(res_mode), START_SH, want))
+        os.chmod(SWITCH_SH, 0o755)
+        log = open("/tmp/mode_switch.log", "ab")
+        subprocess.Popen(["/bin/sh", SWITCH_SH],
+                         stdout=log, stderr=log,
+                         start_new_session=True, close_fds=True)
+        return True
+    except Exception:                                              # noqa: BLE001
+        return False
+
+
+def _capture_selfheal(delay=35.0, max_retry=1):
+    """启动后迟迟没帧就自动重做一次切换。
+
+    ★ delay 不能太小: 启动要 25~30 秒(AI 模型加载 + 打开采集 + 首帧),
+      18 秒时经常还没帧, 会误判并多重启一轮(反而更慢)。实测 35 秒安全。
+
+    实测切分辨率“有概率”失败: FPGA/media/status 全都对得上, 但 rkcif 就是
+    收不到数据(select timeout, fps=0)。人工重跑一次 start.sh 就好。
+    这里把这个动作自动化: 启动 N 秒后仍无帧 -> 重写 0xE0 + 等 5s + 重启,
+    最多重试 max_retry 次(用文件计数, 避免无限重启)。
+    """
+    def _worker():
+        time.sleep(delay)
+        try:
+            # 切换脚本还在跑就别插手(它自己会把 web 拉起来)
+            if os.path.isfile("/tmp/mode_switch.pid"):
+                try:
+                    pid = int(open("/tmp/mode_switch.pid").read().strip())
+                    os.kill(pid, 0)
+                    return
+                except Exception:                                  # noqa: BLE001
+                    pass
+            hub = Handler.hub
+            st = hub.status() if hub is not None else {}
+            if st.get("fps", 0) and st.get("fps", 0) > 1:
+                _reset_retry()
+                return
+            fp = Handler.fpga
+            if fp is None:
+                return
+            _ok, snap = fp.snapshot()
+            regs = snap.get("regs") or {}
+            rm = int(regs.get("RES_MODE", 0) or 0)
+            want = "4k" if rm in (1, 2) else "1080"
+            n = _bump_retry()
+            print("[heal] %.0fs 仍无帧, 自动重试切换(%d/%d) -> %s"
+                  % (delay, n, max_retry, want), file=sys.stderr)
+            if n > max_retry:
+                print("[heal] 已重试 %d 次仍无帧, 不再自动重启; "
+                      "请手动执行 /root/recover.sh %s" % (max_retry, want),
+                      file=sys.stderr)
+                return
+            _launch_start_script(want, rm)
+        except Exception as e:                                     # noqa: BLE001
+            print("[heal] 自愈失败: %s" % e, file=sys.stderr)
+
+    threading.Thread(target=_worker, daemon=True, name="heal").start()
+
+
+def _bump_retry():
+    try:
+        n = int(open(SWITCH_RETRY).read().strip())
+    except Exception:                                              # noqa: BLE001
+        n = 0
+    n += 1
+    try:
+        with open(SWITCH_RETRY, "w") as f:
+            f.write(str(n))
+    except Exception:                                              # noqa: BLE001
+        pass
+    return n
+
+
+def _reset_retry():
+    try:
+        if os.path.isfile(SWITCH_RETRY):
+            os.remove(SWITCH_RETRY)
+    except Exception:                                              # noqa: BLE001
+        pass
+
+
+def _restore_exp_after_switch():
+    """切模式后恢复曝光 —— 现已停用。
+
+    之前把旧模式的曝光(ms)交接过来再按新模式换算 SHR0, 但实测会算出
+    2.1ms 这种离谱值(两种模式的 VMAX/行周期差 3 倍, 四舍五入+夹逼后
+    落到很低的行数), 画面直接变暗。
+    现在切模走 start.sh: 写 0xE0 会让 sensor 重下整套初始化表,
+    SHR0 回到表里的默认值(1080p 16.6ms / 4K 15ms), 两者都是合理值,
+    所以不需要我们再插手。
+    """
+    try:
+        if os.path.isfile(MODE_KEEP_EXP):
+            os.remove(MODE_KEEP_EXP)
+    except Exception:                                              # noqa: BLE001
+        pass
 
 # ------------------------------------------------------------------ 状态持久化
 # 把「上次用过的参数」存成一个 JSON（软件画面参数 + AI 参数），
@@ -540,6 +709,17 @@ class FrameHub:
                 self._fps_t0 = now
             self._cond.notify_all()
 
+    def add_client(self):
+        """客户端计数用方法而不是裸 +=: 多个线程同时增减时会丢更新,
+        表现为“路数”只涨不跌(因为减的时候丢了一次)。"""
+        with self._cond:
+            self._clients += 1
+
+    def del_client(self):
+        with self._cond:
+            if self._clients > 0:
+                self._clients -= 1
+
     def snapshot(self):
         with self._cond:
             return self._jpeg, self._frame_id
@@ -812,6 +992,263 @@ class ParamStore:
 # ============================================================================
 #  采集后端 1: OpenCV (支持全部软件画面参数)
 # ============================================================================
+#  JPEG 编码方式: 软件(cv2) / 硬件(RK MPP mppjpegenc, 走 VPU)
+#
+#  实测 (RK3576, 1728x972):
+#    cv2.imencode : 17ms,  颜色偏差 0.87 LSB, 帧 ~155KB
+#    mppjpegenc   : 10ms,  颜色偏差 6.2  LSB,  帧 ~194-235KB, 省 CPU 5~7%
+#
+#  ★ 旧实现会间歇出「全灰帧」(mean=128 / std=0.3), 根因两个:
+#    1) encode() 先「清空积压 + 抢一个」: 拿到的可能是管道里更早的一帧,
+#       与本次写入的帧并不对应, 长跑后彻底失步;
+#    2) 超时后调 close() 关 stdin -> gst 收到 EOS, 把**没编码完的半帧**
+#       flush 出来, VPU 用灰填满剩下的 MCU —— 这就是全灰帧的来源。
+#  本版改为: 严格一进一出 + 超时只标记失步不 close + 每帧校验 + 周期解码自检。
+# ============================================================================
+class JpegMode:
+    def __init__(self, hw=False):
+        self._lock = threading.Lock()
+        self._hw = bool(hw)
+
+    def get(self):
+        with self._lock:
+            return self._hw
+
+    def set(self, v):
+        with self._lock:
+            self._hw = bool(v)
+            return self._hw
+
+
+HW_JPEG = JpegMode(False)
+
+JPEG_STAT = {"hw_ok": 0, "hw_bad": 0, "sw_fallback": 0, "rebuild": 0}
+
+# ============================================================================
+#  参数版本号 (多前端同步)
+#
+#  多个设备(PC / 手机 / 平板)同时开着这个页面时, 只要有人在任意一处改了
+#  参数, 其它页面应该自动跟上。做法: 每次写入就把对应计数器 +1, /api/sys
+#  带上当前值; 前端 1 秒轮询发现数字变了, 就去拉对应接口刷新 UI。
+#  比 WebSocket 简单得多, 而且 sys 本来就在轮询, 零额外请求。
+# ============================================================================
+PARAM_REV = {"params": 0, "fpga": 0, "ai": 0, "mode": 0}
+_REV_LOCK = threading.Lock()
+
+
+def _bump_rev(key):
+    with _REV_LOCK:
+        PARAM_REV[key] = PARAM_REV.get(key, 0) + 1
+
+
+def _jpeg_size(jpg):
+    """从 JPEG 里读 SOF 的宽高; 解析不出返回 None。"""
+    n = len(jpg)
+    i = 2
+    while i + 9 < n:
+        if jpg[i] != 0xFF:
+            i += 1
+            continue
+        m = jpg[i + 1]
+        if m in (0xD8, 0x01) or 0xD0 <= m <= 0xD7:
+            i += 2
+            continue
+        seg = (jpg[i + 2] << 8) | jpg[i + 3]
+        if m in (0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB):
+            h = (jpg[i + 5] << 8) | jpg[i + 6]
+            w = (jpg[i + 7] << 8) | jpg[i + 8]
+            return (w, h)
+        i += 2 + seg
+    return None
+
+
+class HwJpegEncoder:
+    """mppjpegenc 常驻子进程: NV16/NV12 帧进 -> JPEG 出 (严格一进一出)。
+
+    ★ 踩过的坑(不要再改回去):
+      1) `fdsrc` 后面不能直接跟 video/x-raw caps, 会 not-negotiated;
+         必须经 `rawvideoparse` 把裸字节流声明成帧。
+      2) mppjpegenc 的 caps 里虽然列了 BGR/RGB, 但实测喂 BGR 出来是坏图,
+         只能喂 NV12 / NV16。
+      3) bufsize=0 时 stdin 是 raw FileIO, write() 可能只写一部分,
+         必须循环写满 —— 否则帧字节错位。
+      4) 任何情况下都不要为了「重启」去 close() stdin: EOS 会让 gst 把半帧
+         flush 出来变成全灰帧。要重启就 kill(9)。
+    """
+
+    def __init__(self, w, h, fmt="NV16", gst="gst-launch-1.0"):
+        self.w, self.h = int(w), int(h)
+        self.fmt = fmt.upper()
+        if self.fmt == "NV12":
+            self.frame_bytes = self.w * self.h * 3 // 2
+        else:
+            self.frame_bytes = self.w * self.h * 2
+        self.ok = False
+        self._p = None
+        self._q = queue.Queue()
+        self._buf = bytearray()
+        self._lock = threading.Lock()
+        self._sizes = []                 # 最近的帧体积, 用中位数做异常判定
+        self._n = 0                      # 已成功出帧数(用于周期自检)
+        self._dev = 0.0                  # 与中位数的偏离
+        try:
+            cmd = [gst, "-q",
+                   "fdsrc", "fd=0", "blocksize=%d" % self.frame_bytes, "!",
+                   "rawvideoparse", "format=%s" % self.fmt.lower(),
+                   "width=%d" % self.w, "height=%d" % self.h, "!",
+                   "mppjpegenc", "!",
+                   "fdsink", "fd=1"]
+            self._p = subprocess.Popen(
+                cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL, bufsize=0)
+            threading.Thread(target=self._reader, daemon=True,
+                             name="mppjpeg").start()
+            # 预热: 喂一帧全 0, 等第一个 JPEG 回来
+            if not self._write_all(bytes(self.frame_bytes)):
+                raise IOError("预热写入失败")
+            self._q.get(timeout=3.0)
+            self.ok = True
+        except Exception as e:                                     # noqa: BLE001
+            print("[jpeg] 硬件编码器启动失败: %s" % e, file=sys.stderr)
+            self.close()
+
+    def size(self):
+        return (self.w, self.h)
+
+    def _reader(self):
+        while True:
+            try:
+                d = self._p.stdout.read(65536)
+            except Exception:                                      # noqa: BLE001
+                break
+            if not d:
+                break
+            self._buf.extend(d)
+            while True:
+                s = self._buf.find(b"\xff\xd8")
+                if s < 0:
+                    break
+                e = self._buf.find(b"\xff\xd9", s + 2)
+                if e < 0:
+                    break
+                self._q.put(bytes(self._buf[s:e + 2]))
+                del self._buf[:e + 2]
+        self.ok = False
+
+    def _write_all(self, data):
+        """把一帧完整写进管道(循环写, 直到写完)。"""
+        if self._p is None:
+            return False
+        mv = memoryview(data)
+        try:
+            while mv:
+                n = self._p.stdin.write(mv)
+                if not n:
+                    return False
+                mv = mv[n:]
+            return True
+        except Exception:                                          # noqa: BLE001
+            self.ok = False
+            return False
+
+    def _check(self, jpg, deep=False):
+        """完整性 + 体积 + (周期)解码自检。返回 True 表示可用。"""
+        if len(jpg) < 1024:
+            return False
+        if jpg[:2] != b"\xff\xd8" or jpg[-2:] != b"\xff\xd9":
+            return False
+        sz = _jpeg_size(jpg)
+        if sz != (self.w, self.h):
+            return False
+        n = len(jpg)
+        if len(self._sizes) >= 8:
+            med = sorted(self._sizes)[len(self._sizes) // 2]
+            if n < med * 0.35 or n > med * 3.0:
+                return False
+            self._dev = abs(n - med) / float(med)
+            self._sizes[self._n % len(self._sizes)] = n
+        else:
+            self._sizes.append(n)
+        self._n += 1
+        if deep:
+            try:
+                img = cv2.imdecode(np.frombuffer(jpg, np.uint8),
+                                   cv2.IMREAD_GRAYSCALE)
+                if img is None or float(img.std()) < 3.0:
+                    return False
+            except Exception:                                      # noqa: BLE001
+                return False
+        return True
+
+    def encode(self, raw_bytes, timeout=0.6, deep_every=1):
+        """严格一进一出。返回 JPEG bytes; 失败返回 None 并标记失步。
+
+        deep_every=1 意味着每帧都做一次解码自检。本板的 mppjpegenc 会
+        输出「长度完整 / SOI-EOI 齐全 / 尺寸正确」的全灰帧, 只看结构拦不住,
+        必须真的解一下看亮度方差。单帧 3~4ms, 比灰屏代价低得多。
+        """
+        if not self.ok or self._p is None:
+            return None
+        with self._lock:                       # gst 是串行管道, 必须独占
+            # 队列里还有剩帧 = 上轮已经失步, 清掉重来
+            while not self._q.empty():
+                try:
+                    self._q.get_nowait()
+                except queue.Empty:
+                    break
+            if not self._write_all(raw_bytes):
+                self.ok = False
+                JPEG_STAT["hw_bad"] += 1
+                return None
+            try:
+                jpg = self._q.get(timeout=timeout)
+            except queue.Empty:
+                # ★ 只标记失步, 绝对不 close(): 否则半帧被 flush 成灰帧
+                self.ok = False
+                JPEG_STAT["hw_bad"] += 1
+                return None
+            deep = (deep_every > 0 and (self._n % deep_every) == 0)
+            if not self._check(jpg, deep=deep):
+                self.ok = False
+                JPEG_STAT["hw_bad"] += 1
+                return None
+            JPEG_STAT["hw_ok"] += 1
+            return jpg
+
+    def close(self, graceful=False):
+        """关闭子进程。默认直接 kill —— 不给 EOS, 避免半帧被 flush。"""
+        self.ok = False
+        p = self._p
+        self._p = None
+        if p is None:
+            return
+        if graceful:
+            try:
+                p.stdin.close()
+            except Exception:                                      # noqa: BLE001
+                pass
+        try:
+            p.kill()
+        except Exception:                                          # noqa: BLE001
+            pass
+
+
+def _params_plain(p):
+    """画面参数是否全为默认（不需要逐像素处理）。
+
+    硬件编码快路只在“不需要 BGR”时才走: 任何亮度/对比度/饱和度/色相/伽马/
+    镜像/翻转/旋转 都要先转 BGR 再处理, 那就没必要绕硬件了。
+    开了 AI 标注同理。
+    """
+    return (abs(float(p["brightness"])) < 1e-3
+            and abs(float(p["contrast"]) - 1.0) < 1e-3
+            and abs(float(p["saturation"]) - 1.0) < 1e-3
+            and abs(float(p["hue"])) < 1e-3
+            and abs(float(p["gamma"]) - 1.0) < 1e-3
+            and not int(p["mirror"]) and not int(p["flipv"])
+            and int(p["rotate"]) == 0)
+
+
 class OpenCVCapture(threading.Thread):
     name = "opencv"
 
@@ -836,6 +1273,11 @@ class OpenCVCapture(threading.Thread):
         self._results = {}                 # seq -> jpeg, 用于按序发布
         self._next_pub = 1
         self._seq_cond = threading.Condition()
+
+        # ---- 可选硬件 JPEG 编码 (mppjpegenc / VPU) ----
+        self._hw = None
+        self._hw_lock = threading.Lock()
+        self._hw_retry_at = 0.0
 
     # ------------------------------------------------------------------
     #  三级流水线
@@ -970,14 +1412,102 @@ class OpenCVCapture(threading.Thread):
         if cap is not None:
             cap.release()
 
+    def stop(self):
+        """停止采集并【真正释放 /dev/video22】。
+
+        切分辨率时必须先调它: media-ctl 改 subdev 格式的前提是设备空闲,
+        否则 rkcif 正占着, S_FMT 会被拒或只改一半 pad —— 结果是新旧尺寸
+        混在一起, 采集直接 select() 超时, 只能重建整条通路才能好。
+        这也是为什么 start.sh 的顺序是「先 stop web -> 再配 media」。
+        """
+        self.stop_flag.set()
+        try:
+            self.join(timeout=3.0)
+        except Exception:                                          # noqa: BLE001
+            pass
+
+    # ---- 硬件编码 (MPP/VPU) ----
+    def _hw_encoder(self, w, h, want):
+        """按需拿到当前尺寸的硬件编码器; want=False 或建不起来就返回 None。
+
+        失败后冷却 3 秒再重建, 避免每帧都去 spawn 一个 gst。
+        """
+        with self._hw_lock:
+            if not want:
+                if self._hw is not None:
+                    self._hw.close()
+                    self._hw = None
+                return None
+            if self._hw is not None and self._hw.size() == (w, h) and self._hw.ok:
+                return self._hw
+            if self._hw is not None:
+                self._hw.close()
+                self._hw = None
+            if time.time() < self._hw_retry_at:
+                return None
+            # 已多次证伪: 本板 mppjpegenc 连续出帧会输出全灰 JPEG。
+            # 这种时候不要每 3 秒重建一次(每次都白烧 CPU), 冷却加长。
+            cool = 3.0 if JPEG_STAT["hw_bad"] < 3 else 60.0
+            enc = HwJpegEncoder(w, h, fmt="NV12")
+            if enc.ok:
+                self._hw = enc
+                print("[jpeg] 硬件编码已启用: mppjpegenc NV12 %dx%d" % (w, h))
+                return enc
+            self._hw_retry_at = time.time() + cool
+            JPEG_STAT["rebuild"] += 1
+            return None
+
+    def _nv12_scaled(self, raw, p):
+        """把原始 NV16 在 YUV 域缩到推流尺寸并转 NV12 (给硬件编码用)。
+
+        不做 YUV->BGR->YUV 往返: 色度抽掉奇数行就是 4:2:0。
+        返回 bytes 或 None。
+        """
+        if int(p["rotate"]) != 0 or int(p["mirror"]) or int(p["flipv"]):
+            return None
+        wh = self._w * self._h
+        buf = raw.reshape(-1)
+        if buf.size != wh * 2:              # 只支持 NV16 原始源
+            return None
+        tw, th = self._target_size(p["scale"])
+        y = buf[:wh].reshape(self._h, self._w)
+        c = buf[wh:wh * 2].reshape(self._h, self._w // 2, 2)
+        if (tw, th) != (self._w, self._h):
+            interp = cv2.INTER_LINEAR     # INTER_AREA 在 RK3576 上慢 17 倍
+            y = cv2.resize(y, (tw, th), interpolation=interp)
+            c = cv2.resize(c, (max(1, tw // 2), th), interpolation=interp)
+        c12 = np.ascontiguousarray(c[::2])
+        out = np.concatenate([y.reshape(-1), c12.reshape(-1)])
+        return out.tobytes()
+
     def _conv_loop(self):
-        """中间级: 原始 YUV -> BGR (含缩放/几何/颜色参数)。"""
+        """中间级: 原始 YUV -> BGR (含缩放/几何/颜色参数)。
+
+        若开了硬件编码且当前参数全为默认(无需逐像素处理)、也没开 AI 叠加,
+        则走快路: 只做 YUV 域缩放 + NV16->NV12, 直接交给 mppjpegenc。
+        硬件出任何问题(超时/校验不过)就本帧回落到 cv2, 不影响帧率和画面。
+        """
         while not self.stop_flag.is_set():
             try:
                 seq, raw, t_cap = self._raw_q.get(timeout=0.5)
             except queue.Empty:
                 continue
             p = self.params.get()
+
+            _ai = AI_OVERLAY
+            if (HW_JPEG.get() and _params_plain(p)
+                    and not (_ai is not None and _ai.active)):
+                nv12 = self._nv12_scaled(raw, p)
+                if nv12 is not None:
+                    tw, th = self._target_size(p["scale"])
+                    enc = self._hw_encoder(tw, th, True)
+                    if enc is not None:
+                        jpg = enc.encode(nv12, timeout=0.6)
+                        if jpg is not None:
+                            self._put(self._bgr_q, (seq, jpg, t_cap, "jpg"))
+                            continue
+                JPEG_STAT["sw_fallback"] += 1
+
             try:
                 frame = self._to_bgr(raw, p)
             except Exception as e:
@@ -986,34 +1516,39 @@ class OpenCVCapture(threading.Thread):
             if frame is None:
                 continue
             frame = self._process(frame, p)
-            self._put(self._bgr_q, (seq, frame, t_cap))
+            self._put(self._bgr_q, (seq, frame, t_cap, "bgr"))
 
     def _enc_loop(self):
         """末级: JPEG 编码。多个线程跑同一段代码, 靠 GIL 释放真正并行。"""
         while not self.stop_flag.is_set():
             try:
-                seq, frame, t_cap = self._bgr_q.get(timeout=0.5)
+                seq, payload, t_cap, kind = self._bgr_q.get(timeout=0.5)
             except queue.Empty:
                 continue
             p = self.params.get()
-            # ---- 可选 AI 叠加 ----
-            # 只在"画面源 = AI 标注"时才碰帧; 切回原图时这段开销为零。
-            _ai = AI_OVERLAY
-            if _ai is not None and _ai.active:
-                try:
-                    _ai.submit(frame)
-                    frame = _ai.draw(frame)
-                except Exception as _e:                   # noqa: BLE001
-                    print("[ai] 叠加异常: %s" % _e, file=sys.stderr)
             jpg = None
-            try:
-                ok, buf = cv2.imencode(
-                    ".jpg", frame,
-                    [int(cv2.IMWRITE_JPEG_QUALITY), int(p["quality"])])
-                if ok:
-                    jpg = buf.tobytes()
-            except Exception as e:
-                print("[opencv] 编码异常: %s" % e, file=sys.stderr)
+
+            if kind == "jpg":                 # 硬件编码已出图, 直接发布
+                jpg = payload
+            else:
+                frame = payload
+                # ---- 可选 AI 叠加 ----
+                # 只在"画面源 = AI 标注"时才碰帧; 切回原图时这段开销为零。
+                _ai = AI_OVERLAY
+                if _ai is not None and _ai.active:
+                    try:
+                        _ai.submit(frame)
+                        frame = _ai.draw(frame)
+                    except Exception as _e:                   # noqa: BLE001
+                        print("[ai] 叠加异常: %s" % _e, file=sys.stderr)
+                try:
+                    ok, buf = cv2.imencode(
+                        ".jpg", frame,
+                        [int(cv2.IMWRITE_JPEG_QUALITY), int(p["quality"])])
+                    if ok:
+                        jpg = buf.tobytes()
+                except Exception as e:
+                    print("[opencv] 编码异常: %s" % e, file=sys.stderr)
 
             # 按序号顺序发布, 避免多线程导致客户端看到乱序画面
             with self._seq_cond:
@@ -1969,6 +2504,10 @@ def cam_phys(regs, status=None):
 
         return {
             "cam_exp_ms":  round(ms, 2),
+            # 当前模式下的曝光上限: SHR0 最小取 1 -> rows 最大 vmax-1。
+            # 4K 是 39.9ms, 1080p 是 16.7ms —— 前端滑块 max 要跟着它走,
+            # 否则 4K 下回读值(可能 20 多)超出滑块范围, 拖不动。
+            "cam_exp_max_ms": round((vmax - 1) * t_line / 1000.0, 1),
             "cam_gain_db": round(gain_db, 1),
             "ev":          pick("EV_BIAS", 0, 15, 8) - 8,
             # 基准帧率跟分辨率模式走: 1080p=60, 4K=30 (V21 模式表)
@@ -2300,6 +2839,34 @@ class Handler(BaseHTTPRequestHandler):
                     "capture": {"width": self.args.width,
                                 "height": self.args.height},
                 })
+            if path == "/api/ping":
+                # 给页面测“浏览器 -> 板子”的网络往返延时用, body 尽量小
+                return self._json({"ok": 1})
+            if path == "/api/net":
+                # 列出本机所有可用的局域网 IPv4 (给页面显示“分享地址”用)。
+                # 有线 end0 和 USB WiFi 会各有一个, 同一 WiFi 的其它设备
+                # 用 wlx* 那个就行。
+                ips = []
+                nets = []
+                try:
+                    out = subprocess.run(
+                        ["ip", "-4", "-o", "addr", "show"],
+                        capture_output=True, text=True, timeout=2).stdout
+                    for line in out.splitlines():
+                        p = line.split()
+                        if "inet" not in p:
+                            continue
+                        iface = p[1] if len(p) > 1 else "?"
+                        addr = p[p.index("inet") + 1].split("/")[0]
+                        if addr.startswith("127."):
+                            continue
+                        nets.append({"iface": iface, "ip": addr})
+                        if addr not in ips:
+                            ips.append(addr)
+                except Exception:                                  # noqa: BLE001
+                    pass
+                return self._json({"ok": True, "port": self.args.port,
+                                   "ips": ips, "nets": nets})
             if path == "/api/sys":
                 # 实时系统指标: CPU/GPU/NPU/RAM/DDR/MIPI 带宽/传输延时
                 mon = getattr(Handler, "sysmon", None) or SysMonitor()
@@ -2310,7 +2877,27 @@ class Handler(BaseHTTPRequestHandler):
                 st = self.hub.status()
                 out["clients"] = st.get("clients")
                 out["frame_id"] = st.get("frame_id")
+                out["jpeg"] = {
+                    "want_hw": bool(HW_JPEG.get()),
+                    "active": bool(cap is not None
+                                   and getattr(cap, "_hw", None) is not None
+                                   and cap._hw.ok),
+                    "stat": dict(JPEG_STAT),
+                }
+                # 参数版本号: 前端轮询发现变了就去拉对应接口,
+                # 这样 A 设备改了参数, B 设备也能自动跟上。
+                out["rev"] = dict(PARAM_REV)
                 return self._json(out)
+            if path == "/api/jpeg":
+                cap = Handler.capture
+                return self._json({
+                    "ok": True,
+                    "hw": bool(HW_JPEG.get()),
+                    "active": bool(cap is not None
+                                   and getattr(cap, "_hw", None) is not None
+                                   and cap._hw.ok),
+                    "stat": dict(JPEG_STAT),
+                })
             if path in ("/snapshot.jpg", "/snapshot"):
                 # V43: 默认按【采集原始分辨率】抓拍 (4K 模式 = 3840x2160)。
                 #      推流帧是缩到 --stream-width 的, 用它抓拍只能得到 1920。
@@ -2340,6 +2927,18 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         path = self.path.split("?", 1)[0]
         try:
+            if path == "/api/jpeg":
+                body = self._read_json()
+                HW_JPEG.set(bool(body.get("hw")))
+                cap = Handler.capture
+                active = bool(cap is not None
+                              and getattr(cap, "_hw", None) is not None
+                              and cap._hw.ok)
+                print("[jpeg] 硬件编码 %s (当前生效=%s)"
+                      % ("开启" if HW_JPEG.get() else "关闭", active))
+                return self._json({"ok": True, "hw": bool(HW_JPEG.get()),
+                                   "active": active,
+                                   "stat": dict(JPEG_STAT)})
             if path == "/api/params":
                 body = self._read_json()
                 if body.get("reset"):
@@ -2350,6 +2949,7 @@ class Handler(BaseHTTPRequestHandler):
                 cap = Handler.capture
                 if cap is not None and hasattr(cap, "apply"):
                     cap.apply()
+                _bump_rev("params")          # 通知其它在线前端
                 return self._json(out)
             if path == "/api/ctrl":
                 body = self._read_json()
@@ -2370,6 +2970,7 @@ class Handler(BaseHTTPRequestHandler):
                 # 只在“真的要用 AI”的时候写，免得用户单纯调参数也被改掉预处理。
                 if out.get("active"):
                     out["pp_off"] = _fpga_pp_off(self.fpga)
+                _bump_rev("ai")             # 通知其它在线前端
                 return self._json({"ok": True, "ai": out})
             if path == "/api/fpga":
                 if self.fpga is None:
@@ -2394,6 +2995,7 @@ class Handler(BaseHTTPRequestHandler):
                 snap["write_ok"] = wok
                 snap["message"] = msg
                 snap["meta"] = fpga_meta()
+                _bump_rev("fpga")           # 通知其它在线前端
                 return self._json(snap, 200 if (wok and snap.get("ok")) else 500)
             if path == "/api/mode":
                 body = self._read_json()
@@ -2461,14 +3063,57 @@ class Handler(BaseHTTPRequestHandler):
             old_ms = (cam_ms_from_shr0(old_shr0, old_vm, old_tl)
                       if 1 <= old_shr0 <= old_vm - 1 else None)
 
+            # ★ 优先交给 start.sh —— 已验证稳定。
+            #   它自己会：停 web(释放 /dev/video22) -> 写 0xE0 -> 等 4s
+            #   -> 配 media 三个 pad -> 按新尺寸启 web。
+            #   我们只要把“曝光多少 ms”交接给新进程就行。
+            if int(mode["fps_div"]) == 1 and os.path.isfile(START_SH):
+                want = "4k" if int(mode["res_mode"]) in (1, 2) else "1080"
+                _bump_rev("mode")
+                _reset_retry()          # 用户主动切换 -> 重试计数清零
+                # 先把响应发回去, 再让切换脚本把本进程 kill 掉
+                threading.Timer(1.0, _launch_start_script,
+                                args=(want, int(mode["res_mode"]))).start()
+                return {"ok": True, "mode": mode,
+                        "log": ["切换中 -> %s (RES_MODE=%d)"
+                                % (want, int(mode["res_mode"]))],
+                        "note": "服务重启中，约 18 秒后恢复"}
+
+            # ---- 没有 start.sh 时的回退流程 ----
+
             # FPS_DIV 先写; RES_MODE 后写 —— 写它会产生 VTC 复位窗口,
             # 让它作为最后一步, 免得复位后帧率又被改一次。
+            #
+            # ★ 关键顺序(与 start.sh 一致):
+            #   1) 先放掉 /dev/video22, 否则 media-ctl 改格式会被驱动拒绝;
+            #   2) 再写 FPGA 切模式;
+            #   3) 等够 3 秒(FPGA 复位窗 + sensor 重锁), start.sh 用的是 3~4s;
+            #   4) 最后才配 media 通路。
+            #   之前写成 0.7s 且不释放设备, 所以“有概率卡死”。
+            _cap = Handler.capture
+            if _cap is not None and hasattr(_cap, "stop"):
+                _cap.stop()
+                log.append("已释放采集设备")
+                time.sleep(0.35)
+
             self.fpga.write(0xC7, int(mode["fps_div"]))
             self.fpga.write(0xE0, int(mode["res_mode"]))
             log.append("FPGA: FPS_DIV=%d RES_MODE=%d" % (mode["fps_div"], mode["res_mode"]))
+        except Exception as e:
+            return {"ok": False, "log": log,
+                    "error": "FPGA 写入失败: %s: %s" % (type(e).__name__, e)}
 
-            # 按新模式把 ms 换回 SHR0，保证切模式前后“曝光时间”不变。
-            if old_ms is not None:
+        # ---- RK 侧: 整条 media pipeline 改成新尺寸 ----
+        #   必须改! 只写 FPGA 寄存器的话 rkcif 还按旧尺寸收, 画面是一团错位。
+        #   也必须从 sensor subdev 设起 (见 pipeline_set_fmt 的注释)。
+        #   等 3 秒: FPGA 复位窗现在是 500ms, 但 sensor 重下初始化表 + VTC
+        #   重新锁定实际要 2~3 秒; start.sh 里用的就是 sleep 3/4。
+        time.sleep(3.0)
+
+        # 曝光保持: 必须在【复位完成之后】再写 SHR0。
+        # 写 0xE0 会让 sensor 重下一整套初始化表, 提前写的 SHR0 会被覆盖掉。
+        if old_ms is not None:
+            try:
                 nvm, ntl = ((CAM_VMAX_4K, CAM_T_LINE_US_4K)
                             if int(mode["res_mode"]) in (1, 2)
                             else (CAM_VMAX_1080, CAM_T_LINE_US_1080))
@@ -2477,16 +3122,9 @@ class Handler(BaseHTTPRequestHandler):
                 self.fpga.write(0xC1, (ns >> 8) & 0xFF)
                 self.fpga.write(0xC2, (ns >> 16) & 0x0F)
                 log.append("曝光保持 %.2fms -> SHR0=%d" % (old_ms, ns))
-        except Exception as e:
-            return {"ok": False, "log": log,
-                    "error": "FPGA 写入失败: %s: %s" % (type(e).__name__, e)}
+            except Exception as e:                                 # noqa: BLE001
+                log.append("曝光保持失败: %s" % e)
 
-        # ---- RK 侧: 整条 media pipeline 改成新尺寸 ----
-        #   必须改! 只写 FPGA 寄存器的话 rkcif 还按旧尺寸收, 画面是一团错位。
-        #   也必须从 sensor subdev 设起 (见 pipeline_set_fmt 的注释)。
-        #   V39: FPGA 协同复位窗现在是 500ms (RES_RST_CYCLES=12.5M@25MHz)，
-        #        原来只等 250ms，会在复位中途重开采集 -> csi size err/黑帧。
-        time.sleep(0.70)
         try:
             res = pipeline_set_fmt(int(mode["w"]), int(mode["h"]))
             bad = [(s, e) for (s, ok, e) in res if not ok]
@@ -2504,6 +3142,7 @@ class Handler(BaseHTTPRequestHandler):
         #        采集线程无法处理标志。直接把新宽高写回 argv 并 execv 自己，
         #        新进程会干净地重新打开设备。
         _schedule_self_restart(mode["w"], mode["h"])
+        _bump_rev("mode")          # 让其它在线前端跟着刷新模式表/分辨率
         log.append("服务将在 1.2s 后自动重启，按 %dx%d 重新打开采集"
                    % (mode["w"], mode["h"]))
         return {"ok": True, "mode": mode, "log": log,
@@ -2534,6 +3173,13 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _serve_stream(self):
+        # 并发上限: 每个客户端一个线程, 而且卡在 wait_next 里。
+        # 一旦采集侧出问题(比如切完模式 select 超时), 前端看门狗会不断重连,
+        # 不限流就会堆成几十个僵尸连接把服务拖死。
+        if self.hub._clients >= MAX_STREAM_CLIENTS:
+            return self._json(
+                {"error": "推流连接数已达上限(%d), 请先关掉其它页面"
+                          % MAX_STREAM_CLIENTS}, 503)
         self.send_response(200)
         self.send_header("Content-Type",
                          "multipart/x-mixed-replace; boundary=%s" % BOUNDARY)
@@ -2543,11 +3189,13 @@ class Handler(BaseHTTPRequestHandler):
         self._cors()
         self.end_headers()
 
-        self.hub._clients += 1
+        self.hub.add_client()
         last = -1
         try:
             while True:
-                jpeg, last = self.hub.wait_next(last, timeout=10.0)
+                # 超时不能太长: 客户端断开后这里回收不到,
+                # 连接数会一直挂在旧值上
+                jpeg, last = self.hub.wait_next(last, timeout=3.0)
                 if jpeg is None:
                     continue
                 self.wfile.write(b"--" + BOUNDARY.encode() + b"\r\n")
@@ -2559,7 +3207,7 @@ class Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError, OSError):
             pass
         finally:
-            self.hub._clients -= 1
+            self.hub.del_client()
 
 
 FALLBACK_PAGE = """<!doctype html><html><head><meta charset="utf-8">
@@ -2601,6 +3249,9 @@ def main():
                     help="推流基准宽度 (默认 1920 = 原生 1080p)")
     ap.add_argument("--conv-threads", type=int, default=4,
                     help="色彩转换并行度, 按行切分同时调用 C 库 (默认 4)")
+    ap.add_argument("--hw-jpeg", action="store_true",
+                    help="用 RK MPP(mppjpegenc/VPU) 做 JPEG 硬编; 默认关。"
+                         "⚠ 实测本板固件连续出帧会输出全灰 JPEG, 详见代码注释")
     ap.add_argument("--enc-threads", type=int, default=3,
                     help="JPEG 编码线程数 (默认 3)")
     ap.add_argument("--cpu-affinity", default="auto",
@@ -2641,6 +3292,15 @@ def main():
                     help="参数存档路径 (默认 同目录 state.json; 传空字符串=不保存)")
     args = ap.parse_args()
 
+    # ★ 单实例锁。两个 mipi_webstream 同时跑会互抢 /dev/video22,
+    #   结果是两边都 select() timeout、fps=0 —— 看起来就像“采集卡死”。
+    #   之前切分辨率或并发跑 start.sh 时确实出现过双实例。
+    _lock_fd = _acquire_single_instance()
+    if _lock_fd is None:
+        print("[main] 已有实例在运行, 本进程退出 (锁 %s)"
+              % SINGLE_LOCK, file=sys.stderr)
+        return 1
+
     hub = FrameHub()
     # 参数存档：页面重连 / 服务重启后自动恢复上次的取值
     state_file = (args.state_file or "").strip() or None
@@ -2680,6 +3340,11 @@ def main():
         cap = TestCapture(hub, params, args)
     else:
         cap = GstCapture(hub, params, args)
+
+    # 硬件 JPEG 编码开关 (默认关; 且仅 OpenCV 后端支持)
+    if getattr(args, "hw_jpeg", False):
+        HW_JPEG.set(True)
+        print("[jpeg] 启动参数要求硬件编码 (mppjpegenc/VPU)")
 
     # ---- 可选: AI 叠加 (必须在 cap.start() 之前就位, 好让第一帧就能画) ----
     global AI_OVERLAY
@@ -2722,6 +3387,11 @@ def main():
     Handler.params = params
     Handler.args = args
     Handler.capture = cap
+
+    # 如果这次是 start.sh 因为切分辨率重启起来的, 把用户原来的曝光补回去
+    _restore_exp_after_switch()
+    # 启动后 35 秒仍无帧 -> 自动重试一次切换(切分辨率偶发失败)
+    _capture_selfheal()
     Handler.sysmon = SysMonitor()
 
     # FPGA 预处理参数走 I2C 从机 (RK I2C9 <-> FPGA L18/M18, 底板直连不用飞线)
