@@ -247,51 +247,21 @@ def _launch_start_script(want, res_mode):
                 "fi\n"
                 "echo $$ > \"$PIDF\"\n"
                 "trap 'rm -f \"$PIDF\"' EXIT\n"
-                "pkill -f 'mipi_webstream\\.py' 2>/dev/null\n"
-                # 等旧进程自己退：TERM handler 要等采集线程 release 设备(<=10s)
-                "for i in $(seq 1 30); do\n"
-                "  pgrep -f 'mipi_webstream\\.py' >/dev/null 2>&1 || break\n"
-                "  sleep 0.5\n"
-                "done\n"
+                # 回到最早能切的流程：强杀 -> 2s -> 写 0xE0 -> 5s -> start.sh。
+                # 不要再加 SIGTERM 等待/探测/先停采集 —— 那些反而让设备被占更久，
+                # 后面的 0xE0/新进程全在竞争，CSI2 ECC 刷屏。
                 "pkill -9 -f 'mipi_webstream\\.py' 2>/dev/null\n"
-                "sleep 0.2\n"
+                "sleep 2\n"
                 "python3 /root/rk/deploy/fpga_cfg.py set 0xE0 %d\n"
-                "sleep %d\n"
-                # ★ 启动 web 之前先探测链路: 用 v4l2-ctl 抓 1 帧。
-                #   抓到 = rkcif/dphy 已经完整初始化并锁链，web 再打开就是
-                #   “热”状态，不会出现打开成功却永远 select() timeout。
-                #   抓不到就重写 0xE0 再来一轮（最多 3 次）。
-                "i=0\n"
-                "while [ $i -lt 3 ]; do\n"
-                "  if timeout 8 v4l2-ctl -d /dev/video22 --stream-mmap "
-                "--stream-count=1 --stream-to=/dev/null >/dev/null 2>&1; then\n"
-                "    echo '[probe] link ready'\n"
-                "    break\n"
-                "  fi\n"
-                "  echo '[probe] no frame, reset fpga'\n"
-                "  python3 /root/rk/deploy/fpga_cfg.py set 0xE0 %d\n"
-                "  sleep %d\n"
-                "  i=$((i+1))\n"
-                "done\n"
-                "SKIP_RESET=1 bash %s %s\n"
-                % (int(res_mode),
-                   8 if int(res_mode) in (1, 2) else 5,
-                   int(res_mode),
-                   8 if int(res_mode) in (1, 2) else 5,
-                   START_SH, want))
+                "sleep 5\n"
+                "bash %s %s\n"
+                % (int(res_mode), START_SH, want))
         os.chmod(SWITCH_SH, 0o755)
         # 每次切换覆盖写，不追加 —— 旧日志累积是板上存储的无谓消耗。
         log = open("/tmp/mode_switch.log", "wb")
         subprocess.Popen(["/bin/sh", SWITCH_SH],
                          stdout=log, stderr=log,
                          start_new_session=True, close_fds=True)
-        # 告诉下一个进程“你是切换拉起的”：自愈等待从 35s 缩到 18s，
-        # 且允许重试 2 次 —— 实测首轮偶发 select() timeout，再切一次就好。
-        try:
-            with open(SWITCH_PENDING, "w") as f:
-                f.write(str(int(res_mode)))
-        except Exception:                                          # noqa: BLE001
-            pass
         return True
     except Exception:                                              # noqa: BLE001
         return False
@@ -3309,32 +3279,13 @@ class Handler(BaseHTTPRequestHandler):
                 want = "4k" if int(mode["res_mode"]) in (1, 2) else "1080"
                 _bump_rev("mode")
                 _reset_retry()          # 用户主动切换 -> 重试计数清零
-
-                # ★ 关键顺序: **先让采集线程自己释放设备, 再杀进程**。
-                #   直接 pkill 的话采集线程卡在 cap.read() 的 select() 里，
-                #   设备会被占着 10 秒；这期间写 0xE0 / 探测 / 新进程打开
-                #   全部在与“仍占着设备的旧进程”竞争 -> MIPI_CSI2 ECC 刷屏、
-                #   rkcif 永远 select() timeout（黑屏）。
-                #   采集线程退出时会正常 cap.release() -> VIDIOC_STREAMOFF
-                #   完整执行, 链路干净, 后面一切才顺。
-                def _pre_stop_then_switch():
-                    cap0 = Handler.capture
-                    if cap0 is not None:
-                        try:
-                            cap0.stop_flag.set()
-                            cap0.join(timeout=14.0)   # read 超时上限 10s
-                            print("[switch] 采集已停止(alive=%s)"
-                                  % cap0.is_alive(), file=sys.stderr)
-                        except Exception:                          # noqa: BLE001
-                            pass
-                    _launch_start_script(want, int(mode["res_mode"]))
-
-                threading.Thread(target=_pre_stop_then_switch,
-                                 daemon=True, name="prestop").start()
+                # 先把响应发回去, 再让切换脚本把本进程 kill 掉（与最早版本一致）
+                threading.Timer(0.25, _launch_start_script,
+                                args=(want, int(mode["res_mode"]))).start()
                 return {"ok": True, "mode": mode,
                         "log": ["切换中 -> %s (RES_MODE=%d)"
                                 % (want, int(mode["res_mode"]))],
-                        "note": "采集通路重新配置中，约 15~20 秒后自动恢复（页面无需刷新）"}
+                        "note": "采集通路重新配置中，约 12~18 秒后自动恢复（页面无需刷新）"}
 
             # ---- 没有 start.sh 时的回退流程 ----
 
@@ -3663,17 +3614,7 @@ def main():
     # 如果这次是 start.sh 因为切分辨率重启起来的, 把用户原来的曝光补回去
     _restore_exp_after_switch()
     # 启动后 35 秒仍无帧 -> 自动重试一次切换(切分辨率偶发失败)
-    _heal_delay, _heal_retry = 35.0, 1
-    if os.path.exists(SWITCH_PENDING):
-        # 切换拉起: 4K 初始化更慢(实测 8s 复位 + 启动), 等 25s 再判死,
-        # 太早重试会打断正在进行的 rkcif 锁链。
-        _heal_delay, _heal_retry = 25.0, 1
-        try:
-            os.remove(SWITCH_PENDING)
-        except OSError:
-            pass
-        print("[heal] 本次由切换拉起: 25s 无帧将自动再切一次")
-    _capture_selfheal(delay=_heal_delay, max_retry=_heal_retry)
+    _capture_selfheal()
     Handler.sysmon = SysMonitor()
 
     # FPGA 预处理参数走 I2C 从机 (RK I2C9 <-> FPGA L18/M18, 底板直连不用飞线)
@@ -3724,41 +3665,13 @@ def main():
     print("   把服务器地址填成  %s:%d" % (ip, args.port))
     print("=" * 66)
 
-    try:
-        # ★ SIGTERM 必须自己处理：直接被杀掉的话 /dev/video22 的 fd 会带着
-        #   未完成的 VIDIOC_STREAMOFF 关闭，rkcif 内部状态变脏；下一个进程
-        #   打开后永远 select() timeout（表现就是切完分辨率黑屏）。
-        #   这里先 release 再退出，让内核完整地停流。
-        import signal as _signal
-
-        def _on_term(_signum, _frame):
-            # ⚠ 不能立即 os._exit()，也不能从别的线程 release：
-            #   采集线程正卡在 cap.read() 的 select() 里，直接杀进程会让
-            #   VIDIOC_STREAMOFF 不完整 -> rkcif/dphy 脏状态 -> 下一个进程
-            #   打开后 MIPI_CSI2 ECC 刷屏、永远 select() timeout（黑屏）。
-            #   正确做法：置停止标志，等采集线程自己从 read() 返回并
-            #   cap.release()（select 超时上限 10s），再退出。
-            try:
-                cap.stop_flag.set()
-            except Exception:                                      # noqa: BLE001
-                pass
-            t0 = time.time()
-            while time.time() - t0 < 12.0:
-                try:
-                    if cap is None or not cap.is_alive():
-                        break
-                except Exception:                                  # noqa: BLE001
-                    break
-                time.sleep(0.1)
-            os._exit(0)
-
-        _signal.signal(_signal.SIGTERM, _on_term)
-        _signal.signal(_signal.SIGINT, _on_term)
-    except Exception:                                              # noqa: BLE001
-        pass
-
     _log_trim_watch()          # 运行日志超过 200KB 自动截断
 
+    # ⚠ 不要注册 SIGTERM handler。
+    #   早期能切的版本就是靠默认行为（立即终止）——pkill 后 fd 立刻由内核
+    #   回收，2 秒后写 0xE0 时设备已经彻底释放。
+    #   后来加的“等采集线程 release 再退出”反而把设备多占 10 秒，
+    #   导致后续 0xE0/新进程全部竞争，CSI2 ECC 刷屏、黑屏。
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
