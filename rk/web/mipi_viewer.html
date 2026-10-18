@@ -215,6 +215,29 @@
   }
   #reloadBar button:hover{filter:brightness(1.15)}
   #reloadBar .cnt{opacity:.75; font-variant-numeric:tabular-nums}
+
+  /* 重启遮罩：切分辨率 = 整板重启，必须给用户一个明确的“正在重启”画面 */
+  #rebootMask{
+    position:fixed; inset:0; z-index:9999;
+    display:flex; align-items:center; justify-content:center;
+    background:rgba(6,8,12,.86);
+  }
+  #rebootMask[hidden]{display:none}
+  #rebootMask .box{
+    text-align:center; padding:36px 52px; border-radius:16px;
+    background:#12161d; border:1px solid #2a3340;
+    box-shadow:0 20px 60px rgba(0,0,0,.65);
+  }
+  #rebootMask .title{font-size:22px; font-weight:700; color:#fff; margin-top:16px}
+  #rebootMask .sub{margin-top:10px; color:#9fb0c4; font-size:14px}
+  #rebootMask .cnt{margin-top:8px; color:#ffd75f; font-size:13px;
+                   font-variant-numeric:tabular-nums}
+  #rebootMask .spin{
+    width:42px; height:42px; margin:0 auto;
+    border:4px solid #2a3340; border-top-color:var(--acc2);
+    border-radius:50%; animation:rbspin .9s linear infinite;
+  }
+  @keyframes rbspin{to{transform:rotate(360deg)}}
 </style>
 </head>
 <body>
@@ -245,6 +268,16 @@
     <span>输出格式已切换为 <b id="reloadMode">—</b>，本页的画面连接已失效，刷新后自动恢复。</span>
     <span class="cnt" id="reloadCnt"></span>
     <button id="btnReloadNow">立即刷新</button>
+  </div>
+
+  <!-- 切分辨率时会整板重启，用这个遮罩挡住画面并给出明确提示 -->
+  <div id="rebootMask" hidden>
+    <div class="box">
+      <div class="spin"></div>
+      <div class="title">服务正在重启，请耐心等待</div>
+      <div class="sub" id="rebootSub">正在切换输出格式…</div>
+      <div class="cnt" id="rebootCnt"></div>
+    </div>
   </div>
   <!-- ---------------- 画面 ---------------- -->
   <div id="colLeft">
@@ -1206,7 +1239,7 @@ function modeHint() {
   if (m.load_pct > 85) s += " · <b style='color:#f88'>超过 85%，跑不动</b>";
   if (!m.impl) s += " · <b style='color:#f88'>此帧率需跳帧，当前 RTL 未实现</b>";
   if (modeTable.current && modeTable.current.id === m.id) s += " · 当前已是该模式";
-  else s += " · 点右边按钮切换（画面会中断 1~2 秒）";
+  else s += " · 点右边按钮切换（<b style='color:#ffd75f'>需重启板子，约 70~90 秒</b>）";
   h.innerHTML = s;
 }
 
@@ -1240,10 +1273,37 @@ $("btnApplyMode").onclick = async () => {
    服务端短时间重启（pkill + start.sh），期间 /api/sys 会失败或 fps=0。
    旧版直接弹“请刷新页面”，现在改成静默等待 + 自动续流。 */
 let modeWaitGen = 0;
+
+/* ---- 重启遮罩 ---- */
+let rebootTimer = null;
+function showRebootMask(label) {
+  const m = $("rebootMask");
+  if (!m) return;
+  m.hidden = false;
+  if ($("rebootSub"))
+    $("rebootSub").textContent = "正在切换到 " + (label || "新模式") + "，板子将重启";
+  const t0 = Date.now();
+  clearInterval(rebootTimer);
+  const tick = () => {
+    const s = Math.round((Date.now() - t0) / 1000);
+    if ($("rebootCnt"))
+      $("rebootCnt").textContent = "已等待 " + s + " 秒（通常 70~90 秒，最长 150 秒）";
+  };
+  tick();
+  rebootTimer = setInterval(tick, 500);
+}
+function hideRebootMask() {
+  clearInterval(rebootTimer);
+  rebootTimer = null;
+  const m = $("rebootMask");
+  if (m) m.hidden = true;
+}
+
 async function waitModeReady(label) {
   const gen = ++modeWaitGen;
   clearTimeout(streamTimer);
   needReload = false;
+  showRebootMask(label);
   switchUntil = Date.now() + 150000;   // 整个板子在重启，约 70~90 秒
   connected = false; streamPending = false;
   setDot(false, "板子重启中…");
@@ -1258,6 +1318,7 @@ async function waitModeReady(label) {
     } catch (e) { /* 服务还在重启 */ }
   }
   if (gen !== modeWaitGen) return;
+  hideRebootMask();
   switchUntil = 0;
   streamTries = 0; deadStrikes = 0; zeroClientHits = 0;
   if (ok) {
