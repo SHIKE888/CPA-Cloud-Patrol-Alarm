@@ -111,20 +111,38 @@
   #placeholder{color:var(--dim); text-align:center; padding:0 16px; font-size:13px;
                line-height:1.9}
 
-  .row{display:flex; align-items:center; gap:10px; margin:9px 0}
-  .row label{flex:0 0 84px; color:var(--dim); font-size:13px}
-  .row input[type=range]{flex:1; accent-color:var(--acc2); height:22px}
-  .row .val{flex:0 0 54px; text-align:right; font-variant-numeric:tabular-nums;
+  .row{display:flex; align-items:center; gap:10px; margin:9px 0; min-width:0}
+  .row label{flex:0 1 84px; min-width:0; color:var(--dim); font-size:13px;
+             overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  .row input[type=range]{flex:1; min-width:0; accent-color:var(--acc2); height:22px}
+  /* 数值: 固定 30px, 不再用负边距(负边距会让滑块在最大值时盖住数字,
+     窄屏上还会被挤到可视区外) */
+  .row .val{flex:0 0 30px; text-align:right; white-space:nowrap;
+            padding-right:2px;
+            font-variant-numeric:tabular-nums;
             color:var(--fg); font-size:12.5px}
   .grid2{display:grid; grid-template-columns:1fr 1fr; gap:8px}
   .grid3{display:grid; grid-template-columns:repeat(3,1fr); gap:8px}
   .grid4{display:grid; grid-template-columns:repeat(4,1fr); gap:8px}
   /* 预处理: 统一“按钮 + 下面一条参数滑条” */
-  .pp{display:flex; flex-direction:column; gap:6px}
-  .ppbtn{width:100%; text-align:left; padding:7px 10px}
+  .pp{display:flex; flex-direction:column; gap:6px; padding-right:4px}
+  .ppbtn{width:100%; text-align:left; padding:7px 10px;
+         touch-action:manipulation; -webkit-tap-highlight-color:transparent}
+  /* 连点保护期间的视觉反馈(不拦鼠标, 只防重复触发) */
+  .ppbtn.lock{opacity:.55; transition:opacity .12s}
   .ppparam{display:none; margin:0 0 4px 10px; padding:2px 0 2px 10px;
            border-left:2px solid var(--line)}
-  .ppparam.show{display:block}
+  .ppparam.show{display:block; animation:ppIn .14s ease-out}
+  @keyframes ppIn{from{opacity:0; transform:translateY(-3px)} to{opacity:1; transform:none}}
+  /* 预处理参数行: 标签窄一点, 把宽度让给滑条 */
+  .ppparam .row{gap:8px; margin:7px 0}
+  .ppparam .row label{flex:0 0 56px; font-size:12px}
+  /* 窄屏(手机横屏/竖屏)再让一步, 保证滑条不被压没 */
+  @media (max-width:820px){
+    .row{gap:8px}
+    .row label{flex:0 0 64px}
+    .ppparam .row label{flex:0 0 46px}
+  }
   .sep{height:1px;background:var(--line);margin:14px 0}
   .hint{color:var(--dim); font-size:12px; margin:6px 0 0}
   .kv{display:flex;justify-content:space-between;gap:8px}
@@ -880,8 +898,54 @@ $("btnSnap").onclick = async () => {
 /* ---------------- FPGA 硬件参数 (I2C @0x40) ---------------- */
 let fpgaRegs = {};
 let fpgaPushTimer = null;
+let fpgaPending = {};        // 合并这段时间内所有改动, 避免“后一次覆盖前一次”
 let fpgaTimer = null;
 let ppVerWarned = false;
+
+/* ------------------------------------------------------------------
+   预处理按钮消抖
+   误触表现为: 连点两下 -> 开了又关; 或两个按钮快速连点 -> 只有后一个生效,
+   回读后前一个被“打回去” -> 界面看起来在抖。
+   处理: 同一按钮 PP_DEBOUNCE_MS 内只认一次; 不同按钮不互相阻断(多选要能连点)。
+   ------------------------------------------------------------------ */
+const PP_DEBOUNCE_MS = 260;
+const ppLastClick = new WeakMap();
+function ppClickOK(btn) {
+  const now = (window.performance && performance.now) ? performance.now() : Date.now();
+  const last = ppLastClick.get(btn) || -1e9;
+  if (now - last < PP_DEBOUNCE_MS) return false;   // 同按钮 260ms 内重复点击 -> 忽略
+  ppLastClick.set(btn, now);
+  btn.classList.add("lock");
+  setTimeout(() => btn.classList.remove("lock"), PP_DEBOUNCE_MS);
+  return true;
+}
+
+/* ------------------------------------------------------------------
+   乐观覆盖层
+   现象: 点开一个预处理, 参数滑条刚出来又消失。
+   原因: 刚下发的值要经过 I2C 写 -> FPGA 内部 2 级同步才生效; 这期间
+         ——120ms 后的 POST 回读、或 3 秒一次的 /api/fpga 轮询——
+         返回的还是旧值, 直接盖回 fpgaRegs, UI 就按旧值把面板收起。
+   处理: 写过的寄存器在 OVERLAY_MS 内一律以本地值为准; 过期后自然回到回读值。
+   ------------------------------------------------------------------ */
+const FG_OVERLAY_MS = 1500;
+const fgOverlay = {};
+
+function fgMerge(regs) {
+  const out = Object.assign({}, regs || {});
+  const now = Date.now();
+  Object.keys(fgOverlay).forEach(k => {
+    const o = fgOverlay[k];
+    if (o && o.until > now) out[k] = o.v;
+    else delete fgOverlay[k];
+  });
+  return out;
+}
+
+function fgRemember(patch) {
+  const until = Date.now() + FG_OVERLAY_MS;
+  Object.keys(patch || {}).forEach(k => { fgOverlay[k] = { v: patch[k], until }; });
+}
 
 const BASIC_BITS = [1, 2, 4, 8, 16];   // data-basic 0..4
 
@@ -952,7 +1016,7 @@ function fpgaShowSt(d) {
 async function loadFpga() {
   try {
     const d = await api("/api/fpga");
-    fpgaRegs = d.regs || {};
+    fpgaRegs = fgMerge(d.regs || fpgaRegs);
     fpgaSyncUI();
     camSyncUI(d.phys);
     fpgaShowSt(d);
@@ -962,13 +1026,17 @@ async function loadFpga() {
 }
 
 function scheduleFpgaPush(patch) {
+  Object.assign(fpgaPending, patch);      // 合并, 后写覆盖同名字段
+  fgRemember(patch);                      // 本地值优先, 防旧回读把 UI 打回
   Object.assign(fpgaRegs, patch);
   fpgaSyncUI();
   clearTimeout(fpgaPushTimer);
   fpgaPushTimer = setTimeout(async () => {
+    const send = fpgaPending;
+    fpgaPending = {};
     try {
-      const d = await api("/api/fpga", { method: "POST", body: JSON.stringify(patch) });
-      fpgaRegs = d.regs || fpgaRegs;   // 以 FPGA 回读为准（它可能夹过值）
+      const d = await api("/api/fpga", { method: "POST", body: JSON.stringify(send) });
+      fpgaRegs = fgMerge(d.regs || fpgaRegs);   // 以 FPGA 回读为准，但本地刚写的值优先
       fpgaSyncUI();
       fpgaShowSt(d);
       if (d.write_ok === false) toast("FPGA 写入失败: " + (d.message || "?"), true);
@@ -978,12 +1046,13 @@ function scheduleFpgaPush(patch) {
         await aiLoad(true);          // 刷新 AI 面板：画面源按钮跟着切回「原图」
       }
     } catch (e) { toast("FPGA 参数下发失败: " + e.message, true); }
-  }, 60);
+  }, 120);
 }
 
 /* 初级: 按钮切换位图; 参数滑条只在选中时显示 */
 document.querySelectorAll("[data-basic]").forEach(b => {
   b.onclick = () => {
+    if (!ppClickOK(b)) return;                 // 消抖: 同按钮连点只认一次
     const bit = BASIC_BITS[Number(b.dataset.basic)];
     const next = Number(fpgaRegs.BASIC_EN || 0) ^ bit;
     scheduleFpgaPush({ BASIC_EN: next });
@@ -1009,13 +1078,14 @@ Object.keys(BASIC_SLIDER_BIT).forEach(k => {
 /* 高级: 单选按钮 */
 document.querySelectorAll("[data-adv]").forEach(b => {
   b.onclick = () => {
+    if (!ppClickOK(b)) return;                 // 消抖: 同按钮连点只认一次
     const v = Number(b.dataset.adv);
     scheduleFpgaPush(v === 0 ? { PP_EN: 0 } : { PP_EN: 1, ADV_MODE: v });
   };
 });
-$("btnPpAllOff").onclick  = () => scheduleFpgaPush({ PP_EN: 0, BASIC_EN: 0 });
-$("btnMorph0").onclick    = () => scheduleFpgaPush({ ADV_MORPH_SEL: 0 });
-$("btnMorph1").onclick    = () => scheduleFpgaPush({ ADV_MORPH_SEL: 1 });
+$("btnPpAllOff").onclick  = () => { if (ppClickOK($("btnPpAllOff")))  scheduleFpgaPush({ PP_EN: 0, BASIC_EN: 0 }); };
+$("btnMorph0").onclick    = () => { if (ppClickOK($("btnMorph0")))    scheduleFpgaPush({ ADV_MORPH_SEL: 0 }); };
+$("btnMorph1").onclick    = () => { if (ppClickOK($("btnMorph1")))    scheduleFpgaPush({ ADV_MORPH_SEL: 1 }); };
 $("btnPpRefresh").onclick = async () => { await loadFpga(); toast("已刷新 FPGA 参数"); };
 
 ["ADV_THRESH", "ADV_MORPH_TH", "ADV_SOBEL_SH", "ADV_LAP_SH", "ADV_PREW_SH",
@@ -1326,7 +1396,7 @@ function fpgaPoll() {
     if (!connected) return;
     try {
       const d = await api("/api/fpga");
-      fpgaRegs = d.regs || fpgaRegs;
+      fpgaRegs = fgMerge(d.regs || fpgaRegs);
       fpgaShowSt(d);
     } catch (e) { /* 静默, 不打扰用户 */ }
   }, 3000);
