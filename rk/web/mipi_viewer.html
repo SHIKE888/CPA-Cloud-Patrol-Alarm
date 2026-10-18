@@ -358,9 +358,8 @@
         <div class="row"><label>输出格式</label>
           <select id="sel_mode"></select></div>
 
-        <div class="grid2" style="margin-top:6px">
-          <button id="btnApplyMode">应用输出格式</button>
-          <button class="ghost" id="btnReloadMode">刷新模式表</button>
+        <div style="margin-top:6px">
+          <button id="btnApplyMode" style="width:100%">应用输出格式</button>
         </div>
 
         <p class="hint" id="modeHint">连接后自动读取模式表。</p>
@@ -1239,12 +1238,11 @@ function modeHint() {
   if (m.load_pct > 85) s += " · <b style='color:#f88'>超过 85%，跑不动</b>";
   if (!m.impl) s += " · <b style='color:#f88'>此帧率需跳帧，当前 RTL 未实现</b>";
   if (modeTable.current && modeTable.current.id === m.id) s += " · 当前已是该模式";
-  else s += " · 点右边按钮切换（<b style='color:#ffd75f'>需重启板子，约 70~90 秒</b>）";
+  else s += " · 点下方「应用输出格式」切换（<b style='color:#ffd75f'>需重启板子，约 70~90 秒</b>）";
   h.innerHTML = s;
 }
 
 $("sel_mode").addEventListener("change", modeHint);
-$("btnReloadMode").onclick = () => loadModes(true);
 
 $("btnApplyMode").onclick = async () => {
   const m = curModeObj();
