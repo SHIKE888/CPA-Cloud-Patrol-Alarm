@@ -3309,13 +3309,32 @@ class Handler(BaseHTTPRequestHandler):
                 want = "4k" if int(mode["res_mode"]) in (1, 2) else "1080"
                 _bump_rev("mode")
                 _reset_retry()          # 用户主动切换 -> 重试计数清零
-                # 先把响应发回去, 再让切换脚本把本进程 kill 掉
-                threading.Timer(0.25, _launch_start_script,
-                                args=(want, int(mode["res_mode"]))).start()
+
+                # ★ 关键顺序: **先让采集线程自己释放设备, 再杀进程**。
+                #   直接 pkill 的话采集线程卡在 cap.read() 的 select() 里，
+                #   设备会被占着 10 秒；这期间写 0xE0 / 探测 / 新进程打开
+                #   全部在与“仍占着设备的旧进程”竞争 -> MIPI_CSI2 ECC 刷屏、
+                #   rkcif 永远 select() timeout（黑屏）。
+                #   采集线程退出时会正常 cap.release() -> VIDIOC_STREAMOFF
+                #   完整执行, 链路干净, 后面一切才顺。
+                def _pre_stop_then_switch():
+                    cap0 = Handler.capture
+                    if cap0 is not None:
+                        try:
+                            cap0.stop_flag.set()
+                            cap0.join(timeout=14.0)   # read 超时上限 10s
+                            print("[switch] 采集已停止(alive=%s)"
+                                  % cap0.is_alive(), file=sys.stderr)
+                        except Exception:                          # noqa: BLE001
+                            pass
+                    _launch_start_script(want, int(mode["res_mode"]))
+
+                threading.Thread(target=_pre_stop_then_switch,
+                                 daemon=True, name="prestop").start()
                 return {"ok": True, "mode": mode,
                         "log": ["切换中 -> %s (RES_MODE=%d)"
                                 % (want, int(mode["res_mode"]))],
-                        "note": "采集通路重新配置中，约 8~12 秒后自动恢复（页面无需刷新）"}
+                        "note": "采集通路重新配置中，约 15~20 秒后自动恢复（页面无需刷新）"}
 
             # ---- 没有 start.sh 时的回退流程 ----
 
