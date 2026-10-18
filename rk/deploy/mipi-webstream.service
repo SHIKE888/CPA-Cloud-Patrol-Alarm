@@ -1,0 +1,30 @@
+[Unit]
+Description=MIPI FPGA Stream (IMX415 -> RK3576 -> MJPEG :9012)
+# 设备节点由内核/DTS 提供，网络只是为了网页访问，不必等 online
+After=network.target
+
+[Service]
+Type=simple
+# 不要和旧的手工实例打架（ExecStartPre 必须在 [Service] 段）
+ExecStartPre=-/usr/bin/pkill -9 -f mipi_webstream\.py
+# 1080p60 是稳定档；要 4K 改成 RES=2 并把 W/H 换成 3840/2160
+Environment=RES=0 W=1920 H=1080
+Environment=AI=1 AI_FPS=30 AI_INTERVAL=2 AI_SRC=ai
+Environment=DEV=/dev/video22 PORT=9012
+ExecStart=/root/rk/deploy/boot_start.sh
+
+# 采集线程可能卡在 select()，SIGKILL 才能确保退出
+KillSignal=SIGKILL
+TimeoutStopSec=10
+# 启动含 FPGA 复位(5~8s)+sensor 锁相+AI 模型加载，给足 2 分钟
+TimeoutStartSec=180
+
+Restart=on-failure
+RestartSec=10
+
+# 日志交给 journald，并在 /tmp 另存一份（有 200KB 上限，见 mipi_webstream.py）
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
