@@ -362,6 +362,12 @@
             <div class="row"><label>强度</label>
               <input type="range" id="f_BASIC_GAUSS" min="0" max="8" step="1" value="8">
               <span class="val" id="fv_BASIC_GAUSS">8</span></div>
+            <div class="row"><label title="3x3 轻、5x5 中、7x7 重（级联二项式核，≈高斯 σ 0.85 / 1.0 / 1.24）">核尺寸</label>
+              <div class="grid3" style="flex:1">
+                <button class="ghost" id="btnKer0">3×3</button>
+                <button class="ghost" id="btnKer1">5×5</button>
+                <button class="ghost" id="btnKer2">7×7</button>
+              </div></div>
           </div>
 
           <button class="ghost ppbtn" data-basic="2">直方图均衡</button>
@@ -369,6 +375,9 @@
             <div class="row"><label>强度</label>
               <input type="range" id="f_BASIC_HE" min="0" max="255" step="1" value="255">
               <span class="val" id="fv_BASIC_HE">255</span></div>
+            <div class="row"><label title="限制单个亮度桶的最大计数（x64）。调小可以抑制“大面积背景被硬拉伸成噪点”，0 = 不限制">对比限制</label>
+              <input type="range" id="f_BASIC_HE_CLIP" min="0" max="255" step="1" value="255">
+              <span class="val" id="fv_BASIC_HE_CLIP">255</span></div>
           </div>
 
           <button class="ghost ppbtn" data-basic="3">对比度拉伸</button>
@@ -964,10 +973,16 @@ function fpgaSyncUI() {
   if ($("s_gray_mode") && r.BASIC_GRAY !== undefined) {
     $("s_gray_mode").value = String(Number(r.BASIC_GRAY));
   }
-  ["BASIC_GAUSS", "BASIC_HE", "BASIC_CONTRAST"].forEach(k => {
+  ["BASIC_GAUSS", "BASIC_HE", "BASIC_HE_CLIP", "BASIC_CONTRAST"].forEach(k => {
     const el = $("f_" + k);
     if (el && r[k] !== undefined && document.activeElement !== el) el.value = r[k];
     if (el && $("fv_" + k)) $("fv_" + k).textContent = el.value;
+  });
+  // 高斯核尺寸三选一
+  const ker = Number(r.BASIC_KER || 0);
+  ["btnKer0", "btnKer1", "btnKer2"].forEach((id, i) => {
+    const b = $(id);
+    if (b) b.classList.toggle("on", Number(r.BASIC_EN || 0) & 2 && i === ker);
   });
 
   // ---- 高级 (单选按钮 + 只显示选中项的滑条) ----
@@ -1003,9 +1018,9 @@ function fpgaShowSt(d) {
       ? "0x" + st.VER.toString(16).toUpperCase().padStart(4, "0") : "—";
   // V45.2 起 Sobel/拉普拉斯/Prewitt/锐化 的参数语义从“右移”改成“增益”
   const ver = (st.VER !== undefined) ? Number(st.VER) : null;
-  if (ver !== null && ver < 0x4502 && !ppVerWarned) {
+  if (ver !== null && ver < 0x4503 && !ppVerWarned) {
     ppVerWarned = true;
-    toast("FPGA 固件为 V45.1：边缘/锐化增益需要 V45.2 bit 才准确", true);
+    toast("FPGA 固件为 V45.2 或更早：核尺寸/对比限制需要 V45.3 bit 才生效", true);
   }
   if ($("fsCamWr")) {
     $("fsCamWr").textContent = (st.CAM_WR_CNT !== undefined)
@@ -1062,8 +1077,19 @@ document.querySelectorAll("[data-basic]").forEach(b => {
 $("s_gray_mode").onchange = () =>
   scheduleFpgaPush({ BASIC_GRAY: parseInt($("s_gray_mode").value, 10) });
 
+/* 高斯核尺寸: 3x3 / 5x5 / 7x7 (0xF8 BASIC_KER) */
+["btnKer0", "btnKer1", "btnKer2"].forEach((id, i) => {
+  const b = $(id);
+  if (!b) return;
+  b.onclick = () => {
+    if (!ppClickOK(b)) return;
+    // 选核尺寸时顺便把高斯打开, 否则改了也看不出变化
+    scheduleFpgaPush({ BASIC_KER: i, BASIC_EN: Number(fpgaRegs.BASIC_EN || 0) | 2 });
+  };
+});
+
 /* 初级滑条: 动一下顺便把对应算法打开 */
-const BASIC_SLIDER_BIT = {BASIC_GAUSS: 2, BASIC_HE: 4, BASIC_CONTRAST: 8};
+const BASIC_SLIDER_BIT = {BASIC_GAUSS: 2, BASIC_KER: 2, BASIC_HE: 4, BASIC_HE_CLIP: 4, BASIC_CONTRAST: 8};
 Object.keys(BASIC_SLIDER_BIT).forEach(k => {
   const el = $("f_" + k);
   if (!el) return;

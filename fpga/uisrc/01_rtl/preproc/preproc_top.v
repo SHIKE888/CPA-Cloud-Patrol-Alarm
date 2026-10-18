@@ -30,7 +30,9 @@ module preproc_top #(
 	input  wire [4:0]   i_basic_en,      // bit0 灰度 bit1 高斯 bit2 HE bit3 对比度 bit4 反色
 	input  wire         i_gray_mode,     // 0=BT.601 1=BT.709
 	input  wire [3:0]   i_gauss_str,     // 0..8
+	input  wire [1:0]   i_gauss_ker,     // 0=3x3 1=5x5 2=7x7
 	input  wire [7:0]   i_he_str,        // 0..255
+	input  wire [7:0]   i_he_clip,       // 直方图桶上限(*64), 0=不限
 	input  wire [3:0]   i_contrast,      // 0..8
 
 	// ---- 高级预处理配置 (0xB1~0xB7, 0xF5~0xF7, 单选) ----
@@ -70,7 +72,9 @@ module preproc_top #(
 		.i_en        (i_basic_en),
 		.i_gray_mode (i_gray_mode),
 		.i_gauss_str (i_gauss_str),
+		.i_gauss_ker (i_gauss_ker),
 		.i_he_str    (i_he_str),
+		.i_he_clip   (i_he_clip),
 		.i_contrast  (i_contrast),
 		.o_tvalid    (b_tvalid),
 		.o_tuser     (b_tuser),

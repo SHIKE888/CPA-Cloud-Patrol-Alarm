@@ -21,6 +21,7 @@ module tb_gauss_stats;
 	parameter integer LINES = 64;     // 每帧行数
 	parameter integer SKIP  = 8;      // 统计时跳过前多少行
 	parameter integer COLOR = 0;      // 0=灰场(128,128,128) 1=彩色场(180,100,60)
+	parameter integer KER   = 1;      // 0=3x3 1=5x5 2=7x7
 
 	localparam integer NW = W / 4;    // 每行字数
 
@@ -48,7 +49,9 @@ module tb_gauss_stats;
 		.i_en        (5'b00010),          // 只开高斯
 		.i_gray_mode (1'b0),
 		.i_gauss_str (STR[3:0]),
+		.i_gauss_ker (KER[1:0]),
 		.i_he_str    (8'd255),
+		.i_he_clip   (8'd255),
 		.i_contrast  (4'd4),
 		.o_tvalid    (o_tvalid),
 		.o_tuser     (o_tuser),

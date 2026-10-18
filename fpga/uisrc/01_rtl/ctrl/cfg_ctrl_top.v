@@ -30,7 +30,7 @@ module cfg_ctrl_top #(
 	//     0x3504 = V35 第 4 次构建 (V35d: 4K VMAX=2788 想拿 25fps)
 	//     0x4301 = V43 第 1 次构建 (修 4K 每行多 1~2 个 word 导致的斜向撕裂)
 	//=========================================================================
-	parameter [15:0] CFG_VER  = 16'h4502
+	parameter [15:0] CFG_VER  = 16'h4503
 )(
 	// ---- 系统时钟域 (25MHz 常开) ----
 	input  wire        i_sys_clk,
@@ -67,7 +67,9 @@ module cfg_ctrl_top #(
 	output wire [4:0]  o_basic_en,
 	output wire        o_basic_gray,
 	output wire [3:0]  o_basic_gauss,
+	output wire [1:0]  o_basic_ker,
 	output wire [7:0]  o_basic_he,
+	output wire [7:0]  o_basic_he_clip,
 	output wire [3:0]  o_basic_contrast,
 
 	// ---- 摄像头参数 (直接给 system_top 里的 cam_param, 同在 25MHz 域) ----
@@ -117,7 +119,9 @@ module cfg_ctrl_top #(
 	wire [4:0]  cfg_basic_en;
 	wire        cfg_basic_gray;
 	wire [3:0]  cfg_basic_gauss;
+	wire [1:0]  cfg_basic_ker;
 	wire [7:0]  cfg_basic_he;
+	wire [7:0]  cfg_basic_he_clip;
 	wire [3:0]  cfg_basic_contrast;
 	wire        cfg_soft_rst;
 	wire        cfg_lossless, cfg_bypass, cfg_single, cfg_rc_en;
@@ -192,7 +196,9 @@ module cfg_ctrl_top #(
 		.O_cfg_basic_en      (cfg_basic_en),
 		.O_cfg_basic_gray    (cfg_basic_gray),
 		.O_cfg_basic_gauss   (cfg_basic_gauss),
+		.O_cfg_basic_ker     (cfg_basic_ker),
 		.O_cfg_basic_he      (cfg_basic_he),
+		.O_cfg_basic_he_clip (cfg_basic_he_clip),
 		.O_cfg_basic_contrast(cfg_basic_contrast),
 		.I_st_frame_cnt  (cnt_s2),
 		.O_cfg_cam_exp   (cfg_cam_exp),
@@ -284,7 +290,9 @@ module cfg_ctrl_top #(
 	reg [4:0] ben_s1,  ben_s2;
 	reg       bgm_s1,  bgm_s2;
 	reg [3:0] bga_s1,  bga_s2;
+	reg [1:0] bkr_s1,  bkr_s2;
 	reg [7:0] bhe_s1,  bhe_s2;
+	reg [7:0] bhc_s1,  bhc_s2;
 	reg [3:0] bct_s1,  bct_s2;
 	reg [7:0] wbr_s1,  wbr_s2;
 	reg [7:0] wbb_s1,  wbb_s2;
@@ -306,7 +314,9 @@ module cfg_ctrl_top #(
 			ben_s1<= 5'd0;   ben_s2<= 5'd0;
 			bgm_s1<= 1'b0;   bgm_s2<= 1'b0;
 			bga_s1<= 4'd8;   bga_s2<= 4'd8;
+			bkr_s1<= 2'd1;   bkr_s2<= 2'd1;
 			bhe_s1<= 8'd255; bhe_s2<= 8'd255;
+			bhc_s1<= 8'd255; bhc_s2<= 8'd255;
 			bct_s1<= 4'd4;   bct_s2<= 4'd4;
 			wbr_s1 <= 8'd128; wbr_s2 <= 8'd128;
 			wbb_s1 <= 8'd128; wbb_s2 <= 8'd128;
@@ -326,7 +336,9 @@ module cfg_ctrl_top #(
 			ben_s1  <= cfg_basic_en;      ben_s2  <= ben_s1;
 			bgm_s1  <= cfg_basic_gray;    bgm_s2  <= bgm_s1;
 			bga_s1  <= cfg_basic_gauss;   bga_s2  <= bga_s1;
+			bkr_s1  <= cfg_basic_ker;     bkr_s2  <= bkr_s1;
 			bhe_s1  <= cfg_basic_he;      bhe_s2  <= bhe_s1;
+			bhc_s1  <= cfg_basic_he_clip; bhc_s2  <= bhc_s1;
 			bct_s1  <= cfg_basic_contrast;bct_s2  <= bct_s1;
 			// 这几个是慢变参数 (人手改的), 2 级同步足够;
 			// 注意多比特跨域本应加握手, 但它们在“使用时”已经稳定了几十万个
@@ -366,7 +378,9 @@ module cfg_ctrl_top #(
 	assign o_basic_en       = ben_s2;
 	assign o_basic_gray     = bgm_s2;
 	assign o_basic_gauss    = bga_s2;
+	assign o_basic_ker      = bkr_s2;
 	assign o_basic_he       = bhe_s2;
+	assign o_basic_he_clip  = bhc_s2;
 	assign o_basic_contrast = bct_s2;
 
 	assign o_wb_r    = wbr_s2;

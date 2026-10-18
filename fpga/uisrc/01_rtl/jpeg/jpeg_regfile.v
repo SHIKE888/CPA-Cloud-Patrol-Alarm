@@ -40,6 +40,8 @@
 //    0xF2 BASIC_GAUSS   高斯强度 0..8 (8=完全高斯, 默认 8)
 //    0xF3 BASIC_HE      直方图均衡强度 0..255 (255=完全, 默认 255)
 //    0xF4 BASIC_CONTRAST 对比度强度 0..8 (默认 4)
+//    0xF8 BASIC_KER     高斯核尺寸 0=3x3 1=5x5 2=7x7 (默认 1)
+//    0xF9 BASIC_HE_CLIP 直方图桶上限 *64 (0=不限, 默认 255)
 //    ---- 高级预处理 (V45, 单选, 硬件并行) ----
 //    0xB0 PP_EN         总使能 [0]  (0 -> 强制直通原图)
 //    0xB1 ADV_MODE      [3:0] 0=关 1=Sobel 2=阈值 3=形态 4=中值
@@ -118,7 +120,9 @@ module jpeg_regfile #(
     output wire [4:0]   O_cfg_basic_en,
     output wire         O_cfg_basic_gray,
     output wire [3:0]   O_cfg_basic_gauss,
+    output wire [1:0]   O_cfg_basic_ker,
     output wire [7:0]   O_cfg_basic_he,
+    output wire [7:0]   O_cfg_basic_he_clip,
     output wire [3:0]   O_cfg_basic_contrast,
 
     // ---------------- 补充状态输入 ----------------
@@ -173,7 +177,9 @@ module jpeg_regfile #(
     reg [4:0]  r_basic_en;
     reg        r_basic_gray;
     reg [3:0]  r_basic_gauss;
+    reg [1:0]  r_basic_ker;
     reg [7:0]  r_basic_he;
+    reg [7:0]  r_basic_he_clip;
     reg [3:0]  r_basic_contrast;
     reg [7:0]  r_heartbeat;
     reg [31:0] s_frame_cnt;
@@ -312,6 +318,8 @@ module jpeg_regfile #(
                     8'hF2: r_basic_gauss  <= (I_wr_data[3:0] > 4'd8) ? 4'd8 : I_wr_data[3:0];
                     8'hF3: r_basic_he     <= I_wr_data;
                     8'hF4: r_basic_contrast <= (I_wr_data[3:0] > 4'd8) ? 4'd8 : I_wr_data[3:0];
+                    8'hF8: r_basic_ker    <= (I_wr_data[1:0] > 2'd2) ? 2'd2 : I_wr_data[1:0];
+                    8'hF9: r_basic_he_clip<= I_wr_data;
                     8'hF5: r_pp_emboss_gain <= (I_wr_data[3:0] > 4'd8) ? 4'd8 : I_wr_data[3:0];
                     8'hF6: r_pp_emboss_bias <= I_wr_data;
                     8'hF7: r_pp_sharp_gain  <= (I_wr_data[4:0] > 5'd16) ? 5'd16 : I_wr_data[4:0];
@@ -389,6 +397,8 @@ module jpeg_regfile #(
                 8'hF2: O_rd_data <= {4'b0, r_basic_gauss};
                 8'hF3: O_rd_data <= r_basic_he;
                 8'hF4: O_rd_data <= {4'b0, r_basic_contrast};
+                8'hF8: O_rd_data <= {6'b0, r_basic_ker};
+                8'hF9: O_rd_data <= r_basic_he_clip;
                 8'hF5: O_rd_data <= {4'b0, r_pp_emboss_gain};
                 8'hF6: O_rd_data <= r_pp_emboss_bias;
                 8'hF7: O_rd_data <= {3'b0, r_pp_sharp_gain};
@@ -459,6 +469,8 @@ module jpeg_regfile #(
     assign O_cfg_basic_gray    = r_basic_gray;
     assign O_cfg_basic_gauss   = r_basic_gauss;
     assign O_cfg_basic_he      = r_basic_he;
+    assign O_cfg_basic_ker     = r_basic_ker;
+    assign O_cfg_basic_he_clip = r_basic_he_clip;
     assign O_cfg_basic_contrast= r_basic_contrast;
 
     // 摄像头 / 画质参数
