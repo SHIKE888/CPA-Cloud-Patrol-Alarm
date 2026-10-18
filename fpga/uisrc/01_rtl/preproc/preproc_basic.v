@@ -1,5 +1,5 @@
 //=============================================================================
-//  preproc_basic.v
+//  preproc_basic.v  (V45.2)
 //  初级预处理层: 灰度化 / 高斯滤波 / 直方图均衡 / 对比度拉伸 / 反色
 //
 //  ── 赛题要求 ────────────────────────────────────────────────────────────
@@ -11,21 +11,26 @@
 //
 //  ── 固定组合顺序（与位图无关） ───────────────────────────────────────────
 //      输入 → [高斯] → [直方图均衡] → [灰度] → [对比度] → [反色] → 输出
-//  这样同样的位图永远得到同样的画面, 网页可以直接显示"当前处理链"。
 //
-//  ── 为什么用"亮度差值"做高斯/均衡（保色） ───────────────────────────────
-//  高斯只平滑亮度, 再把 (Y_smooth - Y) 加到 R/G/B 上; 直方图均衡同理。
-//  好处: 只占一套亮度行缓冲, 且颜色不会因平滑/均衡而偏移。
+//  ── V45.2 三处关键修正 ──────────────────────────────────────────────────
+//  1) 高斯改成**两遍 3x3**（等效 5x5，约 -50% 高频），否则 1 像素的模糊在
+//     预览画面上几乎看不出来。强度 s:
+//         s = 1..4 : 原图 → 一遍高斯 线性混合
+//         s = 5..8 : 一遍高斯 → 两遍高斯 线性混合
+//     实现: 第二遍复用第二个 preproc_win3x3, 只对亮度流做, RGB 同步延迟 4 拍。
+//  2) 直方图均衡的帧尾检测**不能再用 tlast**:
+//     ui_isp_top 的 O_tlast 在 ui_awb.v:303 被改成了"valid 下降沿" = 帧尾脉冲,
+//     不是行尾。原来按 tlast 计行永远到不了 v_active -> LUT 一直是单位映射,
+//     现象就是"开了 HE 完全没变化"。
+//     现在改成按**像素组计数**分帧: 每行 nw = h_active/4 组, 累计 v_active 行。
+//     (与 preproc_win3x3 内部的行地址回绕假设一致)
+//  3) 直方图 RAM 上电值不确定: 复位后先 S_INIT 清直方图 + 把 LUT 写成单位映射。
 //
 //  ── 直方图均衡实现要点 ──────────────────────────────────────────────────
-//  1) 每时钟 4 像素 -> 4 个 bank 轮转, 每拍只统计 1 个 lane (≈1/4 采样),
-//     避免多写口冲突, 也避免均匀画面下同一 bin 连续 +1 的读改写覆盖。
-//  2) 帧尾(行计数到 v_active)进入场消隐后构建 CDF/LUT, 约 1300 拍;
-//     1080p 场消隐 ~99k 拍, 4K 更长 => 不需要双缓冲。
-//  3) 纯色画面 (total == cdfmin) 跳过构建, 保留上一帧 LUT, 避免整幅变黑。
-//
-//  ── 时序 ────────────────────────────────────────────────────────────────
-//  窗口 4 拍 + 3 级输出流水; 不改变行结构 (进多少行出多少行)。
+//  · 每时钟 4 像素 -> 4 个 bank 轮转, 每拍只统计 1 个 lane (≈1/4 采样);
+//    每个 bank 每 4 拍才写一次, 读-加一-写回不会自我覆盖。
+//  · 帧尾进入场消隐后构建 CDF/LUT (约 1300 拍), 1080p 场消隐 ~99k 拍, 余量极大。
+//  · 纯色画面 (total == cdfmin) 跳过构建, 保留上一帧 LUT。
 //=============================================================================
 `timescale 1ns / 1ps
 
@@ -43,7 +48,7 @@ module preproc_basic #(
 	input  wire         i_tlast,
 	input  wire [127:0] i_rgb,
 
-	// ---- 配置 (准静态, cfg_ctrl_top 2 级同步后给出) ----
+	// ---- 配置 ----
 	input  wire [4:0]   i_en,           // bit0 灰度 bit1 高斯 bit2 HE bit3 对比度 bit4 反色
 	input  wire         i_gray_mode,    // 0=BT.601  1=BT.709
 	input  wire [3:0]   i_gauss_str,    // 0..8
@@ -67,7 +72,6 @@ module preproc_basic #(
 		input                 mode;      // 0=601  1=709
 		reg   [15:0]          t;
 		begin
-			// BT.601: (77,150,29)   BT.709: (54,183,19)   系数和都是 256
 			t = mode ? (54 * r + 183 * g + 19 * b)
 			         : (77 * r + 150 * g + 29 * b);
 			lum_sel = t[15:8];
@@ -95,19 +99,21 @@ module preproc_basic #(
 	endfunction
 
 	//-------------------------------------------------------------------------
-	// 1. 3x3 亮度窗口 (与高级预处理共用同一套生成器结构)
+	// 1. 第一遍 3x3 亮度窗口
 	//-------------------------------------------------------------------------
 	wire         w_tvalid, w_tuser, w_tlast;
 	wire [2:0]   w_rowmask;
 	wire [47:0]  w_winA, w_winB, w_winC;
 	wire [127:0] w_rgb;
 
+	wire [15:0] nw16 = {3'd0, (i_h_active >> 2)};
+
 	preproc_win3x3 #(
 		.PX_PER_CLK (PX_PER_CLK)
-	) u_win (
+	) u_win1 (
 		.clk       (clk),
 		.rst_n     (rst_n),
-		.I_nw      ({3'd0, (i_h_active >> 2)}),
+		.I_nw      (nw16),
 		.i_tvalid  (i_tvalid),
 		.i_tuser   (i_tuser),
 		.i_tlast   (i_tlast),
@@ -126,7 +132,6 @@ module preproc_basic #(
 	wire [47:0] eB = w_rowmask[1] ? w_winB : w_winC;
 	wire [47:0] eC = w_winC;
 
-	// 本组 4 个像素的中心亮度 (窗口字节 b1..b4)
 	wire [7:0] c_l0 = w_winC[15: 8];
 	wire [7:0] c_l1 = w_winC[23:16];
 	wire [7:0] c_l2 = w_winC[31:24];
@@ -174,7 +179,7 @@ module preproc_basic #(
 	                 S_DIV  = 3'd3,
 	                 S_LUT  = 3'd4,
 	                 S_CLR  = 3'd5,
-	                 S_INIT = 3'd6;   // 上电: 清直方图 + LUT 写成单位映射
+	                 S_INIT = 3'd6;
 
 	reg [2:0]  st;
 	reg [5:0]  wait_cnt;
@@ -193,7 +198,6 @@ module preproc_basic #(
 
 	wire [7:0] raddr = ((st == S_SUM) || (st == S_LUT)) ? bin : hsel_lum;
 
-	// ★ 声明必须在 always 之前
 	wire [25:0] cdf_n    = cdf + hsum_now;
 	wire [25:0] cdfmin_n = (cdf == 26'd0 && hsum_now != 26'd0) ? cdf_n : cdfmin;
 	wire [25:0] cdf2_n   = cdf2 + hsum_now;
@@ -202,31 +206,40 @@ module preproc_basic #(
 	wire [25:0] lut_div  = lut_prod >> 12;
 	wire [7:0]  lutv_n   = (lut_div > 26'd255) ? 8'hFF : lut_div[7:0];
 
-	// 帧尾检测 (不依赖 tuser —— 本工程实测 S_ISP_O_tuser 恒 0)
+	//-------------------------------------------------------------------------
+	// 5. 分帧: 按像素组计数 (不能用 tlast —— ISP 的 tlast 是帧尾脉冲)
+	//-------------------------------------------------------------------------
+	reg [12:0] grp_cnt;
 	reg [11:0] row_cnt;
 	reg        build_req;
 
+	wire [12:0] nw = i_h_active >> 2;
+
 	always @(posedge clk or negedge rst_n) begin
 		if (!rst_n) begin
+			grp_cnt   <= 13'd0;
 			row_cnt   <= 12'd0;
 			build_req <= 1'b0;
 		end else begin
 			build_req <= 1'b0;
-			if (i_tvalid && i_tuser) begin
-				row_cnt <= 12'd0;
-			end else if (i_tvalid && i_tlast && (i_v_active != 12'd0)) begin
-				if ((row_cnt + 12'd1) >= i_v_active) begin
-					row_cnt   <= 12'd0;
-					build_req <= 1'b1;
+			if (i_tvalid && (nw != 13'd0) && (i_v_active != 12'd0)) begin
+				if ((grp_cnt + 13'd1) >= nw) begin
+					grp_cnt <= 13'd0;
+					if ((row_cnt + 12'd1) >= i_v_active) begin
+						row_cnt   <= 12'd0;
+						build_req <= 1'b1;
+					end else begin
+						row_cnt <= row_cnt + 12'd1;
+					end
 				end else begin
-					row_cnt <= row_cnt + 12'd1;
+					grp_cnt <= grp_cnt + 13'd1;
 				end
 			end
 		end
 	end
 
 	//-------------------------------------------------------------------------
-	// 5. 直方图 RAM (读口 + 写口同一 always 块)
+	// 6. 直方图 RAM (读口 + 写口同一 always 块)
 	//-------------------------------------------------------------------------
 	always @(posedge clk or negedge rst_n) begin
 		if (!rst_n) begin
@@ -263,7 +276,7 @@ module preproc_basic #(
 	end
 
 	//-------------------------------------------------------------------------
-	// 6. LUT RAM (读口给像素路径, 写口给状态机)
+	// 7. LUT RAM (读口给像素路径, 写口给状态机)
 	//-------------------------------------------------------------------------
 	always @(posedge clk or negedge rst_n) begin
 		if (!rst_n) begin
@@ -275,7 +288,6 @@ module preproc_basic #(
 			lq3 <= lut3[c_l3];
 
 			if (st == S_INIT) begin
-				// 上电: LUT 先写成单位映射, 保证 HE 第一帧不会是黑/随机
 				lut0[bin] <= bin;
 				lut1[bin] <= bin;
 				lut2[bin] <= bin;
@@ -290,11 +302,11 @@ module preproc_basic #(
 	end
 
 	//-------------------------------------------------------------------------
-	// 7. 构建 FSM
+	// 8. 构建 FSM
 	//-------------------------------------------------------------------------
 	always @(posedge clk or negedge rst_n) begin
 		if (!rst_n) begin
-			st       <= S_INIT;      // 先清直方图 + 单位 LUT
+			st       <= S_INIT;
 			wait_cnt <= 6'd0;
 			bin      <= 8'd0;
 			phase    <= 1'b0;
@@ -313,7 +325,6 @@ module preproc_basic #(
 			nx_q     <= 32'd0;
 		end else begin
 			case (st)
-				// 上电初始化: 清直方图 + LUT 单位映射 (256 拍)
 				S_INIT: begin
 					if (bin == 8'd255) begin
 						st  <= S_IDLE;
@@ -343,7 +354,6 @@ module preproc_basic #(
 					end
 				end
 
-				// pass 1: 求 total / cdfmin
 				S_SUM: begin
 					if (!phase) begin
 						phase <= 1'b1;
@@ -354,7 +364,7 @@ module preproc_basic #(
 							scale  <= 25'd0;
 							dv_i   <= 6'd0;
 							if ((cdf_n - cdfmin_n) == 26'd0) begin
-								st  <= S_CLR;       // 纯色: 跳过, 保留旧 LUT
+								st  <= S_CLR;
 								bin <= 8'd0;
 							end else begin
 								st  <= S_DIV;
@@ -368,7 +378,6 @@ module preproc_basic #(
 					end
 				end
 
-				// 一次除法: scale = (255<<12) / (total - cdfmin)
 				S_DIV: begin
 					if (dv_i == 6'd0) begin
 						dv_n <= 32'd1_044_480;      // 255 << 12
@@ -397,7 +406,6 @@ module preproc_basic #(
 					end
 				end
 
-				// pass 2: 再累加 CDF, 逐 bin 写 LUT
 				S_LUT: begin
 					if (!phase) begin
 						phase <= 1'b1;
@@ -429,14 +437,13 @@ module preproc_basic #(
 	end
 
 	//-------------------------------------------------------------------------
-	// 8. Stage 0: 高斯差值 + 混合 (组合) -> 寄存
+	// 9. 第一遍高斯: 只算亮度 (不做混合), 同时把 p1 打包成第二遍的输入流
 	//-------------------------------------------------------------------------
-	wire [127:0] gauss_mix;
-	wire [127:0] rgb_stage0;
+	wire [7:0] p1_lane [0:3];
 
 	genvar j;
 	generate
-	for (j = 0; j < 4; j = j + 1) begin : g_px
+	for (j = 0; j < 4; j = j + 1) begin : g_p1
 		wire [7:0] a0 = eA[(8*j)     +: 8];
 		wire [7:0] a1 = eA[(8*(j+1)) +: 8];
 		wire [7:0] a2 = eA[(8*(j+2)) +: 8];
@@ -447,119 +454,187 @@ module preproc_basic #(
 		wire [7:0] c1 = eC[(8*(j+1)) +: 8];
 		wire [7:0] c2 = eC[(8*(j+2)) +: 8];
 
-		// 3x3 二项式核, 归一化 /16  (<= 4080)
 		wire [11:0] gsum = {4'b0, a0} + {3'b0, a1, 1'b0} + {4'b0, a2}
 		                 + {3'b0, b0, 1'b0} + {2'b0, b1, 2'b0} + {3'b0, b2, 1'b0}
 		                 + {4'b0, c0} + {3'b0, c1, 1'b0} + {4'b0, c2};
-		wire [7:0]  gfull = gsum[11:4];
-		wire [15:0] gblend = gfull * i_gauss_str
-		                   + c1 * (8'd8 - {4'b0, i_gauss_str});
-		wire [7:0]  gv = gblend[10:3];
-		wire signed [15:0] gd = $signed({8'd0, gv}) - $signed({8'd0, c1});
-
-		wire [7:0] rp = w_rgb[(32*j) + 16 +: 8];
-		wire [7:0] gp = w_rgb[(32*j) +  8 +: 8];
-		wire [7:0] bp = w_rgb[(32*j)      +: 8];
-
-		assign gauss_mix[(32*j) +: 32] = {8'h00,
-			clamp8($signed({8'd0, rp}) + (i_en[1] ? gd : 16'sd0)),
-			clamp8($signed({8'd0, gp}) + (i_en[1] ? gd : 16'sd0)),
-			clamp8($signed({8'd0, bp}) + (i_en[1] ? gd : 16'sd0))};
+		wire [7:0]  p1v = gsum[11:4];
+		assign p1_lane[j] = p1v;
 	end
 	endgenerate
 
-	assign rgb_stage0 = gauss_mix;
+	wire [31:0] p1_pack = {p1_lane[3], p1_lane[2], p1_lane[1], p1_lane[0]};
 
-	reg         v1, u1, t1;
-	reg [127:0] rgb1;
-	reg [31:0]  cl1;
+	// 第二遍窗口: 输入是"亮度复制成 RGB"的流 (lum() 会还原成 p1)
+	wire [127:0] g1_rgb = {
+		{8'h00, p1_lane[3], p1_lane[3], p1_lane[3]},
+		{8'h00, p1_lane[2], p1_lane[2], p1_lane[2]},
+		{8'h00, p1_lane[1], p1_lane[1], p1_lane[1]},
+		{8'h00, p1_lane[0], p1_lane[0], p1_lane[0]}
+	};
+
+	wire         w2_tvalid, w2_tuser, w2_tlast;
+	wire [2:0]   w2_rowmask;
+	wire [47:0]  w2_winA, w2_winB, w2_winC;
+	wire [127:0] w2_rgb;
+
+	preproc_win3x3 #(
+		.PX_PER_CLK (PX_PER_CLK)
+	) u_win2 (
+		.clk       (clk),
+		.rst_n     (rst_n),
+		.I_nw      (nw16),
+		.i_tvalid  (w_tvalid),
+		.i_tuser   (w_tuser),
+		.i_tlast   (w_tlast),
+		.i_rgb     (g1_rgb),
+		.o_tvalid  (w2_tvalid),
+		.o_tuser   (w2_tuser),
+		.o_tlast   (w2_tlast),
+		.o_rowmask (w2_rowmask),
+		.o_winA    (w2_winA),
+		.o_winB    (w2_winB),
+		.o_winC    (w2_winC),
+		.o_rgb     (w2_rgb)
+	);
+
+	//-------------------------------------------------------------------------
+	// 10. 4 拍对齐 (与第二遍窗口同延迟): RGB / 原亮度 / LUT 数据 / p1 / 控制
+	//-------------------------------------------------------------------------
+	reg [127:0] rgb_d1, rgb_d2, rgb_d3, rgb_d4;
+	reg [31:0]  cl_d1,  cl_d2,  cl_d3,  cl_d4;
+	reg [31:0]  lq_d1,  lq_d2,  lq_d3;
+	reg [31:0]  p1_d1,  p1_d2,  p1_d3,  p1_d4;
+	reg         v_d1, v_d2, v_d3, v_d4;
+	reg         u_d1, u_d2, u_d3, u_d4;
+	reg         t_d1, t_d2, t_d3, t_d4;
+
+	wire [31:0] lq_pack = {lq3, lq2, lq1, lq0};
+	wire [31:0] cl_pack = {c_l3, c_l2, c_l1, c_l0};
 
 	always @(posedge clk or negedge rst_n) begin
 		if (!rst_n) begin
-			v1 <= 1'b0; u1 <= 1'b0; t1 <= 1'b0;
-			rgb1 <= 128'd0;
-			cl1  <= 32'd0;
+			rgb_d1 <= 128'd0; rgb_d2 <= 128'd0; rgb_d3 <= 128'd0; rgb_d4 <= 128'd0;
+			cl_d1 <= 32'd0; cl_d2 <= 32'd0; cl_d3 <= 32'd0; cl_d4 <= 32'd0;
+			lq_d1 <= 32'd0; lq_d2 <= 32'd0; lq_d3 <= 32'd0;
+			p1_d1 <= 32'd0; p1_d2 <= 32'd0; p1_d3 <= 32'd0; p1_d4 <= 32'd0;
+			v_d1 <= 1'b0; v_d2 <= 1'b0; v_d3 <= 1'b0; v_d4 <= 1'b0;
+			u_d1 <= 1'b0; u_d2 <= 1'b0; u_d3 <= 1'b0; u_d4 <= 1'b0;
+			t_d1 <= 1'b0; t_d2 <= 1'b0; t_d3 <= 1'b0; t_d4 <= 1'b0;
 		end else begin
-			v1   <= w_tvalid;
-			u1   <= w_tuser;
-			t1   <= w_tlast;
-			rgb1 <= rgb_stage0;
-			cl1  <= {c_l3, c_l2, c_l1, c_l0};
+			rgb_d1 <= w_rgb;       rgb_d2 <= rgb_d1; rgb_d3 <= rgb_d2; rgb_d4 <= rgb_d3;
+			cl_d1  <= cl_pack;     cl_d2  <= cl_d1;  cl_d3  <= cl_d2;  cl_d4  <= cl_d3;
+			lq_d1  <= lq_pack;     lq_d2  <= lq_d1;  lq_d3  <= lq_d2;
+			p1_d1  <= p1_pack;     p1_d2  <= p1_d1;  p1_d3  <= p1_d2;  p1_d4  <= p1_d3;
+			v_d1   <= w_tvalid;    v_d2   <= v_d1;   v_d3   <= v_d2;   v_d4   <= v_d3;
+			u_d1   <= w_tuser;     u_d2   <= u_d1;   u_d3   <= u_d2;   u_d4   <= u_d3;
+			t_d1   <= w_tlast;     t_d2   <= t_d1;   t_d3   <= t_d2;   t_d4   <= t_d3;
 		end
 	end
 
 	//-------------------------------------------------------------------------
-	// 9. Stage 1: 直方图均衡差值 (LUT 数据已在本拍有效) -> 寄存
+	// 11. Stage B: 两遍高斯 + 直方图均衡
 	//-------------------------------------------------------------------------
-	wire [127:0] he_mix;
-	wire [31:0]  luma_h;
+	wire [47:0] f2A = w2_rowmask[2] ? w2_winA : w2_winC;
+	wire [47:0] f2B = w2_rowmask[1] ? w2_winB : w2_winC;
+	wire [47:0] f2C = w2_winC;
+
+	wire [127:0] rgb_b;
+	wire [31:0]  lum_b;
 
 	generate
-	for (j = 0; j < 4; j = j + 1) begin : g_he
-		wire [7:0] cl  = cl1[(8*j) +: 8];
-		wire [7:0] lqv = (j == 0) ? lq0 : (j == 1) ? lq1 : (j == 2) ? lq2 : lq3;
-		// 混合: str=0 -> 原亮度, str=255 -> 完全均衡
-		// ⚠ 必须显式算 256-str (9 位)。若写 (8'd0 - i_he_str), Verilog 会在
-		//    16 位上下文里算出 0xFF01 而不是 1, 乘法结果完全错位。
+	for (j = 0; j < 4; j = j + 1) begin : g_p2
+		// 第二遍 3x3 二项式
+		wire [7:0] a0 = f2A[(8*j)     +: 8];
+		wire [7:0] a1 = f2A[(8*(j+1)) +: 8];
+		wire [7:0] a2 = f2A[(8*(j+2)) +: 8];
+		wire [7:0] b0 = f2B[(8*j)     +: 8];
+		wire [7:0] b1 = f2B[(8*(j+1)) +: 8];
+		wire [7:0] b2 = f2B[(8*(j+2)) +: 8];
+		wire [7:0] c0 = f2C[(8*j)     +: 8];
+		wire [7:0] c1 = f2C[(8*(j+1)) +: 8];
+		wire [7:0] c2 = f2C[(8*(j+2)) +: 8];
+
+		wire [11:0] gsum2 = {4'b0, a0} + {3'b0, a1, 1'b0} + {4'b0, a2}
+		                  + {3'b0, b0, 1'b0} + {2'b0, b1, 2'b0} + {3'b0, b2, 1'b0}
+		                  + {4'b0, c0} + {3'b0, c1, 1'b0} + {4'b0, c2};
+		wire [7:0]  p2v = gsum2[11:4];
+
+		wire [7:0]  cl  = cl_d4[(8*j) +: 8];      // 原始亮度
+		wire [7:0]  p1v = p1_d4[(8*j) +: 8];      // 第一遍结果
+		wire [7:0]  lqv = lq_d3[(8*j) +: 8];      // HE LUT 查表结果
+
+		wire signed [15:0] d1 = $signed({8'd0, p1v}) - $signed({8'd0, cl});
+		wire signed [15:0] d2 = $signed({8'd0, p2v}) - $signed({8'd0, p1v});
+
+		// 强度 0..8: 0..4 = 原图->一遍; 5..8 = 一遍->两遍
+		wire signed [15:0] delta = (i_gauss_str <= 4'd4)
+		    ? ((d1 * $signed({12'd0, i_gauss_str})) >>> 2)
+		    : (d1 + ((d2 * $signed({12'd0, (i_gauss_str - 4'd4)})) >>> 2));
+
+		wire [7:0] rp = rgb_d4[(32*j) + 16 +: 8];
+		wire [7:0] gp = rgb_d4[(32*j) +  8 +: 8];
+		wire [7:0] bp = rgb_d4[(32*j)      +: 8];
+
+		wire [7:0] rg = i_en[1] ? clamp8($signed({8'd0, rp}) + delta) : rp;
+		wire [7:0] gg = i_en[1] ? clamp8($signed({8'd0, gp}) + delta) : gp;
+		wire [7:0] bg = i_en[1] ? clamp8($signed({8'd0, bp}) + delta) : bp;
+
+		// ---- 直方图均衡 (在原亮度上查表, 差值加到当前 RGB) ----
 		wire [8:0]  he_inv = 9'd256 - {1'b0, i_he_str};
 		wire [16:0] hblend = lqv * i_he_str + cl * he_inv + 17'd128;
 		wire [7:0]  hv = hblend[15:8];
 		wire signed [15:0] hd = $signed({8'd0, hv}) - $signed({8'd0, cl});
 
-		wire [7:0] rp = rgb1[(32*j) + 16 +: 8];
-		wire [7:0] gp = rgb1[(32*j) +  8 +: 8];
-		wire [7:0] bp = rgb1[(32*j)      +: 8];
+		wire [7:0] rr2 = i_en[2] ? clamp8($signed({8'd0, rg}) + hd) : rg;
+		wire [7:0] gg2 = i_en[2] ? clamp8($signed({8'd0, gg}) + hd) : gg;
+		wire [7:0] bb2 = i_en[2] ? clamp8($signed({8'd0, bg}) + hd) : bg;
 
-		wire [7:0] r2 = clamp8($signed({8'd0, rp}) + (i_en[2] ? hd : 16'sd0));
-		wire [7:0] g2 = clamp8($signed({8'd0, gp}) + (i_en[2] ? hd : 16'sd0));
-		wire [7:0] b2 = clamp8($signed({8'd0, bp}) + (i_en[2] ? hd : 16'sd0));
-
-		assign he_mix[(32*j) +: 32] = {8'h00, r2, g2, b2};
-		assign luma_h[(8*j)   +: 8] = lum_sel(r2, g2, b2, i_gray_mode);
+		assign rgb_b[(32*j) +: 32] = {8'h00, rr2, gg2, bb2};
+		assign lum_b[(8*j)   +: 8] = lum_sel(rr2, gg2, bb2, i_gray_mode);
 	end
 	endgenerate
 
-	reg         v2, u2, t2;
-	reg [127:0] rgb2;
-	reg [31:0]  lum2;
+	// 未使用信号占位 (保留便于波形观察)
+	wire unused_ok = &{1'b0, w2_rgb[0], w2_tvalid, w2_tuser, w2_tlast};
+
+	reg         vb, ub, tb;
+	reg [127:0] rgb_s;
+	reg [31:0]  lum_s;
 
 	always @(posedge clk or negedge rst_n) begin
 		if (!rst_n) begin
-			v2 <= 1'b0; u2 <= 1'b0; t2 <= 1'b0;
-			rgb2 <= 128'd0;
-			lum2 <= 32'd0;
+			vb <= 1'b0; ub <= 1'b0; tb <= 1'b0;
+			rgb_s <= 128'd0;
+			lum_s <= 32'd0;
 		end else begin
-			v2   <= v1;
-			u2   <= u1;
-			t2   <= t1;
-			rgb2 <= he_mix;
-			lum2 <= luma_h;
+			vb    <= v_d4;
+			ub    <= u_d4;
+			tb    <= t_d4;
+			rgb_s <= rgb_b;
+			lum_s <= lum_b;
 		end
 	end
 
 	//-------------------------------------------------------------------------
-	// 10. Stage 2: 灰度 / 对比度 / 反色 -> 输出寄存
+	// 12. Stage C: 灰度 / 对比度 / 反色 -> 输出
 	//-------------------------------------------------------------------------
 	wire [127:0] final_pix;
 
 	generate
 	for (j = 0; j < 4; j = j + 1) begin : g_out
-		wire [7:0] l  = lum2[(8*j) +: 8];
-		wire [7:0] rp = rgb2[(32*j) + 16 +: 8];
-		wire [7:0] gp = rgb2[(32*j) +  8 +: 8];
-		wire [7:0] bp = rgb2[(32*j)      +: 8];
+		wire [7:0] l  = lum_s[(8*j) +: 8];
+		wire [7:0] rp = rgb_s[(32*j) + 16 +: 8];
+		wire [7:0] gp = rgb_s[(32*j) +  8 +: 8];
+		wire [7:0] bp = rgb_s[(32*j)      +: 8];
 
-		// 灰度: 三通道写同值
 		wire [7:0] r3 = i_en[0] ? l : rp;
 		wire [7:0] g3 = i_en[0] ? l : gp;
 		wire [7:0] b3 = i_en[0] ? l : bp;
 
-		// 对比度
 		wire [7:0] r4 = i_en[3] ? contrast8(r3, i_contrast) : r3;
 		wire [7:0] g4 = i_en[3] ? contrast8(g3, i_contrast) : g3;
 		wire [7:0] b4 = i_en[3] ? contrast8(b3, i_contrast) : b3;
 
-		// 反色
 		wire [7:0] r5 = i_en[4] ? (8'hFF - r4) : r4;
 		wire [7:0] g5 = i_en[4] ? (8'hFF - g4) : g4;
 		wire [7:0] b5 = i_en[4] ? (8'hFF - b4) : b4;
@@ -575,9 +650,9 @@ module preproc_basic #(
 			o_tlast  <= 1'b0;
 			o_rgb    <= 128'd0;
 		end else begin
-			o_tvalid <= v2;
-			o_tuser  <= u2;
-			o_tlast  <= t2;
+			o_tvalid <= vb;
+			o_tuser  <= ub;
+			o_tlast  <= tb;
 			o_rgb    <= final_pix;
 		end
 	end

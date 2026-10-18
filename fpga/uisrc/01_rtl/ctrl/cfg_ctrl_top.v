@@ -54,15 +54,15 @@ module cfg_ctrl_top #(
 
 	// ---- 同步到像素域的配置输出 ----
 	output wire [3:0]  o_pp_mode,          // 高级单选 0..8
-	output wire [3:0]  o_pp_sobel_shift,
+	output wire [4:0]  o_pp_sobel_gain,
 	output wire [7:0]  o_pp_thresh,
 	output wire        o_pp_morph_sel,
 	output wire [7:0]  o_pp_morph_th,
-	output wire [3:0]  o_pp_lap_shift,
-	output wire [3:0]  o_pp_prew_shift,
+	output wire [4:0]  o_pp_lap_gain,
+	output wire [4:0]  o_pp_prew_gain,
 	output wire [3:0]  o_pp_emboss_gain,
 	output wire [7:0]  o_pp_emboss_bias,
-	output wire [3:0]  o_pp_sharp_gain,
+	output wire [4:0]  o_pp_sharp_gain,
 	// 初级预处理 (V45, 多选位图)
 	output wire [4:0]  o_basic_en,
 	output wire        o_basic_gray,
@@ -105,15 +105,15 @@ module cfg_ctrl_top #(
 
 	wire        cfg_pp_en;
 	wire [3:0]  cfg_pp_mode;
-	wire [3:0]  cfg_pp_sh;
+	wire [4:0]  cfg_pp_sh;
 	wire [7:0]  cfg_pp_th;
 	wire        cfg_pp_ms;
 	wire [7:0]  cfg_pp_morph_th;
-	wire [3:0]  cfg_pp_lap_sh;
-	wire [3:0]  cfg_pp_prew_sh;
+	wire [4:0]  cfg_pp_lap_sh;
+	wire [4:0]  cfg_pp_prew_sh;
 	wire [3:0]  cfg_pp_emboss_gain;
 	wire [7:0]  cfg_pp_emboss_bias;
-	wire [3:0]  cfg_pp_sharp_gain;
+	wire [4:0]  cfg_pp_sharp_gain;
 	wire [4:0]  cfg_basic_en;
 	wire        cfg_basic_gray;
 	wire [3:0]  cfg_basic_gauss;
@@ -270,16 +270,16 @@ module cfg_ctrl_top #(
 	// 配置信号: 系统域 -> 像素域 (2 级同步)
 	//-------------------------------------------------------------------------
 	reg [3:0] mode_s1, mode_s2;
-	reg [3:0] sh_s1,   sh_s2;
+	reg [4:0] sh_s1,   sh_s2;
 	reg [7:0] th_s1,   th_s2;
 	reg       ms_s1,   ms_s2;
 	// V45 高级新增参数
 	reg [7:0] mth_s1,  mth_s2;
-	reg [3:0] lap_s1,  lap_s2;
-	reg [3:0] pre_s1,  pre_s2;
+	reg [4:0] lap_s1,  lap_s2;
+	reg [4:0] pre_s1,  pre_s2;
 	reg [3:0] embg_s1, embg_s2;
 	reg [7:0] embb_s1, embb_s2;
-	reg [3:0] shp_s1,  shp_s2;
+	reg [4:0] shp_s1,  shp_s2;
 	// V45 初级
 	reg [4:0] ben_s1,  ben_s2;
 	reg       bgm_s1,  bgm_s2;
@@ -294,15 +294,15 @@ module cfg_ctrl_top #(
 	always @(posedge i_pix_clk or negedge i_pix_rst_n) begin
 		if (!i_pix_rst_n) begin
 			mode_s1 <= 4'd0; mode_s2 <= 4'd0;
-			sh_s1 <= 4'd3;   sh_s2 <= 4'd3;
+			sh_s1 <= 5'd8;   sh_s2 <= 5'd8;
 			th_s1 <= 8'd128; th_s2 <= 8'd128;
 			ms_s1 <= 1'b1;   ms_s2 <= 1'b1;
 			mth_s1<= 8'd128; mth_s2<= 8'd128;
-			lap_s1<= 4'd3;   lap_s2<= 4'd3;
-			pre_s1<= 4'd3;   pre_s2<= 4'd3;
+			lap_s1<= 5'd8;   lap_s2<= 5'd8;
+			pre_s1<= 5'd8;   pre_s2<= 5'd8;
 			embg_s1 <= 4'd4; embg_s2 <= 4'd4;
 			embb_s1 <= 8'd128; embb_s2 <= 8'd128;
-			shp_s1<= 4'd4;   shp_s2<= 4'd4;
+			shp_s1<= 5'd8;   shp_s2<= 5'd8;
 			ben_s1<= 5'd0;   ben_s2<= 5'd0;
 			bgm_s1<= 1'b0;   bgm_s2<= 1'b0;
 			bga_s1<= 4'd8;   bga_s2<= 4'd8;
@@ -354,12 +354,12 @@ module cfg_ctrl_top #(
 	end
 
 	assign o_pp_mode        = mode_s2;
-	assign o_pp_sobel_shift = sh_s2;
+	assign o_pp_sobel_gain = sh_s2;
 	assign o_pp_thresh      = th_s2;
 	assign o_pp_morph_sel   = ms_s2;
 	assign o_pp_morph_th    = mth_s2;
-	assign o_pp_lap_shift   = lap_s2;
-	assign o_pp_prew_shift  = pre_s2;
+	assign o_pp_lap_gain   = lap_s2;
+	assign o_pp_prew_gain  = pre_s2;
 	assign o_pp_emboss_gain = embg_s2;
 	assign o_pp_emboss_bias = embb_s2;
 	assign o_pp_sharp_gain  = shp_s2;

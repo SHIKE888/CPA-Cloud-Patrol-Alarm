@@ -386,15 +386,15 @@ wire         S_pp_tuser;
 wire         S_pp_tlast;
 wire [127:0] S_pp_tdata;
 wire [3:0]   S_pp_mode;
-wire [3:0]   S_pp_sobel_sh;
+wire [4:0]   S_pp_sobel_sh;
 wire [7:0]   S_pp_thresh;
 wire         S_pp_morph_sel;
 wire [7:0]   S_pp_morph_th;
-wire [3:0]   S_pp_lap_sh;
-wire [3:0]   S_pp_prew_sh;
+wire [4:0]   S_pp_lap_sh;
+wire [4:0]   S_pp_prew_sh;
 wire [3:0]   S_pp_emboss_gain;
 wire [7:0]   S_pp_emboss_bias;
-wire [3:0]   S_pp_sharp_gain;
+wire [4:0]   S_pp_sharp_gain;
 wire [4:0]   S_basic_en;
 wire         S_basic_gray;
 wire [3:0]   S_basic_gauss;
@@ -931,12 +931,12 @@ preproc_top #(
 	.i_he_str       (S_basic_he),
 	.i_contrast     (S_basic_contrast),
 	.i_mode         (S_pp_mode),
-	.i_sobel_shift  (S_pp_sobel_sh),
+	.i_sobel_gain   (S_pp_sobel_sh),
 	.i_thresh       (S_pp_thresh),
 	.i_morph_sel    (S_pp_morph_sel),
 	.i_morph_th     (S_pp_morph_th),
-	.i_lap_shift    (S_pp_lap_sh),
-	.i_prew_shift   (S_pp_prew_sh),
+	.i_lap_gain     (S_pp_lap_sh),
+	.i_prew_gain    (S_pp_prew_sh),
 	.i_emboss_gain  (S_pp_emboss_gain),
 	.i_emboss_bias  (S_pp_emboss_bias),
 	.i_sharp_gain   (S_pp_sharp_gain),
@@ -1017,12 +1017,12 @@ cfg_ctrl_top #(
 	.i_fs_corr    (S_axis_tuser),        // 裁剪模块输出帧首
 	.i_last_corr  (S_axis_tlast),        // 裁剪模块输出行尾
 	.o_pp_mode    (S_pp_mode),
-	.o_pp_sobel_shift (S_pp_sobel_sh),
+	.o_pp_sobel_gain (S_pp_sobel_sh),
 	.o_pp_thresh  (S_pp_thresh),
 	.o_pp_morph_sel (S_pp_morph_sel),
 	.o_pp_morph_th  (S_pp_morph_th),
-	.o_pp_lap_shift (S_pp_lap_sh),
-	.o_pp_prew_shift(S_pp_prew_sh),
+	.o_pp_lap_gain (S_pp_lap_sh),
+	.o_pp_prew_gain(S_pp_prew_sh),
 	.o_pp_emboss_gain(S_pp_emboss_gain),
 	.o_pp_emboss_bias(S_pp_emboss_bias),
 	.o_pp_sharp_gain (S_pp_sharp_gain),

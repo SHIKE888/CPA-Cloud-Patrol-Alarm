@@ -35,15 +35,15 @@ module preproc_top #(
 
 	// ---- 高级预处理配置 (0xB1~0xB7, 0xF5~0xF7, 单选) ----
 	input  wire [3:0]   i_mode,          // 0=关 1=Sobel 2=阈值 3=形态 4=中值 5=拉普拉斯 6=浮雕 7=Prewitt 8=锐化
-	input  wire [3:0]   i_sobel_shift,
+	input  wire [4:0]   i_sobel_gain,
 	input  wire [7:0]   i_thresh,
 	input  wire         i_morph_sel,
 	input  wire [7:0]   i_morph_th,
-	input  wire [3:0]   i_lap_shift,
-	input  wire [3:0]   i_prew_shift,
+	input  wire [4:0]   i_lap_gain,
+	input  wire [4:0]   i_prew_gain,
 	input  wire [3:0]   i_emboss_gain,
 	input  wire [7:0]   i_emboss_bias,
-	input  wire [3:0]   i_sharp_gain,
+	input  wire [4:0]   i_sharp_gain,
 
 	// ---- 视频输出 ----
 	output wire         o_tvalid,
@@ -116,12 +116,12 @@ module preproc_top #(
 		.i_winC         (w_winC),
 		.i_rgb          (w_rgb),
 		.i_mode         (i_mode),
-		.i_sobel_shift  (i_sobel_shift),
+		.i_sobel_gain   (i_sobel_gain),
 		.i_thresh       (i_thresh),
 		.i_morph_sel    (i_morph_sel),
 		.i_morph_th     (i_morph_th),
-		.i_lap_shift    (i_lap_shift),
-		.i_prew_shift   (i_prew_shift),
+		.i_lap_gain     (i_lap_gain),
+		.i_prew_gain    (i_prew_gain),
 		.i_emboss_gain  (i_emboss_gain),
 		.i_emboss_bias  (i_emboss_bias),
 		.i_sharp_gain   (i_sharp_gain),

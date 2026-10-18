@@ -2204,12 +2204,12 @@ FPGA_REGS = [
     # ---- 高级预处理 (单选) ----
     ("PP_EN",       0xB0,   0,    1, False, "高级预处理总使能 (0=直通原图)"),
     ("ADV_MODE",    0xB1,   0,    8, False, "0=关 1=Sobel 2=阈值 3=形态 4=中值 5=拉普拉斯 6=浮雕 7=Prewitt 8=锐化"),
-    ("ADV_SOBEL_SH",0xB2,   0,    8, False, "Sobel 幅度右移"),
+    ("ADV_SOBEL_SH",0xB2,   1,   16, False, "Sobel 增益 (4=原幅度, 16=4倍)"),
     ("ADV_THRESH",  0xB3,   0,  255, False, "阈值分割阈值"),
     ("ADV_MORPH_SEL",0xB4,  0,    1, False, "0=腐蚀 1=膨胀"),
     ("ADV_MORPH_TH",0xB5,   0,  255, False, "形态学阈值"),
-    ("ADV_LAP_SH",  0xB6,   0,    8, False, "拉普拉斯幅度右移"),
-    ("ADV_PREW_SH", 0xB7,   0,    8, False, "Prewitt 幅度右移"),
+    ("ADV_LAP_SH",  0xB6,   1,   16, False, "拉普拉斯增益 (4=原幅度)"),
+    ("ADV_PREW_SH", 0xB7,   1,   16, False, "Prewitt 增益 (4=原幅度)"),
     # ---- 初级预处理 (多选位图) ----
     ("BASIC_EN",    0xF0,   0,   31, False, "bit0 灰度 bit1 高斯 bit2 HE bit3 对比度 bit4 反色"),
     ("BASIC_GRAY",  0xF1,   0,    1, False, "灰度系数 0=BT.601 1=BT.709"),
@@ -2218,7 +2218,7 @@ FPGA_REGS = [
     ("BASIC_CONTRAST",0xF4, 0,    8, False, "对比度强度 0..8"),
     ("ADV_EMBOSS_GAIN",0xF5,0,    8, False, "浮雕增益 0..8"),
     ("ADV_EMBOSS_BIAS",0xF6,0,  255, False, "浮雕偏置 0..255"),
-    ("ADV_SHARP_GAIN",0xF7, 0,    8, False, "锐化强度 0..8"),
+    ("ADV_SHARP_GAIN",0xF7, 1,   16, False, "锐化增益 1..16"),
     # ---- 摄像头 / 画质 (0xC0 起) ----
     # 曝光是 20 位, 拆 3 字节; UI 不直接用它们, 而是用 CAM_EXP_MS 物理量
     ("CAM_EXP_L",   0xC0,   0,  255, False, "曝光 SHR0[7:0]"),

@@ -105,15 +105,15 @@ module jpeg_regfile #(
     // ---------------- 预处理配置输出 ----------------
     output wire         O_cfg_pp_en,
     output wire [3:0]   O_cfg_pp_mode,
-    output wire [3:0]   O_cfg_pp_sobel_shift,
+    output wire [4:0]   O_cfg_pp_sobel_shift,
     output wire [7:0]   O_cfg_pp_thresh,
     output wire         O_cfg_pp_morph_sel,
     output wire [7:0]   O_cfg_pp_morph_th,
-    output wire [3:0]   O_cfg_pp_lap_shift,
-    output wire [3:0]   O_cfg_pp_prew_shift,
+    output wire [4:0]   O_cfg_pp_lap_shift,
+    output wire [4:0]   O_cfg_pp_prew_shift,
     output wire [3:0]   O_cfg_pp_emboss_gain,
     output wire [7:0]   O_cfg_pp_emboss_bias,
-    output wire [3:0]   O_cfg_pp_sharp_gain,
+    output wire [4:0]   O_cfg_pp_sharp_gain,
     // 初级预处理 (多选位图)
     output wire [4:0]   O_cfg_basic_en,
     output wire         O_cfg_basic_gray,
@@ -160,15 +160,15 @@ module jpeg_regfile #(
     // 预处理寄存器
     reg        r_pp_en;
     reg [3:0]  r_pp_mode;
-    reg [3:0]  r_pp_sobel_sh;
+    reg [4:0]  r_pp_sobel_sh;
     reg [7:0]  r_pp_thresh;
     reg        r_pp_morph_sel;
     reg [7:0]  r_pp_morph_th;
-    reg [3:0]  r_pp_lap_sh;
-    reg [3:0]  r_pp_prew_sh;
+    reg [4:0]  r_pp_lap_sh;
+    reg [4:0]  r_pp_prew_sh;
     reg [3:0]  r_pp_emboss_gain;
     reg [7:0]  r_pp_emboss_bias;
-    reg [3:0]  r_pp_sharp_gain;
+    reg [4:0]  r_pp_sharp_gain;
     // 初级预处理 (V45)
     reg [4:0]  r_basic_en;
     reg        r_basic_gray;
@@ -241,15 +241,15 @@ module jpeg_regfile #(
             r_soft_rst   <= 1'b0;
             r_pp_en      <= 1'b0;
             r_pp_mode    <= 4'd0;      // 默认关闭高级预处理
-            r_pp_sobel_sh<= 4'd3;
+            r_pp_sobel_sh<= 5'd8;
             r_pp_thresh  <= 8'd128;
             r_pp_morph_sel <= 1'b1;    // 默认膨胀
             r_pp_morph_th  <= 8'd128;
-            r_pp_lap_sh    <= 4'd3;
-            r_pp_prew_sh   <= 4'd3;
+            r_pp_lap_sh    <= 5'd8;
+            r_pp_prew_sh   <= 5'd8;
             r_pp_emboss_gain <= 4'd4;
             r_pp_emboss_bias <= 8'd128;
-            r_pp_sharp_gain  <= 4'd4;
+            r_pp_sharp_gain  <= 5'd8;
             // 初级: 默认全关 (位图 = 0), 参数给常用默认值
             r_basic_en     <= 5'd0;
             r_basic_gray   <= 1'b0;    // BT.601
@@ -300,12 +300,12 @@ module jpeg_regfile #(
                     // ---- 高级预处理 (单选) ----
                     8'hB0: r_pp_en      <= I_wr_data[0];
                     8'hB1: r_pp_mode    <= (I_wr_data[3:0] > 4'd8) ? 4'd8 : I_wr_data[3:0];
-                    8'hB2: r_pp_sobel_sh<= (I_wr_data[3:0] > 4'd8) ? 4'd8 : I_wr_data[3:0];
+                    8'hB2: r_pp_sobel_sh<= (I_wr_data[4:0] > 5'd16) ? 5'd16 : I_wr_data[4:0];
                     8'hB3: r_pp_thresh  <= I_wr_data;
                     8'hB4: r_pp_morph_sel <= I_wr_data[0];
                     8'hB5: r_pp_morph_th  <= I_wr_data;
-                    8'hB6: r_pp_lap_sh    <= (I_wr_data[3:0] > 4'd8) ? 4'd8 : I_wr_data[3:0];
-                    8'hB7: r_pp_prew_sh   <= (I_wr_data[3:0] > 4'd8) ? 4'd8 : I_wr_data[3:0];
+                    8'hB6: r_pp_lap_sh    <= (I_wr_data[4:0] > 5'd16) ? 5'd16 : I_wr_data[4:0];
+                    8'hB7: r_pp_prew_sh   <= (I_wr_data[4:0] > 5'd16) ? 5'd16 : I_wr_data[4:0];
                     // ---- 初级预处理 (多选位图) ----
                     8'hF0: r_basic_en     <= I_wr_data[4:0];
                     8'hF1: r_basic_gray   <= I_wr_data[0];
@@ -314,7 +314,7 @@ module jpeg_regfile #(
                     8'hF4: r_basic_contrast <= (I_wr_data[3:0] > 4'd8) ? 4'd8 : I_wr_data[3:0];
                     8'hF5: r_pp_emboss_gain <= (I_wr_data[3:0] > 4'd8) ? 4'd8 : I_wr_data[3:0];
                     8'hF6: r_pp_emboss_bias <= I_wr_data;
-                    8'hF7: r_pp_sharp_gain  <= (I_wr_data[3:0] > 4'd8) ? 4'd8 : I_wr_data[3:0];
+                    8'hF7: r_pp_sharp_gain  <= (I_wr_data[4:0] > 5'd16) ? 5'd16 : I_wr_data[4:0];
                     // ---- 摄像头 / 画质参数 (0xC0 起) ----
                     8'hC0: r_cam_exp[ 7:0] <= I_wr_data;
                     8'hC1: r_cam_exp[15:8] <= I_wr_data;
@@ -378,12 +378,12 @@ module jpeg_regfile #(
 
                 8'hB0: O_rd_data <= {7'b0, r_pp_en};
                 8'hB1: O_rd_data <= {4'b0, r_pp_mode};
-                8'hB2: O_rd_data <= {4'b0, r_pp_sobel_sh};
+                8'hB2: O_rd_data <= {3'b0, r_pp_sobel_sh};
                 8'hB3: O_rd_data <= r_pp_thresh;
                 8'hB4: O_rd_data <= {7'b0, r_pp_morph_sel};
                 8'hB5: O_rd_data <= r_pp_morph_th;
-                8'hB6: O_rd_data <= {4'b0, r_pp_lap_sh};
-                8'hB7: O_rd_data <= {4'b0, r_pp_prew_sh};
+                8'hB6: O_rd_data <= {3'b0, r_pp_lap_sh};
+                8'hB7: O_rd_data <= {3'b0, r_pp_prew_sh};
                 8'hF0: O_rd_data <= {3'b0, r_basic_en};
                 8'hF1: O_rd_data <= {7'b0, r_basic_gray};
                 8'hF2: O_rd_data <= {4'b0, r_basic_gauss};
@@ -391,7 +391,7 @@ module jpeg_regfile #(
                 8'hF4: O_rd_data <= {4'b0, r_basic_contrast};
                 8'hF5: O_rd_data <= {4'b0, r_pp_emboss_gain};
                 8'hF6: O_rd_data <= r_pp_emboss_bias;
-                8'hF7: O_rd_data <= {4'b0, r_pp_sharp_gain};
+                8'hF7: O_rd_data <= {3'b0, r_pp_sharp_gain};
                 8'hB8: O_rd_data <= s_frame_cnt[ 7:0];
                 8'hB9: O_rd_data <= s_frame_cnt[15:8];
                 8'hBA: O_rd_data <= s_frame_cnt[23:16];
@@ -445,7 +445,7 @@ module jpeg_regfile #(
     // 预处理: PP_EN=0 时强制直通原图
     assign O_cfg_pp_en         = r_pp_en;
     assign O_cfg_pp_mode       = r_pp_en ? r_pp_mode : 4'd0;
-    assign O_cfg_pp_sobel_shift= r_pp_sobel_sh;
+    assign O_cfg_pp_sobel_shift= (r_pp_sobel_sh > 5'd16) ? 5'd16 : r_pp_sobel_sh;
     assign O_cfg_pp_thresh     = r_pp_thresh;
     assign O_cfg_pp_morph_sel  = r_pp_morph_sel;
     assign O_cfg_pp_morph_th   = r_pp_morph_th;

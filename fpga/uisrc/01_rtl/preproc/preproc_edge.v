@@ -39,15 +39,15 @@ module preproc_edge (
 
 	// ---- 配置寄存器 (来自反向传参链路) ----
 	input  wire [3:0]   i_mode,          // 0=原图 1=Sobel 2=阈值 3=形态 4=中值 5=拉普拉斯 6=浮雕 7=Prewitt 8=锐化
-	input  wire [3:0]   i_sobel_shift,   // Sobel 幅度右移 0..8
+	input  wire [4:0]   i_sobel_gain,    // Sobel 增益 0..16 (4 = 原幅度)
 	input  wire [7:0]   i_thresh,        // 阈值分割阈值
 	input  wire         i_morph_sel,     // 0=腐蚀 1=膨胀
 	input  wire [7:0]   i_morph_th,      // 形态学自己的阈值
-	input  wire [3:0]   i_lap_shift,     // 拉普拉斯幅度右移 0..8
-	input  wire [3:0]   i_prew_shift,    // Prewitt 幅度右移 0..8
+	input  wire [4:0]   i_lap_gain,      // 拉普拉斯增益 0..16
+	input  wire [4:0]   i_prew_gain,     // Prewitt 增益 0..16
 	input  wire [3:0]   i_emboss_gain,   // 浮雕增益 0..8
 	input  wire [7:0]   i_emboss_bias,   // 浮雕偏置 0..255 (默认 128)
-	input  wire [3:0]   i_sharp_gain,    // 锐化强度 0..8
+	input  wire [4:0]   i_sharp_gain,    // 锐化增益 0..16
 
 	// ---- 输出 ----
 	output reg          o_tvalid,
@@ -128,8 +128,10 @@ module preproc_edge (
 		wire [12:0] agx = gx[12] ? (~gx + 13'd1) : gx;
 		wire [12:0] agy = gy[12] ? (~gy + 13'd1) : gy;
 		wire [13:0] mag = {1'b0, agx} + {1'b0, agy};        // <= 2040
-		wire [13:0] mag_s = (mag >> i_sobel_shift);
-		wire [7:0]  edgev = (mag_s > 14'd255) ? 8'hFF : mag_s[7:0];
+		// 增益: 4 = 原幅度, 16 = 4 倍 (典型画面 mag 只有 20~60, 右移会几乎全黑)
+		wire [17:0] mag_g = mag * i_sobel_gain;
+		wire [15:0] mag_s = mag_g >> 2;
+		wire [7:0]  edgev = (mag_s > 16'd255) ? 8'hFF : mag_s[7:0];
 
 		// ---------------- 2 阈值分割 ----------------
 		wire binv = (c1 >= i_thresh);
@@ -148,8 +150,9 @@ module preproc_edge (
 		                        - $signed({5'b0, a1}) - $signed({5'b0, c1})
 		                        - $signed({5'b0, b0}) - $signed({5'b0, b2});
 		wire [12:0] alsum = lsum[12] ? (~lsum + 13'd1) : lsum;
-		wire [12:0] al_s  = (alsum >> i_lap_shift);
-		wire [7:0]  lapv  = (al_s > 13'd255) ? 8'hFF : al_s[7:0];
+		wire [16:0] al_g  = alsum * i_lap_gain;
+		wire [14:0] al_s  = al_g >> 2;
+		wire [7:0]  lapv  = (al_s > 15'd255) ? 8'hFF : al_s[7:0];
 
 		// ---------------- 6 浮雕 (独立增益/偏置) ----------------
 		// kernel [-2 -1 0; -1 1 1; 0 1 2]
@@ -168,14 +171,15 @@ module preproc_edge (
 		wire [10:0] apx = px[10] ? (~px + 11'd1) : px;
 		wire [10:0] apy = py[10] ? (~py + 11'd1) : py;
 		wire [11:0] pmag = {1'b0, apx} + {1'b0, apy};      // <= 1530
-		wire [11:0] pmag_s = (pmag >> i_prew_shift);
-		wire [7:0]  prewv = (pmag_s > 12'd255) ? 8'hFF : pmag_s[7:0];
+		wire [15:0] pmag_g = pmag * i_prew_gain;
+		wire [13:0] pmag_s = pmag_g >> 2;
+		wire [7:0]  prewv = (pmag_s > 14'd255) ? 8'hFF : pmag_s[7:0];
 
 		// ---------------- 8 锐化 (保色) ----------------
 		wire signed [12:0] dsh = ($signed({5'b0, b1}) <<< 2)
 		                       - $signed({5'b0, a1}) - $signed({5'b0, b0})
 		                       - $signed({5'b0, b2}) - $signed({5'b0, c1});
-		wire signed [15:0] shadd = (dsh * $signed({12'b0, i_sharp_gain})) >>> 3;
+		wire signed [15:0] shadd = (dsh * $signed({11'b0, i_sharp_gain})) >>> 4;
 
 		wire [7:0] rp = i_rgb[(32*j) + 16 +: 8];
 		wire [7:0] gp = i_rgb[(32*j) +  8 +: 8];
