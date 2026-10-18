@@ -8,7 +8,7 @@ cd "$D"
 echo "== 编译 =="
 iverilog -g2005 -o tb_preproc.vvp \
     tb_preproc.v \
-    preproc_top.v preproc_win3x3.v preproc_edge.v
+    preproc_top.v preproc_basic.v preproc_win3x3.v preproc_edge.v
 echo "   OK"
 
 echo "== 运行 =="

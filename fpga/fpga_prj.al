@@ -474,6 +474,14 @@
                     <Attr Name="CompileOrder" Val="71"/>
                 </FileInfo>
             </File>
+            <File Path="uisrc/01_rtl/preproc/preproc_basic.v">
+                <FileInfo>
+                    <Attr Name="UsedInSyn" Val="true"/>
+                    <Attr Name="UsedInP&R" Val="true"/>
+                    <Attr Name="BelongTo" Val="design_1"/>
+                    <Attr Name="CompileOrder" Val="74"/>
+                </FileInfo>
+            </File>
             <File Path="uisrc/01_rtl/ctrl/cam_param.v">
                 <FileInfo>
                     <Attr Name="UsedInSyn" Val="true"/>
