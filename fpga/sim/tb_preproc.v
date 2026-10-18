@@ -49,8 +49,10 @@ module tb_preproc;
 		.i_tvalid(a_valid), .i_tuser(1'b0), .i_tlast(1'b0),
 		.i_rowmask(a_rm), .i_winA(a_winA), .i_winB(a_winB), .i_winC(a_winC),
 		.i_rgb(a_rgb),
-		.i_mode(3'd0), .i_sobel_shift(4'd3), .i_thresh(8'd128),
-		.i_morph_sel(1'b1),
+		.i_mode(4'd0), .i_sobel_shift(4'd3), .i_thresh(8'd128),
+		.i_morph_sel(1'b1), .i_morph_th(8'd128),
+		.i_lap_shift(4'd3), .i_prew_shift(4'd3),
+		.i_emboss_gain(4'd4), .i_emboss_bias(8'd128), .i_sharp_gain(4'd4),
 		.o_tvalid(ev0), .o_tuser(), .o_tlast(), .o_rgb(eo0));
 
 	preproc_edge u_e1 (
@@ -58,8 +60,10 @@ module tb_preproc;
 		.i_tvalid(a_valid), .i_tuser(1'b0), .i_tlast(1'b0),
 		.i_rowmask(a_rm), .i_winA(a_winA), .i_winB(a_winB), .i_winC(a_winC),
 		.i_rgb(a_rgb),
-		.i_mode(3'd1), .i_sobel_shift(4'd3), .i_thresh(8'd128),
-		.i_morph_sel(1'b1),
+		.i_mode(4'd1), .i_sobel_shift(4'd3), .i_thresh(8'd128),
+		.i_morph_sel(1'b1), .i_morph_th(8'd128),
+		.i_lap_shift(4'd3), .i_prew_shift(4'd3),
+		.i_emboss_gain(4'd4), .i_emboss_bias(8'd128), .i_sharp_gain(4'd4),
 		.o_tvalid(ev1), .o_tuser(), .o_tlast(), .o_rgb(eo1));
 
 	preproc_edge u_e2 (
@@ -67,8 +71,10 @@ module tb_preproc;
 		.i_tvalid(a_valid), .i_tuser(1'b0), .i_tlast(1'b0),
 		.i_rowmask(a_rm), .i_winA(a_winA), .i_winB(a_winB), .i_winC(a_winC),
 		.i_rgb(a_rgb),
-		.i_mode(3'd2), .i_sobel_shift(4'd3), .i_thresh(8'd128),
-		.i_morph_sel(1'b1),
+		.i_mode(4'd2), .i_sobel_shift(4'd3), .i_thresh(8'd128),
+		.i_morph_sel(1'b1), .i_morph_th(8'd128),
+		.i_lap_shift(4'd3), .i_prew_shift(4'd3),
+		.i_emboss_gain(4'd4), .i_emboss_bias(8'd128), .i_sharp_gain(4'd4),
 		.o_tvalid(ev2), .o_tuser(), .o_tlast(), .o_rgb(eo2));
 
 	preproc_edge u_e3 (
@@ -76,8 +82,10 @@ module tb_preproc;
 		.i_tvalid(a_valid), .i_tuser(1'b0), .i_tlast(1'b0),
 		.i_rowmask(a_rm), .i_winA(a_winA), .i_winB(a_winB), .i_winC(a_winC),
 		.i_rgb(a_rgb),
-		.i_mode(3'd3), .i_sobel_shift(4'd3), .i_thresh(8'd128),
-		.i_morph_sel(1'b1),
+		.i_mode(4'd3), .i_sobel_shift(4'd3), .i_thresh(8'd128),
+		.i_morph_sel(1'b1), .i_morph_th(8'd128),
+		.i_lap_shift(4'd3), .i_prew_shift(4'd3),
+		.i_emboss_gain(4'd4), .i_emboss_bias(8'd128), .i_sharp_gain(4'd4),
 		.o_tvalid(ev3), .o_tuser(), .o_tlast(), .o_rgb(eo3));
 
 	//================================================================ PHASE B
@@ -96,15 +104,24 @@ module tb_preproc;
 	wire [127:0] p_rgb;
 
 	preproc_top #(
-		.H_ACTIVE   (H_ACTIVE),
 		.PX_PER_CLK (PX_PER_CLK)
 	) u_dut (
 		.clk(clk), .rst_n(rst_n),
+		.i_h_active(H_ACTIVE[12:0]),
+		.i_v_active(NLINE[11:0]),
 		.i_tvalid(b_valid), .i_tuser(b_tuser), .i_tlast(b_tlast), .i_rgb(b_rgb),
-		.i_mode(3'd1),           // Sobel
+		.i_basic_en(5'd0), .i_gray_mode(1'b0), .i_gauss_str(4'd8),
+		.i_he_str(8'd255), .i_contrast(4'd4),
+		.i_mode(4'd1),           // Sobel
 		.i_sobel_shift(4'd3),
 		.i_thresh(8'd128),
 		.i_morph_sel(1'b1),
+		.i_morph_th(8'd128),
+		.i_lap_shift(4'd3),
+		.i_prew_shift(4'd3),
+		.i_emboss_gain(4'd4),
+		.i_emboss_bias(8'd128),
+		.i_sharp_gain(4'd4),
 		.o_tvalid(p_tvalid), .o_tuser(p_tuser), .o_tlast(p_tlast), .o_rgb(p_rgb));
 
 	// 探针: 把窗口内部信号引出来 (验证行缓冲对齐)
