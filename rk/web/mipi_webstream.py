@@ -138,16 +138,22 @@ def _acquire_single_instance():
 
 SWITCH_SH = "/tmp/mode_switch.sh"
 SWITCH_RETRY = "/tmp/switch_retry"
+SWITCH_PHASE = ""          # 进程内切换的当前阶段(日志/诊断用)
 
 
 def _launch_start_script(want, res_mode):
-    """切模式：停 web -> 写 0xE0 -> 等 5 秒 -> start.sh 重新拉起。
+    """切模式：停 web -> 写 0xE0 -> 等 sensor 重锁 -> start.sh 重新拉起。
 
     为什么不让 start.sh 自己去写 0xE0：它内部 1080p 分支只等 3 秒，
     而从 4K 退出时 sensor 重下初始化表 + VTC 重锁要更久 —— 实测
     “4K 切回 1080p” 会卡死（media 配好了但 rkcif 收不到数据）。
-    自己写完先等够 5 秒，再叫 start.sh（它看到已是目标模式就跳过写+等待，
+    自己写完先等够 3 秒，再叫 start.sh（它看到已是目标模式就跳过写+等待，
     直接配 media 并启动），时序就稳定了。
+
+    等待时间（V45.8 优化，原为 2+5 秒）：
+      pkill 后 0.4s 足够句柄释放；sensor 重下初始化表 + VTC 重锁实测要
+      ≥4s（降到 3s 时 4K 能打开设备但首帧拖到几十秒才来，已实测排除），
+      所以这里保留 5s。真正省掉的是原来额外的 2s + start.sh 里的 2s/3s。
     本进程会被脚本 pkill 掉，所以必须先发响应、再异步跑。
     """
     if not os.path.isfile(START_SH):
@@ -169,7 +175,7 @@ def _launch_start_script(want, res_mode):
                 "echo $$ > \"$PIDF\"\n"
                 "trap 'rm -f \"$PIDF\"' EXIT\n"
                 "pkill -9 -f 'mipi_webstream\\.py' 2>/dev/null\n"
-                "sleep 2\n"
+                "sleep 0.4\n"
                 "python3 /root/rk/deploy/fpga_cfg.py set 0xE0 %d\n"
                 "sleep 5\n"
                 "bash %s %s\n"
@@ -1329,6 +1335,7 @@ class OpenCVCapture(threading.Thread):
 
     def _capture_loop(self, dev):
         cap = None
+        self._cap = None
         seq = 0
         while not self.stop_flag.is_set():
             t_start = time.time()
@@ -1353,6 +1360,7 @@ class OpenCVCapture(threading.Thread):
                 print("[opencv] v4l2-ctl set-fmt %dx%d -> %s" % (w, h, _msgf))
                 print("[opencv] 打开 %s ..." % dev)
                 cap = cv2.VideoCapture(dev, cv2.CAP_V4L2)
+                self._cap = cap          # 供 stop()/切模式时强制打断阻塞的 read
                 if self.args.fourcc:
                     cap.set(cv2.CAP_PROP_FOURCC,
                             cv2.VideoWriter_fourcc(*self.args.fourcc))
@@ -1419,12 +1427,30 @@ class OpenCVCapture(threading.Thread):
         否则 rkcif 正占着, S_FMT 会被拒或只改一半 pad —— 结果是新旧尺寸
         混在一起, 采集直接 select() 超时, 只能重建整条通路才能好。
         这也是为什么 start.sh 的顺序是「先 stop web -> 再配 media」。
+
+        V45.8: 从外部 release 一次底层句柄 —— cap.read() 卡在 select() 时
+        只靠 stop_flag 退不出来, 那样设备永远不释放、media-ctl 必定失败。
         """
         self.stop_flag.set()
         try:
-            self.join(timeout=3.0)
+            self.join(timeout=1.0)
         except Exception:                                          # noqa: BLE001
             pass
+        if self.is_alive():
+            self._force_release()
+            try:
+                self.join(timeout=1.5)
+            except Exception:                                      # noqa: BLE001
+                pass
+
+    def _force_release(self):
+        """从其它线程把底层 VideoCapture 放掉, 用于打断阻塞的 read()。"""
+        c = getattr(self, "_cap", None)
+        if c is not None:
+            try:
+                c.release()
+            except Exception:                                      # noqa: BLE001
+                pass
 
     # ---- 硬件编码 (MPP/VPU) ----
     def _hw_encoder(self, w, h, want):
@@ -3050,6 +3076,76 @@ class Handler(BaseHTTPRequestHandler):
             pass
 
     # ---------- 分辨率/帧率切换 ----------
+    def _switch_inplace(self, mode, old_ms, want):
+        """进程内切分辨率：停采集 -> 写 FPGA -> 等重锁 -> 配 media -> 重开采集。
+
+        相比整进程重启的好处：
+          · 前端页面 / MJPEG 客户端连接不断（只断流，前端自动续）
+          · AI 模型不用重新加载（每次重加载 10~20s）
+          · 不用重新探测 I2C、重建线程池
+        失败兜底：20 秒还没帧就交回 start.sh（已验证稳定的整条重启）。
+        """
+        global SWITCH_PHASE
+        try:
+            SWITCH_PHASE = "stop"
+            cap_old = Handler.capture
+            # ★ 停采集与 sensor 重锁并行：
+            #   写 0xE0 不需要设备空闲，所以先发停止信号 + 立刻释放句柄，
+            #   再去写寄存器/等 5 秒 —— 这 5 秒本来就该等，顺便把线程退出等了。
+            #   旧写法先 join(3s) 再写，白白多了 3 秒。
+            if cap_old is not None:
+                cap_old.stop_flag.set()
+                cap_old._force_release()
+            SWITCH_PHASE = "fpga"
+            self.fpga.write(0xE0, int(mode["res_mode"]))
+            time.sleep(5.0)             # sensor 重下初始化表 + VTC 重锁(实测 >=4s)
+            if cap_old is not None:
+                try:
+                    cap_old.join(timeout=1.5)   # 正常情况下早退完了
+                except Exception:                               # noqa: BLE001
+                    pass
+            # 曝光保持：必须在复位完成后再写 SHR0（会被初始化表覆盖）
+            if old_ms is not None:
+                try:
+                    nvm, ntl = ((CAM_VMAX_4K, CAM_T_LINE_US_4K)
+                                if int(mode["res_mode"]) in (1, 2)
+                                else (CAM_VMAX_1080, CAM_T_LINE_US_1080))
+                    ns = cam_shr0_from_ms(old_ms, nvm, ntl)
+                    self.fpga.write(0xC0, ns & 0xFF)
+                    self.fpga.write(0xC1, (ns >> 8) & 0xFF)
+                    self.fpga.write(0xC2, (ns >> 16) & 0x0F)
+                except Exception:                                  # noqa: BLE001
+                    pass
+            SWITCH_PHASE = "media"
+            try:
+                pipeline_set_fmt(int(mode["w"]), int(mode["h"]))
+            except Exception as e:                                 # noqa: BLE001
+                print("[switch] media-ctl 异常: %s" % e, file=sys.stderr)
+            self.args.width = int(mode["w"])
+            self.args.height = int(mode["h"])
+            SWITCH_PHASE = "capture"
+            cap_new = OpenCVCapture(Handler.hub, self.params, self.args)
+            Handler.capture = cap_new
+            cap_new.start()
+            SWITCH_PHASE = "ready"
+            _bump_rev("mode")
+            print("[switch] 已在进程内切到 %dx%d" % (mode["w"], mode["h"]))
+
+            def _watch():
+                time.sleep(20.0)
+                st = Handler.hub.status() if Handler.hub is not None else {}
+                if (st.get("fps") or 0) <= 0.5:
+                    global SWITCH_PHASE
+                    SWITCH_PHASE = "fallback"
+                    print("[switch] 20s 仍无帧, 回退 start.sh", file=sys.stderr)
+                    _launch_start_script(want, int(mode["res_mode"]))
+            threading.Thread(target=_watch, daemon=True, name="switchwd").start()
+        except Exception as e:                                     # noqa: BLE001
+            SWITCH_PHASE = "error"
+            print("[switch] 进程内切换失败: %s: %s" % (type(e).__name__, e),
+                  file=sys.stderr)
+            _launch_start_script(want, int(mode["res_mode"]))
+
     def _apply_mode(self, mode, force=False):
         """切模式: FPGA 寄存器 -> RK 侧 V4L2 格式 -> 采集线程重开。
 
@@ -3098,17 +3194,20 @@ class Handler(BaseHTTPRequestHandler):
             #   它自己会：停 web(释放 /dev/video22) -> 写 0xE0 -> 等 4s
             #   -> 配 media 三个 pad -> 按新尺寸启 web。
             #   我们只要把“曝光多少 ms”交接给新进程就行。
-            if int(mode["fps_div"]) == 1 and os.path.isfile(START_SH):
+            # ★ V45.8 进程内切换：只重开采集，不重启 web。
+            #   实测每次重启 web 都要重新加载 AI 模型（10~20s），那才是
+            #   “切换慢”的主因；前端连接和模型都不该为换格式买单。
+            if int(mode["fps_div"]) == 1:
                 want = "4k" if int(mode["res_mode"]) in (1, 2) else "1080"
                 _bump_rev("mode")
                 _reset_retry()          # 用户主动切换 -> 重试计数清零
-                # 先把响应发回去, 再让切换脚本把本进程 kill 掉
-                threading.Timer(1.0, _launch_start_script,
-                                args=(want, int(mode["res_mode"]))).start()
+                threading.Thread(target=self._switch_inplace,
+                                 args=(mode, old_ms, want),
+                                 daemon=True, name="switch").start()
                 return {"ok": True, "mode": mode,
                         "log": ["切换中 -> %s (RES_MODE=%d)"
                                 % (want, int(mode["res_mode"]))],
-                        "note": "服务重启中，约 18 秒后恢复"}
+                        "note": "只断流，页面与 AI 模型不受影响，约 6~9 秒恢复"}
 
             # ---- 没有 start.sh 时的回退流程 ----
 

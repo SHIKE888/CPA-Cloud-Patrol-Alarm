@@ -1022,11 +1022,12 @@ function fpgaShowSt(d) {
   $("fsBeat").textContent   = (st.HEARTBEAT !== undefined) ? st.HEARTBEAT : "—";
   $("fsVer").textContent    = (st.VER !== undefined)
       ? "0x" + st.VER.toString(16).toUpperCase().padStart(4, "0") : "—";
-  // V45.2 起 Sobel/拉普拉斯/Prewitt/锐化 的参数语义从“右移”改成“增益”
-  const ver = (st.VER !== undefined) ? Number(st.VER) : null;
-  if (ver !== null && ver < 0x4507 && !ppVerWarned) {
-    ppVerWarned = true;
-    toast("FPGA 固件低于 V45.6：三通道高斯 / 防频闪需要 V45.6 bit 才生效", true);
+  // 版本号只在这里显示，不再弹 toast —— V45.6/0x4506 是当前可用的稳定版本，
+  // 0x4507 需要重新综合烧写，未烧时反复提示只会干扰。
+  const _ver = (st.VER !== undefined) ? Number(st.VER) : null;
+  if (_ver !== null && _ver < 0x4507 && $("fsVer")) {
+    $("fsVer").title = "当前 0x" + _ver.toString(16).toUpperCase() +
+      "；V45.7(0x4507) 修复了行首 16 像素错位，需重新综合烧写 bit";
   }
   if ($("fsCamWr")) {
     $("fsCamWr").textContent = (st.CAM_WR_CNT !== undefined)
@@ -1208,25 +1209,58 @@ $("btnApplyMode").onclick = async () => {
   if (!m) return;
   if (!confirm(
       "切换到 " + m.label + " ?\n\n" +
-      "· 采集通路会重新配置：停采集 → 写 FPGA 模式 → 等 5 秒复位 → 配 media → 重启服务\n" +
-      "· 画面会中断约 40 秒（期间所有设备都看不到画面）\n" +
-      "· 完成后本页会提示「请刷新页面」，刷新后自动恢复拉流\n\n" +
+      "· 采集通路会重新配置：停采集 → 写 FPGA 模式 → 等 sensor 重锁 → 配 media → 重启服务\n" +
+      "· 画面会中断约 6~10 秒，**页面不用刷新**，恢复后自动续流\n\n" +
       "采集格式将变为 " + m.w + " x " + m.h + "。")) return;
   toast("正在切换到 " + m.id + " …");
+  let r = null;
   try {
-    const r = await api("/api/mode",
-                        { method: "POST", body: JSON.stringify({ id: m.id }) });
+    r = await api("/api/mode",
+                  { method: "POST", body: JSON.stringify({ id: m.id }) });
     if (r.ok) toast((r.log || []).join("  |  ") || "已切换");
     else toast(r.error || (r.log || []).join("  |  ") || "切换失败", true);
-  } catch (e) { toast("切换失败: " + e.message, true); }
-  // 服务端会重启 web(监听 socket 被关) -> 旧 MJPEG 连接必死。
-  // 实测在这块板上“自动重连”经常把采集撞挂(clients 堆满 -> fps 0),
-  // 所以统一改成明确提示刷新 —— 两次点击换来稳定。
-  // 实测完整切换要 ~40 秒(含 start.sh 自己的等待), 这期间别让看门狗插手
-  switchUntil = Date.now() + 45000;
-  streamTries = 0;
-  showReloadBar(m.label);
+  } catch (e) {
+    // 服务端被 pkill 时 POST 可能收不到响应 —— 这是正常流程，继续等恢复
+  }
+  if (r && !r.ok) return;              // 明确失败就别等
+  await waitModeReady(m.label);
 };
+
+/* 切模式后：页面不刷新，等服务端真正出帧了再重挂 MJPEG 流。
+   服务端短时间重启（pkill + start.sh），期间 /api/sys 会失败或 fps=0。
+   旧版直接弹“请刷新页面”，现在改成静默等待 + 自动续流。 */
+let modeWaitGen = 0;
+async function waitModeReady(label) {
+  const gen = ++modeWaitGen;
+  clearTimeout(streamTimer);
+  needReload = false;
+  switchUntil = Date.now() + 45000;    // 静默期: 看门狗/重连都别插手
+  connected = false; streamPending = false;
+  setDot(false, "切换中…");
+  const t0 = Date.now();
+  let ok = false;
+  while (gen === modeWaitGen && Date.now() - t0 < 45000) {
+    await new Promise(r => setTimeout(r, 700));
+    try {
+      const d = await api("/api/sys");
+      const fps = (d.capture && d.capture.fps) || 0;
+      if (fps > 0.5) { ok = true; break; }
+    } catch (e) { /* 服务还在重启 */ }
+  }
+  if (gen !== modeWaitGen) return;
+  switchUntil = 0;
+  streamTries = 0; deadStrikes = 0; zeroClientHits = 0;
+  lastForceAt = 0;                     // 绕过 startStream 的 5s 限频
+  if (ok) {
+    await loadModes(true).catch(() => {});
+    startStream(true);
+    toast("切换完成: " + (label || ""));
+  } else {
+    // 真的起不来才让用户刷新（兜底）
+    setDot(false, "切换超时");
+    showReloadBar(label);
+  }
+}
 
 /* ---------------- 系统指标 ---------------- */
 let sysTimer = null;
@@ -1247,6 +1281,7 @@ async function sysPollOnce() {
   try { d = await api("/api/sys"); }
   catch (e) {
     // 切模式期间服务端在重启, 请求会失败 —— 连续失败就主动重连拉流
+    if (Date.now() < switchUntil) return;      // 切换流程自己会重连
     if (!streamPending || Date.now() - streamPendingAt > 6000) {
       if (++zeroClientHits >= 5) { zeroClientHits = 0; startStream(true); }
     }
@@ -1366,11 +1401,10 @@ async function applyRemote(kind) {
     if (kind === "ai") { await aiLoad(); return true; }
     if (kind === "mode") {
       // ★ 分辨率/格式变了, 已有的 MJPEG 连接已经失效。
-      //   实测在这个板子上自动重连很容易把采集搞挂(clients 堆满 -> fps 0),
-      //   所以这里只给一个明确的“请刷新”提示。
+      //   现在由 waitModeReady 等服务真正出帧后自动续流（不再要求刷新页面）。
       try { await loadModes(); } catch (e) {}
       const m = curModeObj();
-      showReloadBar(m ? m.label : "新模式");
+      await waitModeReady(m ? m.label : "新模式");
       return true;
     }
   } catch (e) { return false; }

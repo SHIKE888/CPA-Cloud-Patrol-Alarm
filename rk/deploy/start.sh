@@ -77,13 +77,19 @@ stop_all() {
     if pkill -f 'ai_webstream\.py' 2>/dev/null; then
         echo "  已停 9013 独立版 AI"
     fi
-    sleep 2
+    # V45.8: 原来固定 sleep 2 —— 但进程已死时没有任何意义。
+    #        改成先查一次，还活着才等（切换耗时直接少 2 秒）。
     n=$(pgrep -f 'mipi_webstream\.py' 2>/dev/null | wc -l)
     n=${n:-0}
     if [ "$n" -gt 0 ]; then
+        sleep 0.4
+        n=$(pgrep -f 'mipi_webstream\.py' 2>/dev/null | wc -l)
+        n=${n:-0}
+    fi
+    if [ "$n" -gt 0 ]; then
         c_warn "  仍有 $n 个残留, 强制 kill"
         pkill -9 -f 'mipi_webstream\.py' 2>/dev/null
-        sleep 1
+        sleep 0.4
     fi
     return 0
 }
@@ -205,7 +211,9 @@ do_start() {
         tail -n 30 "$LOG"
         exit 1
     fi
-    sleep 3
+    # V45.8: 原来再睡 3 秒。端口已监听=HTTP 已可用，首帧由前端自己等，
+    #        这里只留 0.5 秒缓冲。
+    sleep 0.5
 
     c_ok "  ✔ 已启动"
     echo ""
