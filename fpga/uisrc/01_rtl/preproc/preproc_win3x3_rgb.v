@@ -113,17 +113,12 @@ module preproc_win3x3_rgb #(
 			v_d1 <= 1'b0; v_d2 <= 1'b0;
 			u_d1 <= 1'b0; u_d2 <= 1'b0;
 			t_d1 <= 1'b0; t_d2 <= 1'b0;
-		end else if (i_tvalid) begin
-			// 只有真有像素时才推进（行消隐冻结，避免行首窗口用旧数据）
+		end else begin
 			cur_d1 <= rgb4;      cur_d2 <= cur_d1;
 			r1_d1  <= r1_raw;
-			v_d1   <= 1'b1;      v_d2   <= v_d1;
+			v_d1   <= i_tvalid;  v_d2   <= v_d1;
 			u_d1   <= i_tuser;   u_d2   <= u_d1;
 			t_d1   <= i_tlast;   t_d2   <= t_d1;
-		end else begin
-			v_d1 <= 1'b0;  v_d2 <= 1'b0;
-			u_d1 <= 1'b0;  u_d2 <= 1'b0;
-			t_d1 <= 1'b0;  t_d2 <= 1'b0;
 		end
 	end
 
@@ -145,14 +140,12 @@ module preproc_win3x3_rgb #(
 			c_p1 <= 96'd0; c_p2 <= 96'd0;
 			rgb_d1 <= 128'd0; rgb_d2 <= 128'd0; rgb_d3 <= 128'd0;
 			v_d3 <= 1'b0; u_d3 <= 1'b0; t_d3 <= 1'b0;
-		end else if (v_d2) begin
+		end else begin
 			a_p1 <= wA;  a_p2 <= a_p1;
 			b_p1 <= wB;  b_p2 <= b_p1;
 			c_p1 <= wC;  c_p2 <= c_p1;
 			rgb_d1 <= i_rgb; rgb_d2 <= rgb_d1; rgb_d3 <= rgb_d2;
-			v_d3 <= 1'b1; u_d3 <= u_d2; t_d3 <= t_d2;
-		end else begin
-			v_d3 <= 1'b0; u_d3 <= 1'b0; t_d3 <= 1'b0;
+			v_d3 <= v_d2; u_d3 <= u_d2; t_d3 <= t_d2;
 		end
 	end
 
