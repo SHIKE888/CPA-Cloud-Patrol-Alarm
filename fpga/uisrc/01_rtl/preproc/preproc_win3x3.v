@@ -148,12 +148,19 @@ module preproc_win3x3 #(
 			v_d1 <= 1'b0; v_d2 <= 1'b0;
 			u_d1 <= 1'b0; u_d2 <= 1'b0;
 			t_d1 <= 1'b0; t_d2 <= 1'b0;
-		end else begin
+		end else if (i_tvalid) begin
+			// ★ 只有真有像素时才推进。行消隐期间必须冻结，否则回来后第一批
+			//   窗口的"左邻像素"是行首之前的旧数据 —— 实测每级 3x3 弄脏 4 像素，
+			//   4 级级联就是每行开头 16 像素错位（表现为左侧红/黑色带）。
 			cur_d1 <= lum4;      cur_d2 <= cur_d1;
 			r1_d1  <= r1_raw;
-			v_d1   <= i_tvalid;  v_d2   <= v_d1;
+			v_d1   <= 1'b1;      v_d2   <= v_d1;
 			u_d1   <= i_tuser;   u_d2   <= u_d1;
 			t_d1   <= i_tlast;   t_d2   <= t_d1;
+		end else begin
+			v_d1 <= 1'b0;  v_d2 <= 1'b0;
+			u_d1 <= 1'b0;  u_d2 <= 1'b0;
+			t_d1 <= 1'b0;  t_d2 <= 1'b0;
 		end
 	end
 
@@ -179,12 +186,14 @@ module preproc_win3x3 #(
 			c_p1 <= 32'd0; c_p2 <= 32'd0;
 			rgb_d1 <= 128'd0; rgb_d2 <= 128'd0; rgb_d3 <= 128'd0;
 			v_d3 <= 1'b0; u_d3 <= 1'b0; t_d3 <= 1'b0;
-		end else begin
+		end else if (v_d2) begin
 			a_p1 <= wA;  a_p2 <= a_p1;
 			b_p1 <= wB;  b_p2 <= b_p1;
 			c_p1 <= wC;  c_p2 <= c_p1;
 			rgb_d1 <= i_rgb; rgb_d2 <= rgb_d1; rgb_d3 <= rgb_d2;
-			v_d3 <= v_d2; u_d3 <= u_d2; t_d3 <= t_d2;
+			v_d3 <= 1'b1; u_d3 <= u_d2; t_d3 <= t_d2;
+		end else begin
+			v_d3 <= 1'b0; u_d3 <= 1'b0; t_d3 <= 1'b0;
 		end
 	end
 
