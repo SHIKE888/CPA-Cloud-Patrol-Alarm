@@ -3585,6 +3585,14 @@ def main():
                     help="参数存档路径 (默认 同目录 state.json; 传空字符串=不保存)")
     args = ap.parse_args()
 
+    # ★ GIL 切换间隔：**试过，别调**。
+    #   默认 5ms。曾怀疑 AI 的纯 Python 后处理与 3 个编码线程抢 GIL，
+    #   导致 MJPEG 帧间隔抖动（实测平均帧率不变 58.7 vs 59.4，但 stdev 0.68 -> 3.57ms、
+    #   p99 19 -> 25ms，观感"拖影 / 一顿一顿"）。
+    #   实测 `sys.setswitchinterval(0.001)` **更差**（stdev 5.72ms、p99 35ms、最大 41ms）：
+    #   切换本身的开销大于它带来的公平性收益。所以保持默认。
+    #   真正有效的做法是降低 AI 帧率（见 --ai-fps / 网页「AI 帧率」）。
+
     # ★ 单实例锁。两个 mipi_webstream 同时跑会互抢 /dev/video22,
     #   结果是两边都 select() timeout、fps=0 —— 看起来就像“采集卡死”。
     #   之前切分辨率或并发跑 start.sh 时确实出现过双实例。

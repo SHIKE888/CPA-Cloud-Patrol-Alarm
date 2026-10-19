@@ -86,6 +86,21 @@ def _first_existing_name(mdir, *names):
     return names[0]
 
 
+def _lower_priority(delta):
+    """把**当前线程**的 nice 值调高（= 把 CPU 让给视频链路）。
+
+    Linux 的 nice 是 per-thread 的，所以只影响调用它的那个线程。
+    为什么要这个：AI 开到 50fps 后，推理/前处理线程会把 3 个编码线程挤走，
+    MJPEG 的平均帧率看不出变化（58.7 vs 59.4），但**帧间隔抖动**从 0.68ms
+    涨到 3.57ms（p99 19→25ms），观感就是“拖影 / 一顿一顿”。
+    AI 是“尽力而为”，视频链路才是主业务，所以让它先让路。
+    """
+    try:
+        os.nice(int(delta))
+    except Exception:                                           # noqa: BLE001
+        pass
+
+
 class AiOverlay(object):
     """线程安全的 AI 叠加器。编码线程调 submit()/draw()，本类内部线程负责推理。"""
 
@@ -152,6 +167,9 @@ class AiOverlay(object):
         # 纯骨骼模式：整帧涂黑，只留关节点/骨架（不带人体框与标签）—— 隐私场景用
         self.skeleton_only = bool(skeleton_only)
         self.verbose = bool(verbose)
+        # 绘制函数在 _load() 里缓存（draw() 每帧都要用，不能每帧 import）
+        self._draw_person = None
+        self._draw_pose = None
         self.zone = list(zone or [])
 
         self.ok = False
@@ -241,6 +259,12 @@ class AiOverlay(object):
         try:
             from action_rules import ActionRecognizer          # noqa: WPS433
             from det_core import SimpleTracker, TwoStageDetector  # noqa: WPS433
+            from det_core import draw_person, draw_pose        # noqa: WPS433
+            # ★ 绘制函数缓存成属性：draw() 在**每个编码帧**都会调，
+            #   以前那里每次都 `from det_core import ...` —— 走 import 锁 + 模块表查找，
+            #   58fps 下每秒 58 次，实测把 MJPEG 帧间隔抖动从 1.07ms 抬到 6.66ms。
+            self._draw_person = draw_person
+            self._draw_pose = draw_pose
         except Exception as e:                                  # noqa: BLE001
             self.err = "导入 AI 模块失败(%s): %s" % (board, e)
             return False
@@ -356,9 +380,15 @@ class AiOverlay(object):
             return frame
         with self._lock:
             res = self._result
-        try:
-            from det_core import draw_person, draw_pose
-        except Exception:                                       # noqa: BLE001
+        if not res and not self.skeleton_only:
+            # 没结果（画面里没人）时直接返回。这一行很关键：
+            # 以前即使什么都没画也要先跑一次 `from det_core import ...`，
+            # 而 draw() 在**每个编码帧**都被调，54~66fps 下就是每秒 50+ 次 import，
+            # 实测导致 MJPEG 帧间隔 stdev 1.07 -> 6.66ms、p99 19 -> 33ms（看着卡/拖影），
+            # 而且与 ai_fps 无关（20fps 时依然抖）—— 因为它是“每帧”成本，不是“每推理”成本。
+            return frame
+        draw_person, draw_pose = self._draw_person, self._draw_pose
+        if draw_person is None:
             return frame
 
         if self.skeleton_only:
@@ -455,6 +485,7 @@ class AiOverlay(object):
 
     # ------------------------------------------------------------------ 推理线程
     def _run(self):
+        _lower_priority(4)          # 推理让路给编码/采集
         if not self._load():
             print("[ai] 未启用: %s" % self.err, file=sys.stderr)
             return
@@ -544,17 +575,15 @@ class AiOverlay(object):
         """
         k = 0
         last = -1
+        _lower_priority(6)          # 前处理比推理更次要
         while not self._stop.is_set():
             if not self.active or self.detector is None:
                 time.sleep(0.05)
                 continue
-            if self._pre_q.full():
-                time.sleep(0.003)
-                continue
             with self._lock:
                 fr, sq = self._frame, self._seq
             if fr is None or sq == last:
-                time.sleep(0.003)
+                time.sleep(0.005)
                 continue
             last = sq
             try:
@@ -565,7 +594,9 @@ class AiOverlay(object):
                 continue
             k += 1
             try:
-                self._pre_q.put((fr, pack, sq), timeout=0.05)
+                # 队列满就**阻塞等**，不要忙轮询：原来每 3ms 醒一次，
+                # 一次不下就空转一次，白白抢了一个核的调度。
+                self._pre_q.put((fr, pack, sq), timeout=0.3)
             except queue.Full:
                 pass
 
