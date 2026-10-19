@@ -676,9 +676,23 @@ class TwoStageDetector(object):
 
         objs = _decode_heads(outs, self.det_conf, keep_cls=[0], want_kps=True,
                              input_size=self.pose_size)
-        objs = _post(objs, self.nms_thres, max_det=1)
-        if not objs or objs[0].kps is None:
+        objs = [o for o in _post(objs, self.nms_thres, max_det=4)
+                if o.kps is not None]
+        if not objs:
             return None
+        if len(objs) > 1:
+            # ★ 多人时骨架“乱跳”的主因之一：ROI 是人体框外扩 roi_expand 来的，
+            #   两人靠近时会把旁边的人也框进去，而旧代码 max_det=1 直接取**最高分**
+            #   那个 —— 经常就是“另一个人”。改成选与一级人体框**重叠最大**的，
+            #   一级框是独立的、不会自己污染自己，所以这个判据最稳。
+            best, best_iou = objs[0], -1.0
+            for o in objs:
+                bx = ((o.box[0] - px) / scale + rx1, (o.box[1] - py) / scale + ry1,
+                      (o.box[2] - px) / scale + rx1, (o.box[3] - py) / scale + ry1)
+                iou = SimpleTracker._iou(box, bx)
+                if iou > best_iou:
+                    best, best_iou = o, iou
+            objs = [best]
 
         k = objs[0].kps.astype(np.float32)          # (17,3) in 640-space
         k[:, 0] = (k[:, 0] - px) / scale + rx1
@@ -796,15 +810,21 @@ class TwoStageDetector(object):
         x1, y1, x2, y2 = [float(v) for v in box]
         cx, cy = (x1 + x2) * 0.5, (y1 + y2) * 0.5
         lim = max(8.0, 0.6 * max(1.0, x2 - x1, y2 - y1))
-        best, bestd = None, lim
+        best, best_key = None, None
         for pb, pk in self._prev_pose:
             if pk is None:
                 continue
             pcx = (float(pb[0]) + float(pb[2])) * 0.5
             pcy = (float(pb[1]) + float(pb[3])) * 0.5
             d = math.hypot(pcx - cx, pcy - cy)
-            if d < bestd:
-                bestd, best = d, (pb, pk)
+            # ★ 用 IoU 优先而不是“中心距离最近”：两人靠近/交叉时，
+            #   中心距离经常把 A 的关节配给 B（这就是“骨架跳到别人身上”）。
+            iou = SimpleTracker._iou(box, pb)
+            if iou < 0.02 and d > lim:
+                continue
+            key = (iou, -d)
+            if best_key is None or key > best_key:
+                best_key, best = key, (pb, pk)
         if best is None:
             return None
         dx = cx - (float(best[0][0]) + float(best[0][2])) * 0.5

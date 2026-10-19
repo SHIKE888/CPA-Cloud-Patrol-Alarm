@@ -3593,6 +3593,23 @@ def main():
     #   切换本身的开销大于它带来的公平性收益。所以保持默认。
     #   真正有效的做法是降低 AI 帧率（见 --ai-fps / 网页「AI 帧率」）。
 
+    # ★ 垃圾回收（2026-10-19）。cv2/numpy 每帧都产生大量临时对象，默认阈值
+    #   (700,10,10) 会让 Python 周期性做一次**全量扫描**；在这颗小核上就是一次
+    #   几十毫秒的停顿 —— 实测 AI 的 run_ms 会偶发 44ms 尖峰，画面表现就是"一顿"。
+    #   只做 freeze()：把启动时已存在的长寿命对象（模块、常量、大字典）移出扫描集合，
+    #   这样每次 GC 要遍历的对象少一个数量级。
+    #
+    #   ⚠⚠ **千万不要调 gc.set_threshold 放宽**：实测 (50000,100,100) 会让
+    #   cv2/numpy 的临时对象大量滞留不回收，RSS 从 272MB 涨到 **1.4GB**，
+    #   几十秒后直接被 OOM killer 杀掉（dmesg: Killed process ... anon-rss:1407292kB）。
+    #   这块板只有 1.9GB 内存，阈值保持默认。也别 gc.disable()（同理）。
+    try:
+        import gc
+        gc.freeze()
+        print("[gc] 已 freeze 长寿命对象（阈值保持默认）")
+    except Exception as _e:                                     # noqa: BLE001
+        print("[gc] freeze 失败: %s" % _e, file=sys.stderr)
+
     # ★ 单实例锁。两个 mipi_webstream 同时跑会互抢 /dev/video22,
     #   结果是两边都 select() timeout、fps=0 —— 看起来就像“采集卡死”。
     #   之前切分辨率或并发跑 start.sh 时确实出现过双实例。

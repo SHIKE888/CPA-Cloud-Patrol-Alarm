@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import os
+import itertools
 import queue
 import sys
 import threading
@@ -196,6 +197,7 @@ class AiOverlay(object):
         self._seq = 0
         self._result = []             # 最近一次的标注结果
         self._result_t = 0.0
+        self._seq_gen = itertools.count(1)   # submit() 用的原子序号
         self._stats = {"n": 0, "t0": time.time(), "det_n": 0, "pose_n": 0}
 
         self._stop = threading.Event()
@@ -285,6 +287,13 @@ class AiOverlay(object):
                  "OK" if (det.pose and det.pose.ok) else "FAIL",
                  getattr(det, "det_size", 0), getattr(det, "pose_size", 0),
                  self.preset))
+        try:
+            # 模型对象已就位，把这一大批长寿命对象移出 GC 扫描集合。
+            # 配合 mipi_webstream 里的 set_threshold，能消掉 run_ms 的偶发尖峰。
+            import gc
+            gc.freeze()
+        except Exception:                                       # noqa: BLE001
+            pass
         return True
 
     def _build(self, det_path, pose_path):
@@ -367,19 +376,25 @@ class AiOverlay(object):
 
     # ------------------------------------------------------------------ 编码线程接口
     def submit(self, frame):
-        """投递最新帧（只存引用；真正要推理时内部才拷贝）。"""
+        """投递最新帧（只存引用；真正要推理时内部才拷贝）。
+
+        ★ **不拿锁**。这个函数在**每个编码帧**都会被调，而 `self._lock` 也被
+        推理线程（写结果）/前处理线程（取帧）/status() 用。哪怕每次只等几十微秒，
+        在 58fps × 多个调用点上也足以把 MJPEG 帧间隔抖动抬到毫秒级。
+        序号用 `itertools.count()` 的 next() 生成（CPython 里是原子的），
+        所以 3 个编码线程并发调也不会拿到重复序号。
+        丢一两帧（并发覆盖）无所谓：本来就是“最新值”语义。
+        """
         if not self.active or frame is None:
             return
-        with self._lock:
-            self._frame = frame
-            self._seq += 1
+        self._frame = frame
+        self._seq = next(self._seq_gen)
 
     def draw(self, frame):
         """把最近一次的标注画到 frame 上（就地）。无结果时原样返回。"""
         if not self.active or frame is None:
             return frame
-        with self._lock:
-            res = self._result
+        res = self._result                 # 无锁读引用（同上，不跟推理线程抢锁）
         if not res and not self.skeleton_only:
             # 没结果（画面里没人）时直接返回。这一行很关键：
             # 以前即使什么都没画也要先跑一次 `from det_core import ...`，
@@ -509,8 +524,7 @@ class AiOverlay(object):
                 if sq == last_seq:
                     continue
             else:
-                with self._lock:
-                    fr, sq = self._frame, self._seq
+                fr, sq = self._frame, self._seq      # 无锁读（引用+整数，原子）
                 if fr is None or sq == last_seq:
                     time.sleep(0.005)
                     continue
@@ -580,8 +594,7 @@ class AiOverlay(object):
             if not self.active or self.detector is None:
                 time.sleep(0.05)
                 continue
-            with self._lock:
-                fr, sq = self._frame, self._seq
+            fr, sq = self._frame, self._seq      # 无锁读（同上，不抢锁）
             if fr is None or sq == last:
                 time.sleep(0.005)
                 continue
