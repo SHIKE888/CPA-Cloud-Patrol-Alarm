@@ -75,22 +75,61 @@ def letterbox(img, size=(640, 640), color=114, interp=None):
     return canvas, r, px, py
 
 
-def letterbox_rgb(img, size=(640, 640), color=114, interp=None):
+# letterbox 画布缓存: key=(th, tw, dtype) -> {'buf', 'shape', 'pos'}
+#
+# 为什么要缓存：`np.full((640,640,3), 114)` 每次都要分配 + memset 1.2MB，
+# 实测 letterbox_rgb 总耗时 3.09ms，而裸 resize+cvtColor 只要 0.80ms ——
+# 差的 2.2ms 几乎全是分配画布和 memset（GPU/UMat 那条路更慢：上传+下载 7.7ms）。
+# 1080p 输入的 nw/nh/px/py 每帧都一样，画布只需把中间区域覆盖掉即可。
+#
+# ⚠ 返回的 canvas 是**复用缓冲**：下次调用会被覆盖，只能同步用完即弃
+#   （persons() / pose_in() 都是先喂给 infer 再丢弃，安全）。
+# ⚠ 单个进程内共用；det 与 pose 交替使用同一块 640 画布是安全的，
+#   因为两者都是同步串行使用，且每次都会把中间区域整块重写。
+_LB_CACHE = {}
+
+
+def letterbox_rgb(img, size=(640, 640), color=114, interp=None, slot=''):
     """letterbox 并直接给出 RGB。
 
-    缩放与转色的先后顺序按“哪边小先做哪边”来选：
-      * 大图缩小（1080p→640）：先缩再转色，在小图上转色快得多；
+    缩放与转色的先后顺序按“哪边像素少先做哪边”来选：
+      * 大图缩小（1080p→640）：**先缩再转色** —— 转色只处理 640×360，
+        而不是整块 640×640 画布（原来多转 44% 的像素，~0.35ms/帧）；
       * 小图放大（人体 ROI→640）：先在原尺寸转色再放大，
         免得把 1.2MB 的画布做一次无谓的 cvtColor。
+
+    slot: 缓存槽名。**一级检测与二级姿态必须用不同的 slot** ——
+    两者的贴图区域尺寸差异很大，共用一个缓冲会每帧都触发整块重填，
+    等于把复用的收益全部吃掉。
+    返回的 canvas 是复用缓冲，下次同 slot 调用即失效。
     """
     h, w = img.shape[:2]
     tw, th = size
     r = min(tw / float(w), th / float(h))
+    if interp is None:
+        interp = cv2.INTER_LINEAR if r > 1 else cv2.INTER_AREA
+    nw, nh = int(round(w * r)), int(round(h * r))
+    px, py = (tw - nw) // 2, (th - nh) // 2
+
+    key = (slot, th, tw, img.dtype.str)
+    ent = _LB_CACHE.get(key)
+    if ent is None:
+        ent = {'buf': np.empty((th, tw, 3), dtype=img.dtype),
+               'shape': None, 'pos': None}
+        _LB_CACHE[key] = ent
+    canvas = ent['buf']
+    if ent['shape'] != (nh, nw) or ent['pos'] != (px, py):
+        # 贴图区域变了（典型：二级姿态的 ROI 每人每帧都不一样）：
+        # 整块重填一次底色，比重新 malloc 一块还快。
+        canvas[:] = color
+        ent['shape'], ent['pos'] = (nh, nw), (px, py)
+
     if r <= 1.0:
-        canvas, r, px, py = letterbox(img, size, color, interp=interp)
-        return cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB), r, px, py
+        resized = cv2.resize(img, (nw, nh), interpolation=interp)
+        canvas[py:py + nh, px:px + nw] = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
+        return canvas, r, px, py
     rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    canvas, r, px, py = letterbox(rgb, size, color, interp=interp)
+    canvas[py:py + nh, px:px + nw] = cv2.resize(rgb, (nw, nh), interpolation=interp)
     return canvas, r, px, py
 
 
@@ -532,7 +571,8 @@ class TwoStageDetector(object):
                  max_persons=4, roi_expand=1.15,
                  kpt_margin=0.15, kpt_scale_max=1.2, person_cls=0,
                  det_interval=1, det_interp=None,
-                 det_input=None, pose_input=None, spread_pose=True):
+                 det_input=None, pose_input=None, spread_pose=True,
+                 pose_budget=2):
         self.det = RKNNModel(det_model, 'det') if det_model else None
         self.pose = RKNNModel(pose_model, 'pose') if pose_model else None
         self.det_size = int(det_input or _guess_input_size(det_model))
@@ -562,9 +602,17 @@ class TwoStageDetector(object):
         # 累计计数，上层(ai_overlay)靠它们的增量算出“一级检测帧率 / 姿态帧率”。
         self.stat = {'det_ms': 0.0, 'pose_ms': 0.0, 'stage2_n': 0,
                      'kpt_dropped': 0, 'kpt_far': 0, 'det_ran': 0,
-                     'frames': 0, 'det_n': 0, 'pose_n': 0}
+                     'frames': 0, 'det_n': 0, 'pose_n': 0, 'pose_skip': 0}
         self._tick = 0
         self._cached = []          # 跳帧期间复用的检测框 [(box, score), ...]
+        # 多人时的**姿态预算**: 每帧最多跑几个人的姿态（<=0 = 不限制）。
+        # 二级姿态是逐人串行的（N 人 = N × ~23ms），4 个人就会把帧率拖到 10fps。
+        # 设成 2 后每帧只更新 2 个人，其余人沿用上一帧关节（按框中心位移补偿），
+        # 帧率不再随人数线性下降；代价是被跳过的人骨架更新得慢一点。
+        # 人数 <= 预算时行为与不限制完全一致。
+        self.pose_budget = int(pose_budget or 0)
+        self._pose_rr = 0           # 轮转起点，保证每个人都轮得到
+        self._prev_pose = []        # 上一轮 [(box, kps), ...] 供跳过的那些复用
 
     # -------------------------------------------------- 工具
     @staticmethod
@@ -580,7 +628,8 @@ class TwoStageDetector(object):
     def persons(self, img_bgr):
         """Stage-1：返回原图坐标下的人体框列表 [(box, score), ...]。"""
         H, W = img_bgr.shape[:2]
-        rgb, scale, px, py = letterbox_rgb(img_bgr, self.INPUT, interp=self.interp)
+        rgb, scale, px, py = letterbox_rgb(img_bgr, self.INPUT, interp=self.interp,
+                                           slot='det')
         outs = self.det.infer(rgb)
         self.stat['det_ms'] = self.det.infer_ms
         self.stat['det_ran'] = 1
@@ -637,7 +686,8 @@ class TwoStageDetector(object):
         if roi.size == 0:
             return None
 
-        rgb, scale, px, py = letterbox_rgb(roi, (self.pose_size, self.pose_size))
+        rgb, scale, px, py = letterbox_rgb(roi, (self.pose_size, self.pose_size),
+                                           slot='pose')
         outs = self.pose.infer(rgb)
         self.stat['pose_ms'] = self.pose.infer_ms
 
@@ -716,8 +766,21 @@ class TwoStageDetector(object):
 
         out = []
         new_cache = []
+        # 这一帧轮到谁跑姿态：人数超过预算时按轮转取预算个，其余复用上一轮关节
+        n = len(self._cached)
+        budget = self.pose_budget
+        if budget > 0 and n > budget:
+            rot = self._pose_rr % n
+            run_idx = set((rot + i) % n for i in range(budget))
+            self._pose_rr = (rot + budget) % n
+        else:
+            run_idx = None
         for idx, (box, score) in enumerate(self._cached):
-            kps = self.pose_in(img_bgr, box) if self.pose is not None else None
+            if run_idx is None or idx in run_idx:
+                kps = self.pose_in(img_bgr, box) if self.pose is not None else None
+            else:
+                kps = self._reuse_kps(box)
+                self.stat['pose_skip'] += 1
             use_box = np.asarray(box, dtype=np.float32)
             if kps is not None and self.det_interval > 1:
                 nb = self._kps_to_box(kps, box)
@@ -732,7 +795,40 @@ class TwoStageDetector(object):
         if self.det_interval > 1 and new_cache:
             self._cached = new_cache
         self._last_kps = [o['kps'] for o in out]
+        self._prev_pose = [(np.asarray(o['box'], dtype=np.float32), o['kps'])
+                           for o in out]
         return out
+
+    def _reuse_kps(self, box):
+        """未轮到跑姿态的人：捡上一轮最近的那份关节，并按框中心位移平移。
+
+        限距是为了防止“上一个人的关节”被错配到另一个人身上
+        （人数变化时 _cached 的下标会错位，所以不能按下标取）。
+        """
+        if not self._prev_pose:
+            return None
+        x1, y1, x2, y2 = [float(v) for v in box]
+        cx, cy = (x1 + x2) * 0.5, (y1 + y2) * 0.5
+        lim = max(8.0, 0.6 * max(1.0, x2 - x1, y2 - y1))
+        best, bestd = None, lim
+        for pb, pk in self._prev_pose:
+            if pk is None:
+                continue
+            pcx = (float(pb[0]) + float(pb[2])) * 0.5
+            pcy = (float(pb[1]) + float(pb[3])) * 0.5
+            d = math.hypot(pcx - cx, pcy - cy)
+            if d < bestd:
+                bestd, best = d, (pb, pk)
+        if best is None:
+            return None
+        dx = cx - (float(best[0][0]) + float(best[0][2])) * 0.5
+        dy = cy - (float(best[0][1]) + float(best[0][3])) * 0.5
+        if abs(dx) < 0.5 and abs(dy) < 0.5:
+            return best[1]
+        k = best[1].copy()
+        k[:, 0] += dx
+        k[:, 1] += dy
+        return k
 
     def _spread_out(self):
         """spread 模式：用新检测框 + 上一帧的关节拼一个返回。"""
@@ -751,6 +847,8 @@ class TwoStageDetector(object):
         if out:
             self._cached = [(np.asarray(o['box'], dtype=np.float32), o['score'])
                             for o in out]
+            self._prev_pose = [(np.asarray(o['box'], dtype=np.float32), o['kps'])
+                               for o in out]
         return out
 
 

@@ -37,7 +37,7 @@ _STATE_KEYS = ("enabled", "source", "ai_fps", "det_conf", "nms_thres",
                "kpt_conf", "max_persons", "roi_expand", "kpt_margin",
                "kpt_scale_max", "det_interval", "copy_frame", "show_skeleton",
                "show_score", "show_label", "show_hud", "skeleton_only",
-               "zone", "tune", "preset", "spread_pose")
+               "zone", "tune", "preset", "spread_pose", "pose_budget")
 
 # 模型档位。
 #
@@ -92,7 +92,7 @@ class AiOverlay(object):
                  ai_fps=6.0, det_conf=0.35, nms_thres=0.45, kpt_conf=0.30,
                  max_persons=4, roi_expand=1.15, kpt_margin=0.15,
                  kpt_scale_max=1.2, det_interval=2, copy_frame=False,
-                 spread_pose=True,
+                 spread_pose=True, pose_budget=2,
                  source="raw", enabled=True,
                  zone=None, show_skeleton=True, show_score=True, show_label=True,
                  show_hud=False, skeleton_only=False, state_path=None, verbose=False):
@@ -131,6 +131,11 @@ class AiOverlay(object):
         # 检测帧是否跳过姿态：两级串在同一帧会出现“长尾帧”(det+pose≈45ms)，
         # 拆开后每帧都是短帧，帧率明显上去（代价：那帧的骨架滞后一帧）
         self.spread_pose = bool(spread_pose)
+        # 多人时的姿态预算：每帧最多跑几个人的姿态（<=0 = 不限制）。
+        # 姿态是逐人串行的（N 人 = N × ~23ms），人多会把帧率拖垮；
+        # 限成 2 后其余人沿用上一帧关节（框位移补偿），
+        # 人数 <= 预算时与不限制完全一致。
+        self.pose_budget = int(pose_budget or 0)
         # 是否在推理前拷贝整帧：不拷贝可省 ~2.5ms/帧，代价是编码线程可能
         # 已在同一数组上画了几笔标注（对检测影响可忽略）
         self.copy_frame = bool(copy_frame)
@@ -262,7 +267,8 @@ class AiOverlay(object):
                                kpt_margin=self.kpt_margin,
                                kpt_scale_max=self.kpt_scale_max,
                                det_interval=self.det_interval,
-                               spread_pose=self.spread_pose)
+                               spread_pose=self.spread_pose,
+                               pose_budget=self.pose_budget)
         if not det.det or not det.det.ok:
             self.err = "检测模型不可用: %s" % (det.det.err if det.det else "未指定")
             return None
@@ -563,6 +569,7 @@ class AiOverlay(object):
             "det_interval": self.det_interval,
             "copy_frame": self.copy_frame,
             "spread_pose": self.spread_pose,
+            "pose_budget": self.pose_budget,
             "kpt_conf": round(self.kpt_conf, 3),
             "kpt_margin": round(self.kpt_margin, 3),
             "kpt_scale_max": round(self.kpt_scale_max, 3),
@@ -649,6 +656,11 @@ class AiOverlay(object):
             self.spread_pose = bool(patch["spread_pose"])
             if self.detector is not None:
                 self.detector.spread_pose = self.spread_pose
+        if "pose_budget" in patch:
+            # 每帧最多跑几个人的姿态（0 = 不限制）；人多时防止帧率线性下降
+            self.pose_budget = max(0, min(16, int(patch["pose_budget"])))
+            if self.detector is not None:
+                self.detector.pose_budget = self.pose_budget
         if "preset" in patch and patch["preset"]:
             self.switch_preset(patch["preset"])
         if "pose_preset" in patch and patch["pose_preset"]:

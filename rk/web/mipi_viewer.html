@@ -577,6 +577,10 @@
           <input type="range" id="a_det_interval" min="1" max="6" step="1" value="2">
           <span class="val" id="av_det_interval">2 帧</span></div>
 
+        <div class="row"><label title="每帧最多给几个人跑姿态。姿态是逐人串行的，人多时帧率会按人数下降；限成 2 后其余人沿用上一帧关节（框位移补偿），人数不超过预算时完全不变。0 = 不限制">姿态预算</label>
+          <input type="range" id="a_pose_budget" min="0" max="8" step="1" value="2">
+          <span class="val" id="av_pose_budget">2 人</span></div>
+
         <div class="row"><label>检测阈值</label>
           <input type="range" id="a_det_conf" min="0.1" max="0.9" step="0.01" value="0.35">
           <span class="val" id="av_det_conf">0.35</span></div>
@@ -1737,6 +1741,8 @@ function aiSyncUI() {
 
   setSlider("a_fps", "av_fps", ai.fps_target, " fps");
   setSlider("a_det_interval", "av_det_interval", ai.det_interval ?? 2, " 帧");
+  setSlider("a_pose_budget", "av_pose_budget", ai.pose_budget ?? 2, " 人");
+  if ((ai.pose_budget ?? 2) === 0) $("av_pose_budget").textContent = "不限";
   setSlider("a_det_conf", "av_det_conf", ai.det_conf, null, 2);
   setSlider("a_kpt_margin", "av_kpt_margin", ai.kpt_margin ?? 0.15, null, 2);
   setSlider("a_kpt_scale_max", "av_kpt_scale_max", ai.kpt_scale_max ?? 1.2, null, 2);
@@ -1833,6 +1839,11 @@ $("a_det_conf").addEventListener("input", e => {
 $("a_det_interval").addEventListener("input", e => {
   $("av_det_interval").textContent = e.target.value + " 帧";
   aiPush({ det_interval: Number(e.target.value) });
+});
+$("a_pose_budget").addEventListener("input", e => {
+  const n = Number(e.target.value);
+  $("av_pose_budget").textContent = n === 0 ? "不限" : n + " 人";
+  aiPush({ pose_budget: n });
 });
 $("a_kpt_margin").addEventListener("input", e => {
   $("av_kpt_margin").textContent = Number(e.target.value).toFixed(2);

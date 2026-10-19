@@ -3538,8 +3538,9 @@ def main():
                          "⚠ 实测本板固件连续出帧会输出全灰 JPEG, 详见代码注释")
     ap.add_argument("--enc-threads", type=int, default=3,
                     help="JPEG 编码线程数 (默认 3)")
-    ap.add_argument("--cpu-affinity", default="auto",
-                    help="绑定 CPU: auto(默认, 自动挑大核) / none / 形如 4-7")
+    ap.add_argument("--cpu-affinity", default="all",
+                    help="绑定 CPU: all(默认, 全部核) / auto(只绑大核 cpu4-7) / "
+                         "none / 形如 4-7")
     ap.add_argument("--v4l2ctl", default="v4l2-ctl", help="v4l2-ctl 可执行文件路径")
     ap.add_argument("--fpga-bus", type=int, default=9,
                     help="FPGA I2C 从机所在总线 (默认 9 = RK I2C9; 设 -1 关闭)")
@@ -3568,6 +3569,10 @@ def main():
     ap.add_argument("--ai-det-interval", type=int, default=2,
                     help="一级检测跳帧(默认 2 = 每两帧检测一次); 1=每帧都检测(最准最慢), "
                          "调大可明显提高 AI 帧率")
+    ap.add_argument("--ai-pose-budget", type=int, default=2,
+                    help="每帧最多跑几个人的姿态(默认 2, 0=不限制)。姿态是逐人串行的, "
+                         "人多时帧率会按人数线性下降; 限成 2 后其余人沿用上帧关节(框位移补偿), "
+                         "人数 <= 预算时行为完全不变")
     ap.add_argument("--ai-copy-frame", action="store_true",
                     help="推理前拷一份整帧(更干净但多 ~2.5ms/帧; 默认不拷)")
     ap.add_argument("--ai-zone", default="",
@@ -3595,15 +3600,26 @@ def main():
     params = ParamStore(state_file)
 
     # 本板是 8 核异构: cpu0-3 = Cortex-A53@1.92G, cpu4-7 = Cortex-A72@2.11G。
-    # 实测同一段 JPEG 编码在小核上 21.8fps、大核上 41.4fps, 差将近一倍,
-    # 所以默认就把进程绑到最快的那批核上。
-    aff = str(getattr(args, "cpu_affinity", "auto") or "").strip().lower()
+    #
+    # 历史上默认只绑大核（cpu4-7），理由是单线程 JPEG 编码小核 21.8fps / 大核 41.4fps。
+    # 但开 AI 后线程数变成 8+（采集 1 + C 转换 4 + 编码 3 + 推理 1），**挤 4 个核就是 2x 超订**，
+    # 推理线程被抢占 -> det.infer 从 17ms 涨到 21ms。
+    # 板上 A/B 实测（taskset 切换，取稳定值）:
+    #     只绑大核 4-7 : ai 46.5 fps, video 57.7~58.5 fps
+    #     全部 8 核     : ai 50.8~51.8 fps, video 59.2~59.3 fps   <- 两项都更好
+    # 所以默认改成 all；想回到旧行为传 --cpu-affinity auto。
+    aff = str(getattr(args, "cpu_affinity", "all") or "").strip().lower()
     if aff and aff != "none":
-        cpus = _pick_fast_cores() if aff == "auto" else _parse_cpu_list(aff)
+        if aff == "all":
+            cpus = set(range(os.cpu_count() or 1))
+        elif aff == "auto":
+            cpus = _pick_fast_cores()
+        else:
+            cpus = _parse_cpu_list(aff)
         if cpus:
             try:
                 os.sched_setaffinity(0, cpus)
-                print("[cpu] 已绑定到大核 CPU %s" % sorted(cpus))
+                print("[cpu] 已绑定 CPU %s" % sorted(cpus))
             except Exception as _e:
                 print("[cpu] 绑定失败: %s" % _e, file=sys.stderr)
 
@@ -3653,6 +3669,7 @@ def main():
                                    kpt_margin=args.ai_kpt_margin,
                                    kpt_scale_max=args.ai_kpt_max_dist,
                                    det_interval=args.ai_det_interval,
+                                   pose_budget=args.ai_pose_budget,
                                    copy_frame=args.ai_copy_frame,
                                    source=args.ai_source,
                                    zone=_zone,
