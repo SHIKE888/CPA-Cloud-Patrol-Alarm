@@ -600,7 +600,9 @@ class AiOverlay(object):
             if k in patch:
                 setattr(self, k, bool(patch[k]))
         if "ai_fps" in patch:
-            self.ai_fps = max(0.5, min(30.0, float(patch["ai_fps"])))
+            # 上限放开到 60: 原来卡在 30 会掩盖真实性能（双核 NPU 后 det 单帧仅 ~17ms，
+            # 理论上限已高于 30）。真正的天花板由 run_ms 决定，不需要人为限制。
+            self.ai_fps = max(0.5, min(60.0, float(patch["ai_fps"])))
         if "det_conf" in patch:
             self.det_conf = max(0.05, min(0.95, float(patch["det_conf"])))
             if self.detector is not None:

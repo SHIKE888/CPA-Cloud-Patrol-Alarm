@@ -3551,7 +3551,8 @@ def main():
     ap.add_argument("--ai-dir", default=None,
                     help="AI 代码与模型目录 (默认自动找 /root/rk/ai)")
     ap.add_argument("--ai-fps", type=float, default=30.0,
-                    help="AI 推理帧率上限 (默认 30; 与视频帧率无关)")
+                    help="AI 推理帧率上限 (默认 30, 可到 60; 与视频帧率无关, "
+                         "真正的天花板是单帧耗时 run_ms)")
     ap.add_argument("--ai-det-model", default=None,
                     help="检测模型路径 (默认 <ai-dir>/models/yolov8n.rknn)")
     ap.add_argument("--ai-pose-model", default=None,

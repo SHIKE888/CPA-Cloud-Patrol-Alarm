@@ -178,9 +178,22 @@ class RKNNModel(object):
             self.rknn = RKNNLite(verbose=False)
             if self.rknn.load_rknn(path) != 0:
                 raise RuntimeError('load_rknn 失败')
+            # ★ 默认用 **双核** (NPU_CORE_0_1)。RK3576 的 NPU 是双核，而
+            #   NPU_CORE_AUTO 只会挑一个核跑，另一个核全程 0% —— 外部看到的现象
+            #   就是“NPU 占用才 20~40%，却怎么也快不起来”。
+            #   板上实测 (probe_npu_core.py，640 输入单次推理墙钟):
+            #     det  yolov8n-slim    : AUTO 25.2ms -> 双核 17.3ms  (-31%)
+            #     pose yolov8n-pose-hyb: AUTO 29.9ms -> 双核 25.8ms  (-14%)
+            if core_mask is None:
+                core_mask = getattr(RKNNLite, 'NPU_CORE_0_1', None)
             cm = RKNNLite.NPU_CORE_AUTO if core_mask is None else core_mask
             if self.rknn.init_runtime(core_mask=cm) != 0:
-                raise RuntimeError('init_runtime 失败')
+                # 双核初始化失败(老 runtime / 模型不支持) -> 退回单核自动，不阻断
+                if cm != RKNNLite.NPU_CORE_AUTO:
+                    if self.rknn.init_runtime(core_mask=RKNNLite.NPU_CORE_AUTO) != 0:
+                        raise RuntimeError('init_runtime 失败')
+                else:
+                    raise RuntimeError('init_runtime 失败')
             self.ok = True
         except Exception as e:  # noqa: BLE001
             self.err = str(e)
