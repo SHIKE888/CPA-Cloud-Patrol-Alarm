@@ -21,8 +21,9 @@
   - [1. 系统概览](#1-系统概览)
   - [2. 已实现功能](#2-已实现功能)
   - [3. 系统架构](#3-系统架构)
-    - [3.1 视频数据通路](#31-视频数据通路)
-    - [3.2 控制通路](#32-控制通路)
+    - [3.1 全系统结构框图](#31-全系统结构框图)
+    - [3.2 视频数据通路](#32-视频数据通路)
+    - [3.3 控制通路](#33-控制通路)
   - [4. 硬件与接线](#4-硬件与接线)
     - [4.1 必需硬件](#41-必需硬件)
     - [4.2 关键连接](#42-关键连接)
@@ -115,87 +116,68 @@
 ### 3.1 全系统结构框图
 
 ```mermaid
+%%{init: {"themeVariables":{"fontSize":"12px"},"flowchart":{"nodeSpacing":16,"rankSpacing":22}}}%%
 flowchart TB
-    CAM["IMX415 摄像头<br/>4-lane MIPI CSI-2"]
+    CAM["IMX415<br/>4-lane CSI-2"]
 
-    subgraph FPGA["FPGA · Anlogic PH1A90SEG324"]
+    subgraph FPGA["FPGA · PH1A90SEG324"]
         direction LR
-        RX["D-PHY RX<br/>CSI-2 解包"] --> ISP["ISP<br/>BLC / AWB / Demosaic / Gamma"]
-        ISP --> PP["图像预处理<br/>灰度 / 滤波 / 边缘 / 形态学"]
-        PP --> BUF["ui_dbuf + FDMA<br/>DDR3 三帧缓存"]
-        BUF --> TX["CSI-2 组包<br/>D-PHY TX 4lane"]
-        REG["参数寄存器组<br/>I2C 从机 0x40"] -.-> ISP
-        REG -.-> PP
+        RX["MIPI RX<br/>CSI 解包"] --> ISP["ISP + 预处理"]
+        ISP --> BUF["dbuf + DDR3"]
+        BUF --> TX["CSI-2 TX<br/>D-PHY 4lane"]
     end
 
     subgraph RK["RK3576J SoC"]
         direction LR
-        CSI["csi2_dphy3 / mipi3_csi2"] --> DRV["milianke_mipi 驱动<br/>rkcif → rkisp → rkvpss"]
-        DRV --> V22["/dev/video22<br/>NV16"]
-        V22 --> HDMI["HDMI 2.1"]
-        V22 --> SVC["mipi_webstream.py<br/>MJPEG / 调参 / AI 叠加"]
-        V22 --> NPU["RKNN NPU<br/>人体检测 + 姿态"]
-        NPU -.-> SVC
-        GCTRL["gimbal_keyctrl.py"]
-        SYS["systemd<br/>mipi-webstream.service"] -.-> SVC
+        CSI["csi2_dphy3<br/>milianke_mipi"] --> V22["/dev/video22"]
+        V22 --> OUT["HDMI / MJPEG :9012<br/>RKNN NPU"]
     end
 
-    CAM -->|MIPI x4| RX
-    TX -->|板内 MIPI x4| CSI
-    HDMI --> DISP["HDMI 显示器"]
-    SVC <-->|HTTP :9012| NET["以太网 / USB WiFi"]
-    NET <--> CLIENT["PC / 手机浏览器<br/>mipi_viewer.html"]
-    SVC -->|I2C9 @0x40| REG
-    GCTRL <-->|USB CDC-ACM| GIM["QGimbal 云台"]
-    BIT["fpga_prj_compress.bit<br/>JTAG / Flash"] -.-> FPGA
-    BOOT["boot.img + mode.env<br/>eMMC / SD"] -.-> RK
+    CAM -->|MIPI x4| FPGA
+    FPGA -->|板内 MIPI x4| RK
+    RK --> DISP["HDMI 显示器"]
+    RK <-->|HTTP :9012| NET["以太网 / WiFi"]
+    NET <--> CLIENT["PC / 手机浏览器"]
+    RK <-->|USB CDC| GIM["QGimbal 云台"]
 ```
 
 > 实线 = 视频/业务数据，虚线 = 控制/配置。FPGA 与 RK 之间同时存在
-> **MIPI 视频链路**和 **I2C9 参数链路**，两者方向相反、互不占用带宽。
+> **MIPI 视频链路**和 **I2C9 参数链路**，两条链路互不占用带宽。
 
 ### 3.2 视频数据通路
 
-按「采集预处理 → 缓存发送 → RK 接收输出」三行展开，第 2 行从右向左走，避免单行过长：
-
 ```mermaid
+%%{init: {"themeVariables":{"fontSize":"12px"},"flowchart":{"nodeSpacing":16,"rankSpacing":22}}}%%
 flowchart TB
-    subgraph L1["第 1 行（左 → 右）：采集与预处理"]
+    subgraph R1["① 采集"]
         direction LR
-        CAM["IMX415<br/>MIPI CSI-2 4lane"] -->|CSI RX| DPHYRX["FPGA D-PHY RX"]
-        DPHYRX --> UNPACK["CSI-2 解包<br/>RAW10 还原"]
-        UNPACK --> CROP["图像裁剪"]
-        CROP --> ISP["米联客 ISP<br/>BLC / AWB / Demosaic / Gamma"]
-        ISP --> YUVOUT["RGB888 → YUV422<br/>BT.709 limited"]
+        CAM["IMX415"] --> RX["D-PHY RX"] --> UNPACK["CSI-2 解包"] --> CROP["图像裁剪"]
     end
 
-    subgraph L2["第 2 行（右 → 左）：DDR 缓存与 MIPI 发送"]
-        direction RL
-        YUVIN["YUV422 帧流"] --> DBUF["ui_dbuf + FDMA<br/>三帧缓存"]
-        DBUF <--> DDR["DDR3"]
-        DBUF --> VTC["VTC 读时序"]
-        VTC --> PACK["csi2_pack_yuv422_stream"]
-        PACK --> FRAME["csi2_frame_tx<br/>DT=0x1E"]
-        FRAME --> DPHYTX["FPGA D-PHY TX 4lane"]
-    end
-
-    subgraph L3["第 3 行（左 → 右）：RK3576 接收与输出"]
+    subgraph R2["② ISP 与缓存"]
         direction LR
-        RKDPHY["csi2_dphy3 / mipi3_csi2"] --> DRV["milianke_mipi<br/>虚拟摄像头驱动"]
-        DRV --> CIFISP["rkcif → rkisp → rkvpss"]
-        CIFISP --> V22["/dev/video22<br/>NV16"]
-        V22 --> HDMI["HDMI 2.1 / kmssink"]
-        V22 --> WEB["MJPEG :9012"]
-        V22 --> AI["RKNN NPU 标注"]
+        ISP["ISP<br/>BLC/AWB/Gamma"] --> YUV["RGB → YUV422"] --> DBUF["dbuf + FDMA<br/>DDR3 三帧"] --> VTC["VTC 读时序"]
     end
 
-    L1 ==>|下一行| L2
-    L2 ==>|板内 MIPI x4| L3
+    subgraph R3["③ 打包发送"]
+        direction LR
+        PACK["csi2_pack"] --> FRAME["csi2_frame_tx<br/>DT=0x1E"] --> TX["D-PHY TX"] --> RK["csi2_dphy3"]
+    end
+
+    subgraph R4["④ RK 接收与输出"]
+        direction LR
+        DRV["milianke_mipi"] --> CIF["rkcif → rkisp"] --> V22["/dev/video22"] --> OUT["HDMI / MJPEG :9012 / NPU"]
+    end
+
+    R1 ==>|下一行| R2
+    R2 ==>|下一行| R3
+    R3 ==>|板内 MIPI x4| R4
 ```
 
 ### 3.3 控制通路
 
 ```mermaid
+%%{init: {"themeVariables":{"fontSize":"12px"},"flowchart":{"nodeSpacing":16,"rankSpacing":22}}}%%
 flowchart LR
     CLIENT["PC / 手机浏览器"] <-->|HTTP :9012| SVC["mipi_webstream.py"]
     SVC -->|I2C9 @0x40| FPGA["FPGA 参数寄存器"]
