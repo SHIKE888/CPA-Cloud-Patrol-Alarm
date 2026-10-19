@@ -189,8 +189,8 @@ flowchart TB
         V22 --> AI["RKNN NPU 标注"]
     end
 
-    YUVOUT ==>|下一行| YUVIN
-    DPHYTX ==>|板内 MIPI x4| RKDPHY
+    L1 ==>|下一行| L2
+    L2 ==>|板内 MIPI x4| L3
 ```
 
 ### 3.3 控制通路
