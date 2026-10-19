@@ -15,8 +15,9 @@
     fight     激烈肢体冲突（腕部速度极高）
     intrude   越界（脚部关键点落入警戒多边形）
     handup    举手求救（腕高于肩且持续）
-    squat     下蹲（髋部接近膝部高度）
-"""
+    squat     下蹲（髋部接近膝部高度）    swing     挥砍（**单侧**手臂高速大位移，与 fight 的双手高频区分）
+    throw     投掷（手腕快速**向上**挥动且过肩）
+    photo     拍照/手持设备（双手举到脸前、彼此靠近、保持不动）"""
 from __future__ import annotations
 
 import math
@@ -47,6 +48,9 @@ ACTION_META = {
     'run':     ('奔跑',     'Run',     (0, 255, 255), LEVEL_WARN),
     'handup':  ('举手求救', 'Help',    (0, 255, 0),   LEVEL_WARN),
     'squat':   ('下蹲',     'Squat',   (255, 200, 0), LEVEL_INFO),
+    'swing':   ('挥砍',     'Swing',   (0, 0, 220),   LEVEL_ALARM),
+    'throw':   ('投掷',     'Throw',   (0, 90, 255),  LEVEL_ALARM),
+    'photo':   ('拍照',     'Photo',   (200, 200, 0), LEVEL_WARN),
 }
 
 
@@ -98,7 +102,8 @@ class TrackState(object):
     def __init__(self, tid, tune=None, maxlen=90, box_margin=0.35):
         self.tid = tid
         # 与 ActionRecognizer 共享同一个 dict，实现在线调灵敏度
-        self.tune = tune if tune is not None else {'fall': 1.0, 'run': 1.0}
+        self.tune = tune if tune is not None else {'fall': 1.0, 'run': 1.0,
+                                                   'swing': 1.0, 'throw': 1.0}
         self.box_margin = float(box_margin)   # 一级框的空间约束(同 det_core.kpt_margin)
         self.hist = deque(maxlen=maxlen)     # (t, hip, shoulder_mid, kps, box)
         self.actions = {}                    # label -> [起始ts, 分数, 最近命中ts]
@@ -156,18 +161,28 @@ class TrackState(object):
         if rec12 and rec12[1] and hip:
             rise = (rec12[1][1] - hip[1]) / bh
 
-        # ---------- 腕部速度（身高/秒）
+        # ---------- 腕部速度（身高/秒）—— 同时拆出左右手与**垂直分量**
+        #   左右分开：挥砍是单侧主导，而 fight 是双手都在高速乱挥；
+        #   垂直分量：投掷的特征是手腕“上撩”（向上速度大）。
         wrist_v = 0.0
+        wrist_v_l = wrist_v_r = 0.0
+        wrist_vy = 0.0                      # 正值 = 向上
         if rec is not None:
             k0 = rec[3]
             dt = max(1e-3, t - rec[0])
-            d = []
-            for i in (LW, RW):
+            for i, side in ((LW, 'l'), (RW, 'r')):
                 p1, p0 = _pt(kps, i), _pt(k0, i)
-                if p1 and p0:
-                    d.append(math.hypot(p1[0] - p0[0], p1[1] - p0[1]))
-            if d:
-                wrist_v = max(d) / bh / dt
+                if not (p1 and p0):
+                    continue
+                v = math.hypot(p1[0] - p0[0], p1[1] - p0[1]) / bh / dt
+                if side == 'l':
+                    wrist_v_l = v
+                else:
+                    wrist_v_r = v
+                vy = (p0[1] - p1[1]) / bh / dt        # y 向下为正，取反=向上
+                if vy > wrist_vy:
+                    wrist_vy = vy
+            wrist_v = max(wrist_v_l, wrist_v_r)
 
         hands_above_shoulder = False
         if sh and lw and rw:
@@ -179,6 +194,27 @@ class TrackState(object):
         feet = [p for p in (la, ra) if p]
         foot = (sum(p[0] for p in feet) / len(feet),
                 sum(p[1] for p in feet) / len(feet)) if feet else None
+
+        # ---------- 短窗口位移（给“瞬时动作”用：挥砍 / 投掷）
+        #   ❗ 瞬时动作不能用 0.4s 的速度窗口：快速挥动往往是个往复，
+        #   0.4s 前后位置几乎相同，净位移≈ 0，速度测出来是 0（实测踩过）。
+        #   改成取 ~0.13s（≈4 帧）的位移，足以分辨一次挥动。
+        rec_s = self._at(0.13, t)
+        w_disp_l = w_disp_r = w_rise = 0.0
+        if rec_s is not None:
+            k0 = rec_s[3]
+            for i, side in ((LW, 'l'), (RW, 'r')):
+                p1, p0 = _pt(kps, i), _pt(k0, i)
+                if not (p1 and p0):
+                    continue
+                d = math.hypot(p1[0] - p0[0], p1[1] - p0[1]) / bh
+                if side == 'l':
+                    w_disp_l = d
+                else:
+                    w_disp_r = d
+                r = (p0[1] - p1[1]) / bh          # 向上为正
+                if r > w_rise:
+                    w_rise = r
 
         # ================================================== 规则判定
         s_fall = _clamp(self.tune.get('fall', 1.0), 0.3, 1.0)
@@ -204,6 +240,38 @@ class TrackState(object):
             knee = _mid(lk, rk)
             if knee and hip[1] > knee[1] - 0.12 * bh:
                 self._mark(acts, 'squat', True, t, 0.5, score=0.6)
+
+        # ---------- 新增 3 条（2026-10-19）
+        s_swing = max(0.3, self.tune.get('swing', 1.0))
+        s_throw = max(0.3, self.tune.get('throw', 1.0))
+
+        # 挥砍：**单侧**手臂大幅位移（另一侧明显小），与 fight 的双手高频区分。
+        #   阈值 0.45 身高 / 0.13s（≈ 3.5 身高/秒以上）；hold 0.15s 去抖。
+        dmax, dmin = max(w_disp_l, w_disp_r), min(w_disp_l, w_disp_r)
+        self._mark(acts, 'swing',
+                   dmax > 0.45 / s_swing and dmin < dmax * 0.5,
+                   t, 0.15, score=min(1.0, dmax / 0.8))
+
+        # 投掷：0.13s 内手腕**上撩**超过 0.35 身高，且已经过肩。
+        #   与 climb 的区别：climb 要髖部抬升/脚高于髖，投掷只要手上撩。
+        self._mark(acts, 'throw',
+                   w_rise > 0.35 / s_throw and hands_above_shoulder,
+                   t, 0.1, score=min(1.0, w_rise / 0.6))
+
+        # 拍照/手持设备：双手都举到**脸高附近**（鼻点 ±0.18 身高）、两手靠拢、
+        #   且幅度很小保持 1.5s。
+        #   与 handup 的区别：handup 是双手高举过头（手腕会高出鼻点 0.05 身高以上）；
+        #   拍照是“双手捧在眼前”，手腕基本不超过鼻点太多。
+        nose = _pt(kps, NOSE)
+        photo_hold = False
+        if nose and lw and rw:
+            near_face = (abs(lw[1] - nose[1]) < 0.18 * bh and
+                         abs(rw[1] - nose[1]) < 0.18 * bh)
+            hands_close = abs(lw[0] - rw[0]) < 0.40 * bh
+            not_too_high = (lw[1] > nose[1] - 0.05 * bh and
+                            rw[1] > nose[1] - 0.05 * bh)
+            photo_hold = near_face and hands_close and not_too_high and dmax < 0.25
+        self._mark(acts, 'photo', photo_hold, t, 1.5, score=0.65)
 
         self.foot = foot
         return acts
@@ -259,7 +327,7 @@ class ActionRecognizer(object):
         # 一级框对三级动作判定的空间约束(同 det_core.kpt_margin)
         self.box_margin = float(box_margin)
         # 可在线调节的灵敏度（1.0 为默认；越大越容易触发）
-        self.tune = {'fall': 1.0, 'run': 1.0}
+        self.tune = {'fall': 1.0, 'run': 1.0, 'swing': 1.0, 'throw': 1.0}
 
     def update(self, t, results):
         """results: [ {tid, box, score, kps}, ... ]；原样返回并附加 actions。"""
