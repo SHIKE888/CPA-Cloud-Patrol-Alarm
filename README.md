@@ -16,28 +16,54 @@
 
 ## 目录
 
-1. [系统概览](#1-系统概览)
-2. [已实现功能](#2-已实现功能)
-3. [系统架构](#3-系统架构)
-4. [硬件与接线](#4-硬件与接线)
-5. [软件环境](#5-软件环境)
-6. [目录结构](#6-目录结构)
-7. [部署步骤](#7-部署步骤)
-8. [日常运行](#8-日常运行)
-9. [FPGA 端设计](#9-fpga-端设计)
-10. [RK 端驱动与设备树](#10-rk-端驱动与设备树)
-11. [摄像头参数与寄存器](#11-摄像头参数与寄存器)
-12. [FPGA 预处理](#12-fpga-预处理)
-13. [输出格式与模式切换](#13-输出格式与模式切换)
-14. [网页控制台与 HTTP API](#14-网页控制台与-http-api)
-15. [AI 人体检测 / 姿态 / 危险动作](#15-ai-人体检测--姿态--危险动作)
-16. [云台控制](#16-云台控制)
-17. [无线局域网访问](#17-无线局域网访问)
-18. [性能实测](#18-性能实测)
-19. [已知限制与注意事项](#19-已知限制与注意事项)
-20. [常见问题排查](#20-常见问题排查)
-21. [文档索引](#21-文档索引)
-22. [发布包说明](#22-发布包说明)
+- [MLK-AFC03 异构视频链路完整工程说明](#mlk-afc03-异构视频链路完整工程说明)
+  - [目录](#目录)
+  - [1. 系统概览](#1-系统概览)
+  - [2. 已实现功能](#2-已实现功能)
+  - [3. 系统架构](#3-系统架构)
+    - [3.1 视频数据通路](#31-视频数据通路)
+    - [3.2 控制通路](#32-控制通路)
+  - [4. 硬件与接线](#4-硬件与接线)
+    - [4.1 必需硬件](#41-必需硬件)
+    - [4.2 关键连接](#42-关键连接)
+    - [4.3 上电顺序](#43-上电顺序)
+  - [5. 软件环境](#5-软件环境)
+  - [6. 目录结构](#6-目录结构)
+  - [7. 部署步骤](#7-部署步骤)
+    - [7.1 首次刷机](#71-首次刷机)
+    - [7.2 部署运行时代码](#72-部署运行时代码)
+    - [7.3 开机自启（可选，工程已配置）](#73-开机自启可选工程已配置)
+  - [8. 日常运行](#8-日常运行)
+  - [9. FPGA 端设计](#9-fpga-端设计)
+    - [9.1 顶层与参数](#91-顶层与参数)
+    - [9.2 数据格式](#92-数据格式)
+    - [9.3 4K 斜向撕裂修复（V43）](#93-4k-斜向撕裂修复v43)
+    - [9.4 无摄像头自检](#94-无摄像头自检)
+  - [10. RK 端驱动与设备树](#10-rk-端驱动与设备树)
+    - [10.1 拓扑](#101-拓扑)
+    - [10.2 色彩空间修正](#102-色彩空间修正)
+    - [10.3 模式表](#103-模式表)
+    - [10.4 采集节点](#104-采集节点)
+  - [11. 摄像头参数与寄存器](#11-摄像头参数与寄存器)
+  - [12. FPGA 预处理](#12-fpga-预处理)
+    - [12.1 初级（多选位图 `BASIC_EN` 0xF0）](#121-初级多选位图-basic_en-0xf0)
+    - [12.2 高级（单选 `ADV_MODE` 0xB1）](#122-高级单选-adv_mode-0xb1)
+  - [13. 输出格式与模式切换](#13-输出格式与模式切换)
+  - [14. 网页控制台与 HTTP API](#14-网页控制台与-http-api)
+    - [14.1 页面能力](#141-页面能力)
+    - [14.2 API 一览](#142-api-一览)
+  - [15. AI 人体检测 / 姿态 / 危险动作](#15-ai-人体检测--姿态--危险动作)
+    - [15.1 流水线](#151-流水线)
+    - [15.2 可识别动作](#152-可识别动作)
+    - [15.3 实测](#153-实测)
+  - [16. 云台控制](#16-云台控制)
+  - [17. 无线局域网访问](#17-无线局域网访问)
+  - [18. 性能实测](#18-性能实测)
+  - [19. 已知限制与注意事项](#19-已知限制与注意事项)
+  - [20. 常见问题排查](#20-常见问题排查)
+  - [21. 文档索引](#21-文档索引)
+  - [22. 发布包说明](#22-发布包说明)
+  - [版本](#版本)
 
 ---
 
@@ -86,39 +112,96 @@
 
 ## 3. 系统架构
 
-### 3.1 视频数据通路
+### 3.1 全系统结构框图
 
 ```mermaid
-flowchart LR
-    CAM["IMX415<br/>MIPI CSI-2 4lane"] -->|CSI RX| DPHYRX["FPGA D-PHY RX"]
-    DPHYRX --> UNPACK["CSI-2 解包<br/>RAW10 还原"]
-    UNPACK --> CROP["图像裁剪"]
-    CROP --> ISP["米联客 ISP<br/>BLC / AWB / Demosaic / Gamma"]
-    ISP --> YUV["RGB888 → YUV422<br/>BT.709 limited"]
-    YUV --> DBUF["ui_dbuf + FDMA<br/>三帧缓存"]
-    DBUF <--> DDR["DDR3"]
-    DBUF --> VTC["VTC 1080P60 读时序"]
-    VTC --> PACK["csi2_pack_yuv422_stream"]
-    PACK --> FRAME["csi2_frame_tx<br/>DT=0x1E"]
-    FRAME --> DPHYTX["FPGA D-PHY TX 4lane"]
-    DPHYTX -->|板内 MIPI| RKDPHY["RK3576 csi2_dphy3<br/>mipi3_csi2"]
-    RKDPHY --> DRV["milianke_mipi<br/>虚拟摄像头驱动"]
-    DRV --> CIFISP["rkcif → rkisp → rkvpss"]
-    CIFISP --> V22["/dev/video22"]
-    V22 --> HDMI["HDMI 2.1 / kmssink"]
-    V22 --> WEB["MJPEG :9012"]
-    V22 --> AI["RKNN NPU 标注"]
+flowchart TB
+    CAM["IMX415 摄像头<br/>4-lane MIPI CSI-2"]
+
+    subgraph FPGA["FPGA · Anlogic PH1A90SEG324"]
+        direction LR
+        RX["D-PHY RX<br/>CSI-2 解包"] --> ISP["ISP<br/>BLC / AWB / Demosaic / Gamma"]
+        ISP --> PP["图像预处理<br/>灰度 / 滤波 / 边缘 / 形态学"]
+        PP --> BUF["ui_dbuf + FDMA<br/>DDR3 三帧缓存"]
+        BUF --> TX["CSI-2 组包<br/>D-PHY TX 4lane"]
+        REG["参数寄存器组<br/>I2C 从机 0x40"] -.-> ISP
+        REG -.-> PP
+    end
+
+    subgraph RK["RK3576J SoC"]
+        direction LR
+        CSI["csi2_dphy3 / mipi3_csi2"] --> DRV["milianke_mipi 驱动<br/>rkcif → rkisp → rkvpss"]
+        DRV --> V22["/dev/video22<br/>NV16"]
+        V22 --> HDMI["HDMI 2.1"]
+        V22 --> SVC["mipi_webstream.py<br/>MJPEG / 调参 / AI 叠加"]
+        V22 --> NPU["RKNN NPU<br/>人体检测 + 姿态"]
+        NPU -.-> SVC
+        GCTRL["gimbal_keyctrl.py"]
+        SYS["systemd<br/>mipi-webstream.service"] -.-> SVC
+    end
+
+    CAM -->|MIPI x4| RX
+    TX -->|板内 MIPI x4| CSI
+    HDMI --> DISP["HDMI 显示器"]
+    SVC <-->|HTTP :9012| NET["以太网 / USB WiFi"]
+    NET <--> CLIENT["PC / 手机浏览器<br/>mipi_viewer.html"]
+    SVC -->|I2C9 @0x40| REG
+    GCTRL <-->|USB CDC-ACM| GIM["QGimbal 云台"]
+    BIT["fpga_prj_compress.bit<br/>JTAG / Flash"] -.-> FPGA
+    BOOT["boot.img + mode.env<br/>eMMC / SD"] -.-> RK
 ```
 
-### 3.2 控制通路
+> 实线 = 视频/业务数据，虚线 = 控制/配置。FPGA 与 RK 之间同时存在
+> **MIPI 视频链路**和 **I2C9 参数链路**，两者方向相反、互不占用带宽。
+
+### 3.2 视频数据通路
+
+按「采集预处理 → 缓存发送 → RK 接收输出」三行展开，第 2 行从右向左走，避免单行过长：
+
+```mermaid
+flowchart TB
+    subgraph L1["第 1 行（左 → 右）：采集与预处理"]
+        direction LR
+        CAM["IMX415<br/>MIPI CSI-2 4lane"] -->|CSI RX| DPHYRX["FPGA D-PHY RX"]
+        DPHYRX --> UNPACK["CSI-2 解包<br/>RAW10 还原"]
+        UNPACK --> CROP["图像裁剪"]
+        CROP --> ISP["米联客 ISP<br/>BLC / AWB / Demosaic / Gamma"]
+        ISP --> YUVOUT["RGB888 → YUV422<br/>BT.709 limited"]
+    end
+
+    subgraph L2["第 2 行（右 → 左）：DDR 缓存与 MIPI 发送"]
+        direction RL
+        YUVIN["YUV422 帧流"] --> DBUF["ui_dbuf + FDMA<br/>三帧缓存"]
+        DBUF <--> DDR["DDR3"]
+        DBUF --> VTC["VTC 读时序"]
+        VTC --> PACK["csi2_pack_yuv422_stream"]
+        PACK --> FRAME["csi2_frame_tx<br/>DT=0x1E"]
+        FRAME --> DPHYTX["FPGA D-PHY TX 4lane"]
+    end
+
+    subgraph L3["第 3 行（左 → 右）：RK3576 接收与输出"]
+        direction LR
+        RKDPHY["csi2_dphy3 / mipi3_csi2"] --> DRV["milianke_mipi<br/>虚拟摄像头驱动"]
+        DRV --> CIFISP["rkcif → rkisp → rkvpss"]
+        CIFISP --> V22["/dev/video22<br/>NV16"]
+        V22 --> HDMI["HDMI 2.1 / kmssink"]
+        V22 --> WEB["MJPEG :9012"]
+        V22 --> AI["RKNN NPU 标注"]
+    end
+
+    YUVOUT ==>|下一行| YUVIN
+    DPHYTX ==>|板内 MIPI x4| RKDPHY
+```
+
+### 3.3 控制通路
 
 ```mermaid
 flowchart LR
-    WEB["网页 / HTTP API"] --> SVC["mipi_webstream.py"]
+    CLIENT["PC / 手机浏览器"] <-->|HTTP :9012| SVC["mipi_webstream.py"]
     SVC -->|I2C9 @0x40| FPGA["FPGA 参数寄存器"]
     SVC -->|media-ctl / v4l2| PIPE["RK media pipeline"]
     SVC --> STATE["state.json"]
-    CLIENT["PC / 手机浏览器"] <-->|HTTP :9012| SVC
+    GCTRL["gimbal_keyctrl.py"] <-->|USB CDC-ACM| GIM["QGimbal 云台"]
 ```
 
 - FPGA 通过 **I2C9 地址 0x40** 作为从设备接收参数（底板已连好，无需飞线）。
