@@ -312,7 +312,8 @@ def _decode_heads(outputs, conf_thres, keep_cls=None, want_kps=False,
     for o in outputs:
         if getattr(o, 'ndim', 0) == 3 and o.shape[0] == 1 and o.shape[1] >= 5 \
                 and o.shape[-1] >= 100 and o.shape[1] != 51 and o.shape[1] != 17:
-            return _decode_flat(o[0], conf_thres, keep_cls, kps_out, input_size)
+            return _decode_flat(o[0], conf_thres, keep_cls, kps_out, input_size,
+                                want_kps=want_kps)
 
     for o in outputs:
         if getattr(o, 'ndim', 0) == 4 and o.shape[1] == 17 and o.shape[2] == 3:
@@ -436,75 +437,42 @@ def _guess_input_size(path, default=640):
     return default
 
 
-def _decode_flat(a, conf_thres, keep_cls, kps_out, input_size):
-    """解析 (C, N) 扁平输出：C = box4 + cls(n) [+ kpt51]。
-
-    这是 ultralytics 原生导出的姿态/检测模型；每个 anchor 一列，box 已是 xywh 像素坐标。
-    另有一个实测坑：**类别分支会被 INT8 量化抹平成全 0**（人头可见但 cls=0），
-    所以当 cls 没命中时，改用“关键点置信度”兜底判定有人。
-    """
-    n = a.shape[1]
-    segs = [max(1, int(input_size // s)) ** 2 for s in (8, 16, 32)]
-    if sum(segs) != n:
-        segs = [n // 3] * 3
-    has_kpt = kps_out is not None
-    ncls = a.shape[0] - 4 - (51 if has_kpt else 0)
-    if ncls <= 0:
-        return []
-    base = 4 + ncls                      # 关键点起始通道（若有关键点是 51 个）
-    objs = []
-    pos = 0
-    for m in segs:
-        seg = a[:, pos:pos + m]
-        if seg.size == 0:
-            break
-        idxs = (list(range(ncls)) if keep_cls is None
-                else [c for c in keep_cls if c < ncls])
-        pos0 = pos
-        pos += m
-        if not idxs:
-            continue
-        u = seg[4:4 + ncls][idxs]
-        lo, hi = float(u.min()), float(u.max())
-        conf = u if (0.0 <= lo and hi <= 1.0) else _sigmoid(u)
-        if conf.ndim == 1:
-            conf = conf[None, :]
-        if has_kpt and float(conf.max()) <= conf_thres:
-            # cls 被抹平：用关键点置信度当分数（一人一 pose，够用）
-            kc = kps_out[2::3, pos0:pos0 + m].max(axis=0)
-            if kc.size == m:
-                conf = np.maximum(conf, kc[None, :])
-        hits = np.argwhere(conf > conf_thres)
-        if not hits.size:
-            continue
-        c, y = hits[:, 0], hits[:, 1]
-        sc = conf[c, y]
-        cx, cy, bw, bh = seg[0, y], seg[1, y], seg[2, y], seg[3, y]
-        boxes = np.stack([cx - bw * 0.5, cy - bh * 0.5,
-                          cx + bw * 0.5, cy + bh * 0.5], axis=1)
-        for i in range(boxes.shape[0]):
-            kp = None
-            if kps_out is not None and base + 51 <= a.shape[0]:
-                kp = kps_out[:, pos0 + int(y[i])].reshape(17, 3).copy()
-            objs.append(Obj(boxes[i], sc[i], idxs[int(c[i])], kp))
-    return objs
-
-
-def _decode_flat(a, conf_thres, keep_cls, kps_out, input_size):
+def _decode_flat(a, conf_thres, keep_cls, kps_out, input_size, want_kps=False):
     """解析 (C, N) 扁平输出：C = box4 + cls(n) [+ kpt51]。
 
     这是 ultralytics 原生导出的姿态/检测模型：每个 anchor 一列，box 已是 xywh 像素坐标。
-    实测坑：**类别分支会被 INT8 量化抹平成全 0**（画面里明明有人但 cls=0），
+
+    ★ 关键点有两种摆法，**必须都支持**：
+      A) 独立张量：另有一个 (1,17,3,N) 或 (1,51,N)（→ kps_out 非空，640 官方导出就是这种）
+      B) **内联在尾部**：C = 4 + ncls + 51，52 行里后 51 行就是 17 点 ×(x,y,conf)
+         （→ ultralytics 原生导出的小尺寸 pose，(1,56,3024) 这种）
+      以前只认 A：B 的 51 行 kpt 会被当成 52 个类别，导致 kps=None、
+      “cls 被量化抹平”的兜底也一起失效 → 表现为**有框无骨架 / 直接没框**。
+
+    实测坑：类别分支会被 INT8 量化抹平成全 0（画面里明明有人但 cls=0），
     所以 cls 没命中时改用“关键点置信度”兜底判定有人（一人一个 pose，足够用）。
     """
     n = a.shape[1]
     segs = [max(1, int(input_size // s)) ** 2 for s in (8, 16, 32)]
     if sum(segs) != n:
         segs = [n // 3] * 3
-    has_kpt = kps_out is not None
-    ncls = a.shape[0] - 4 - (51 if has_kpt else 0)
+
+    kps_all = kps_out
+    if kps_all is None and want_kps and a.shape[0] - 4 - 51 >= 1:
+        ncls = a.shape[0] - 4 - 51
+        kps_all = a[4 + ncls:]                          # (51, N)，视图，不拷贝
+    else:
+        ncls = a.shape[0] - 4 - (51 if kps_all is not None else 0)
     if ncls <= 0:
         return []
+    has_kpt = kps_all is not None
+    if has_kpt:
+        # 扁平导出的关键点 conf **不是概率而是 logits**（实测 max 1.8 这种），
+        # 官方 rknn_model_zoo 的分离式输出才已经 sigmoid 过。
+        _c = kps_all[2::3]
+        if _c.size and (float(_c.max()) > 1.0 or float(_c.min()) < 0.0):
+            kps_all = kps_all.copy()
+            kps_all[2::3] = _sigmoid(kps_all[2::3])
     objs = []
     pos = 0
     for m in segs:
@@ -523,8 +491,10 @@ def _decode_flat(a, conf_thres, keep_cls, kps_out, input_size):
         if conf.ndim == 1:
             conf = conf[None, :]
         if has_kpt and float(conf.max()) <= conf_thres:
-            kc = kps_out[2::3, pos0:pos0 + m].max(axis=0)
-            if kc.size == m:
+            kc = kps_all[2::3, pos0:pos0 + m].max(axis=0)
+            # ⚠ 必须要求 kc 真有区分度：量化把 kpt conf 压成 0 时 sigmoid(0) 恒为 0.5，
+            #   直接用会让 3024 个 anchor **全部**通过（实测过一次，框糊满整屏）。
+            if kc.size == m and float(kc.max()) >= 0.55:
                 conf = np.maximum(conf, kc[None, :])
         hits = np.argwhere(conf > conf_thres)
         if not hits.size:
@@ -537,7 +507,7 @@ def _decode_flat(a, conf_thres, keep_cls, kps_out, input_size):
         for i in range(boxes.shape[0]):
             kp = None
             if has_kpt:
-                kp = kps_out[:, pos0 + int(y[i])].reshape(17, 3).copy()
+                kp = kps_all[:, pos0 + int(y[i])].reshape(17, 3).copy()
             objs.append(Obj(boxes[i], sc[i], idxs[int(c[i])], kp))
     return objs
 
