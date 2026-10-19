@@ -118,27 +118,39 @@
 ```mermaid
 %%{init: {"themeVariables":{"fontSize":"12px"},"flowchart":{"nodeSpacing":16,"rankSpacing":22}}}%%
 flowchart TB
-    CAM["IMX415<br/>4-lane CSI-2"]
+    CAM["IMX415 摄像头<br/>4-lane MIPI CSI-2"]
 
-    subgraph FPGA["FPGA · PH1A90SEG324"]
+    subgraph FPGA["FPGA · Anlogic PH1A90SEG324"]
         direction LR
-        RX["MIPI RX<br/>CSI 解包"] --> ISP["ISP + 预处理"]
-        ISP --> BUF["dbuf + DDR3"]
-        BUF --> TX["CSI-2 TX<br/>D-PHY 4lane"]
+        RX["D-PHY RX<br/>CSI-2 解包"] --> ISP["ISP<br/>BLC / AWB / Demosaic / Gamma"]
+        ISP --> PP["图像预处理<br/>灰度 / 滤波 / 边缘 / 形态学"]
+        PP --> BUF["ui_dbuf + FDMA<br/>DDR3 三帧缓存"]
+        BUF --> TX["CSI-2 组包<br/>D-PHY TX 4lane"]
+        REG["参数寄存器组<br/>I2C 从机 0x40"] -.-> ISP
+        REG -.-> PP
     end
 
     subgraph RK["RK3576J SoC"]
         direction LR
-        CSI["csi2_dphy3<br/>milianke_mipi"] --> V22["/dev/video22"]
-        V22 --> OUT["HDMI / MJPEG :9012<br/>RKNN NPU"]
+        CSI["csi2_dphy3 / mipi3_csi2"] --> DRV["milianke_mipi 驱动<br/>rkcif → rkisp → rkvpss"]
+        DRV --> V22["/dev/video22<br/>NV16"]
+        V22 --> HDMI["HDMI 2.1"]
+        V22 --> SVC["mipi_webstream.py<br/>MJPEG / 调参 / AI 叠加"]
+        V22 --> NPU["RKNN NPU<br/>人体检测 + 姿态"]
+        NPU -.-> SVC
+        GCTRL["gimbal_keyctrl.py"]
+        SYS["systemd<br/>mipi-webstream.service"] -.-> SVC
     end
 
-    CAM -->|MIPI x4| FPGA
-    FPGA -->|板内 MIPI x4| RK
-    RK --> DISP["HDMI 显示器"]
-    RK <-->|HTTP :9012| NET["以太网 / WiFi"]
-    NET <--> CLIENT["PC / 手机浏览器"]
-    RK <-->|USB CDC| GIM["QGimbal 云台"]
+    CAM -->|MIPI x4| RX
+    TX -->|板内 MIPI x4| CSI
+    HDMI --> DISP["HDMI 显示器"]
+    SVC <-->|HTTP :9012| NET["以太网 / USB WiFi"]
+    NET <--> CLIENT["PC / 手机浏览器<br/>mipi_viewer.html"]
+    SVC -->|I2C9 @0x40| REG
+    GCTRL <-->|USB CDC-ACM| GIM["QGimbal 云台"]
+    BIT["fpga_prj_compress.bit<br/>JTAG / Flash"] -.-> FPGA
+    BOOT["boot.img + mode.env<br/>eMMC / SD"] -.-> RK
 ```
 
 > 实线 = 视频/业务数据，虚线 = 控制/配置。FPGA 与 RK 之间同时存在
