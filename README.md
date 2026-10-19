@@ -252,6 +252,10 @@ scp rk/gimbal/gimbal_keyctrl.py rk/gimbal/gimbal_cmd.py afc03:/root/
 ssh afc03 "chmod +x /root/gimbal_*.py"
 ```
 
+> 发布包在 Windows 上压缩，Unix 可执行位不会保留。解压后先在源码目录执行
+> `chmod +x rk/web/*.sh rk/deploy/*.sh rk/ai/board/*.sh rk/gimbal/*.py`，
+> 或在拷贝到板子后按上面的命令统一 `chmod +x`。
+
 ### 7.3 开机自启（可选，工程已配置）
 
 板上已启用 `mipi-webstream.service`：
@@ -696,6 +700,7 @@ ssh afc03 "nmcli con up 509"                         # 掉线重连
 - `__pycache__/`、`*.pyc`、`tools/*.png`、`tools/_*.txt`（生成物）
 
 > 如果需要在另一台机器上复现完整历史，请使用 Git 仓库（tag `release-2026-10-19`）。
+> 解压后脚本默认没有可执行位，先 `chmod +x rk/web/*.sh rk/deploy/*.sh rk/ai/board/*.sh`。
 
 ---
 
