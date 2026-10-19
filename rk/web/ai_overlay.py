@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import os
+import queue
 import sys
 import threading
 import time
@@ -37,7 +38,7 @@ _STATE_KEYS = ("enabled", "source", "ai_fps", "det_conf", "nms_thres",
                "kpt_conf", "max_persons", "roi_expand", "kpt_margin",
                "kpt_scale_max", "det_interval", "copy_frame", "show_skeleton",
                "show_score", "show_label", "show_hud", "skeleton_only",
-               "zone", "tune", "preset", "spread_pose", "pose_budget")
+               "zone", "tune", "preset", "spread_pose", "pose_budget", "pipeline")
 
 # 模型档位。
 #
@@ -92,7 +93,7 @@ class AiOverlay(object):
                  ai_fps=6.0, det_conf=0.35, nms_thres=0.45, kpt_conf=0.30,
                  max_persons=4, roi_expand=1.15, kpt_margin=0.15,
                  kpt_scale_max=1.2, det_interval=2, copy_frame=False,
-                 spread_pose=True, pose_budget=2,
+                 spread_pose=True, pose_budget=2, pipeline=True,
                  source="raw", enabled=True,
                  zone=None, show_skeleton=True, show_score=True, show_label=True,
                  show_hud=False, skeleton_only=False, state_path=None, verbose=False):
@@ -136,6 +137,11 @@ class AiOverlay(object):
         # 限成 2 后其余人沿用上一帧关节（框位移补偿），
         # 人数 <= 预算时与不限制完全一致。
         self.pose_budget = int(pose_budget or 0)
+        # 前处理流水：一级 letterbox（~1ms）交给独立线程，与 NPU 推理重叠。
+        # 板上实测 21.17 -> 18.69 ms/帧（+12%），见 rk/web/bench_gpu_pipe.py。
+        # ⚠ 只在启动时生效（运行中改值不会重建线程，重启服务才切换）。
+        self.pipeline = bool(pipeline)
+        self._pre_q = queue.Queue(maxsize=1)
         # 是否在推理前拷贝整帧：不拷贝可省 ~2.5ms/帧，代价是编码线程可能
         # 已在同一数组上画了几笔标注（对检测影响可忽略）
         self.copy_frame = bool(copy_frame)
@@ -452,19 +458,32 @@ class AiOverlay(object):
         if not self._load():
             print("[ai] 未启用: %s" % self.err, file=sys.stderr)
             return
+        if self.pipeline:
+            # 前处理（letterbox ~1ms）交给独立线程，与 NPU 推理重叠。
+            # 实测 21.17 -> 18.69 ms/帧（+12%）；见 rk/web/bench_gpu_pipe.py。
+            threading.Thread(target=self._pre_loop, daemon=True,
+                             name="ai-pre").start()
         last_seq = -1
         while not self._stop.is_set():
             if not self.active:
                 time.sleep(0.1)
                 continue
-            with self._lock:
-                fr, sq = self._frame, self._seq
-            if fr is None or sq == last_seq:
-                time.sleep(0.005)
-                continue
-            last_seq = sq
-
             t0 = time.time()
+            prepared = None
+            if self.pipeline:
+                try:
+                    fr, prepared, sq = self._pre_q.get(timeout=0.2)
+                except queue.Empty:
+                    continue
+                if sq == last_seq:
+                    continue
+            else:
+                with self._lock:
+                    fr, sq = self._frame, self._seq
+                if fr is None or sq == last_seq:
+                    time.sleep(0.005)
+                    continue
+            last_seq = sq
             # 默认不拷贝：编码线程最多在同一块内存上画几笔，对检测影响可忽略；
             # 要“绝对干净”就把 copy_frame 打开（多花 ~2.5ms/帧）。
             img = fr.copy() if self.copy_frame else fr
@@ -472,7 +491,7 @@ class AiOverlay(object):
                 # _det_lock：推理期间不许换模型（switch_pose 会 release 旧实例）
                 t1 = time.time()
                 with self._det_lock:
-                    dets = self.detector.run(img)
+                    dets = self.detector.run(img, prepared)
                     t2 = time.time()
                     dets = self.tracker.update(t0, dets)
                     dets = self.actions.update(t0, dets)
@@ -511,6 +530,44 @@ class AiOverlay(object):
             rest = 1.0 / max(0.5, self.ai_fps) - (time.time() - t0)
             if rest > 0:
                 time.sleep(rest)
+
+    def _pre_loop(self):
+        """AI 流水的前处理线程：对最新帧做一级 letterbox，交给推理线程。
+
+        三个要点：
+          * 双缓冲：`pipe0` / `pipe1` 轮流用。推理线程正在读上一块画布时，
+            本线程写另一块，否则会把正在喂给 NPU 的数据盖掉。
+          * 队列只留 1 个：推理端还没消费时**不再生产**（直接把新帧丢掉），
+            否则延迟会累积，画面越跟越不上。
+          * **不拿 `_det_lock`**：主线程一轮 run() 要 18~20ms，抢锁就等于没流水。
+            `prepare()` 只读构造后不变量（INPUT / interp），无需保护。
+        """
+        k = 0
+        last = -1
+        while not self._stop.is_set():
+            if not self.active or self.detector is None:
+                time.sleep(0.05)
+                continue
+            if self._pre_q.full():
+                time.sleep(0.003)
+                continue
+            with self._lock:
+                fr, sq = self._frame, self._seq
+            if fr is None or sq == last:
+                time.sleep(0.003)
+                continue
+            last = sq
+            try:
+                pack = self.detector.prepare(fr, slot="pipe%d" % (k & 1))
+            except Exception as e:                              # noqa: BLE001
+                self.last_error = "%s: %s" % (type(e).__name__, e)
+                time.sleep(0.05)
+                continue
+            k += 1
+            try:
+                self._pre_q.put((fr, pack, sq), timeout=0.05)
+            except queue.Full:
+                pass
 
     # ------------------------------------------------------------------ 状态 / 调参
     def status(self):
@@ -570,6 +627,7 @@ class AiOverlay(object):
             "copy_frame": self.copy_frame,
             "spread_pose": self.spread_pose,
             "pose_budget": self.pose_budget,
+            "pipeline": self.pipeline,
             "kpt_conf": round(self.kpt_conf, 3),
             "kpt_margin": round(self.kpt_margin, 3),
             "kpt_scale_max": round(self.kpt_scale_max, 3),
@@ -661,6 +719,9 @@ class AiOverlay(object):
             self.pose_budget = max(0, min(16, int(patch["pose_budget"])))
             if self.detector is not None:
                 self.detector.pose_budget = self.pose_budget
+        if "pipeline" in patch:
+            # 前处理流水开关：只有启动时读，运行中改需要重启服务才生效
+            self.pipeline = bool(patch["pipeline"])
         if "preset" in patch and patch["preset"]:
             self.switch_preset(patch["preset"])
         if "pose_preset" in patch and patch["pose_preset"]:

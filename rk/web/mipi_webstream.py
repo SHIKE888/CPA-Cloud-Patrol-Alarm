@@ -3573,6 +3573,9 @@ def main():
                     help="每帧最多跑几个人的姿态(默认 2, 0=不限制)。姿态是逐人串行的, "
                          "人多时帧率会按人数线性下降; 限成 2 后其余人沿用上帧关节(框位移补偿), "
                          "人数 <= 预算时行为完全不变")
+    ap.add_argument("--ai-pipeline", type=int, default=1, choices=[0, 1],
+                    help="前处理流水(默认 1=开): letterbox 交给独立线程与 NPU 推理重叠, "
+                         "实测 21.17 -> 18.69 ms/帧 (+12%); 出问题时传 0 回退单线程")
     ap.add_argument("--ai-copy-frame", action="store_true",
                     help="推理前拷一份整帧(更干净但多 ~2.5ms/帧; 默认不拷)")
     ap.add_argument("--ai-zone", default="",
@@ -3670,6 +3673,7 @@ def main():
                                    kpt_scale_max=args.ai_kpt_max_dist,
                                    det_interval=args.ai_det_interval,
                                    pose_budget=args.ai_pose_budget,
+                                   pipeline=bool(args.ai_pipeline),
                                    copy_frame=args.ai_copy_frame,
                                    source=args.ai_source,
                                    zone=_zone,

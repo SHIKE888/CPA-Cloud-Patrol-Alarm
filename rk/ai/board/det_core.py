@@ -595,11 +595,24 @@ class TwoStageDetector(object):
                          max(0.0, min(W - 1.0, x2)), max(0.0, min(H - 1.0, y2))],
                         dtype=np.float32)
 
-    def persons(self, img_bgr):
-        """Stage-1：返回原图坐标下的人体框列表 [(box, score), ...]。"""
+    def prepare(self, img_bgr, slot='det'):
+        """只做一级 letterbox，供 AI 流水的前处理线程单独调用。
+
+        ⚠ **不要在这里拿 `_det_lock`**：它必须和主推理线程真正并行，
+          而主线程跑一轮 run() 要 18~20ms，抢锁会把流水收益全部抵消。
+          本函数只读 `self.INPUT` / `self.interp`（构造后不变），无需保护。
+        ⚠ 返回的是复用画布：调用方必须保证 slot 不冲突
+          （流水双缓冲用 `pipe0` / `pipe1` 轮流，避免盖掉推理正在用的那块）。
+        """
+        return letterbox_rgb(img_bgr, self.INPUT, interp=self.interp, slot=slot)
+
+    def persons(self, img_bgr, pack=None):
+        """Stage-1：返回原图坐标下的人体框列表 [(box, score), ...]。
+
+        pack 可由 prepare() 预先算好（流水前处理），省掉这一次 letterbox。
+        """
         H, W = img_bgr.shape[:2]
-        rgb, scale, px, py = letterbox_rgb(img_bgr, self.INPUT, interp=self.interp,
-                                           slot='det')
+        rgb, scale, px, py = pack if pack is not None else self.prepare(img_bgr)
         outs = self.det.infer(rgb)
         self.stat['det_ms'] = self.det.infer_ms
         self.stat['det_ran'] = 1
@@ -708,9 +721,12 @@ class TwoStageDetector(object):
         self.stat['pose_n'] += 1
         return k
 
-    def run(self, img_bgr):
+    def run(self, img_bgr, prepared=None):
         """完整两级：返回 [ {box, score, kps}, ... ] （原图坐标）。
 
+        prepared: 由 prepare() 预先算好的一级输入包 (rgb, scale, px, py)。
+          流水模式下前处理线程已经做过了，传进来就省掉一次 letterbox；
+          不传则在本函数内现算（单线程模式，行为与以前完全一致）。
         det_interval > 1 时会跳帧：只在第 1、1+N、1+2N… 次调用里跑一级检测，
         中间帧直接复用缓存框；每帧的姿态结果会用"关节外接框"回写缓存，
         所以人走动时框依然能跟得上（只是不会发现新出现的人）。
@@ -725,14 +741,14 @@ class TwoStageDetector(object):
         need_det = (self.det_interval <= 1 or not self._cached
                     or (self._tick - 1) % self.det_interval == 0)
         if need_det and self.det is not None and self.det.ok:
-            self._cached = self.persons(img_bgr)[:self.max_persons]
+            self._cached = self.persons(img_bgr, prepared)[:self.max_persons]
             self.stat['det_n'] += 1
             if self.spread_pose and self.det_interval > 1 and self._last_kps:
                 # 这一帧只做检测：直接返回新框 + 上一帧的关节
                 self.stat['stage2_n'] = 0
                 return self._spread_out()
         elif not self._cached and self.det is not None and self.det.ok:
-            self._cached = self.persons(img_bgr)[:self.max_persons]
+            self._cached = self.persons(img_bgr, prepared)[:self.max_persons]
 
         out = []
         new_cache = []
