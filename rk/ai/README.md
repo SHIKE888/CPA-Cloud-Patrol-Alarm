@@ -14,30 +14,40 @@
               MJPEG Web 推流（浏览器实时查看）
 ```
 
-**帧率解耦**：采集/渲染按视频帧率跑，AI 推理按自己的限频跑（默认 6fps），
+**帧率解耦**：采集/渲染按视频帧率跑，AI 推理按自己的限频跑（`--ai-fps`，默认 30、最高 60；
+真正的天花板由单帧耗时 `run_ms` 决定，限频只是闸门），
 AI 结果通过"最近值"共享给渲染线程 —— 叠加标注不会拖慢视频帧率。
 
 **模型档位（网页上可热切换）**：NPU 耗时几乎正比于输入面积，所以除了原始 640 模型，
 还转了更小的输入尺寸各用一套：
 
-| 模型文件 | 输入 | 用途 | 实测 NPU 耗时 |
+| 模型文件 | 输入 | 用途 | 实测 NPU 耗时（双核） |
 |---|---|---|---|
-| `yolov8n-slim.rknn` | 640 | 一级检测（原始）| 24 ms |
-| `yolov8n-slim-512.rknn` | 512 | 一级检测（快）| 20 ms |
-| `yolov8n-pose-hybrid.rknn` | 640 | 二级姿态（最准）| 33 ms |
-| `yolov8n-pose-384-hybrid.rknn` | 384 | 二级姿态（推荐）| 15 ms |
-| `yolov8n-pose-320-hybrid.rknn` | 320 | 二级姿态（极速）| 14 ms |
+| `yolov8n-slim.rknn` | 640 | 一级检测（线上在用）| **17 ms**（单核 24 ms）|
+| `yolov8n-slim-512.rknn` | 512 | 一级检测（已否决，漏检）| 20 ms |
+| `yolov8n-pose-hybrid.rknn` | 640 | 二级姿态（线上在用）| **22~26 ms**（单核 33 ms）|
+| `yolov8n-pose-384-hybrid.rknn` | 384 | 已否决（见下文）| 15 ms，但输出已损坏 |
+| `yolov8n-pose-320-hybrid.rknn` | 320 | 已否决（见下文）| 24 ms，但输出已损坏 |
+
+“双核”指 `RKNNLite` 的 `core_mask=NPU_CORE_0_1` —— RK3576 的 NPU 是双核，
+而 `NPU_CORE_AUTO` **只挑一个核**（另一个全程 0%），这是早期“NPU 占用才 20~40% 却快不起来”的真正原因。
+`det_core.RKNNModel` 已默认双核（init 失败自动退回 AUTO）。
 
 网页上「模型档位」就是上面这些文件的组合；
 `det_core.TwoStageDetector` 会**从文件名自动识别输入尺寸**（`-384-` → 384），
 解码器也支持三种输出布局（airorckchip 分离式、合并 DFL、ultralytics 原生扁平 (1,C,N)）。
 
-> ⚠ **小尺寸模型实测不可用（2026-10-16 结论）**：
+> ⚠ **小尺寸模型实测不可用（2026-10-16 结论，2026-10-19 又验证了第三条路）**：
 > * det 512 → 画面里较小的人**漏检**；
-> * ultralytics 原生导出的 pose 384/320 → RKNN INT8 量化把类别分支压成全 0、
->   关键点置信度只剩零星值（把 cv2/cv3/cv4/Concat 都改 float16 也无效）→ “有框无骨架”。
-> 所以线上只用 640 那套；“快”靠 `det_core` 的 **spread_pose**（检测帧跳过姿态），
-> 两级串行的 45ms 长尾帧消失，17fps → 26fps。
+> * pose 384/320 做 **INT8** → 类别分支压成 0、关键点置信度全 0
+>   （把 cv2/cv3/cv4/Concat 都改 float16 也无效）→“有框无骨架”；
+> * pose 384/320 做 **FP16**（`do_quantization=False`，见 `convert/vm_fp16.py`）→
+>   输出完全正常，但 RK3576 的 NPU 跑 FP16 极慢：**384 = 56.6 ms、320 = 24.6 ms**，
+>   都不比 640 INT8（22~26 ms）快 → 同样不可用。
+>
+> 所以线上只用 640 那套；“快”靠三件事：**spread_pose**（检测帧跳过姿态）、
+> **pose_budget**（多人时每帧只更新 N 个人）、**NPU 双核**。
+> 无人 50 fps / 1 人 36 fps / 4 人 26.7 fps（见 `../web/README.md` 的性能调优速查表）。
 
 怎么得到小尺寸模型（VM 上，ultralytics + rknn-toolkit2）：
 
@@ -83,13 +93,17 @@ python convert_rknn.py --onnx yolov8n-slim-512.onnx --out yolov8n-slim-512.rknn 
 
 ## 2. 实测数据（MLK-AFC03 / RK3576J / librknnrt 2.3.0 / RKNPU driver 0.9.8）
 
+> 表中 NPU 耗时是 **2026-10-19 双核（`NPU_CORE_0_1`）之后**的值；括号里是更早的单核数据。
+
 | 项 | 数值 |
 |---|---|
 | 输入 | 1920×1080（来自 FPGA→MIPI 摄像头链路） |
-| 一级 yolov8n 640×640 INT8 | **~32 ms** |
-| 二级 yolov8n-pose 640×640 INT8（关键点输出头 float16） | **~34 ms / 人** |
-| 两级串联上限 | ~12–15 fps（单人；多人按人数线性增加） |
-| 运行配置 | AI 限频 6 fps，视频输出 **25 fps 不降** |
+| 一级 yolov8n 640×640 INT8 | **~17 ms**（单核 ~24 ms） |
+| 二级 yolov8n-pose 640×640 INT8（关键点输出头 float16） | **~22~26 ms / 人**（单核 ~34 ms） |
+| 两级**每帧都跑** | ~21 fps（单人） |
+| 帧率优先档（检测帧跳过姿态 + 检测间隔 2） | **~36 fps（1 人）/ 50 fps（无人）** |
+| 多人（姿态预算 2） | 4 人 26.7 fps（不限制时 15 fps） |
+| 运行配置 | AI 限频 60；视频输出 **59 fps 不降**（与 AI 无关） |
 | 检测精度（COCO 参考图） | NPU INT8 `person 0.686 / box(412,157,466,299)` vs ONNX Runtime FP32 `0.712 / box(412,156,465,298)` |
 | 关键点 | NPU 与 FP32 一致：15/17 高置信 |
 
@@ -97,6 +111,9 @@ python convert_rknn.py --onnx yolov8n-slim-512.onnx --out yolov8n-slim-512.rknn 
 > （坐标还是对的，但置信度全丢 → 画不出骨架）。解决：对输出层做**混合量化**，只把
 > `/model.22/Concat_6_output_0_int8` 设为 `float16`（见下节），坐标与置信度都恢复正常，
 > 代价仅约 +3 ms。
+>
+> **这条修法只对 640 有效**：384/320 的同一手法救不回来（2026-10-19 用 `probe_pose_model.py`
+> 复验，kpt conf 仍全 0），改走 FP16 又因为 RK3576 的 FP16 太慢而不可用 —— 详见开头的模型表。
 
 ---
 
@@ -207,7 +224,7 @@ SRC=/root/rk/ai/000000000139.jpg PORT=9014 AIFPS=8 bash /root/rk/ai/board/start_
 | 参数 | 说明 |
 |---|---|
 | `--source` | 视频源：`/dev/video22`、`http://ip:port/stream`、`rtsp://…`、图片路径 |
-| `--ai-fps` | AI 推理帧率上限（与视频帧率无关，默认 6） |
+| `--ai-fps` | AI 推理帧率上限（默认 30，最高 60；与视频帧率无关，真正天花板由 `run_ms` 决定） |
 | `--cap-fps` | 采集限频（接网络流时默认 25，避免拉重复帧空烧 CPU） |
 | `--det-conf` / `--nms-thres` | 检测阈值（误检多就调高 det-conf，漏检就调低） |
 | `--max-persons` | 每帧最多跑几个 ROI 姿态（越多人越慢） |
