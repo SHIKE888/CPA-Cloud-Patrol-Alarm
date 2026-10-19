@@ -97,6 +97,20 @@ ssh afc03 "cd /root/rk/deploy && ./restart_web.sh"
 PC 侧观看：双击 `rk/web/mipi_viewer.html`，地址框填 `192.168.137.100:9012`；
 或直接开 `http://192.168.137.100:9012/`；VLC 可放 `http://192.168.137.100:9012/stream`。
 
+**手机 / 平板（无线局域网）**：板子 USB WiFi 由 NetworkManager 管理，连 `509`（5GHz），
+开机自动 DHCP，当前地址 `http://192.168.1.136:9012/`。页头「局域网」芯片会显示
+`/api/net` 选出的无线地址，点一下即可复制。排障：
+
+```bash
+ssh afc03 "nmcli -t dev status | grep wlx"                  # 应为 wifi:connected:509
+ssh afc03 "ip -4 -o addr show wlx8c7ab3f8171b"              # 应有 192.168.1.x
+ssh afc03 "nmcli con up 509"                                # 掉线时手动重连
+```
+
+> ⚠ **不要**再通过 `/etc/wpa_supplicant.conf` 手工起 `wpa_supplicant` / `dhclient`
+> （曾写在 `load_drv.sh` 里）：会和 NetworkManager 抢同一张网卡，表现为
+> 网卡 `associated` 但没有 IP，局域网/手机完全打不开。无线统一交给 NetworkManager。
+
 > ⚠ 启动脚本**没有 `--fps` 参数**（`mipi_webstream.py` 未定义它，传了会直接报错退出）。
 > 推流帧率上限在**网页「画面」页签的「帧率」滑块**上调，或 `POST /api/params {"fps":20}`。
 > 采集尺寸/JPEG 质量则在启动时用 `--width/--height` / `--quality` 定。
