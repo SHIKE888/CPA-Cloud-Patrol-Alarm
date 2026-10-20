@@ -97,7 +97,9 @@ module cfg_ctrl_top #(
 	output wire [1:0]  o_res_mode,
 	output wire        o_res_chg,
 	// 2026-10-21: CSI RX 手动 tap 步进按钮 (idle=1, 写 0xD9 产生一次按下->释放)
-	output wire        o_dbg_btn
+	output wire        o_dbg_btn,
+	// 2026-10-21: Bayer 相位 (0=RGGB 1=GRBG 2=GBRG 3=BGGR), 已同步到像素域
+	output wire [1:0]  o_bayer_sel
 );
 
 	//-------------------------------------------------------------------------
@@ -150,6 +152,7 @@ module cfg_ctrl_top #(
 	wire [3:0]  cfg_cam_ev;
 	wire [7:0]  cfg_cam_trig;
 	wire [7:0]  cfg_wb_r, cfg_wb_b;
+	wire [1:0]  cfg_bayer_sel;
 	wire [6:0]  cfg_roi_pct;
 	wire [2:0]  cfg_fps_div;
 	reg  [15:0] lg_s1, lg_s2;   // V21 诊断同步器
@@ -247,6 +250,7 @@ module cfg_ctrl_top #(
 		.O_cfg_cam_trig  (cfg_cam_trig),
 		.O_cfg_res_mode  (cfg_res_mode),   // V21
 		.O_res_chg       (cfg_res_chg),    // V21
+		.O_cfg_bayer_sel (cfg_bayer_sel),  // 2026-10-21
 		.I_st_cam_wr_cnt (st_corr_fc),
 		.I_st_cam_busy   (i_cam_busy),
           .I_st_line_groups(lg_max),
@@ -259,6 +263,7 @@ module cfg_ctrl_top #(
   );
 
 	assign o_dbg_btn = cfg_dbg_btn;
+	assign o_bayer_sel = bsel_s2;   // 2026-10-21: 已在像素域
 
 	//-------------------------------------------------------------------------
 	// I2C 从机
@@ -344,6 +349,7 @@ module cfg_ctrl_top #(
 	reg [7:0] wbb_s1,  wbb_s2;
 	reg [6:0] roi_s1,  roi_s2;
 	reg [2:0] fps_s1,  fps_s2;
+	reg [1:0] bsel_s1, bsel_s2;
 
 	always @(posedge i_pix_clk or negedge i_pix_rst_n) begin
 		if (!i_pix_rst_n) begin
@@ -370,6 +376,7 @@ module cfg_ctrl_top #(
 			wbb_s1 <= 8'd128; wbb_s2 <= 8'd128;
 			roi_s1 <= 7'd100; roi_s2 <= 7'd100;
 			fps_s1 <= 3'd1;   fps_s2 <= 3'd1;
+			bsel_s1 <= 2'd0;  bsel_s2 <= 2'd0;
 		end else begin
 			mode_s1 <= cfg_pp_mode; mode_s2 <= mode_s1;
 			sh_s1   <= cfg_pp_sh;   sh_s2   <= sh_s1;
@@ -397,6 +404,7 @@ module cfg_ctrl_top #(
 			wbb_s1  <= cfg_wb_b;    wbb_s2  <= wbb_s1;
 			roi_s1  <= cfg_roi_pct; roi_s2  <= roi_s1;
 			fps_s1  <= cfg_fps_div; fps_s2  <= fps_s1;
+			bsel_s1 <= cfg_bayer_sel; bsel_s2 <= bsel_s1;   // 2026-10-21
 		end
 	end
 

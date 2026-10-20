@@ -44,6 +44,9 @@ module ui_top_demosaic #(
     input           I_rst_n 		,  // 复位信号，低有效
     input  [12:0]   I_img_width     ,  // V21: 运行时图像宽度
     input  [12:0]   I_img_height    ,  // V21: 运行时图像高度
+    // 2026-10-21: 行相位取反。配合不同 BAYER_MODE 例化, 可以覆盖全部 4 种顺序:
+    //   RGGB 分支 inv=1 -> GRBG ;  GBRG 分支 inv=1 -> BGGR
+    input           I_ypos_inv      ,
 
     input [39:0]    I_axi4s_tdata 	,  // AXI4-Stream视频数据
     input [9:0]     I_axi4s_tdest 	,
@@ -66,6 +69,8 @@ wire 		demosaic_tvalid;
 wire 		demosaic_tready; 
 
 wire        bayer_ypos      ;
+// 行相位取反后的版本: 只影响插值模块对当前行是 R/G 行还是 G/B 行的判断
+wire        bayer_ypos_x = bayer_ypos ^ I_ypos_inv;
 wire [95:0] matrix_last_line;
 wire [95:0] matrix_cur_line ;
 wire [95:0] matrix_next_line;
@@ -109,7 +114,7 @@ X_ui_bilinear_interpolation(
 	.I_tvalid     		(demosaic_tvalid)  	,
 	.I_tready     		(demosaic_tready)  	,
 	
-	.bayer_ypos       	(bayer_ypos       )	,
+	.bayer_ypos       		(bayer_ypos_x     )	,
 	.matrix_last_line 	(matrix_last_line )	,
 	.matrix_cur_line  	(matrix_cur_line  )	,
 	.matrix_next_line 	(matrix_next_line )	,
