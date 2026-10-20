@@ -360,8 +360,7 @@ wire 							S_ae_req		;
 //    改动时 system_top 会给写侧一个 120ms 复位窗，让行/帧计数重新对齐。
 //=============================================================================
 wire          					S_hs_clk0		;   // cam0 RX 恢复时钟
-wire          					S_hs_clk1_raw	;   // cam1 RX 原始恢复时钟 (只做 BUFG 输入)
-wire          					S_hs_clk1		;   // cam1 RX 恢复时钟 (BUFG 后, 全局网)
+wire          					S_hs_clk1		;   // cam1 RX 恢复时钟 (仅作 mux 输入)
 wire          					S_hs_rx_clk_mux	;   // 二选一（LUT）
 wire          					S_hs_rx_clk		;   // BUFG 后的全局 byte clock (= HS clk / 4)
 
@@ -815,9 +814,10 @@ always @(posedge S_hs_rx_clk or negedge S_pll_lock) begin
 	if (!S_pll_lock) S_res_win_rx <= 2'b00;
 	else             S_res_win_rx <= {S_res_win_rx[0], S_res_win25};
 end
-// 2026-10-21 双目: cam1 裁剪模块在 cam1 自己的恢复时钟域, 单独同步一份
+// 2026-10-21 双目: cam1 裁剪模块现在与 cam0 同域(都是 S_hs_rx_clk),
+// 但复位窗仍单独同步一份, 方便以后真要做双时钟时直接切。
 reg [1:0] S_res_win_rx1;
-always @(posedge S_hs_clk1 or negedge S_pll_lock) begin
+always @(posedge S_hs_rx_clk or negedge S_pll_lock) begin
 	if (!S_pll_lock) S_res_win_rx1 <= 2'b00;
 	else             S_res_win_rx1 <= {S_res_win_rx1[0], S_res_win25};
 end
@@ -1065,13 +1065,12 @@ mipi_csi_rx #(
 	.I_hs_data_p           ( I_data1_hs_p),
 	.I_enable              ( 1'b1        ),
 
-	.O_hs_div_clk          ( S_hs_clk1_raw   ),
+	.O_hs_div_clk          ( S_hs_clk1   ),
 
-	// 2026-10-21: 必须用 cam1 **自己**的时钟。原来接的 S_hs_rx_clk 在双目模式下
-	//   是 cam0 的时钟(S_dual_eff 时 mux 固定选 clk0), 而下游 ui_image_correction1
-	//   跑在 S_hs_clk1 上 —— 两路数据被异域采样, 行/列计数器和 tuser 全乱,
-	//   直接导致 dbuf 不再轮转、RK 侧画面冻结。
-	.m_axis_video_aclk     ( S_hs_clk1     ),
+	// 2026-10-21: 两路 AXIS 输出时钟都用 S_hs_rx_clk (与 0x4601 一致)。
+	//   选中的那一路的恢复时钟就是 S_hs_rx_clk 的来源，所以下游全部同域；
+	//   没选中的那一路靠 RX 内部 FIFO 做 CDC，数据丢弃即可。
+	.m_axis_video_aclk     ( S_hs_rx_clk   ),
 	.m_axis_video_aresetn  ( S_rx_rstn     ),
 	.m_axis_video_tready   ( 1'b1          ),
 	.m_axis_video_tuser    ( S_rx1_tuser   ),
@@ -1108,10 +1107,10 @@ sensor_sync_start #(
 //    (0x450E 实测)。这里 S_rx_sel 是准静态寄存器，只有切换瞬间会毛刺，
 //    切换后立刻有 120ms 写侧复位窗兜住。
 //--------------------------------------------------------------------------
-// ⚠ 这里必须用 **BUFG 之前**的 S_hs_clk1_raw: S_hs_clk1 已经是 X_bufg_clk1 的
-//   输出, 再喂给 X_bufg_rx_clk 就是 BUFG 串 BUFG, TD 会报错/时序崩。
+// ⚠ 这里用 BUFG 之前的 S_hs_clk1（原设计就这样）: S_hs_rx_clk 是它的 BUFG 输出，
+//   不能反过来把 BUFG 输出再喂给 BUFG。
 assign S_hs_rx_clk_mux = S_dual_eff ? S_hs_clk0
-                       : (S_rx_sel ? S_hs_clk1_raw : S_hs_clk0);
+                       : (S_rx_sel ? S_hs_clk1 : S_hs_clk0);
 
 PH1_LOGIC_BUFG X_bufg_rx_clk (
 	.i ( S_hs_rx_clk_mux ),
@@ -1119,21 +1118,14 @@ PH1_LOGIC_BUFG X_bufg_rx_clk (
 );
 
 //--------------------------------------------------------------------------
-//  cam1 自己的恢复时钟也必须过 BUFG (2026-10-21 补)
-//
-//  0x4700 新增了挂在 cam1 域上的 ui_image_correction1 + dual_frame_sched.I_clk1,
-//  它们直接吃 mipi_csi_rx1 的原始 .O_hs_div_clk。这个时钟不走全局网的话
-//  偏斜大、扇出受限, 裁剪模块的行/列计数器和 tuser 生成会不可靠 ——
-//  一旦 tuser 丢了, dbuf 写状态机的 w_fs 就不来, 三帧缓存不再轮转,
-//  RK 端会**永远读到 DDR 里同一帧**(画面冻结), 而帧率/标记一切正常, 极难排查。
-//
-//  ⚠ S_hs_clk1_raw 只允许作为 BUFG 的输入, 下面一律用 S_hs_clk1。
-//  ⚠ 声明必须放在第一个使用点(例化)之前, 否则会被隐式声明成 1bit wire。
+//  ⚠ 0x4700 曾经在这里给 cam1 额外插了一个 BUFG (S_hs_clk1_raw -> S_hs_clk1)，
+//    让 ui_image_correction1 跑在 cam1 自己的时钟上。**那是错的，已删除**：
+//    dual_frame_sched 内部是用 I_clk(=S_hs_rx_clk) 采样 I_d1/v1/u1/l1 的，
+//    只要 cam1 那一支不自始至终跟 S_hs_rx_clk 同域，tuser 就会丢，
+//    dbuf 写状态机的 w_fs 不来 -> 三帧缓存不轮转 -> 画面冻结。
+//    正确做法就是 0x4601 原本的设计：两路 RX 的 m_axis_video_aclk 都用
+//    S_hs_rx_clk，选中的那一路就是它的时钟源，整条下游天然同域。
 //--------------------------------------------------------------------------
-PH1_LOGIC_BUFG X_bufg_clk1 (
-	.i ( S_hs_clk1_raw ),
-	.o ( S_hs_clk1     )
-);
 
 //--------------------------------------------------------------------------
 //  "换源"检测 (25MHz 域) + 把选源位同步进 RX 时钟域
@@ -1198,14 +1190,19 @@ ui_image_correction #(
 
 );
 
-//图像大小裁剪模块 (cam1) —— 必须挂在 cam1 自己的恢复时钟上
+//图像大小裁剪模块 (cam1)
+//  ⚠ 时钟必须是 S_hs_rx_clk。这个模块靠 I_raw_valid 数行/列, 再对比
+//    I_raw_frame_start( = S_rx1_tvalid & S_rx1_tuser ) 复位行号。
+//    一旦它的时钟和 S_rx1_* (m_axis_video_aclk = S_hs_rx_clk) 不同域,
+//    frame_start 会漏採 -> v_cnt 失控 -> O_raw_tuser 永不出来 -> 下游
+//    dbuf 写状态机不再推进 -> 画面冻结。
 ui_image_correction #(
     .DATA_WIDTH  (40),
     .TDEST_WIDTH (10)
 )X_ui_image_correction1
 (
     .O_line_groups    (S_line_groups1    ),
-    .I_clk            (S_hs_clk1		  ),
+    .I_clk            (S_hs_rx_clk		  ),
     .I_rst_n          (S_pll_lock & S_res_rstn_rx1 ),
     .I_img_width      (S_h_active		  ),
     .I_img_height     (S_v_active		  ),
@@ -1236,7 +1233,10 @@ dual_frame_sched #(
     .LINE_GRP   (480)          // 1080p: 1920px / 4
 ) X_dual_sched (
     .I_clk        (S_hs_rx_clk      ),
-    .I_clk1       (S_hs_clk1        ),
+    // ⚠ 和 I_clk 用同一个时钟: dual_frame_sched 内部 d1_r/v1_r/u1_r/l1_r
+    //    都用 I_clk 采样, I_clk1 只用作行组环形缓冲的写时钟。两者必须同域,
+    //    否则 cam1 的 tuser 会被漏採 -> dbuf 不轮转 -> 画面冻结。
+    .I_clk1       (S_hs_rx_clk      ),
     .I_rst_n      (S_pll_lock       ),
     .I_dual_en    (S_dual_eff       ),
     .I_sel        (S_rx_sel_rx      ),
@@ -1389,7 +1389,7 @@ cfg_ctrl_top #(
 	//           0x3807, 所以板上读到的仍是 0x3807 —— 不能只凭版本号判断是否
 	//           烧了新 bit, 要看画面/相位相关。
 	//   0x4509 = 2026-10-20 修 IDELAY 使能语义(电平) + eye-scan 只扫 32 tap
-	.CFG_VER  (16'h4700)
+	.CFG_VER  (16'h4701)
 ) u_cfg_ctrl (
 	.i_sys_clk    (I_sysclk_25m),
 	.i_sys_rst_n  (1'b1),
@@ -1401,6 +1401,10 @@ cfg_ctrl_top #(
 	.i_frame_tuser(S_ISP_O_tuser),
 	// V36: 真正的帧首/行尾信号 (S_ISP_O_tuser 实测恒 0, 不能用作计数)
 	.i_fs_csi     (S_csi_frame_start),   // CSI-2 FS 短包 -> 传感器真实帧率
+	// 2026-10-21 画面冻结定位 (只读 0xE1~0xE3)
+	.i_diag_sof   (D_sof_s2),
+	.i_diag_wbuf  (D_wb_s2),
+	.i_diag_vs    (D_vs_s2),
 	.i_fs_corr    (S_axis_tuser),        // 裁剪模块输出帧首
 	.i_last_corr  (S_axis_tlast),        // 裁剪模块输出行尾
 	// 2026-10-20: LP-free RX 调试总线 (只读 0xD6/0xD7/0xD8) = 固定 cam0
@@ -1455,6 +1459,43 @@ cfg_ctrl_top #(
 	.o_res_chg    (S_res_chg)      // V21
 );
 
+
+//=============================================================================
+//  诊断 (只读 0xE1~0xE3): 画面冻结定位 (2026-10-21)
+//
+//  背景: 现象是 fps 正常、帧标记正常, 但 RK 读到的永远是 DDR 里同一帧。
+//  uidbuf 写状态机 
+//      S_IDLE: if (I_W_en & wfifo_rst_done_r2 & w_fs) begin
+//                  W_MS <= S_RST; ... O_W_sync_cnt 递增 ...
+//  没有 w_fs(=tuser) 就永远停在 IDLE, 三帧缓存不轮转。
+//  这三个计数器一次上板就能定位断在哪一环:
+//     0xE1 涨、0xE2 不变 -> tuser 有, 但写缓冲不轮转 (读侧/防覆盖卡住)
+//     0xE1 不变          -> sof 根本没进 dbuf (tuser 丢在更上游)
+//     0xE3 不变          -> VTC 没跑, 读侧不启动(连带写侧卡住)
+//=============================================================================
+reg  [7:0] D_sof_cnt;
+reg  [7:0] D_vs_cnt;
+always @(posedge S_hs_rx_clk or negedge S_pll_lock) begin
+	if (!S_pll_lock)     D_sof_cnt <= 8'd0;
+	else if (S_yuv_sof)  D_sof_cnt <= D_sof_cnt + 8'd1;
+end
+always @(posedge S_pclkx1 or negedge S_pll_lock) begin
+	if (!S_pll_lock)     D_vs_cnt <= 8'd0;
+	else if (S_vtc_vs)   D_vs_cnt <= D_vs_cnt + 8'd1;
+end
+
+// 跨到 25MHz 域 (只读快照; 8bit 二进制同步, 变化很慢, 撕裂概率可忽略)
+always @(posedge I_sysclk_25m or negedge S_pll_lock) begin
+	if (!S_pll_lock) begin
+		D_sof_s1 <= 8'd0; D_sof_s2 <= 8'd0;
+		D_vs_s1  <= 8'd0; D_vs_s2  <= 8'd0;
+		D_wb_s1  <= 8'd0; D_wb_s2  <= 8'd0;
+	end else begin
+		D_sof_s1 <= D_sof_cnt;   D_sof_s2 <= D_sof_s1;
+		D_vs_s1  <= D_vs_cnt;    D_vs_s2  <= D_vs_s1;
+		D_wb_s1  <= S_wbuf_sync; D_wb_s2  <= D_wb_s1;
+	end
+end
 
 //设置3帧缓存，读延迟写1帧
 ui_setvbuf#(

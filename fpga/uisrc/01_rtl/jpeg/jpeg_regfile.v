@@ -175,6 +175,14 @@ module jpeg_regfile #(
     input  wire [15:0]  I_st_line_groups,
     input  wire         I_st_cam_busy,
 
+    // 2026-10-21 画面冻结定位 (只读, 0xE1~0xE3)
+    //   0xE1 = S_yuv_sof 帧首计数 (进 dbuf 写侧的 sof 到底有没有)
+    //   0xE2 = dbuf 写缓冲索引 S_wbuf_sync (三帧缓存到底在不在轮转)
+    //   0xE3 = VTC 场同步计数 S_vtc_vs (dbuf 读侧有没有被启动)
+    input  wire [7:0]   I_diag_sof,
+    input  wire [7:0]   I_diag_wbuf,
+    input  wire [7:0]   I_diag_vs,
+
     // 2026-10-20: LP-free RX 调试总线 (只读)
     //   0xD6 = dbg_mipi  : [3:0]各lane字节对齐 [4]word对齐 [5]in_frame
     //                      [6]payload_valid [7]10bit解包有效
@@ -520,6 +528,10 @@ module jpeg_regfile #(
                 8'hDA: O_rd_data <= {6'b0, r_bayer_sel};
                 8'hDB: O_rd_data <= {5'b0, r_mark_en, r_dual_en, r_rx_sel};
                 8'hE0: O_rd_data <= {6'b0, r_res_mode};
+                // 2026-10-21 画面冻结定位 (只读快照, 连着读两次看有没有变)
+                8'hE1: O_rd_data <= I_diag_sof;
+                8'hE2: O_rd_data <= I_diag_wbuf;
+                8'hE3: O_rd_data <= I_diag_vs;
                 8'hD0: O_rd_data <= s_cam_wr_cnt[ 7:0];
                 8'hD1: O_rd_data <= s_cam_wr_cnt[15:8];
                 8'hD2: O_rd_data <= {7'b0, s_cam_busy};

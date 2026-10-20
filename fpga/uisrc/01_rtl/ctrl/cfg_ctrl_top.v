@@ -35,7 +35,7 @@ module cfg_ctrl_top #(
 	//              cam1 走 0xDD/DE/DF, 新增 0xDC 两路打包状态
 	//     0x4700 = V47 第 0 次构建: 双目交替推流 (0xDB[1]) + 帧标记 (0xDB[2])
 	//=========================================================================
-	parameter [15:0] CFG_VER  = 16'h4700
+	parameter [15:0] CFG_VER  = 16'h4701
 )(
 	// ---- 系统时钟域 (25MHz 常开) ----
 	input  wire        i_sys_clk,
@@ -101,6 +101,10 @@ module cfg_ctrl_top #(
 	output wire [7:0]  o_cam_trig,
 	input  wire [15:0] i_cam_wr_cnt,
 	input  wire        i_cam_busy,
+	// 2026-10-21 画面冻结定位 (已 2 级同步到 i_sys_clk)
+	input  wire [7:0]  i_diag_sof,
+	input  wire [7:0]  i_diag_wbuf,
+	input  wire [7:0]  i_diag_vs,
 
 	// ---- 画质参数 (同步到像素域) ----
 	output wire [7:0]  o_wb_r,
@@ -312,6 +316,10 @@ module cfg_ctrl_top #(
 		.O_dual_start    (cfg_dual_start), // 2026-10-21
 		.I_st_cam_wr_cnt (st_corr_fc),
 		.I_st_cam_busy   (i_cam_busy),
+		// 2026-10-21 画面冻结定位
+		.I_diag_sof      (i_diag_sof),
+		.I_diag_wbuf     (i_diag_wbuf),
+		.I_diag_vs       (i_diag_vs),
           .I_st_line_groups(lg_max),
           // 2026-10-20: RX 调试总线 (已 2 级同步到 i_sys_clk)
           // 2026-10-21: 0xD6/D7/D8 固定是 cam0, cam1 固定走 0xDD/DE/DF
