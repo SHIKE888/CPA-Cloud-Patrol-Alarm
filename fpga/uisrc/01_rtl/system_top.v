@@ -150,7 +150,12 @@ parameter CS_WIDTH        = 1
 	output wire						O_mipi_dsi_lp_clk_p	,
 	output wire						O_mipi_dsi_lp_clk_n	,
 	output wire	[3:0]				O_mipi_dsi_lp_data_p,
-	output wire	[3:0]				O_mipi_dsi_lp_data_n
+	output wire	[3:0]				O_mipi_dsi_lp_data_n,
+	// ---- 2026-10-21 临时: 第二路摄像头 (子卡 J3) 的 MCLK / RST / SCCB ----
+	output wire						O_clk1_24m	,
+	output wire						O_clk1_rst	,
+	output wire						O_cam1_scl	,
+	inout  wire						IO_cam1_sda
 );
 
 	//==================== 视频格式 / 分辨率配置 ====================
@@ -402,6 +407,8 @@ wire [31:0] 					S_ud_rtdata		;  // RGBX8888 (1 像素/cyc) 出 dbuf 读侧
 wire        					S_R_vrst		;
 					
 assign O_clk_rst				= 1'b1;
+// 2026-10-21 临时: cam1 的 RESETn 与 cam0 一样恒解除 (cam0 的模组也不需要 FPGA 拉复位)
+assign O_clk1_rst				= 1'b1;
 	
 assign S_ud_wclk 				= S_hs_rx_clk	;
 assign S_ud_wtuser 				= S_yuv_sof		;
@@ -478,6 +485,15 @@ ui_pll X_ui_pll (
 
 PH1_LOGIC_ODDR X_cam_clk (
     .q  		(O_clk_24m	), 
+    .clk		(S_clk_24m	),
+    .d0 		(1'b1		),
+    .d1 		(1'b0		),
+    .rst		(1'b0		)
+  );
+
+// 2026-10-21 临时: cam1 的 MCLK (同一个 24MHz, 直接再来一个 ODDR)
+PH1_LOGIC_ODDR X_cam1_clk (
+    .q  		(O_clk1_24m	), 
     .clk		(S_clk_24m	),
     .d0 		(1'b1		),
     .d1 		(1'b0		),
@@ -617,6 +633,26 @@ X_ui_cfg_imx415(
 	.IO_cam_sda		(IO_cam_sda		), 
 	.O_cfg_done		(S_cam_cfg_done	),
 	.O_ae_cfg_done	(S_ae_cfg_done	)
+  );
+
+// 2026-10-21 临时: cam1 (子卡 J3) 的 SCCB
+//   与 cam0 完全同参数、同一套 AE 数据 -> 两颗传感器配置完全一致。
+//   O_cfg_done / O_ae_cfg_done 这路不参与状态上报, 先悬空。
+ui_cfg_imx415#(
+	.CLK_DIV(24_000_000/100_000-1)
+	)
+X_ui_cfg_imx415_ch1(
+	.I_clk			(S_clk_24m		),
+	.I_rst_n		(S_pll_lock		),
+	.I_ae_req		(S_ae_req_24	),
+	.I_cam_mode		(S_cam_mode_24	),
+	.I_full_reload	(S_full_reload	),
+	.I_ae_data		(S_gain_24_s2	),
+	.I_rt_exp		(S_exp_24_s2	),
+	.O_cam_scl		(O_cam1_scl		),
+	.IO_cam_sda		(IO_cam1_sda	),
+	.O_cfg_done		(             	),
+	.O_ae_cfg_done	(             	)
   );
 
 //=============================================================================
@@ -1137,7 +1173,7 @@ cfg_ctrl_top #(
 	//           0x3807, 所以板上读到的仍是 0x3807 —— 不能只凭版本号判断是否
 	//           烧了新 bit, 要看画面/相位相关。
 	//   0x4509 = 2026-10-20 修 IDELAY 使能语义(电平) + eye-scan 只扫 32 tap
-	.CFG_VER  (16'h450E)
+	.CFG_VER  (16'h450F)
 ) u_cfg_ctrl (
 	.i_sys_clk    (I_sysclk_25m),
 	.i_sys_rst_n  (1'b1),
