@@ -46,12 +46,15 @@ module ui_image_correction #(
     input    [DATA_WIDTH - 1:0]       	I_raw_data			,       
     input                             	I_raw_valid 		,     
     input                             	I_raw_frame_start	,
-    input                             	I_raw_frame_end  	,    // 2026-10-21 新增: 来自 RX 的**真实行尾**。
-    //   原来这里用“I_raw_valid 为低连续 10 拍”(cnt==10) 来分行,
-    //   但换成 LP-free RX (mipi_csi_rx) 后, 行间只有 byte_align 找同步字的
-    //   8~9 拍空隙, 刚好到不了 10 -> last 时有时无 -> h_cnt 跨行累加
-    //   (0xD4/D5 从 486 涨到 738) -> v_cnt 少计 -> 画面行重复(鬼影)。
-    input                              	I_raw_tlast     	,    // V21 诊断: 一行最后一个像素组编号 (用 0xD4/0xD5 回读)
+    input                             	I_raw_frame_end  	,    // 2026-10-21 新增: 来自 RX 的行尾 (备用, 当前**不用**于分行)。
+    //   实测: 新 RX 的输出 valid 在行间不会拉低, 所以 tlast (靠 valid 下降沿产生)
+    //   和旧的行尾判断 (cnt==10) 都很不可靠 -> 必须改成按固定组数分行。
+    input                              	I_raw_tlast     	,
+    // 2026-10-21 新增: 传感器每行实际组数 (1080p 实测 486, 4K 约 966)。
+    //   主判据: h_cnt 数到该值即认为一行结束 (不依赖任何间隙)。
+    //   兼容: 若某行偏短/偏长, 旧的 cnt==10 间隙判据仍能兼底。
+    input    [15:0]                    	I_raw_line_groups	,
+    // V21 诊断: 一行最后一个像素组编号 (用 0xD4/0xD5 回读)
     //   用来判断传感器每行实际输出多少组: 全像素 3864 宽 => ~966 组;
     //   2x2 相加(合并)到 ~1932 宽 => ~483 组。
     output reg [15:0]                 	O_line_groups      	,
@@ -115,7 +118,10 @@ module ui_image_correction #(
         end
     end
 
-    wire last = I_raw_tlast_d;   // 2026-10-21: 改用真实行尾 (原为 cnt == 10)
+    // 2026-10-21: 分行判据
+    //   主: h_cnt 数到固定组数 (确定性, 不依赖间隙)
+    //   辅: 万一某行变短/变长, cnt==10 的旧间隙判据保底(能自愈)
+    wire last = (h_cnt == (I_raw_line_groups - 16'd1)) || (cnt == 10);
     // 计算行数
     always @(posedge I_clk or negedge I_rst_n) begin
         if(!I_rst_n || I_raw_frame_start)
