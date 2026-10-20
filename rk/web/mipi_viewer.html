@@ -537,6 +537,11 @@
 
         <div class="sep"></div>
 
+        <div class="row"><label>双目拼接</label>
+          <button class="ghost" id="btnDual" style="flex:1">左 cam0 / 右 cam1</button>
+        </div>
+        <p class="hint" id="dualLine">—</p>
+
         <div class="grid2" style="margin-bottom:8px">
           <button class="ghost" id="btnMirror">水平镜像</button>
           <button class="ghost" id="btnFlipv">垂直翻转</button>
@@ -891,6 +896,7 @@ function syncLabel(k) {
 function syncToggles() {
   $("btnMirror").classList.toggle("on", !!params.mirror);
   $("btnFlipv").classList.toggle("on", !!params.flipv);
+  $("btnDual").classList.toggle("on", Number(params.dual ?? 1) !== 0);
   document.querySelectorAll("[data-rot]").forEach(b =>
     b.classList.toggle("on", Number(b.dataset.rot) === Number(params.rotate || 0)));
 }
@@ -917,6 +923,13 @@ function schedulePush() {
 /* 开关 / 旋转 */
 $("btnMirror").onclick = () => { params.mirror = params.mirror ? 0 : 1; syncToggles(); schedulePush(); };
 $("btnFlipv").onclick  = () => { params.flipv  = params.flipv  ? 0 : 1; syncToggles(); schedulePush(); };
+/* 双目: 只切开关, 拼接本身在服务端自动做(靠 FPGA 的帧标记认路)。
+   源帧没有标记(单目 / 4K 模式)时会自动退化成直通, 所以打开也不影响单目。 */
+$("btnDual").onclick = () => {
+  params.dual = Number(params.dual ?? 1) ? 0 : 1;
+  syncToggles(); schedulePush();
+  toast(params.dual ? "双目拼接: 开 (左 cam0 / 右 cam1)" : "双目拼接: 关");
+};
 document.querySelectorAll("[data-rot]").forEach(b => {
   b.onclick = () => { params.rotate = Number(b.dataset.rot); syncToggles(); schedulePush(); };
 });
@@ -1702,7 +1715,7 @@ function renderDets(ai) {
 function aiTopSync() {
   const on = !!(ai && ai.active);
   const n  = (ai && ai.detections ? ai.detections.length : 0);
-  $("sAiFps").textContent = on ? (ai.fps + " fps（检测 " + (ai.fps_det ?? 0) + "）")
+  $("sAiFps").textContent = on ? (Number(ai.fps).toFixed(1) + " fps")
                               : (ai && ai.ok ? "未运行（原图）" : "—");
   $("sAiRes").textContent = on ? (n ? n + " 人" : "无人") : "—";
 }
@@ -1760,9 +1773,9 @@ function aiSyncUI() {
   $("aiState").textContent = ai.ok ? (ai.err ? "已加载 · " + ai.err : "已加载")
                                    : (ai.err || "未加载");
   $("aiFps").textContent = ai.active
-      ? ai.fps + " fps（目标 " + ai.fps_target + "）"
+      ? Number(ai.fps).toFixed(1) + " fps"
       : "已停止";
-  $("aiDetFps").textContent = ai.active ? (ai.fps_det ?? 0) + " fps" : "—";
+  $("aiDetFps").textContent = ai.active ? Number(ai.fps_det ?? 0).toFixed(1) + " fps" : "—";
   $("aiMs").textContent = ai.det_ms + " / " + ai.pose_ms + " ms";
   $("aiPersons").textContent = ai.persons;
 
@@ -1878,6 +1891,20 @@ async function poll() {
     const _aw = +st.width, _ah = +st.height;
     if (_aw > 0 && _ah > 0) $("stage").style.aspectRatio = _aw + " / " + _ah;
     $("sFps").textContent     = (st.fps ?? "?") + " fps";
+    // ---- 双目状态 ----
+    const _d = st.dual;
+    if (_d && $("dualLine")) {
+      const _ms = v => (v == null ? "—" : Math.round(v) + "ms");
+      const _tag = _d.active ? "拼接中"
+                  : (Number(params.dual ?? 1) ? "等两路标记" : "已关闭");
+      const _s = _d.stat || {};
+      $("dualLine").textContent =
+        _tag + " · cam0 " + _ms(_d.cam0_age_ms) + " · cam1 " + _ms(_d.cam1_age_ms)
+        + " · 拼 " + (_s.pair || 0) + " / 单路 " + (_s.single || 0)
+        + " · 无标记 " + (_s.nomark || 0);
+    } else if ($("dualLine")) {
+      $("dualLine").textContent = "服务端未启用双目";
+    }
     if (st.ai) {
       ai = st.ai;
       $("aiVFps").textContent = (st.fps ?? "?") + " fps";

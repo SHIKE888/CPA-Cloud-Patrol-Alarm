@@ -38,6 +38,7 @@ import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs
 
 
 def _schedule_self_restart(width, height, delay=1.2):
@@ -436,6 +437,9 @@ DEFAULT_PARAMS = {
     "scale":      1.0,    #  0.25 .. 1.5       (相对 --stream-width 的缩放)
     "quality":    80,     #  30 .. 95          (JPEG 质量)
     "fps":        60,     #  1 .. 120          (推流帧率上限, 默认 60 = 当前链路上限)
+    # 双目拼接 (0x4700): 1=自动, 0=关。开的时候如果源帧没有帧标记(单目模式),
+    # 会自动退化成直通, 所以默认开着不影响单目/4K 模式。
+    "dual":       1,      #  0/1
 }
 
 PARAM_RANGE = {
@@ -453,6 +457,7 @@ PARAM_RANGE = {
     # 本工程 FPGA 固定输出 1080p60, 所以填 60 以上等于不限速, 结果仍是 ~59.6fps。
     # 想真的超过 60 得改 FPGA 侧 (ui_vtc 时序 / PLL / D-PHY byte clk)。
     "fps":        (1, 120),
+    "dual":       (0, 1),
 }
 
 
@@ -466,7 +471,7 @@ def _clamp_params(p):
             v = float(p[k])
         except (TypeError, ValueError):
             continue
-        if k in ("mirror", "flipv", "rotate"):
+        if k in ("mirror", "flipv", "rotate", "dual"):
             v = int(round(v))
         if k == "rotate":
             v = min((0, 90, 180, 270), key=lambda x: abs(x - v))
@@ -846,6 +851,14 @@ class FrameHub:
         with self._cond:
             return self._jpeg, self._frame_id
 
+    def update_info(self, **kw):
+        """只改元信息, 不动当前 JPEG(不会造成客户端闪一帧黑)。
+
+        双目拼接前后输出尺寸不一样, 前端拿它算黑框比例。
+        """
+        with self._cond:
+            self._info.update(kw)
+
     def wait_next(self, last_id, timeout=5.0):
         """阻塞等待比 last_id 更新的帧, 返回 (jpeg, id); 超时返回 (None, last_id)。"""
         with self._cond:
@@ -1147,6 +1160,35 @@ HW_JPEG = JpegMode(False)
 JPEG_STAT = {"hw_ok": 0, "hw_bad": 0, "sw_fallback": 0, "rebuild": 0}
 
 # ============================================================================
+#  双目拼接 (FPGA CFG_VER 0x4700)
+# ----------------------------------------------------------------------------
+#  FPGA 交替出帧: 偶数帧 = cam0, 奇数帧 = cam1, 每帧仍是 1920x1080, 各 30fps。
+#  靠 Y 平面头 4 字节的帧标记区分来源 (system_top.v / S_frame_mark):
+#
+#      Y[0]=0xA5   Y[1]=0x5A   Y[2]=src   Y[3]=0xFF     (色度 = 0x80 中性)
+#      src = 0x00 -> cam0     src = 0x11 -> cam1
+#
+#  每帧只损失左上角 4 个像素, 肉眼不可见。
+#  **没有标记 = 单目模式 / 没开 mark_en -> 完全直通**, 与 0x4601 版本行为一致。
+#
+#  左右交替的后果: 任意一帧只含一路, 所以必须由 RK 侧做配对拼接:
+#     - 每一路缩到 --stream-width/2 宽, hstack 后总宽仍是 --stream-width
+#       (默认 1920 -> 每路 960x540, 输出 1920x540), 总像素只有 1080p 的一半,
+#       CPU 比单目 60fps 还轻松。
+#     - 输出帧率 = 60/2 = 30fps, 因为每两帧才产生一对新的。
+# ============================================================================
+DUAL_MAGIC0 = 0xA5
+DUAL_MAGIC1 = 0x5A
+DUAL_MAGIC3 = 0xFF
+DUAL_SRC1 = 0x11          # 0x11 = cam1, 其它(0x00) = cam0
+
+DUAL_STALE = 1.5          # 秒: 一路超过这么久没更新, 就只出另一路(另一半涂黑)
+DUAL_GAP = 8              # 帧号相差超过这么多就不配对(防止拿几十帧前的旧图硬拼)
+
+DUAL_STAT = {"cam0": 0, "cam1": 0, "pair": 0, "single": 0, "nomark": 0,
+             "shape_skip": 0, "dup_skip": 0, "half_skip": 0}
+
+# ============================================================================
 #  参数版本号 (多前端同步)
 #
 #  多个设备(PC / 手机 / 平板)同时开着这个页面时, 只要有人在任意一处改了
@@ -1401,6 +1443,19 @@ class OpenCVCapture(threading.Thread):
         self._hw_lock = threading.Lock()
         self._hw_retry_at = 0.0
 
+        # ---- 双目交替出帧 (0x4700) ----
+        # _dual_ts[src]   : 该路最后一次出现的时刻, 用来判断"这一路还活着吗"
+        # _dual_now       : 当前是否在做拼接(会改变 _target_size -> 每路半宽)
+        # _dual_slot[src] : (BGR帧, t_cap, 到达时刻, 帧号), 供配对
+        self._dual_now = False
+        self._dual_ts = {0: 0.0, 1: 0.0}
+        self._dual_last_src = None
+        self._dual_slot = {0: None, 1: None}
+        self._dual_last_pair = None
+        self._dual_lock = threading.Lock()
+        self._last_raw_by_src = {}
+        self._dual_tag = "single"
+
     # ------------------------------------------------------------------
     #  三级流水线
     #
@@ -1524,7 +1579,42 @@ class OpenCVCapture(threading.Thread):
             #       这里不 copy、只存引用, 转换线程只读不写, 开销为零。
             self._last_raw = (seq, frame)
             # t_cap: 这一帧从 V4L2 拿到的时刻, 一路传到发布, 用来算传输延时
-            self._put(self._raw_q, (seq, frame, time.time()))
+
+            # ---- 双目: 先读帧标记, 决定这一帧来自哪一路 ----
+            #     没有标记(单目 / 没开 mark_en) -> src=None, 后面完全直通。
+            src = self._peek_dual_src(frame)
+            now_cap = time.time()
+            if src is None:
+                DUAL_STAT["nomark"] += 1
+                if self._dual_now:
+                    self._dual_now = False
+                    self._dual_slot = {0: None, 1: None}
+                    print("[dual] 帧标记消失 -> 关闭拼接(直通)")
+            else:
+                DUAL_STAT["cam%d" % src] += 1
+                self._dual_ts[src] = now_cap
+                self._dual_last_src = src
+                self._last_raw_by_src[src] = (seq, frame, now_cap)
+                # 两路都在 DUAL_STALE 内出现过, 才算真的双目
+                both = ((now_cap - self._dual_ts[0]) < DUAL_STALE
+                        and (now_cap - self._dual_ts[1]) < DUAL_STALE)
+                want = bool(int(self.params.get().get("dual", 1))) and both
+                if want != self._dual_now:
+                    self._dual_now = want
+                    self._dual_slot = {0: None, 1: None}
+                    self._dual_last_pair = None
+                    print("[dual] %s" % ("开启拼接: 左 cam0 / 右 cam1"
+                                         if want else "关闭拼接(直通)"))
+                    # 输出尺寸变了(单目 1920x1080 -> 双目 1920x540), 告诉前端
+                    try:
+                        tw, th = self._target_size(self.params.get()["scale"])
+                        self.hub.update_info(
+                            width=(tw * 2 if want else self._w),
+                            height=(th if want else self._h))
+                    except Exception:                              # noqa: BLE001
+                        pass
+
+            self._put(self._raw_q, (seq, frame, now_cap, src))
 
             # 限帧: 只补足"剩余"时间。默认 60 (链路上限), 可在网页上往下调。
             target = max(1.0, float(self.params.get()["fps"]))
@@ -1628,13 +1718,15 @@ class OpenCVCapture(threading.Thread):
         """
         while not self.stop_flag.is_set():
             try:
-                seq, raw, t_cap = self._raw_q.get(timeout=0.5)
+                seq, raw, t_cap, src = self._raw_q.get(timeout=0.5)
             except queue.Empty:
                 continue
             p = self.params.get()
 
             _ai = AI_OVERLAY
-            if (HW_JPEG.get() and _params_plain(p)
+            # 双目不做 NV12 硬件快路: 拼接得在 BGR 域做(cv2.hconcat), 而且
+            # mppjpegenc 的管道尺寸会变。软编 1920x540 只要 ~5ms, 足够。
+            if (HW_JPEG.get() and _params_plain(p) and not self._dual_now
                     and not (_ai is not None and _ai.active)):
                 nv12 = self._nv12_scaled(raw, p)
                 if nv12 is not None:
@@ -1643,7 +1735,8 @@ class OpenCVCapture(threading.Thread):
                     if enc is not None:
                         jpg = enc.encode(nv12, timeout=0.6)
                         if jpg is not None:
-                            self._put(self._bgr_q, (seq, jpg, t_cap, "jpg"))
+                            self._put(self._bgr_q,
+                                      (seq, jpg, t_cap, "jpg", src))
                             continue
                 JPEG_STAT["sw_fallback"] += 1
 
@@ -1655,13 +1748,13 @@ class OpenCVCapture(threading.Thread):
             if frame is None:
                 continue
             frame = self._process(frame, p)
-            self._put(self._bgr_q, (seq, frame, t_cap, "bgr"))
+            self._put(self._bgr_q, (seq, frame, t_cap, "bgr", src))
 
     def _enc_loop(self):
         """末级: JPEG 编码。多个线程跑同一段代码, 靠 GIL 释放真正并行。"""
         while not self.stop_flag.is_set():
             try:
-                seq, payload, t_cap, kind = self._bgr_q.get(timeout=0.5)
+                seq, payload, t_cap, kind, src = self._bgr_q.get(timeout=0.5)
             except queue.Empty:
                 continue
             p = self.params.get()
@@ -1671,23 +1764,41 @@ class OpenCVCapture(threading.Thread):
                 jpg = payload
             else:
                 frame = payload
-                # ---- 可选 AI 叠加 ----
-                # 只在"画面源 = AI 标注"时才碰帧; 切回原图时这段开销为零。
-                _ai = AI_OVERLAY
-                if _ai is not None and _ai.active:
+                # ---- 双目拼接: 左 cam0 / 右 cam1 ----
+                # 源帧是左右交替的, 每帧只含一路, 所以这里做配对。
+                # 返回 None = 这一帧被判定为"和上一对重复", 直接跳过(不发布),
+                # 于是输出帧率正好是输入的一半 = 30fps。
+                if self._dual_now and src is not None:
+                    got = self._dual_compose(src, frame, t_cap, seq)
+                    if got is None:
+                        frame = None
+                    else:
+                        frame, t_cap, _tag = got
+                        self._dual_tag = _tag
+
+                if frame is not None:
+                    # ---- 可选 AI 叠加 ----
+                    # 只在"画面源 = AI 标注"时才碰帧; 切回原图时这段开销为零。
+                    # 双目模式下 AI 只跑 cam0(= 左半边), 这是用户定的方案:
+                    # 4K/单目/双目 都保持"自选一路全速", 省一半 NPU 和 CPU。
+                    _ai = AI_OVERLAY
+                    if _ai is not None and _ai.active:
+                        try:
+                            if self._dual_now:
+                                frame = self._ai_dual_draw(_ai, frame)
+                            else:
+                                _ai.submit(frame)
+                                frame = _ai.draw(frame)
+                        except Exception as _e:                   # noqa: BLE001
+                            print("[ai] 叠加异常: %s" % _e, file=sys.stderr)
                     try:
-                        _ai.submit(frame)
-                        frame = _ai.draw(frame)
-                    except Exception as _e:                   # noqa: BLE001
-                        print("[ai] 叠加异常: %s" % _e, file=sys.stderr)
-                try:
-                    ok, buf = cv2.imencode(
-                        ".jpg", frame,
-                        [int(cv2.IMWRITE_JPEG_QUALITY), int(p["quality"])])
-                    if ok:
-                        jpg = buf.tobytes()
-                except Exception as e:
-                    print("[opencv] 编码异常: %s" % e, file=sys.stderr)
+                        ok, buf = cv2.imencode(
+                            ".jpg", frame,
+                            [int(cv2.IMWRITE_JPEG_QUALITY), int(p["quality"])])
+                        if ok:
+                            jpg = buf.tobytes()
+                    except Exception as e:
+                        print("[opencv] 编码异常: %s" % e, file=sys.stderr)
 
             # 按序号顺序发布, 避免多线程导致客户端看到乱序画面
             with self._seq_cond:
@@ -1699,10 +1810,135 @@ class OpenCVCapture(threading.Thread):
                         self.hub.publish(j, ts=t_cap)
                 self._seq_cond.notify_all()
 
+    # ---- 双目拼接 ----
+    @staticmethod
+    def _peek_dual_src(frame):
+        """从原始 NV16 缓冲的 Y 平面前 4 字节读出帧来自哪一路。
+
+        返回 0=cam0 / 1=cam1 / None=没有标记(单目模式)。
+        只读 4 个字节, 不开销。
+        """
+        if frame is None:
+            return None
+        try:
+            v = frame.reshape(-1)
+            if v.size < 4:
+                return None
+            if (int(v[0]) != DUAL_MAGIC0 or int(v[1]) != DUAL_MAGIC1
+                    or int(v[3]) != DUAL_MAGIC3):
+                return None
+            return 1 if int(v[2]) == DUAL_SRC1 else 0
+        except Exception:                                          # noqa: BLE001
+            return None
+
+    def _dual_compose(self, src, frame, t_cap, seq):
+        """把当前帧和另一路最近一帧拼成一张。返回 (frame, t_cap, tag) 或 None。
+
+        - 两路都新鲜且帧号相邻 -> cv2.hconcat, tag='dual'
+        - 只有一路新鲜        -> 另一边涂黑保宽度, tag='cam0'/'cam1'
+        - 非主路到达          -> 返回 None (只入槽, 不发布; 输出正好 30fps)
+        - 这一对刚拼过        -> 返回 None (双保险去重)
+        """
+        now = time.time()
+        with self._dual_lock:
+            # ★ 先入槽再判发布: 否则被跳过的那些帧根本进不了配对缓冲
+            self._dual_slot[src] = (frame, t_cap, now, seq)
+
+            # 每一路本身只有 30fps (FPGA 交替出帧), 每到达 2 帧才有一对"全新"的
+            # 组合。只在主路(cam0; cam0 掉线时退化成 cam1)到达时发布 → 输出 30fps:
+            #   - 不会把同一份内容推两遍
+            #   - 推流带宽减半 (1920x540@30 的像素量只有单目 1080p60 的 1/4)
+            lead = 0 if (now - self._dual_ts.get(0, 0.0)) < DUAL_STALE else 1
+            if src != lead:
+                DUAL_STAT["half_skip"] += 1
+                return None
+
+            a, b = self._dual_slot[0], self._dual_slot[1]
+
+            def _fresh(s):
+                return s is not None and (now - s[2]) < DUAL_STALE
+
+            if _fresh(a) and _fresh(b):
+                if a[0].shape != b[0].shape:
+                    # 尺寸对不上(刚好在切换缩放/旋转) -> 这一帧先单独出
+                    DUAL_STAT["shape_skip"] += 1
+                elif abs(a[3] - b[3]) > DUAL_GAP:
+                    # 帧号差太远, 拼出来会有明显时间错位
+                    DUAL_STAT["shape_skip"] += 1
+                else:
+                    key = (a[3], b[3])
+                    if key == self._dual_last_pair:
+                        DUAL_STAT["dup_skip"] += 1
+                        return None
+                    self._dual_last_pair = key
+                    DUAL_STAT["pair"] += 1
+                    return (cv2.hconcat([a[0], b[0]]),
+                            min(a[1], b[1]), "dual")
+
+            # ---- 只有一路活着: 另一半涂黑, 保持输出宽度不变 ----
+            # 否则画面会突然从 1920 变成 960 宽, 网页布局跳一下。
+            # 本帧不是自己这一路(对方那路才是主角)时就不重复发布。
+            me = a if src == 0 else b
+            if me is None or me[3] != seq:
+                return None
+            key = (seq, -1)
+            if key == self._dual_last_pair:
+                DUAL_STAT["dup_skip"] += 1
+                return None
+            self._dual_last_pair = key
+            DUAL_STAT["single"] += 1
+            f = me[0]
+            canvas = np.zeros((f.shape[0], f.shape[1] * 2, 3), np.uint8)
+            x = 0 if src == 0 else f.shape[1]
+            canvas[:, x:x + f.shape[1]] = f
+            return canvas, me[1], "cam%d" % src
+
+    def _ai_dual_draw(self, ai, frame):
+        """双目模式: AI 只喂左半边(cam0), 画完再贴回去。
+
+        必须 copy 一份再贴: frame 的左右两半是 _dual_slot 里那两帧本身,
+        原地改会把还在用于下一对配对的帧也改脏。
+        """
+        hw = frame.shape[1] // 2
+        left = frame[:, :hw]
+        ai.submit(left)
+        drawn = ai.draw(left)
+        if drawn is None:
+            return frame
+        out = frame.copy()
+        dh, dw = drawn.shape[:2]
+        out[:min(dh, out.shape[0]), :min(dw, hw)] = \
+            drawn[:min(dh, out.shape[0]), :min(dw, hw)]
+        return out
+
+    def dual_status(self):
+        """给 /api/status、/api/sys 用的双目状态。"""
+        now = time.time()
+
+        def _age(s):
+            t = self._dual_ts.get(s) or 0.0
+            return round((now - t) * 1000.0, 1) if t else None
+
+        return {
+            "enabled": bool(int(self.params.get().get("dual", 1))),
+            "active": bool(self._dual_now),
+            "last_src": self._dual_last_src,
+            "cam0_age_ms": _age(0),
+            "cam1_age_ms": _age(1),
+            "stat": dict(DUAL_STAT),
+        }
+
 
     def _target_size(self, scale):
-        """推流目标尺寸 (以 --stream-width 为基准)。"""
+        """推流目标尺寸 (以 --stream-width 为基准)。
+
+        双目拼接时每路只占一半宽度, 拼起来总宽仍是 --stream-width:
+        默认 1920 -> 每路 960x540, 输出 1920x540。
+        总像素只有 1080p 的一半, 再加上帧率是 30, CPU 比单目还轻。
+        """
         tw = max(64, int(round(self.args.stream_width * float(scale) / 2.0) * 2))
+        if self._dual_now:
+            tw = max(64, (tw // 4) * 2)     # 取偶数且不超一半
         th = max(64, int(round(tw * self._h / float(self._w) / 2.0) * 2))
         return tw, th
 
@@ -1787,20 +2023,49 @@ class OpenCVCapture(threading.Thread):
         """用最近一帧原始缓冲, 按【采集原始分辨率】生成 JPEG (抓拍用)。
 
         不在推流路径上, 只在点“抓拍”时跑一次, 所以慢一点无所谓。
+        双目模式下抓两张原始帧拼起来 -> 3840x1080 (或 4K 模式下的 7680x2160)。
         """
-        item = getattr(self, "_last_raw", None)
-        if item is None or not HAVE_CV2:
+        if not HAVE_CV2:
             return None
-        _seq, raw = item
         p = self.params.get()
         try:
-            self._last_snap_size = (self._w, self._h)
-            frame = self._to_bgr(raw, None)      # p=None -> 不预缩放
-            if frame is None:
-                return None
-            frame = self._process(frame, p, scale_to_stream=False)
+            raws = []
+            if self._dual_now:
+                now = time.time()
+                for s in (0, 1):
+                    it = self._last_raw_by_src.get(s)
+                    raws.append(it if (it is not None
+                                       and (now - it[2]) < DUAL_STALE) else None)
+                if raws[0] is None or raws[1] is None:
+                    raws = []
+            if not raws:
+                item = getattr(self, "_last_raw", None)
+                if item is None:
+                    return None
+                raws = [None]
+
+            outs = []
+            if raws[0] is None:
+                _seq, raw = getattr(self, "_last_raw")
+                self._last_snap_size = (self._w, self._h)
+                frame = self._to_bgr(raw, None)      # p=None -> 不预缩放
+                if frame is None:
+                    return None
+                outs = [self._process(frame, p, scale_to_stream=False)]
+            else:
+                self._last_snap_size = (self._w * 2, self._h)
+                for _seq, raw, _t in raws:
+                    f = self._to_bgr(raw, None)
+                    if f is None:
+                        return None
+                    outs.append(self._process(f, p, scale_to_stream=False))
+                if outs[0].shape != outs[1].shape:
+                    outs = outs[:1]
+                else:
+                    outs = [cv2.hconcat([outs[0], outs[1]])]
+
             ok, buf = cv2.imencode(
-                ".jpg", frame,
+                ".jpg", outs[0],
                 [int(cv2.IMWRITE_JPEG_QUALITY), int(quality)])
             return buf.tobytes() if ok else None
         except Exception as e:                                    # noqa: BLE001
@@ -2892,6 +3157,37 @@ def fpga_meta():
     }
 
 
+def shrink_jpeg(jpeg, max_w=0, quality=80):
+    """把 JPEG 缩到 max_w 宽（给云端看板省上行带宽）。
+
+    ⚠ 必须用 INTER_LINEAR：这颗 SoC 上 INTER_AREA 没有 SIMD 路径，
+      1920→640 会从 ~1ms 变成 ~20ms（见 rk3576 resize 实测）。
+    没有 cv2 就原样返回，不影响功能。
+    """
+    if not jpeg or max_w <= 0:
+        return jpeg
+    try:
+        import cv2
+        import numpy as np
+    except Exception:                                          # noqa: BLE001
+        return jpeg
+    try:
+        img = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
+        if img is None:
+            return jpeg
+        h, w = img.shape[:2]
+        if w <= max_w:
+            return jpeg
+        nh = max(2, int(round(h * float(max_w) / w)))
+        img = cv2.resize(img, (int(max_w), nh), interpolation=cv2.INTER_LINEAR)
+        ok, out = cv2.imencode(
+            ".jpg", img,
+            [int(cv2.IMWRITE_JPEG_QUALITY), int(max(30, min(95, quality)))])
+        return out.tobytes() if ok else jpeg
+    except Exception:                                          # noqa: BLE001
+        return jpeg
+
+
 # ============================================================================
 #  HTTP 服务
 # ============================================================================
@@ -2962,6 +3258,10 @@ class Handler(BaseHTTPRequestHandler):
                 st["port"] = self.args.port
                 st["python"] = sys.executable
                 st["ai"] = AI_OVERLAY.status() if AI_OVERLAY is not None else None
+                _cap = Handler.capture
+                st["dual"] = (_cap.dual_status()
+                              if (_cap is not None
+                                  and hasattr(_cap, "dual_status")) else None)
                 st["backends"] = {
                     "gi_gst": HAVE_GST_PY,
                     "cv2": HAVE_CV2,
@@ -2984,7 +3284,11 @@ class Handler(BaseHTTPRequestHandler):
                         {"ok": False, "error": "FPGA I2C 未启用 (--fpga-bus -1)"},
                         503)
                 _ok, snap = self.fpga.snapshot()
-                snap["meta"] = fpga_meta()
+                # compact=1: 板端代理（cloud_agent）每 15s 拉一次，
+                # meta 有 ~4KB 的寄存器描述，对它没用 —— 去掉能省 90% 流量。
+                _qs = self.path.split("?", 1)[1] if "?" in self.path else ""
+                if "compact=1" not in _qs:
+                    snap["meta"] = fpga_meta()
                 return self._json(snap)
             if path == "/api/modes":
                 regs = {}
@@ -3056,6 +3360,8 @@ class Handler(BaseHTTPRequestHandler):
                 # 参数版本号: 前端轮询发现变了就去拉对应接口,
                 # 这样 A 设备改了参数, B 设备也能自动跟上。
                 out["rev"] = dict(PARAM_REV)
+                if hasattr(cap, "dual_status"):
+                    out["dual"] = cap.dual_status()
                 return self._json(out)
             if path == "/api/jpeg":
                 cap = Handler.capture
@@ -3081,6 +3387,14 @@ class Handler(BaseHTTPRequestHandler):
                     jpeg, _ = self.hub.snapshot()
                 if not jpeg:
                     return self._json({"error": "no frame"}, 503)
+                # ?w=640&q=55 → 板端直接缩好再发（云端看板/报警图都靠它省流量）
+                try:
+                    _q = parse_qs(qs)
+                    _w = int((_q.get("w") or [0])[0] or 0)
+                    _quality = int((_q.get("q") or [80])[0] or 80)
+                except Exception:                              # noqa: BLE001
+                    _w, _quality = 0, 80
+                jpeg = shrink_jpeg(jpeg, _w, _quality)
                 self.send_response(200)
                 self.send_header("Content-Type", "image/jpeg")
                 self.send_header("Content-Length", str(len(jpeg)))

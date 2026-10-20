@@ -51,8 +51,13 @@ show() {
     echo "--------------------------------------------------------------"
     lo=$(g 0xa9); hi=$(g 0xaa)
     lo=${lo#0x}; hi=${hi#0x}
-    echo "版本 0x${hi}${lo}    (0x4601 或更高 = 双路调试寄存器版)"
-    echo "0xDB (当前选源) = $(g 0xdb)    0 = cam0(J2), 1 = cam1(J3)"
+    echo "版本 0x${hi}${lo}    (0x4601 = 双路调试寄存器 / 0x4700 = 双目交替出帧)"
+    db=$(g 0xdb); db=${db:-0x00}; dbv=${db#0x}; dbv=${dbv:-0}
+    echo "0xDB = $db   rx_sel=$(bitnote "0x$dbv" 0) (0=cam0/J2 1=cam1/J3)  dual_en=$(bitnote "0x$dbv" 1)  mark_en=$(bitnote "0x$dbv" 2)"
+    if [ "$(bitnote "0x$dbv" 1)" = "1" ]; then
+        echo "       双目已开: 两路 60fps 采集 / 交替出帧 / 输出 30fps;"
+        echo "       web 靠 Y[0..3]=A5 5A src FF 拼成 左cam0|右cam1"
+    fi
     echo "0xE0 (分辨率)   = $(g 0xe0)    0 = 1080p60"
     echo "--------------------------------------------------------------"
     row "cam0 (子卡 J2)" "$(g 0xd6)" "$(g 0xd7)" "$(g 0xd8)"
@@ -70,6 +75,11 @@ show() {
         echo "0xDC 读不到 —— 板上还是 0x4600 或更早的 bit"
     fi
     echo "--------------------------------------------------------------"
+    echo "web 双目状态 (9012 没起就跳过):"
+    curl -s --max-time 2 localhost:9012/api/status 2>/dev/null \
+        | tr ',' '\n' | grep -E 'dual|active|cam[01]_age_ms|"pair"|nomark' \
+        | sed 's/^/    /' || echo "    (未启动)"
+    echo "--------------------------------------------------------------"
 }
 
 case "${1:-read}" in
@@ -86,7 +96,8 @@ esac
 
 echo ""
 echo "判读提示:"
-echo "  in_frame=0 且 autodone=0 -> 没有 HS 时钟 (量 MCLK: cam0=A18, cam1=J3 pin8)"
+echo "  in_frame=0 且 autodone=0 -> 没有 HS 时钟 (量 MCLK: cam0=A18, cam1=J13)"
 echo "  in_frame=0 但 autodone=1 -> 时钟有、眼图锁上, 查 lane 顺序/极性 或 SCCB"
 echo "  两路 in_frame 都=1       -> 两路都在跑, 可以开始做真双路"
 echo "  0xD4/D5 > 486            -> 行分隔没对齐 (写 0xE0 重清再看)"
+echo "  dual_en=1 但 web cam1_age_ms 一直增长 -> cam1 真的没帧, 右半边会是黑的"

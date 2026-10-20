@@ -40,6 +40,8 @@
 | 11 | 云台 QGimbal 键盘控制（含回零/设零点） | ✅ | `/root/gimbal_keyctrl.py` |
 | 12 | 链路比特精确性验证 / 颜色诊断 / 性能基准 / 环境探测 | ✅ | `deploy/`、`web/` 下的诊断脚本 |
 | 13 | **云端数据看板**（公网大号报警灯 + 全参数 + 报警抓图 + 预留扩展） | ✅ | `http://<SERVER_DOMAIN>/`，见 `cloud/README.md` |
+| 14 | **双目交替推流**（两颗 IMX415 各 60fps 采集、每两帧抽一帧交替进同一条流水线，left cam0 / right cam1，输出 1920×540@30） | ✅ FPGA `0x4700` + web | 网页「画面」→ **双目拼接**；`0xDB bit1` |
+| 15 | 双目融合测距 | ⬜ 待做 | — |
 
 ---
 
@@ -115,6 +117,42 @@ ssh afc03 "nmcli con up 509"                                # 掉线时手动重
 > ⚠ 启动脚本**没有 `--fps` 参数**（`mipi_webstream.py` 未定义它，传了会直接报错退出）。
 > 推流帧率上限在**网页「画面」页签的「帧率」滑块**上调，或 `POST /api/params {"fps":20}`。
 > 采集尺寸/JPEG 质量则在启动时用 `--width/--height` / `--quality` 定。
+
+#### 双目推流（FPGA 0x4700，左 cam0 / 右 cam1）
+
+网页「画面」页签多了一个 **双目拼接** 开关（默认开）。开着也不会影响单目 / 4K ——
+拼接是**靠 FPGA 写的帧标记自动判定**的，源帧没有标记就自动退化成直通。
+
+```bash
+# 开双目（同时触发两颗 sensor 同步启动：RSTn 同拉低 20ms -> 释放 -> 等 20ms -> 同拍开跑）
+ssh afc03 "i2ctransfer -y 9 w2@0x40 0xDB 0x02"
+
+# 关双目 / 回单目 cam0 全速
+ssh afc03 "i2ctransfer -y 9 w2@0x40 0xDB 0x00"
+
+# 纯单目 cam1 全速
+ssh afc03 "i2ctransfer -y 9 w2@0x40 0xDB 0x01"
+
+# 看状态（含两路存活性、拼/单路计数）
+ssh afc03 "curl -s localhost:9012/api/status" | python3 -m json.tool
+```
+
+输出：**1920×540 @30fps**（每路 960×540）。因为两颗 sensor 各 60fps 交替出帧，
+RK 侧每两帧配一对，所以输出正好 30fps；每路本身也只有 30fps，不会有内容重复。
+像素量只有单目 1080p60 的 **1/4**，CPU/带宽反而比单目更轻。
+
+缺一路时另半边涂黑（宽度不变，网页布局不跳）：
+- 只插 cam1 模组（当前状态）→ 左边全黑、右边有画面，这是**设计预期**
+- `0xDC` 的 `lost` 位或 `/api/status` 的 `cam1_age_ms` 会一直增长
+
+帧标记格式（`Y` 平面头 4 字节，来自 `system_top.v` 的 `S_frame_mark`）：
+
+```
+Y[0]=0xA5  Y[1]=0x5A  Y[2]=src  Y[3]=0xFF     src: 0x00=cam0  0x11=cam1
+```
+
+抓拍（`/snapshot.jpg?full=1`）在双目下会拼成 **3840×1080**。
+AI 叠加在双目下**只跑 cam0（左半边）**，右半边原样直出。
 
 ### 3.3 HDMI 出图 / 抓帧
 
@@ -311,6 +349,27 @@ ssh afc03 "cat /root/rk/cloud/token"             # 板端 token（与服务器 c
 
 云端不存视频、不做转码；看板 5s 轮询，标签页隐藏自动降到 20s。
 板端下行指令全靠代理长轮询（板子没有公网 IP）。
+
+**事件视频（前 5s + 后 5s）**：
+
+```bash
+# 板端环形缓存 / 待传队列（默认值，改参数要编辑 cloud-agent.service）
+ssh afc03 "du -sh /mnt/sd/csi_ring /mnt/sd/csi_clips; ls /mnt/sd/csi_clips | wc -l"
+ssh afc03 "systemctl restart cloud-agent"          # 代理自带环形缓存，重启即生效
+
+# 板端自检：录 14s → 合一个 10s 片段（--selftest-upload 会建测试报警并上传）
+ssh afc03 "cd /root/rk/cloud && /usr/bin/python3 -u cloud_agent.py \
+  --server http://<SERVER_DOMAIN> --token-file token \
+  --ring-dir /tmp/t_ring --clip-dir /tmp/t_clip --selftest-clip 14 --selftest-upload"
+
+# 云端：SQLite 里的事件/视频元数据、视频目录与总量
+ssh example "python3 -c \"import sqlite3;c=sqlite3.connect('/opt/csi-dashboard/data/dash.db');\
+print(c.execute('select count(*),sum(clip) from alarms').fetchone(),\
+c.execute('select count(*),sum(bytes) from clips').fetchone())\""
+ssh example "du -sh /opt/csi-dashboard/data/clips"
+```
+
+看板「事件记录」里有视频的那条会显示 `视频 10s` 标签和 **▶ 回放** 按钮。
 
 `start.sh` 已把云端推送并入一键流程：`start.sh` 起（web → 代理）、`start.sh stop` 一起停、
 开机由 `systemd mipi-webstream → boot_start.sh → start.sh cloud` 幂等拉起。
