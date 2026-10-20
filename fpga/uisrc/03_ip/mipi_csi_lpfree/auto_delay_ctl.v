@@ -157,7 +157,9 @@ always @(posedge I_byte_clk or negedge I_reset_n) begin
                 end
             end
 
-            if (scan_tap == 6'd63) begin
+            // ? 2026-10-20: PH1_LOGIC_DYNAMIC_IDELAY 的 WIDTH=5 => 只有 0~31
+            //   共 32 个 tap。原来扫到 63 会回绕, best 区间统计会失真。
+            if (scan_tap == 6'd31) begin
                 state <= ST_FIND;
             end else begin
                 scan_tap <= scan_tap + 1'b1;

@@ -1033,8 +1033,8 @@ cfg_ctrl_top #(
 	//           ⚠ 注意: 4:36 那次构建虽然已经是 V43 的 RTL, 但当时这里还是
 	//           0x3807, 所以板上读到的仍是 0x3807 —— 不能只凭版本号判断是否
 	//           烧了新 bit, 要看画面/相位相关。
-	//   0x4508 = 2026-10-20 换成 LP-free mipi_csi_rx (子卡去 LP) + 调试寄存器
-	.CFG_VER  (16'h4508)
+	//   0x4509 = 2026-10-20 修 IDELAY 使能语义(电平) + eye-scan 只扫 32 tap
+	.CFG_VER  (16'h4509)
 ) u_cfg_ctrl (
 	.i_sys_clk    (I_sysclk_25m),
 	.i_sys_rst_n  (1'b1),

@@ -34,7 +34,11 @@ generate if (DEVICE == "PH1A") begin : gen_ph1a
       .WIDTH ( 5 )
     ) u_idelay (
       .i        ( I_hs_data_p           ),
-      .indly_en ( I_delay_vaild         ),
+      // ⚠ 2026-10-20: indly_en 是【电平使能】不是 load 脉冲
+      //   (仿真模型: assign o = indly_en ? dly_o : i;)
+      //   原代码接 I_delay_vaild (只 1 拍脉冲) => 延时只在那一拍生效,
+      //   eye-scan 实际在测“无延时”的数据, 最终 tap 也不会被施加。
+      .indly_en ( 1'b1                  ),
       .in_dly   ( I_delay_value[4:0]    ),
       .o        ( w_hs_data_dalay       )
     );
