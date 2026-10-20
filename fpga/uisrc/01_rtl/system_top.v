@@ -824,9 +824,11 @@ end
 //     所以原来的 ui_csi_unpacket_4lane + ui_raw10_unpacket_4lane 一起删掉。
 //
 // 三个坑 (都写在代码里, 别改):
-//   1) I_debug_button 必须接 1'b1。07 工程里它是"上拉按键未按下"的电平;
+//   1) I_debug_button 默认必须为 1'b1 (上拉按键未按下)。
 //      接 0 会在复位后产生一次 11->01 的边沿, 把 RX 锁进 manual delay 模式,
 //      自动 eye-scan 就不再执行了。
+//      2026-10-21: 改由寄存器 0xD9 驱动 (idle=1)。写一次 0xD9 = 按一下再松开,
+//      RX 就 tap+1 —— 用来在板上逐 tap 抓图, 直接测眼图中心。
 //   2) m_axis_video_tready 恒 1。该 AXIS 的 tvalid = tready & ~empty,
 //      下游没有反压 (和原来的 raw10 通路一致)。
 //   3) 参考时钟用 I_ddr_clk (T13, 100MHz LVDS)。07 工程用 PLL 出 150MHz,
@@ -839,11 +841,14 @@ end
 //   那个同步器永远不更新 -> 复位永远不放 -> 死锁。
 assign S_rx_rstn = S_pll_lock & ~S_dphy_rx_rst;
 
+// 2026-10-21: 手动 tap 步进按钮 (来自 cfg_ctrl_top 的 0xD9, idle=1)
+wire S_dbg_btn;
+
 mipi_csi_rx #(
 	.MIPI_LAN        ( 4      ),
 	.DEVICE          ( "PH1A" )
 )X_mipi_csi_rx(
-	.I_debug_button        ( 1'b1        ),
+	.I_debug_button        ( S_dbg_btn  ),
 	.I_ref_clock           ( I_ddr_clk   ),
 	.I_clk_hs_rx_p         ( I_clk_hs_p  ),
 	.I_reset_n             ( S_rx_rstn   ),
@@ -1034,7 +1039,7 @@ cfg_ctrl_top #(
 	//           0x3807, 所以板上读到的仍是 0x3807 —— 不能只凭版本号判断是否
 	//           烧了新 bit, 要看画面/相位相关。
 	//   0x4509 = 2026-10-20 修 IDELAY 使能语义(电平) + eye-scan 只扫 32 tap
-	.CFG_VER  (16'h4509)
+	.CFG_VER  (16'h450A)
 ) u_cfg_ctrl (
 	.i_sys_clk    (I_sysclk_25m),
 	.i_sys_rst_n  (1'b1),
@@ -1053,6 +1058,7 @@ cfg_ctrl_top #(
 	.i_dbg_delay     (S_rx_dbg_delay),
 	.i_dbg_best_len  (S_rx_dbg_best_len),
 	.i_dbg_autodone  (S_rx_autodone),
+	.o_dbg_btn       (S_dbg_btn),
 	.o_pp_mode    (S_pp_mode),
 	.o_pp_sobel_gain (S_pp_sobel_sh),
 	.o_pp_thresh  (S_pp_thresh),

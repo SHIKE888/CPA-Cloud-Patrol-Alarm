@@ -95,7 +95,9 @@ module cfg_ctrl_top #(
 	output wire [2:0]  o_fps_div,
 	// V21: 分辨率模式 (0=1080p60 默认, 1=4K30) + 变更脉冲
 	output wire [1:0]  o_res_mode,
-	output wire        o_res_chg
+	output wire        o_res_chg,
+	// 2026-10-21: CSI RX 手动 tap 步进按钮 (idle=1, 写 0xD9 产生一次按下->释放)
+	output wire        o_dbg_btn
 );
 
 	//-------------------------------------------------------------------------
@@ -172,6 +174,8 @@ module cfg_ctrl_top #(
 	reg  [7:0] dbg_delay_s1, dbg_delay_s2;
 	reg  [5:0] dbg_blen_s1,  dbg_blen_s2;
 	reg        dbg_adone_s1, dbg_adone_s2;
+	// 2026-10-21: 手动 tap 步进按钮 (idle=1)
+	wire       cfg_dbg_btn;
 	always @(posedge i_sys_clk or negedge sys_rst_n) begin
 		if (!sys_rst_n) begin
 			dbg_mipi_s1  <= 8'd0; dbg_mipi_s2  <= 8'd0;
@@ -250,8 +254,11 @@ module cfg_ctrl_top #(
           .I_dbg_mipi      (dbg_mipi_s2),
           .I_dbg_delay     (dbg_delay_s2),
           .I_dbg_best_len  (dbg_blen_s2),
-          .I_dbg_autodone  (dbg_adone_s2)
+          .I_dbg_autodone  (dbg_adone_s2),
+          .O_dbg_btn       (cfg_dbg_btn)
   );
+
+	assign o_dbg_btn = cfg_dbg_btn;
 
 	//-------------------------------------------------------------------------
 	// I2C 从机

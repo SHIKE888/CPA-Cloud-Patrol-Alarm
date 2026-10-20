@@ -94,6 +94,12 @@ module jpeg_regfile #(
     output wire [2:0]   O_cfg_predictor,
     output wire         O_soft_rst,         // 一个时钟宽
 
+    // 2026-10-21: CSI RX 手动 tap 步进按钮
+    //   idle = 1; 写 0xD9 产生一次 "按下(0)->释放(1)" 脉冲。
+    //   RX 侧 (csi_rx_phy): 第一次释放沿 = 锁存自动 tap 并进手动模式;
+    //   之后每次释放沿 tap+1 —— 可以用来在板上逐 tap 抓图。
+    output wire         O_dbg_btn,
+
     // ---------------- 状态回读输入 ----------------
     input  wire [23:0]  I_st_frame_bytes,
     input  wire [31:0]  I_st_total_bytes,
@@ -370,6 +376,20 @@ module jpeg_regfile #(
             end
         end
     end
+
+    // ---------------------------------------------------------------- CSI RX 手动 tap 步进
+    // 写 0xD9 任意值 -> 拉低 O_dbg_btn 一段时间再放开, 给 RX 一个"释放沿"。
+    // i_sys_clk = 25MHz, 2500 拍 = 100us, 远大于 w_hs_clk 的同步周期。
+    reg [15:0] r_dbg_btn_cnt;
+    always @(posedge I_clk or negedge I_rst_n) begin
+        if (!I_rst_n)
+            r_dbg_btn_cnt <= 16'd0;
+        else if (I_wr_en && (I_wr_addr == 8'hD9))
+            r_dbg_btn_cnt <= 16'd2500;
+        else if (r_dbg_btn_cnt != 16'd0)
+            r_dbg_btn_cnt <= r_dbg_btn_cnt - 1'b1;
+    end
+    assign O_dbg_btn = (r_dbg_btn_cnt == 16'd0);
 
     // ---------------------------------------------------------------- 读 (1 拍延迟)
     // 量化表整段占 0x10~0x8F (128 项 = 亮度 64 + 色度 64), 单独判断,
