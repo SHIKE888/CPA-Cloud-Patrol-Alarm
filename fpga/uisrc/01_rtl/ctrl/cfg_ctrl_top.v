@@ -98,8 +98,6 @@ module cfg_ctrl_top #(
 	output wire        o_res_chg,
 	// 2026-10-21: CSI RX 手动 tap 步进按钮 (idle=1, 写 0xD9 产生一次按下->释放)
 	output wire        o_dbg_btn,
-	// 2026-10-21: CSI 输入源选择 (0= cam0/J2, 1= cam1/J3)，直接给 25MHz 域用
-	output wire        o_rx_sel,
 	// 2026-10-21: Bayer 相位 (0=RGGB 1=GRBG 2=GBRG 3=BGGR), 已同步到像素域
 	output wire [1:0]  o_bayer_sel
 );
@@ -155,11 +153,6 @@ module cfg_ctrl_top #(
 	wire [7:0]  cfg_cam_trig;
 	wire [7:0]  cfg_wb_r, cfg_wb_b;
 	wire [1:0]  cfg_bayer_sel;
-	wire        cfg_rx_sel;
-	// ★ Bayer 选择位在像素域的 2 级同步寄存器。
-	//   必须在这里（assign o_bayer_sel 之前）声明 —— 否则会被当成隐式 1bit net,
-	//   o_bayer_sel 只剩 bit0, 选 2/3(GBRG/BGGR) 时静默失效。
-	reg  [1:0]  bsel_s1, bsel_s2;
 	wire [6:0]  cfg_roi_pct;
 	wire [2:0]  cfg_fps_div;
 	reg  [15:0] lg_s1, lg_s2;   // V21 诊断同步器
@@ -258,7 +251,6 @@ module cfg_ctrl_top #(
 		.O_cfg_res_mode  (cfg_res_mode),   // V21
 		.O_res_chg       (cfg_res_chg),    // V21
 		.O_cfg_bayer_sel (cfg_bayer_sel),  // 2026-10-21
-		.O_cfg_rx_sel    (cfg_rx_sel),     // 2026-10-21
 		.I_st_cam_wr_cnt (st_corr_fc),
 		.I_st_cam_busy   (i_cam_busy),
           .I_st_line_groups(lg_max),
@@ -272,7 +264,6 @@ module cfg_ctrl_top #(
 
 	assign o_dbg_btn = cfg_dbg_btn;
 	assign o_bayer_sel = bsel_s2;   // 2026-10-21: 已在像素域
-	assign o_rx_sel    = cfg_rx_sel;
 
 	//-------------------------------------------------------------------------
 	// I2C 从机
@@ -358,6 +349,7 @@ module cfg_ctrl_top #(
 	reg [7:0] wbb_s1,  wbb_s2;
 	reg [6:0] roi_s1,  roi_s2;
 	reg [2:0] fps_s1,  fps_s2;
+	reg [1:0] bsel_s1, bsel_s2;
 
 	always @(posedge i_pix_clk or negedge i_pix_rst_n) begin
 		if (!i_pix_rst_n) begin
