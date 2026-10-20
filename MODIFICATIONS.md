@@ -116,3 +116,32 @@ limited 数据 → 黑电平抬高、白点只到 235、色度欠饱和（画面
   在 TD 里对 `syn_1` / `phy_1` 重新 Run 即可（预期结果一致）。
 - 未包含 YOLO 识别与开机自启动部分（参考材料 `415_mipi/yolo识别+自启动/` 里有，
   教程第二章/第三章有说明），本项目聚焦「采集→传输→显示」链路测试。
+
+---
+
+## 五、2026-10-21 · 子卡去 LP 后的 CSI 接入修复（`CFG_VER = 0x450D`）
+
+背景：MIPI 子卡改版拆掉了 CSI 侧 100Ω LP 分压电阻（为复用 DSI 差分对），
+原接收器依赖 LP-11→01→00 状态跳变，FPGA 的 LP 输入悬空后永远锁不上。
+
+| 改动 | 文件 |
+|---|---|
+| 新增 LP-free 接收器（14 文件，从 07 异构方案移植） | `fpga/uisrc/03_ip/mipi_csi_lpfree/` |
+| 引脚约束只保留 5 条 LVDS，8 条 LP 注释保留 | `fpga/uisrc/04_pin/fpga_pin.adc` |
+| CSI 接收换成 `mipi_csi_rx`，删 `I_data_lp_p/n` | `fpga/uisrc/01_rtl/system_top.v` |
+| 新增调试/控制寄存器 `0xD6~0xDA` | `jpeg_regfile.v` / `cfg_ctrl_top.v` |
+| demosaic 支持行相位取反（Bayer 4 选 1） | `ui_top_demosaic.v` / `ui_isp_top.v` |
+| eye-scan 重试 + 兑底 | `mipi_csi_lpfree/csi_rx_phy.v` |
+| 整链仿真 + 板上扫描脚本 | `fpga/sim/tb_csi_full.v`、`tools/board_csi_tap_sweep.sh`、`tools/board_bayer_try.sh` |
+
+**踩到的关键坑**（详细过程与证据见 [`docs/WORKLOG_2026-10-21.md`](docs/WORKLOG_2026-10-21.md)）：
+
+1. `indly_en` 是**电平使能**不是脉冲；且 tap 只有 32 档（原代码扫 64 档）。
+2. RX 复位不能引用自己分频出来的时钟（会死锁）。
+3. eye-scan 有**启动竞态**：热烧录时扫描抢在传感器就绪前跑，挑到贴边 tap → 花屏；
+   现改为“结果不可信就重扫，仍不可信固定 tap=16”，**烧完不用重启**。
+4. 新 RX 通路比旧通路**早一行**，Bayer 行相位翻转：
+   **1080p 与 4K 正确排布都是 RGGB**（旧代码的 GBRG 一直在补偿旧通路的行偏移）。
+
+上板验证（`0x450D`）：`0xA9/AA`=`0D/45`，`0xDA`=`00`(RGGB)，`0xD7`=`50`(manual, tap=16)，
+`0xD8`=`5F`(best_len=31)；1080p 与 4K 画面、颜色均正常。

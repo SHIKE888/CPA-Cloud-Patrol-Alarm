@@ -39,6 +39,7 @@
 | 10 | 参数自动存档（重启/换浏览器自动恢复） | ✅ | 服务端 `state.json` |
 | 11 | 云台 QGimbal 键盘控制（含回零/设零点） | ✅ | `/root/gimbal_keyctrl.py` |
 | 12 | 链路比特精确性验证 / 颜色诊断 / 性能基准 / 环境探测 | ✅ | `deploy/`、`web/` 下的诊断脚本 |
+| 13 | **云端数据看板**（公网大号报警灯 + 全参数 + 报警抓图 + 预留扩展） | ✅ | `http://<SERVER_DOMAIN>/`，见 `cloud/README.md` |
 
 ---
 
@@ -210,7 +211,7 @@ ssh afc03 "curl -s -X POST http://127.0.0.1:9012/api/fpga -H 'Content-Type: appl
 > - 高级：`0xB0`=PP_EN、`0xB1`=ADV_MODE（0..8）、`0xB2`=Sobel 位移、`0xB3`=阈值、
 >   `0xB4`=0 腐蚀/1 膨胀、`0xB5`=形态学阈值、`0xB6`=拉普拉斯位移、`0xB7`=Prewitt 位移、
 >   `0xF5`=浮雕增益、`0xF6`=浮雕偏置、`0xF7`=锐化强度
-> - 状态：`0xB8~0xBB`=帧计数、`0xBC`=心跳（只读）、`0xA9/0xAA`=版本号（V45.2=`0x4502`）
+> - 状态：`0xB8~0xBB`=帧计数、`0xBC`=心跳（只读）、`0xA9/0xAA`=版本号（**当前 `0x450D`**）
 >
 > 初级固定串联顺序：**高斯 → 直方图均衡 → 灰度 → 对比度 → 反色**；两级可同时生效。
 > 注意：**打开任意一级预处理会自动把 AI 画面源切回原图**（双向联动）。
@@ -290,16 +291,84 @@ ssh afc03 "reboot"                        # 重启板子
 
 ---
 
+### 3.11 云端看板（<SERVER_DOMAIN>）
+
+```bash
+# 云端（服务器）
+ssh example "systemctl status csi-dashboard; journalctl -u csi-dashboard -n 30 --no-pager"
+ssh example "du -sh /opt/csi-dashboard/data; ls -lt /opt/csi-dashboard/data/shots | head"
+curl -s http://<SERVER_DOMAIN>/api/ping          # 不需要密码
+
+# 板端代理（心跳 / 报警抓图 / 长轮询取指令）
+ssh afc03 "/root/rk/deploy/start.sh status"     # web + 云端推送 + 监听端口 + FPGA 模式
+ssh afc03 "/root/rk/deploy/start.sh cloud"      # 只拉代理（开机脚本 boot_start.sh 调的就是这个）
+ssh afc03 "systemctl status cloud-agent; journalctl -u cloud-agent -n 30 --no-pager"
+ssh afc03 "cat /root/rk/cloud/token"             # 板端 token（与服务器 config.json 一致）
+
+# 看板密码在服务器 /opt/csi-dashboard/config.json 的 ui_pass
+# 部署/重装/卸载/带宽预算：cloud/README.md
+```
+
+云端不存视频、不做转码；看板 5s 轮询，标签页隐藏自动降到 20s。
+板端下行指令全靠代理长轮询（板子没有公网 IP）。
+
+`start.sh` 已把云端推送并入一键流程：`start.sh` 起（web → 代理）、`start.sh stop` 一起停、
+开机由 `systemd mipi-webstream → boot_start.sh → start.sh cloud` 幂等拉起。
+
+开机顺序（厂镜像默认乱，已用脚本固化）：
+
+```bash
+ssh afc03 "bash /root/rk/deploy/fix_boot_order.sh"           # 下发顺序（幂等）
+ssh afc03 "bash /root/rk/deploy/fix_boot_order.sh --check"   # 只看现状
+# load-drv → NetworkManager → wait-online(25s) → mipi-webstream → cloud-agent
+```
+
+---
+
+### 3.12 CSI 接收调试（LP-free RX，`0xD6~0xDA`）
+
+子卡去 LP 后 CSI 输入改由 `mipi_csi_rx`（LVDS + IDELAY + IDDR，不依赖 LP）接收。
+出图异常时先读这三个只读寄存器：
+
+```bash
+# 0xD6=数据状态  0xD7=tap  0xD8=eye-scan 结果
+ssh afc03 'for r in d6 d7 d8 da; do echo "$r=$(i2cget -y 9 0x40 0x$r)"; done'
+```
+
+| 寄存器 | 含义 |
+|---|---|
+| `0xD6` | `[3:0]`各 lane 字节对齐 `[4]`word对齐 `[5]`in_frame `[6]`payload_valid `[7]`unpack_valid |
+| `0xD7` | `[5:0]`当前 tap `[6]`=1 表示已锁定手动 tap |
+| `0xD8` | `[5:0]`=best_len（本次扫描连续通过的 tap 段长度） |
+| `0xDA` | Bayer 相位：`0`=RGGB(默认) `1`=GRBG `2`=GBRG `3`=BGGR |
+
+判读：`0xD8` 很小（<8）说明那次扫描不可信；正常应≈32（近满量程），tap 落在 16 附近。
+`0x450D` 起扫描自带重试与兑底，**烧录后无需重启**。
+
+```bash
+# 逐 tap 手动步进（写一次 0xD9 = tap+1）并逐档抓图
+ssh afc03 "sh /root/rk/deploy/board_csi_tap_sweep.sh"   # 需先把 tools/ 下同名脚本拷上去
+
+# 4 种 Bayer 顺序各抓一张，挑对的那个写回
+ssh afc03 "sh /root/rk/deploy/board_bayer_try.sh"
+ssh afc03 'i2cset -y 9 0x40 0xda 0'      # 0=RGGB 1=GRBG 2=GBRG 3=BGGR
+```
+
+> 换回旧子卡时才需要恢复 LP 约束：`fpga_pin.adc` 里注释掉的 8 条 `LP` 条目，
+> 以及 `system_top.v` 里的 `I_data_lp_p/n` 端口（参考 `docs/WORKLOG_2026-10-21.md`）。
+
+---
+
 ## 4. HTTP API 速查（默认 `http://192.168.137.100:9012`）
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/` | 内置控制台页面 |
 | GET | `/stream` | MJPEG 流（VLC 可放） |
-| GET | `/snapshot.jpg` | 抓当前一帧 |
+| GET | `/snapshot.jpg` | 抓当前一帧；**`?w=640&q=55&full=0` 板内缩图（云端看板用，省上行）** |
 | GET / POST | `/api/params` | 软件画面参数（亮度/对比度/饱和度/色相/伽马/镜像/翻转/旋转/缩放/质量/帧率） |
 | GET | `/api/status` | 后端 / 设备 / 分辨率 / 实际帧率 / 客户端数 |
-| GET / POST | `/api/fpga` | **FPGA 寄存器**：摄像头物理量、初级/高级预处理、回读快照 |
+| GET / POST | `/api/fpga` | **FPGA 寄存器**：摄像头物理量、初级/高级预处理、回读快照；`?compact=1` 省掉 4KB 元信息 |
 | GET / POST | `/api/ai` | AI 状态与调参（需 `--ai` 启动） |
 | GET | `/api/modes` | 可用输出格式表（含 `impl` RTL 是否实现、`ok` 带宽是否 ≤85%） |
 | POST | `/api/mode` | 切输出格式 `{"id":"4k25"}`（返回逐步执行 log） |
