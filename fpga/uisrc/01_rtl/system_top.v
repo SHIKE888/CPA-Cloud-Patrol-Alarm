@@ -131,18 +131,6 @@ parameter CS_WIDTH        = 1
 	//  改由 mipi_csi_rx 用 LVDS + IDELAY/IDDR 解串 (靠 CSI-2 包头同步, 不需要 LP)。
 	input  wire		    			I_clk_hs_p  ,	
 	input  wire	[3:0]				I_data_hs_p , 
-	// =====================================================================
-	// 2026-10-21 临时测试: 第二路 CSI (子卡 J3, 原 DSI 座复用为 CSI 输入)
-	//   引脚来源: 硬件手册 FMC-HPC 表 + 子卡 J3 原理图
-	//     HS_CLK = FMC_HPC_CLK1_M2C_P/N = E16/F16
-	//     HS_D0  = FMC_HPC_LA22_P/N     = A13/B13
-	//     HS_D1  = FMC_HPC_LA25_P/N     = D18/E18
-	//     HS_D2  = FMC_HPC_LA29_P/N     = F18/G18 (设计文档写的 G18/K16 不是差分对, 已按手册修正)
-	//     HS_D3  = FMC_HPC_LA31_P/N     = K16/K17
-	//   0xDB[0] 选择哪一路接进原视频通路 (0=cam0/J2, 1=cam1/J3)
-	// =====================================================================
-	input  wire						I_clk1_hs_p ,
-	input  wire	[3:0]				I_data1_hs_p,
 	
 	input  wire						I_dsi_en			,	//RK3576 高表示使能 DSI 发送
 	output wire						O_mipi_dsi_hs_clk_p	,
@@ -150,12 +138,7 @@ parameter CS_WIDTH        = 1
 	output wire						O_mipi_dsi_lp_clk_p	,
 	output wire						O_mipi_dsi_lp_clk_n	,
 	output wire	[3:0]				O_mipi_dsi_lp_data_p,
-	output wire	[3:0]				O_mipi_dsi_lp_data_n,
-	// ---- 2026-10-21 临时: 第二路摄像头 (子卡 J3) 的 MCLK / RST / SCCB ----
-	output wire						O_clk1_24m	,
-	output wire						O_clk1_rst	,
-	output wire						O_cam1_scl	,
-	inout  wire						IO_cam1_sda
+	output wire	[3:0]				O_mipi_dsi_lp_data_n
 );
 
 	//==================== 视频格式 / 分辨率配置 ====================
@@ -336,24 +319,13 @@ wire 							S_ae_cfg_done	;
 wire 							S_ae_req		;
 
 wire          					S_hs_rx_clk		;   // 新 RX 的 byte clock (= HS clk / 4)
-	wire          					S_hs_rx_clk0		;   // cam0 (J2) byte clock
-	wire          					S_hs_rx_clk1		;   // cam1 (J3) byte clock
-	wire          					S_rx_sel		;   // 0=cam0 1=cam1 (来自 0xDB)
+
 	//---- LP-free CSI-2 RX (03_ip/mipi_csi_lpfree) 的 AXIS 输出 ----
 	wire							S_rx_rstn		;
 	wire [39:0]						S_rx_tdata		;
 	wire							S_rx_tvalid		;
 	wire							S_rx_tlast		;
 	wire							S_rx_tuser		;
-	// cam1 (J3) 的 AXIS 输出
-	wire							S_rx1_tvalid		;
-	wire							S_rx1_tlast		;
-	wire							S_rx1_tuser		;
-	wire [39:0]						S_rx1_tdata		;
-	wire [7:0]						S_rx1_dbg_mipi	;
-	wire [7:0]						S_rx1_dbg_delay	;
-	wire [5:0]						S_rx1_dbg_blen	;
-	wire							S_rx1_autodone	;
 
 	//---- RX 调试总线 (只读寄存器 0xD6/0xD7/0xD8) ----
 	wire [7:0]						S_rx_dbg_mipi	;
@@ -407,8 +379,6 @@ wire [31:0] 					S_ud_rtdata		;  // RGBX8888 (1 像素/cyc) 出 dbuf 读侧
 wire        					S_R_vrst		;
 					
 assign O_clk_rst				= 1'b1;
-// 2026-10-21 临时: cam1 的 RESETn 与 cam0 一样恒解除 (cam0 的模组也不需要 FPGA 拉复位)
-assign O_clk1_rst				= 1'b1;
 	
 assign S_ud_wclk 				= S_hs_rx_clk	;
 assign S_ud_wtuser 				= S_yuv_sof		;
@@ -485,15 +455,6 @@ ui_pll X_ui_pll (
 
 PH1_LOGIC_ODDR X_cam_clk (
     .q  		(O_clk_24m	), 
-    .clk		(S_clk_24m	),
-    .d0 		(1'b1		),
-    .d1 		(1'b0		),
-    .rst		(1'b0		)
-  );
-
-// 2026-10-21 临时: cam1 的 MCLK (同一个 24MHz, 直接再来一个 ODDR)
-PH1_LOGIC_ODDR X_cam1_clk (
-    .q  		(O_clk1_24m	), 
     .clk		(S_clk_24m	),
     .d0 		(1'b1		),
     .d1 		(1'b0		),
@@ -633,26 +594,6 @@ X_ui_cfg_imx415(
 	.IO_cam_sda		(IO_cam_sda		), 
 	.O_cfg_done		(S_cam_cfg_done	),
 	.O_ae_cfg_done	(S_ae_cfg_done	)
-  );
-
-// 2026-10-21 临时: cam1 (子卡 J3) 的 SCCB
-//   与 cam0 完全同参数、同一套 AE 数据 -> 两颗传感器配置完全一致。
-//   O_cfg_done / O_ae_cfg_done 这路不参与状态上报, 先悬空。
-ui_cfg_imx415#(
-	.CLK_DIV(24_000_000/100_000-1)
-	)
-X_ui_cfg_imx415_ch1(
-	.I_clk			(S_clk_24m		),
-	.I_rst_n		(S_pll_lock		),
-	.I_ae_req		(S_ae_req_24	),
-	.I_cam_mode		(S_cam_mode_24	),
-	.I_full_reload	(S_full_reload	),
-	.I_ae_data		(S_gain_24_s2	),
-	.I_rt_exp		(S_exp_24_s2	),
-	.O_cam_scl		(O_cam1_scl		),
-	.IO_cam_sda		(IO_cam1_sda	),
-	.O_cfg_done		(             	),
-	.O_ae_cfg_done	(             	)
   );
 
 //=============================================================================
@@ -901,42 +842,6 @@ end
 //   那个同步器永远不更新 -> 复位永远不放 -> 死锁。
 assign S_rx_rstn = S_pll_lock & ~S_dphy_rx_rst;
 
-// ---------------------------------------------------------------------
-// 2026-10-21 临时测试: CSI 源切换 (0xDB[0]: 0=cam0/J2  1=cam1/J3)
-//   切换时先把 RX 按住 40ms (S_rx_sw_rst), 同时把选择位寄存一拍,
-//   让"复位已建立"和"引脚换源"发生在同一个 25MHz 沿上。
-//   ★ 只切引脚, 不切时钟: 时钟始终由 RX 原语直接输出, 走全局时钟网络。
-//     (旧版把两路时钟做 LUT 二选一, 会让 S_ud_wclk 偏斜/丢拍 -> 画面滚动)
-// ---------------------------------------------------------------------
-reg  [1:0]  S_rxsel_d;
-reg  [21:0] S_rx_sw_cnt;
-reg         S_rx_sel_q;
-wire        S_rx_sw_rst = (S_rx_sw_cnt != 22'd0);
-
-always @(posedge I_sysclk_25m or negedge S_pll_lock) begin
-	if (!S_pll_lock) begin
-		S_rxsel_d   <= 2'b00;
-		S_rx_sw_cnt <= 22'd0;
-		S_rx_sel_q  <= 1'b0;
-	end else begin
-		S_rxsel_d <= {S_rxsel_d[0], S_rx_sel};
-		if (S_rxsel_d == 2'b01) begin          // 选择位变了
-			S_rx_sel_q  <= S_rx_sel;            // 同拍换源
-			S_rx_sw_cnt <= 22'd1_000_000;       // 40ms @25MHz 复位窗
-		end else if (S_rx_sw_cnt != 22'd0) begin
-			S_rx_sw_cnt <= S_rx_sw_cnt - 22'd1;
-		end
-	end
-end
-
-wire S_rx0_rstn = S_rx_rstn & ~S_rx_sw_rst;
-// ★ 2026-10-21 修正: 切源只切 **输入引脚**, 只保留一个 RX 实例。
-//   原因: S_hs_rx_clk 就是 S_ud_wclk (写侧时钟)。原先把两路时钟做 LUT 二选一,
-//   TD 不会把它放到全局时钟网络 -> 写侧偏斜/丢拍 -> 写地址计数逐帧漂移
-//   -> 表现就是画面持续向上滚动。现在时钟始终是 RX 原语的直接输出。
-wire        S_rx_clk_in  = S_rx_sel_q ? I_clk1_hs_p  : I_clk_hs_p;
-wire [3:0]  S_rx_data_in = S_rx_sel_q ? I_data1_hs_p : I_data_hs_p;
-
 // 2026-10-21: 手动 tap 步进按钮 (来自 cfg_ctrl_top 的 0xD9, idle=1)
 wire S_dbg_btn;
 
@@ -946,15 +851,15 @@ mipi_csi_rx #(
 )X_mipi_csi_rx(
 	.I_debug_button        ( S_dbg_btn  ),
 	.I_ref_clock           ( I_ddr_clk   ),
-	.I_clk_hs_rx_p         ( S_rx_clk_in  ),
-	.I_reset_n             ( S_rx0_rstn   ),
-	.I_hs_data_p           ( S_rx_data_in ),
+	.I_clk_hs_rx_p         ( I_clk_hs_p  ),
+	.I_reset_n             ( S_rx_rstn   ),
+	.I_hs_data_p           ( I_data_hs_p ),
 	.I_enable              ( 1'b1        ),
 
 	.O_hs_div_clk          ( S_hs_rx_clk ),
 
-	.m_axis_video_aclk     ( S_hs_rx_clk  ),
-	.m_axis_video_aresetn  ( S_rx0_rstn    ),
+	.m_axis_video_aclk     ( S_hs_rx_clk   ),
+	.m_axis_video_aresetn  ( S_rx_rstn     ),
 	.m_axis_video_tready   ( 1'b1          ),
 	.m_axis_video_tuser    ( S_rx_tuser    ),
 	.m_axis_video_tlast    ( S_rx_tlast    ),
@@ -972,8 +877,8 @@ mipi_csi_rx #(
 assign S_raw10_valid       = S_rx_tvalid;
 assign S_raw10_data        = S_rx_tdata;
 assign S_raw10_frame_start = S_rx_tvalid & S_rx_tuser;
-assign S_raw10_frame_end   = 1'b0;                          // 该模块不使用
-assign S_csi_frame_start   = S_rx_tvalid & S_rx_tuser;       // 供 cfg_ctrl_top 统计真实帧率
+assign S_raw10_frame_end   = 1'b0;                        // 该模块不使用
+assign S_csi_frame_start   = S_rx_tvalid & S_rx_tuser;    // 供 cfg_ctrl_top 统计真实帧率
 
 
 //图像大小裁剪模块
@@ -1156,7 +1061,6 @@ cfg_ctrl_top #(
 	.i_dbg_best_len  (S_rx_dbg_best_len),
 	.i_dbg_autodone  (S_rx_autodone),
 	.o_dbg_btn       (S_dbg_btn),
-	.o_rx_sel        (S_rx_sel),
 	.o_bayer_sel     (S_bayer_sel),
 	.o_pp_mode    (S_pp_mode),
 	.o_pp_sobel_gain (S_pp_sobel_sh),
