@@ -228,6 +228,8 @@ module jpeg_regfile #(
     reg [1:0]  r_res_mode;     // V21: 0=1080p60, 1=4K30, 2=4K25
     reg [1:0]  r_bayer_sel;    // 2026-10-21: 0=RGGB 1=GRBG 2=GBRG 3=BGGR
     reg        r_rx_sel;       // 2026-10-21: CSI 输入源 0=cam0(J2) 1=cam1(J3)
+    reg        r_rx_sel_set;   // 2026-10-21: 0xDB 是否已被主机写过
+                               //   没写过就强制 cam0 —— 上电 FF 状态不确定也绝不会误切到 cam1
     reg        res_chg;        // V21: 模式寄存器写入脉冲 (自清)
     reg [15:0] s_cam_wr_cnt;
     reg        s_cam_busy;
@@ -321,6 +323,7 @@ module jpeg_regfile #(
             // 若颜色仍不对, 依次试 1(GRBG) / 2(GBRG) / 3(BGGR)。
             r_bayer_sel  <= 2'd0;
             r_rx_sel     <= 1'b0;      // 上电默认 cam0 (J2)
+            r_rx_sel_set <= 1'b0;
             res_chg      <= 1'b0;
             // 注: r_heartbeat 不在这里复位, 它由上面那个自由运行计数块统一驱动
         end else begin
@@ -385,7 +388,10 @@ module jpeg_regfile #(
                     // ---- 2026-10-21: Bayer 相位选择 ----
                     8'hDA: r_bayer_sel  <= I_wr_data[1:0];
                     // ---- 2026-10-21 临时测试: CSI 输入源 ----
-                    8'hDB: r_rx_sel     <= I_wr_data[0];
+                    8'hDB: begin
+                        r_rx_sel     <= I_wr_data[0];
+                        r_rx_sel_set <= 1'b1;
+                    end
                     // ---- V21: 分辨率模式 ----
                     8'hE0: begin
                         r_res_mode <= I_wr_data[1:0];
@@ -484,7 +490,7 @@ module jpeg_regfile #(
                 8'hC8: O_rd_data <= {1'b0, r_roi_pct};
                 8'hC9: O_rd_data <= r_cam_trig;
                 8'hDA: O_rd_data <= {6'b0, r_bayer_sel};
-                8'hDB: O_rd_data <= {7'b0, r_rx_sel};
+                8'hDB: O_rd_data <= {6'b0, r_rx_sel_set, r_rx_sel};   // [0]=源 [1]=已被写过
                 8'hE0: O_rd_data <= {6'b0, r_res_mode};
                 8'hD0: O_rd_data <= s_cam_wr_cnt[ 7:0];
                 8'hD1: O_rd_data <= s_cam_wr_cnt[15:8];
@@ -558,7 +564,7 @@ module jpeg_regfile #(
     assign O_cfg_cam_trig  = r_cam_trig;
     assign O_cfg_res_mode  = r_res_mode;   // V21
     assign O_cfg_bayer_sel = r_bayer_sel;  // 2026-10-21
-    assign O_cfg_rx_sel    = r_rx_sel;     // 2026-10-21
+    assign O_cfg_rx_sel    = r_rx_sel_set ? r_rx_sel : 1'b0;   // 没写过 0xDB 就永远是 cam0
     assign O_res_chg       = res_chg;      // V21
 
 endmodule

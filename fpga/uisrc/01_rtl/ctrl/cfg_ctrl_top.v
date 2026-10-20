@@ -156,6 +156,10 @@ module cfg_ctrl_top #(
 	wire [7:0]  cfg_wb_r, cfg_wb_b;
 	wire [1:0]  cfg_bayer_sel;
 	wire        cfg_rx_sel;
+	// ★ Bayer 选择位在像素域的 2 级同步寄存器。
+	//   必须在这里（assign o_bayer_sel 之前）声明 —— 否则会被当成隐式 1bit net,
+	//   o_bayer_sel 只剩 bit0, 选 2/3(GBRG/BGGR) 时静默失效。
+	reg  [1:0]  bsel_s1, bsel_s2;
 	wire [6:0]  cfg_roi_pct;
 	wire [2:0]  cfg_fps_div;
 	reg  [15:0] lg_s1, lg_s2;   // V21 诊断同步器
@@ -354,7 +358,6 @@ module cfg_ctrl_top #(
 	reg [7:0] wbb_s1,  wbb_s2;
 	reg [6:0] roi_s1,  roi_s2;
 	reg [2:0] fps_s1,  fps_s2;
-	reg [1:0] bsel_s1, bsel_s2;
 
 	always @(posedge i_pix_clk or negedge i_pix_rst_n) begin
 		if (!i_pix_rst_n) begin
