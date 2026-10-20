@@ -29,7 +29,7 @@ set_pin_assignment	{ O_clk_24m }		{ LOCATION = A18; IOSTANDARD = LVCMOS18; DRIVE
 #         lane3: FMC_HPC_LA15_P/N = F15 / F14
 #       (CSI_LP_CKP/CKN 本来就没接 FPGA, 一直没用)
 #
-#   这 8 条约束保留, 但上下拉决定了 IP 看到的 LP 电平 (板载已悬空, 只能靠这里):
+#   这 8 个脚的上下拉曾经决定 IP 看到的 LP 电平 (板载已悬空, 只能靠这里):
 #      PULLUP   -> P/N 恒为 1 = LP-11 = 总线空闲
 #      PULLDOWN -> P/N 恒为 0 = LP-00 = HS 忙态
 #   *** 2026-10-20 实测: PULLDOWN(LP-00) 也不行 —— 帧计数仍为 0, 画面纯色块。
@@ -44,15 +44,17 @@ set_pin_assignment	{ I_data_hs_p[1] }	{ LOCATION = D14; IOSTANDARD = LVDS18; PUL
 set_pin_assignment	{ I_data_hs_p[2] }	{ LOCATION = A15; IOSTANDARD = LVDS18; PULLTYPE = NONE; INDEL = 20; }
 set_pin_assignment	{ I_data_hs_p[3] }	{ LOCATION = G17; IOSTANDARD = LVDS18; PULLTYPE = NONE; INDEL = 20; }
 
-# 以下 LP 8 脚: 板载已悬空; 恢复为原 PULLUP (LP-11), 装回 100R 后由传感器驱动
-set_pin_assignment	{ I_data_lp_n[0] }	{ LOCATION = C16; IOSTANDARD = LVCMOS18; PULLTYPE = PULLUP; }
-set_pin_assignment	{ I_data_lp_n[1] }	{ LOCATION = D15; IOSTANDARD = LVCMOS18; PULLTYPE = PULLUP; }
-set_pin_assignment	{ I_data_lp_n[2] }	{ LOCATION = B17; IOSTANDARD = LVCMOS18; PULLTYPE = PULLUP; }
-set_pin_assignment	{ I_data_lp_n[3] }	{ LOCATION = F14; IOSTANDARD = LVCMOS18; PULLTYPE = PULLUP; }
-set_pin_assignment	{ I_data_lp_p[0] }	{ LOCATION = B16; IOSTANDARD = LVCMOS18; PULLTYPE = PULLUP; }
-set_pin_assignment	{ I_data_lp_p[1] }	{ LOCATION = C15; IOSTANDARD = LVCMOS18; PULLTYPE = PULLUP; }
-set_pin_assignment	{ I_data_lp_p[2] }	{ LOCATION = C17; IOSTANDARD = LVCMOS18; PULLTYPE = PULLUP; }
-set_pin_assignment	{ I_data_lp_p[3] }	{ LOCATION = F15; IOSTANDARD = LVCMOS18; PULLTYPE = PULLUP; }
+# LP 8 脚 (B16/C16, C15/D15, C17/B17, F15/F14) 板载已断开, 且 RTL 已不再使用
+# (mipi_csi_rx 只用 5 对 LVDS 解 MIPI), 所以**不再约束** —— 留空即高阻, 与板子现状一致。
+# 将来若要恢复 LP 方式的 D-PHY, 把下面 8 条加回来并把 100R 装回即可:
+#   set_pin_assignment { I_data_lp_n[0] } { LOCATION = C16; IOSTANDARD = LVCMOS18; PULLTYPE = PULLUP; }
+#   set_pin_assignment { I_data_lp_n[1] } { LOCATION = D15; IOSTANDARD = LVCMOS18; PULLTYPE = PULLUP; }
+#   set_pin_assignment { I_data_lp_n[2] } { LOCATION = B17; IOSTANDARD = LVCMOS18; PULLTYPE = PULLUP; }
+#   set_pin_assignment { I_data_lp_n[3] } { LOCATION = F14; IOSTANDARD = LVCMOS18; PULLTYPE = PULLUP; }
+#   set_pin_assignment { I_data_lp_p[0] } { LOCATION = B16; IOSTANDARD = LVCMOS18; PULLTYPE = PULLUP; }
+#   set_pin_assignment { I_data_lp_p[1] } { LOCATION = C15; IOSTANDARD = LVCMOS18; PULLTYPE = PULLUP; }
+#   set_pin_assignment { I_data_lp_p[2] } { LOCATION = C17; IOSTANDARD = LVCMOS18; PULLTYPE = PULLUP; }
+#   set_pin_assignment { I_data_lp_p[3] } { LOCATION = F15; IOSTANDARD = LVCMOS18; PULLTYPE = PULLUP; }
 
 # =============================================================
 # MIPI DSI TX (实质 CSI-2 协议, 4-lane LVDS HS + LVCMOS18 LP)

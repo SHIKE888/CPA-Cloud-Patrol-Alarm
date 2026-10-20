@@ -126,10 +126,11 @@ parameter CS_WIDTH        = 1
 	// I_button 口已删除: U17/V17 LVDS 对被 DSI HS data lane[1] 占用, 本工程不再外提按键
 	
 	//MIPI_RX
+	//  2026-10-20: 子卡去掉 LP 抽头后, 物理上只剩 5 对差分 (CLK + D0~D3)。
+	//  按厂家说法「改引脚定义后用 LVDS 解 MIPI」: 这里不再提 I_data_lp_p/n,
+	//  改由 mipi_csi_rx 用 LVDS + IDELAY/IDDR 解串 (靠 CSI-2 包头同步, 不需要 LP)。
 	input  wire		    			I_clk_hs_p  ,	
 	input  wire	[3:0]				I_data_hs_p , 
-	input  wire	[3:0]				I_data_lp_p ,
-	input  wire	[3:0]				I_data_lp_n ,
 	
 	input  wire						I_dsi_en			,	//RK3576 高表示使能 DSI 发送
 	output wire						O_mipi_dsi_hs_clk_p	,
