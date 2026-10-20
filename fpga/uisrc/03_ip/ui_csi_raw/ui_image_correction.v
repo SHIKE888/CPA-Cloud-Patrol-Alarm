@@ -46,8 +46,12 @@ module ui_image_correction #(
     input    [DATA_WIDTH - 1:0]       	I_raw_data			,       
     input                             	I_raw_valid 		,     
     input                             	I_raw_frame_start	,
-    input                             	I_raw_frame_end  	,
-    // V21 诊断: 一行最后一个像素组编号 (用 0xD4/0xD5 回读)
+    input                             	I_raw_frame_end  	,    // 2026-10-21 新增: 来自 RX 的**真实行尾**。
+    //   原来这里用“I_raw_valid 为低连续 10 拍”(cnt==10) 来分行,
+    //   但换成 LP-free RX (mipi_csi_rx) 后, 行间只有 byte_align 找同步字的
+    //   8~9 拍空隙, 刚好到不了 10 -> last 时有时无 -> h_cnt 跨行累加
+    //   (0xD4/D5 从 486 涨到 738) -> v_cnt 少计 -> 画面行重复(鬼影)。
+    input                              	I_raw_tlast     	,    // V21 诊断: 一行最后一个像素组编号 (用 0xD4/0xD5 回读)
     //   用来判断传感器每行实际输出多少组: 全像素 3864 宽 => ~966 组;
     //   2x2 相加(合并)到 ~1932 宽 => ~483 组。
     output reg [15:0]                 	O_line_groups      	,
@@ -61,6 +65,7 @@ module ui_image_correction #(
 );
 
     reg                        I_raw_tvalid_d; 
+    reg                        I_raw_tlast_d;
     reg    [DATA_WIDTH - 1:0]  I_raw_tdata_r;
     reg    [14:0]              h_cnt,v_cnt;
     wire                       V_valid,H_valid;
@@ -89,10 +94,12 @@ module ui_image_correction #(
         if(!I_rst_n )begin
             I_raw_tvalid_d <= 0;
             I_raw_tdata_r  <= 0;
+            I_raw_tlast_d  <= 0;
         end
         else begin
             I_raw_tvalid_d <= I_raw_valid;
             I_raw_tdata_r  <= I_raw_data;
+            I_raw_tlast_d  <= I_raw_tlast;   // 与 I_raw_tvalid_d 对齐
         end
     end
     
@@ -108,7 +115,7 @@ module ui_image_correction #(
         end
     end
 
-    wire last = (cnt == 10);
+    wire last = I_raw_tlast_d;   // 2026-10-21: 改用真实行尾 (原为 cnt == 10)
     // 计算行数
     always @(posedge I_clk or negedge I_rst_n) begin
         if(!I_rst_n || I_raw_frame_start)

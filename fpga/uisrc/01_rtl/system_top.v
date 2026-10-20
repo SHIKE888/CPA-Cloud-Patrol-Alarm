@@ -1046,8 +1046,8 @@ ui_image_correction #(
     .I_raw_valid      (S_raw10_valid      ),     
     .I_raw_frame_start(S_raw10_frame_start),
     .I_raw_frame_end  (S_raw10_frame_end  ),
-    
-    .O_raw_tdata 	  (S_axis_tdata 	  ),
+	// 2026-10-21: 真实行尾, 供裁剪模块按行分隔 (原为间隙计时, 新 RX 下不可靠)
+	.I_raw_tlast      (S_rx_tlast         ),
     .O_raw_tlast 	  (S_axis_tlast 	  ),
     .O_raw_tvalid	  (S_axis_tvalid	  ),
     .O_raw_tuser 	  (S_axis_tuser 	  )
@@ -1186,7 +1186,7 @@ cfg_ctrl_top #(
 	//           0x3807, 所以板上读到的仍是 0x3807 —— 不能只凭版本号判断是否
 	//           烧了新 bit, 要看画面/相位相关。
 	//   0x4509 = 2026-10-20 修 IDELAY 使能语义(电平) + eye-scan 只扫 32 tap
-	.CFG_VER  (16'h4511)
+	.CFG_VER  (16'h4512)
 ) u_cfg_ctrl (
 	.i_sys_clk    (I_sysclk_25m),
 	.i_sys_rst_n  (1'b1),
