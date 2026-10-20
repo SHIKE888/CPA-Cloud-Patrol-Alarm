@@ -1074,11 +1074,11 @@ assign S_rx_tvalid = S_rx_sel_rx ? S_rx1_tvalid : S_rx0_tvalid;
 assign S_rx_tlast  = S_rx_sel_rx ? S_rx1_tlast  : S_rx0_tlast ;
 assign S_rx_tuser  = S_rx_sel_rx ? S_rx1_tuser  : S_rx0_tuser ;
 
-// 调试总线也按源选，方便"只接 cam1"时看它自己的 eye-scan 结果 (0xD6~0xD8)
-wire [7:0] S_dbg_mipi_sel  = S_rx_sel_rx ? S_rx1_dbg_mipi     : S_rx_dbg_mipi    ;
-wire [7:0] S_dbg_delay_sel = S_rx_sel_rx ? S_rx1_dbg_delay    : S_rx_dbg_delay   ;
-wire [5:0] S_dbg_blen_sel  = S_rx_sel_rx ? S_rx1_dbg_best_len : S_rx_dbg_best_len;
-wire       S_dbg_adone_sel = S_rx_sel_rx ? S_rx1_autodone     : S_rx_autodone    ;
+// 调试总线**不按源选**：0xD6/D7/D8 固定是 cam0，0xDD/DE/DF 固定是 cam1。
+// 原因：S_rx_sel_rx 的同步器挂在 S_hs_rx_clk 上，切到没摄像头的源时
+//   时钟 mux 切到空时钟 -> 同步器停摆 -> 选源位卡住 -> 调试寄存器一直
+//   显示上一个源的数据（实测踩过, 差点误判 cam0 有数据）。
+// 0xDC 额外提供两路打包状态，不用切源就能同时看到两路。
 
 // AXIS(40bit RAW10, tuser=帧首) -> ui_image_correction 的 raw10 接口
 assign S_raw10_valid       = S_rx_tvalid;
@@ -1248,7 +1248,7 @@ cfg_ctrl_top #(
 	//           0x3807, 所以板上读到的仍是 0x3807 —— 不能只凭版本号判断是否
 	//           烧了新 bit, 要看画面/相位相关。
 	//   0x4509 = 2026-10-20 修 IDELAY 使能语义(电平) + eye-scan 只扫 32 tap
-	.CFG_VER  (16'h4600)
+	.CFG_VER  (16'h4601)
 ) u_cfg_ctrl (
 	.i_sys_clk    (I_sysclk_25m),
 	.i_sys_rst_n  (1'b1),
@@ -1262,12 +1262,16 @@ cfg_ctrl_top #(
 	.i_fs_csi     (S_csi_frame_start),   // CSI-2 FS 短包 -> 传感器真实帧率
 	.i_fs_corr    (S_axis_tuser),        // 裁剪模块输出帧首
 	.i_last_corr  (S_axis_tlast),        // 裁剪模块输出行尾
-	// 2026-10-20: LP-free RX 调试总线 (只读 0xD6/0xD7/0xD8)
-	// 2026-10-21: 改成按源选后的 —— 只接 cam1 时能单独看 cam1 的 eye-scan 结果
-	.i_dbg_mipi      (S_dbg_mipi_sel),
-	.i_dbg_delay     (S_dbg_delay_sel),
-	.i_dbg_best_len  (S_dbg_blen_sel),
-	.i_dbg_autodone  (S_dbg_adone_sel),
+	// 2026-10-20: LP-free RX 调试总线 (只读 0xD6/0xD7/0xD8) = 固定 cam0
+	// 2026-10-21: cam1 的独立一套 -> 0xDD/0xDE/0xDF; 两路打包 -> 0xDC
+	.i_dbg_mipi      (S_rx_dbg_mipi),
+	.i_dbg_delay     (S_rx_dbg_delay),
+	.i_dbg_best_len  (S_rx_dbg_best_len),
+	.i_dbg_autodone  (S_rx_autodone),
+	.i_dbg1_mipi     (S_rx1_dbg_mipi),
+	.i_dbg1_delay    (S_rx1_dbg_delay),
+	.i_dbg1_best_len (S_rx1_dbg_best_len),
+	.i_dbg1_autodone (S_rx1_autodone),
 	.o_dbg_btn       (S_dbg_btn),
 	.o_bayer_sel     (S_bayer_sel),
 	// 2026-10-21: 0xDB CSI 源选择 (0=cam0 1=cam1)

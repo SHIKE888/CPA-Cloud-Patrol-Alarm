@@ -1,23 +1,25 @@
 #!/bin/sh
 #=============================================================================
-# board_dual_diag.sh —— 双路 CSI 切换诊断 (装在板上跑, 或 ssh 过来跑)
+# board_dual_diag.sh —— 双路 CSI 状态诊断 (0x4601+)
 #
 #   用法:
-#     sh board_dual_diag.sh            # 依次测 cam0 / cam1 / 切回 cam0
-#     sh board_dual_diag.sh 1          # 只看 cam1
-#     sh board_dual_diag.sh 0          # 只看 cam0
+#     sh board_dual_diag.sh          # 只读状态 (不切源、不改任何寄存器)
+#     sh board_dual_diag.sh realign  # 先写 0xE0 触发整链路重新对齐, 再读
 #
-#   每个源都会先写 0xE0 (=RES_MODE, 原值重写) 触发一次整链路重新对齐:
-#     - 清掉 0xD4/0xD5 的历史最大值 (lg_max 只在 cfg_res_chg 时清)
-#     - 让两路 mipi_csi_rx 重跑 eye-scan (摄像头是后插的就必须重跑)
-#   代价是每次要等约 1.5s (传感器全表重写 ~100ms + RX 复位 250ms + 窗口 500ms)。
+#   0x4601 起调试寄存器不再跟随选源，两路可以同时看到：
+#     0xD6 / 0xD7 / 0xD8  -> 固定 cam0 (子卡 J2)
+#     0xDD / 0xDE / 0xDF  -> 固定 cam1 (子卡 J3)
+#     0xDC                -> 两路打包实时状态
 #
-#   读法 (关键判据):
-#     0xD7 bit6 = manual_mode   —— eye-scan 是否锁定
-#     0xD8 bit6 = autodone      —— 自动扫描是否完成
-#     0xD8[5:0] = best_len      —— 眼图窗口长度, 正常 20~31
-#     0xD6 bit2 = in_frame      —— 当前是否在传输中 (这一位最直接)
-#     0xD4/0xD5 = 每行组数历史最大值, 1080p 正常 = 486 = 0x01E6
+#   读法：
+#     0xD7 bit6 = manual_mode   eye-scan 已锁定
+#     0xD8 bit6 = autodone     自动扫描完成
+#     0xD8[5:0] = best_len     眼图窗口长度, 正常 20~31
+#     0xD6 bit5 = in_frame     正在传输
+#     0xD6 bit7 = unpack_valid 真的在吐像素
+#     0xD4/D5   = 每行组数历史最大值, 1080p 正常 486
+#
+#   ⚠ 0xD4/D5 是**历史最大值**, 只在分辨率模式切换(写 0xE0)时清零。
 #=============================================================================
 
 DEV=${DEV:-9}
@@ -26,68 +28,65 @@ ADDR=${ADDR:-0x40}
 g() { printf '%s' "$(i2cget -y $DEV $ADDR $1 2>/dev/null)"; }
 s() { i2cset -y $DEV $ADDR $1 $2 >/dev/null 2>&1; }
 
-hex2() {  # $1 $2 -> decimal (两次单字节读, 小端)
+hex2() {
     lo=$(g $1); hi=$(g $2)
     echo $(( ${lo:-0} + 256 * ${hi:-0} )) 2>/dev/null || echo "?"
 }
 
-dump() {
-    d6=$(g 0xd6); d7=$(g 0xd7); d8=$(g 0xd8)
-    echo "  0xD6 = $d6   (bit2=in_frame)"
-    echo "  0xD7 = $d7   (bit6=manual_mode, [5:0]=tap)"
-    echo "  0xD8 = $d8   (bit6=autodone,  [5:0]=best_len)"
-    echo "  0xD4/D5 lg_max = $(hex2 0xd4 0xd5)   (1080p 正常 486)"
-    echo "  0xD0/D1 cam_wr_cnt = $(hex2 0xd0 0xd1)"
+bitnote() {  # $1=值 $2=位号 -> 打印 0/1
+    v=$1; b=$2
+    if [ -z "$v" ]; then echo "?"; return; fi
+    r=$(( v & (1 << b) ))
+    if [ "$r" -ne 0 ]; then echo 1; else echo 0; fi
 }
 
-realign() {
-    echo "    (写 0xE0 触发整链路重新对齐, 等 3s ...)"
-    s 0xe0 0
-    sleep 3
+row() {  # $1=名字 $2=D6 $3=D7 $4=D8
+    echo "  $1"
+    echo "    D6=$2  in_frame=$(bitnote "$2" 5)  unpack_valid=$(bitnote "$2" 7)  word_align=$(bitnote "$2" 4)"
+    echo "    D7=$3  manual_mode=$(bitnote "$3" 6)"
+    echo "    D8=$4  autodone=$(bitnote "$4" 6)"
 }
 
-ver() {
+show() {
+    echo "--------------------------------------------------------------"
     lo=$(g 0xa9); hi=$(g 0xaa)
-    echo "版本 0x$hi$lo  (期望 0x4600)"
+    lo=${lo#0x}; hi=${hi#0x}
+    echo "版本 0x${hi}${lo}    (0x4601 或更高 = 双路调试寄存器版)"
+    echo "0xDB (当前选源) = $(g 0xdb)    0 = cam0(J2), 1 = cam1(J3)"
+    echo "0xE0 (分辨率)   = $(g 0xe0)    0 = 1080p60"
+    echo "--------------------------------------------------------------"
+    row "cam0 (子卡 J2)" "$(g 0xd6)" "$(g 0xd7)" "$(g 0xd8)"
+    echo "    D4/D5 每行组数(历史max) = $(hex2 0xd4 0xd5)   (1080p 正常 486)"
+    echo "    D0/D1 SCCB 写次数       = $(hex2 0xd0 0xd1)"
+    echo "--------------------------------------------------------------"
+    row "cam1 (子卡 J3)" "$(g 0xdd)" "$(g 0xde)" "$(g 0xdf)"
+    echo "--------------------------------------------------------------"
+    dc=$(g 0xdc)
+    if [ -n "$dc" ]; then
+        echo "0xDC = $dc   两路打包状态"
+        echo "    cam0: in_frame=$(bitnote "$dc" 0)  autodone=$(bitnote "$dc" 2)  unpack=$(bitnote "$dc" 4)  4lane=$(bitnote "$dc" 6)"
+        echo "    cam1: in_frame=$(bitnote "$dc" 1)  autodone=$(bitnote "$dc" 3)  unpack=$(bitnote "$dc" 5)  4lane=$(bitnote "$dc" 7)"
+    else
+        echo "0xDC 读不到 —— 板上还是 0x4600 或更早的 bit"
+    fi
+    echo "--------------------------------------------------------------"
 }
 
-one() {
-    src=$1
-    echo "=============================================================="
-    echo "== CSI 源 = cam$src   (0xDB=$src)"
-    echo "=============================================================="
-    s 0xdb $src
-    echo "  0xDB 回读 = $(g 0xdb)"
-    realign
-    echo "  --- 第 1 次 (等 1s) ---"
-    sleep 1
-    dump
-    echo "  --- 第 2 次 (再等 1s) ---"
-    sleep 1
-    dump
-    echo "  --- 第 3 次 (再等 1s) ---"
-    sleep 1
-    dump
-}
-
-echo "=============================================================="
-ver
-echo "0xDB 当前 = $(g 0xdb)"
-echo "=============================================================="
-
-case "${1:-both}" in
-    0)    one 0 ;;
-    1)    one 1 ;;
-    both) one 0; one 1; echo "== 切回 cam0 =="; s 0xdb 0; echo "  0xDB = $(g 0xdb)" ;;
-    *)    echo "用法: $0 [0|1|both]"; exit 2 ;;
+case "${1:-read}" in
+    realign)
+        echo "写 0xE0 触发整链路重新对齐 (传感器全表重写 + RX 复位, 等 4s)..."
+        s 0xe0 0
+        sleep 4
+        show
+        ;;
+    *)
+        show
+        ;;
 esac
 
-echo "=============================================================="
+echo ""
 echo "判读提示:"
-echo "  cam1 若 0xD7 没有 bit6(manual) / 0xD8 没有 bit6(autodone)"
-echo "     -> eye-scan 没锁上 = 没有 HS 时钟 或 差分信号太差"
-echo "        => 先量 J3 pin8 (DSI_CLK) 有没有 24MHz 方波"
-echo "  cam1 若 manual/autodone 都有, best_len 也正常, 但 0xD6 bit2 恒 0"
-echo "     -> 时钟 OK, 但 lane 顺序/极性 或 SCCB 没配成功"
-echo "  cam0 的 0xD4/D5 必须回到 486; 大于 486 = 行分隔没对齐"
-echo "=============================================================="
+echo "  in_frame=0 且 autodone=0 -> 没有 HS 时钟 (量 MCLK: cam0=A18, cam1=J3 pin8)"
+echo "  in_frame=0 但 autodone=1 -> 时钟有、眼图锁上, 查 lane 顺序/极性 或 SCCB"
+echo "  两路 in_frame 都=1       -> 两路都在跑, 可以开始做真双路"
+echo "  0xD4/D5 > 486            -> 行分隔没对齐 (写 0xE0 重清再看)"

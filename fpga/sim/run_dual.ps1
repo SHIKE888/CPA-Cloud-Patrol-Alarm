@@ -1,6 +1,5 @@
 #=============================================================================
-# run_dual.ps1 -- one-shot entry for the dual-CSI simulations (Windows/iverilog)
-#
+# run_dual.ps1 -- one-shot entry for the dual-CSI simulations (Windows/iverilog)#
 #   .\run_dual.ps1 dual    source select + per-channel isolation
 #   .\run_dual.ps1 regdb   0xDB register + version
 #   .\run_dual.ps1 full    LP-free RX chain regression
@@ -25,14 +24,14 @@ if (-not (Test-Path (Join-Path $s "bin\iverilog.exe"))) {
 $env:PATH = "$s\bin;$s\lib;" + $env:PATH
 $env:YOSYSHQ_ROOT = $s
 
-$RTL    = Join-Path $here "..\uisrc"
-$JPEG   = Join-Path $RTL  "01_rtl\jpeg"
-$CORR   = Join-Path $RTL  "03_ip\ui_csi_raw\ui_image_correction.v"
+$RTL = Join-Path $here "..\uisrc"
+$JPEG = Join-Path $RTL  "01_rtl\jpeg"
+$CORR = Join-Path $RTL  "03_ip\ui_csi_raw\ui_image_correction.v"
 $LPFREE = Join-Path $RTL  "03_ip\mipi_csi_lpfree"
 
-$LPSRC = @("csi_rx_byte_align.v","csi_rx_word_align.v","csi_rx_word_gear_box.v",
-           "csi_rx_packet_handler.v","csi_rx_10bit_unpack.v","csi_rx_vid2stream.v",
-           "csi_rx_hdr_ecc.v","mipi_sfifo.v") | ForEach-Object { Join-Path $LPFREE $_ }
+$LPSRC = @("csi_rx_byte_align.v", "csi_rx_word_align.v", "csi_rx_word_gear_box.v",
+    "csi_rx_packet_handler.v", "csi_rx_10bit_unpack.v", "csi_rx_vid2stream.v",
+    "csi_rx_hdr_ecc.v", "mipi_sfifo.v") | ForEach-Object { Join-Path $LPFREE $_ }
 
 $script:failed = 0
 
@@ -51,19 +50,20 @@ function Run-Sim([string]$title, [string]$tb, [string[]]$srcs) {
     $out | ForEach-Object { $_ }
     if (($out -join "`n") -match "PASS") {
         Write-Host "  ==> PASS" -ForegroundColor Green
-    } else {
+    }
+    else {
         Write-Host "  ==> FAIL" -ForegroundColor Red
         $script:failed++
     }
 }
 
 switch ($Target) {
-    "dual"  { Run-Sim "tb_dual_src : source select / per-channel isolation" "tb_dual_src" @($CORR) }
-    "regdb" { Run-Sim "tb_reg_db   : 0xDB register + version 0x4600"        "tb_reg_db"  @((Join-Path $JPEG "jpeg_regfile.v")) }
-    "full"  { Run-Sim "tb_csi_full : LP-free RX chain regression"           "tb_csi_full" $LPSRC }
-    "all"   {
+    "dual" { Run-Sim "tb_dual_src : source select / per-channel isolation" "tb_dual_src" @($CORR) }
+    "regdb" { Run-Sim "tb_reg_db   : 0xDB register + version 0x4601"        "tb_reg_db"  @((Join-Path $JPEG "jpeg_regfile.v")) }
+    "full" { Run-Sim "tb_csi_full : LP-free RX chain regression"           "tb_csi_full" $LPSRC }
+    "all" {
         Run-Sim "tb_dual_src : source select / per-channel isolation" "tb_dual_src" @($CORR)
-        Run-Sim "tb_reg_db   : 0xDB register + version 0x4600"        "tb_reg_db"  @((Join-Path $JPEG "jpeg_regfile.v"))
+        Run-Sim "tb_reg_db   : 0xDB register + version 0x4601"        "tb_reg_db"  @((Join-Path $JPEG "jpeg_regfile.v"))
         Run-Sim "tb_csi_full : LP-free RX chain regression"           "tb_csi_full" $LPSRC
     }
     default { Write-Host "usage: .\run_dual.ps1 [dual|regdb|full|all]" }
@@ -71,4 +71,4 @@ switch ($Target) {
 
 Write-Host ""
 if ($script:failed -eq 0) { Write-Host "ALL SIMULATIONS PASSED" -ForegroundColor Green }
-else                      { Write-Host "$($script:failed) simulation(s) FAILED" -ForegroundColor Red; exit 1 }
+else { Write-Host "$($script:failed) simulation(s) FAILED" -ForegroundColor Red; exit 1 }

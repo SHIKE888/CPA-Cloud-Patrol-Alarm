@@ -6,7 +6,7 @@
 //      单路版本一致"的前提；
 //   2. 写 1 读回必须是 1；写 0 读回必须是 0；写 0xFF 只取 bit0；
 //   3. 0xDA (Bayer) 不受影响（相邻寄存器不能串）；
-//   4. 0xAA/0xA9 版本号 == 0x4600。
+//   4. 0xAA/0xA9 ver == 0x4601
 //=============================================================================
 `timescale 1ns/1ps
 
@@ -25,7 +25,7 @@ module tb_reg_db;
     wire cfg_rx_sel;
     wire [1:0] cfg_bayer_sel;
 
-    jpeg_regfile #(.JPEG_VER(16'h4600)) u_reg (
+    jpeg_regfile #(.JPEG_VER(16'h4601)) u_reg (
         .I_clk           (clk),
         .I_rst_n         (rstn),
         .I_wr_en         (wr_en),
@@ -48,6 +48,11 @@ module tb_reg_db;
         .I_dbg_delay     (8'd0),
         .I_dbg_best_len  (6'd0),
         .I_dbg_autodone  (1'b0),
+        .I_dbg1_mipi     (8'd0),
+        .I_dbg1_delay    (8'd0),
+        .I_dbg1_best_len (6'd0),
+        .I_dbg1_autodone (1'b0),
+        .I_dbg_status    (8'd0),
         .O_cfg_bayer_sel (cfg_bayer_sel),
         .O_cfg_rx_sel    (cfg_rx_sel)
     );
@@ -123,7 +128,7 @@ module tb_reg_db;
         expect8(8'hDB, 8'h01, "rx_sel untouched by 0xDA");
 
         // 4. 版本号
-        expect8(8'hA9, 8'h00, "ver low");
+        expect8(8'hA9, 8'h01, "ver low");
         expect8(8'hAA, 8'h46, "ver high");
 
         // 恢复默认
@@ -131,7 +136,7 @@ module tb_reg_db;
         wr(8'hDA, 8'h00);
 
         $display("===============================================================");
-        if (err == 0) $display("PASS: 0xDB 寄存器 + 版本号 0x4600 验证通过");
+        if (err == 0) $display("PASS: 0xDB register + version 0x4601 OK");
         else          $display("FAIL: %0d 项", err);
         $display("===============================================================");
         $finish;

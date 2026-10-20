@@ -178,8 +178,21 @@ module jpeg_regfile #(
     input  wire [7:0]   I_dbg_mipi,
     input  wire [7:0]   I_dbg_delay,
     input  wire [5:0]   I_dbg_best_len,
-    input  wire         I_dbg_autodone
-);
+    input  wire         I_dbg_autodone,
+    // 2026-10-21 双路: cam1 完全独立一套 (0xDD/0xDE/0xDF)
+    //   ★ 0xD6/0xD7/0xD8 固定读 cam0，0xDD/0xDE/0xDF 固定读 cam1，
+    //     **不再跟随 0xDB 的选源** —— 切到没有摄像头的源时那边时钟停摆，
+    //     「按源选」会让寄存器一直显示上一个源的值，误导排障。
+    input  wire [7:0]   I_dbg1_mipi,
+    input  wire [7:0]   I_dbg1_delay,
+    input  wire [5:0]   I_dbg1_best_len,
+    input  wire         I_dbg1_autodone,
+    // 0xDC: 两路实时状态打包，不用切源就能同时看到两路
+    //   bit0 cam0 in_frame        bit1 cam1 in_frame
+    //   bit2 cam0 autodone        bit3 cam1 autodone
+    //   bit4 cam0 unpack_valid    bit5 cam1 unpack_valid
+    //   bit6 cam0 4lane byte对齐  bit7 cam1 4lane byte对齐
+    input  wire [7:0]   I_dbg_status);
 
     // ---------------------------------------------------------------- 控制寄存器
     reg        r_lossless;
@@ -504,6 +517,11 @@ module jpeg_regfile #(
                 8'hD6: O_rd_data <= I_dbg_mipi;
                 8'hD7: O_rd_data <= I_dbg_delay;
                 8'hD8: O_rd_data <= {1'b0, I_dbg_autodone, I_dbg_best_len};
+                // 2026-10-21 双路
+                8'hDC: O_rd_data <= I_dbg_status;
+                8'hDD: O_rd_data <= I_dbg1_mipi;
+                8'hDE: O_rd_data <= I_dbg1_delay;
+                8'hDF: O_rd_data <= {1'b0, I_dbg1_autodone, I_dbg1_best_len};
 
                 default: O_rd_data <= 8'h00;
             endcase

@@ -31,8 +31,10 @@ module cfg_ctrl_top #(
 	//     0x4301 = V43 第 1 次构建 (修 4K 每行多 1~2 个 word 导致的斜向撕裂)
 	//     0x450D = 单路最佳版 (已上板验证 1080p/4K 画面与颜色正常)
 	//     0x4600 = V46 第 0 次构建: 双路 CSI (0xDB 选源), 上电默认 cam0
+	//     0x4601 = V46 第 1 次构建: 调试寄存器 0xD6/D7/D8=cam0 固定,
+	//              cam1 走 0xDD/DE/DF, 新增 0xDC 两路打包状态
 	//=========================================================================
-	parameter [15:0] CFG_VER  = 16'h4600
+	parameter [15:0] CFG_VER  = 16'h4601
 )(
 	// ---- 系统时钟域 (25MHz 常开) ----
 	input  wire        i_sys_clk,
@@ -59,6 +61,15 @@ module cfg_ctrl_top #(
 	input  wire [7:0]  i_dbg_delay,
 	input  wire [5:0]  i_dbg_best_len,
 	input  wire        i_dbg_autodone,
+	// 2026-10-21 双路: cam1 的完全独立一套 (0xDD/0xDE/0xDF)
+	//   ⚠ 不能让这两路走同一根「按源选」的总线 —— S_rx_sel_rx 的同步器挂在
+	//     S_hs_rx_clk 上, 切到没摄像头的源时时钟停摆、选源位会卡住,
+	//     导致调试寄存器显示的是上一个源的数据 (实测踩过, 差点误判)。
+	//     这里两路各自同步、各自独立回读, 没有任何选源环节。
+	input  wire [7:0]  i_dbg1_mipi,
+	input  wire [7:0]  i_dbg1_delay,
+	input  wire [5:0]  i_dbg1_best_len,
+	input  wire        i_dbg1_autodone,
 
 	// ---- 同步到像素域的配置输出 ----
 	output wire [3:0]  o_pp_mode,          // 高级单选 0..8
@@ -189,6 +200,22 @@ module cfg_ctrl_top #(
 	reg  [7:0] dbg_delay_s1, dbg_delay_s2;
 	reg  [5:0] dbg_blen_s1,  dbg_blen_s2;
 	reg        dbg_adone_s1, dbg_adone_s2;
+	// 2026-10-21 双路: cam1 一套独立同步器
+	reg  [7:0] dbg1_mipi_s1,  dbg1_mipi_s2;
+	reg  [7:0] dbg1_delay_s1, dbg1_delay_s2;
+	reg  [5:0] dbg1_blen_s1,  dbg1_blen_s2;
+	reg        dbg1_adone_s1, dbg1_adone_s2;
+	// 0xDC: 两路实时状态打包 (bit 定义见 jpeg_regfile 注释)
+	wire [7:0] cfg_dbg_status = {
+		&dbg1_mipi_s2[3:0],   // bit7 cam1 四lane字节对齐全有效
+		&dbg_mipi_s2[3:0],    // bit6 cam0 四lane字节对齐全有效
+		dbg1_mipi_s2[7],      // bit5 cam1 unpack_valid (真的在吐像素)
+		dbg_mipi_s2[7],       // bit4 cam0 unpack_valid
+		dbg1_adone_s2,        // bit3 cam1 eye-scan 完成
+		dbg_adone_s2,         // bit2 cam0 eye-scan 完成
+		dbg1_mipi_s2[5],      // bit1 cam1 in_frame
+		dbg_mipi_s2[5]        // bit0 cam0 in_frame
+	};
 	// 2026-10-21: 手动 tap 步进按钮 (idle=1)
 	wire       cfg_dbg_btn;
 	always @(posedge i_sys_clk or negedge sys_rst_n) begin
@@ -197,11 +224,19 @@ module cfg_ctrl_top #(
 			dbg_delay_s1 <= 8'd0; dbg_delay_s2 <= 8'd0;
 			dbg_blen_s1  <= 6'd0; dbg_blen_s2  <= 6'd0;
 			dbg_adone_s1 <= 1'b0; dbg_adone_s2 <= 1'b0;
+			dbg1_mipi_s1  <= 8'd0; dbg1_mipi_s2  <= 8'd0;
+			dbg1_delay_s1 <= 8'd0; dbg1_delay_s2 <= 8'd0;
+			dbg1_blen_s1  <= 6'd0; dbg1_blen_s2  <= 6'd0;
+			dbg1_adone_s1 <= 1'b0; dbg1_adone_s2 <= 1'b0;
 		end else begin
 			dbg_mipi_s1  <= i_dbg_mipi;      dbg_mipi_s2  <= dbg_mipi_s1;
 			dbg_delay_s1 <= i_dbg_delay;     dbg_delay_s2 <= dbg_delay_s1;
 			dbg_blen_s1  <= i_dbg_best_len;  dbg_blen_s2  <= dbg_blen_s1;
 			dbg_adone_s1 <= i_dbg_autodone;  dbg_adone_s2 <= dbg_adone_s1;
+			dbg1_mipi_s1  <= i_dbg1_mipi;     dbg1_mipi_s2  <= dbg1_mipi_s1;
+			dbg1_delay_s1 <= i_dbg1_delay;    dbg1_delay_s2 <= dbg1_delay_s1;
+			dbg1_blen_s1  <= i_dbg1_best_len; dbg1_blen_s2  <= dbg1_blen_s1;
+			dbg1_adone_s1 <= i_dbg1_autodone; dbg1_adone_s2 <= dbg1_adone_s1;
 		end
 	end
 
@@ -268,10 +303,16 @@ module cfg_ctrl_top #(
 		.I_st_cam_busy   (i_cam_busy),
           .I_st_line_groups(lg_max),
           // 2026-10-20: RX 调试总线 (已 2 级同步到 i_sys_clk)
+          // 2026-10-21: 0xD6/D7/D8 固定是 cam0, cam1 固定走 0xDD/DE/DF
           .I_dbg_mipi      (dbg_mipi_s2),
           .I_dbg_delay     (dbg_delay_s2),
           .I_dbg_best_len  (dbg_blen_s2),
           .I_dbg_autodone  (dbg_adone_s2),
+          .I_dbg1_mipi     (dbg1_mipi_s2),
+          .I_dbg1_delay    (dbg1_delay_s2),
+          .I_dbg1_best_len (dbg1_blen_s2),
+          .I_dbg1_autodone (dbg1_adone_s2),
+          .I_dbg_status    (cfg_dbg_status),
           .O_dbg_btn       (cfg_dbg_btn)
   );
 
