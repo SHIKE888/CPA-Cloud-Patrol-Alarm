@@ -59,11 +59,13 @@ function Run-Sim([string]$title, [string]$tb, [string[]]$srcs) {
 
 switch ($Target) {
     "dual" { Run-Sim "tb_dual_src : source select / per-channel isolation" "tb_dual_src" @($CORR) }
-    "regdb" { Run-Sim "tb_reg_db   : 0xDB register + version 0x4601"        "tb_reg_db"  @((Join-Path $JPEG "jpeg_regfile.v")) }
-    "full" { Run-Sim "tb_csi_full : LP-free RX chain regression"           "tb_csi_full" $LPSRC }
-    "all" {
+    "sched" { Run-Sim "tb_dual_sched : alternating-frame scheduler"        "tb_dual_sched" @((Join-Path $RTL "01_rtl\dual\dual_frame_sched.v")) }
+    "regdb" { Run-Sim "tb_reg_db   : 0xDB register + version 0x4700"        "tb_reg_db"  @((Join-Path $JPEG "jpeg_regfile.v")) }
+    "full"  { Run-Sim "tb_csi_full : LP-free RX chain regression"           "tb_csi_full" $LPSRC }
+    "all"   {
         Run-Sim "tb_dual_src : source select / per-channel isolation" "tb_dual_src" @($CORR)
-        Run-Sim "tb_reg_db   : 0xDB register + version 0x4601"        "tb_reg_db"  @((Join-Path $JPEG "jpeg_regfile.v"))
+        Run-Sim "tb_dual_sched : alternating-frame scheduler"        "tb_dual_sched" @((Join-Path $RTL "01_rtl\dual\dual_frame_sched.v"))
+        Run-Sim "tb_reg_db   : 0xDB register + version 0x4700"        "tb_reg_db"  @((Join-Path $JPEG "jpeg_regfile.v"))
         Run-Sim "tb_csi_full : LP-free RX chain regression"           "tb_csi_full" $LPSRC
     }
     default { Write-Host "usage: .\run_dual.ps1 [dual|regdb|full|all]" }

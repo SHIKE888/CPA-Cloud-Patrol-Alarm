@@ -157,12 +157,17 @@ module jpeg_regfile #(
     output wire [1:0]   O_cfg_bayer_sel,
     output wire         O_res_chg,
 
-    // 2026-10-21: CSI 输入源选择 (0xDB, 双路摄像头用)
-    //   0 = cam0 (子卡 J2 / CSI 座, 引脚 A18/B18/A14/B14 + CLK0/LA00/LA03/LA04/LA08)
-    //   1 = cam1 (子卡 J3 / 原 DSI 座, 引脚 J13/K13/N11/N10 + CLK1/LA29/LA31/LA30/LA33)
-    //   上电默认 0 —— 只接 cam0 时行为与单路版本完全一致。
-    //   改动后 system_top 会产生一次写侧复位窗(120ms), 让新源重新对齐行/帧。
+    // 2026-10-21: CSI 输入源选择 + 双目模式 (0xDB)
+    //   bit0 = 单目模式的选源: 0=cam0(默认) 1=cam1
+    //   bit1 = 双目交替模式: 0=单目全速(默认) 1=两路交替各 30fps
+    //          （4K 下强制按单目处理）
+    //   bit2 = 帧标记强制使能（双目模式下自动置位）
+    //          每帧首行头 4 个像素写 magic+源号, 供 web 端区分这一帧是哪一路
     output wire         O_cfg_rx_sel,
+    output wire         O_cfg_dual_en,
+    output wire         O_cfg_mark_en,
+    // 写 0xDB 且 bit1=1 时的一拍脉冲: 触发两颗传感器同步启动
+    output wire         O_dual_start,
 
     // ---------------- 摄像头通道状态回读 ----------------
     input  wire [15:0]  I_st_cam_wr_cnt,    // 摄像头寄存器写成功次数
@@ -243,6 +248,9 @@ module jpeg_regfile #(
     reg [1:0]  r_res_mode;     // V21: 0=1080p60, 1=4K30, 2=4K25
     reg [1:0]  r_bayer_sel;    // 2026-10-21: 0=RGGB 1=GRBG 2=GBRG 3=BGGR
     reg        r_rx_sel;       // 2026-10-21: 0=cam0(J2) 1=cam1(J3)
+    reg        r_dual_en;      // 2026-10-21: 1 = 双目交替
+    reg        r_mark_en;      // 2026-10-21: 1 = 帧标记强制开
+    reg        dual_start;     // 2026-10-21: 双目启动脉冲 (自清)
     reg        res_chg;        // V21: 模式寄存器写入脉冲 (自清)
     reg [15:0] s_cam_wr_cnt;
     reg        s_cam_busy;
@@ -337,11 +345,15 @@ module jpeg_regfile #(
             r_bayer_sel  <= 2'd0;
             // 双路上电默认走 cam0 —— 保证"只接 cam0"时和 0x450D 单路版一致
             r_rx_sel     <= 1'b0;
+            r_dual_en    <= 1'b0;
+            r_mark_en    <= 1'b0;
+            dual_start   <= 1'b0;
             res_chg      <= 1'b0;
             // 注: r_heartbeat 不在这里复位, 它由上面那个自由运行计数块统一驱动
         end else begin
             r_soft_rst <= 1'b0;        // 自清, 只保持一拍
             res_chg    <= 1'b0;        // V21: 自清
+            dual_start <= 1'b0;        // 2026-10-21: 自清
 
             if (I_wr_en) begin
                 case (I_wr_addr)
@@ -400,8 +412,14 @@ module jpeg_regfile #(
                     8'hC9: r_cam_trig   <= I_wr_data;
                     // ---- 2026-10-21: Bayer 相位选择 ----
                     8'hDA: r_bayer_sel  <= I_wr_data[1:0];
-                    // ---- 2026-10-21: CSI 源选择 (双路) ----
-                    8'hDB: r_rx_sel     <= I_wr_data[0];
+                    // ---- 2026-10-21: CSI 源选择 / 双目模式 ----
+                    8'hDB: begin
+                        r_rx_sel  <= I_wr_data[0];
+                        r_dual_en <= I_wr_data[1];
+                        r_mark_en <= I_wr_data[2];
+                        // 进双目时触发一次"两颗传感器同步启动"
+                        if (I_wr_data[1]) dual_start <= 1'b1;
+                    end
                     // ---- V21: 分辨率模式 ----
                     8'hE0: begin
                         r_res_mode <= I_wr_data[1:0];
@@ -500,7 +518,7 @@ module jpeg_regfile #(
                 8'hC8: O_rd_data <= {1'b0, r_roi_pct};
                 8'hC9: O_rd_data <= r_cam_trig;
                 8'hDA: O_rd_data <= {6'b0, r_bayer_sel};
-                8'hDB: O_rd_data <= {7'b0, r_rx_sel};
+                8'hDB: O_rd_data <= {5'b0, r_mark_en, r_dual_en, r_rx_sel};
                 8'hE0: O_rd_data <= {6'b0, r_res_mode};
                 8'hD0: O_rd_data <= s_cam_wr_cnt[ 7:0];
                 8'hD1: O_rd_data <= s_cam_wr_cnt[15:8];
@@ -580,6 +598,10 @@ module jpeg_regfile #(
     assign O_cfg_res_mode  = r_res_mode;   // V21
     assign O_cfg_bayer_sel = r_bayer_sel;  // 2026-10-21
     assign O_cfg_rx_sel    = r_rx_sel;     // 2026-10-21: 0=cam0 1=cam1
+    assign O_cfg_dual_en   = r_dual_en;    // 2026-10-21: 1 = 双目交替
+    // 双目模式自动带帧标记（web 要靠它区分帧归属）
+    assign O_cfg_mark_en   = r_mark_en | r_dual_en;
+    assign O_dual_start    = dual_start;   // 2026-10-21: 传感器同步启动脉冲
     assign O_res_chg       = res_chg;      // V21
 
 endmodule

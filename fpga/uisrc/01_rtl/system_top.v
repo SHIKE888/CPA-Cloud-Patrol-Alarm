@@ -388,6 +388,31 @@ wire          					S_hs_rx_clk		;   // BUFG 后的全局 byte clock (= HS clk / 
 	reg  [1:0]						S_rx_sel_rx_s	;
 	wire							S_rx_sel_rx		;
 
+	//---- 2026-10-21 双目交替 ----
+	wire							S_dual_en		;   // 0xDB[1]
+	wire							S_mark_en		;   // 0xDB[2] | dual
+	wire							S_dual_start	;   // 写 0xDB 进双目时的一拍脉冲
+	wire							S_dual_eff		;   // = dual_en & ~is_4k
+	wire							S_out_src		;   // 当前输出帧的来源 0/1
+	wire							S_frame_parity	;
+	wire							S_ch1_lost		;   // cam1 行缓冲没跟上
+	wire							S_sensor_rst_n	;   // 两颗传感器的 RSTn (同步启动)
+	wire							S_cfg_hold		;   // 1 = 两个 cfg 模块保持在复位
+
+	//---- 两路裁剪输出 ----
+	wire [39:0]						S_crop0_tdata	;
+	wire							S_crop0_tvalid	;
+	wire							S_crop0_tlast	;
+	wire							S_crop0_tuser	;
+	wire							S_crop0_frame_start;
+	wire [39:0]						S_crop1_tdata	;
+	wire							S_crop1_tvalid	;
+	wire							S_crop1_tlast	;
+	wire							S_crop1_tuser	;
+	wire							S_crop1_frame_start;
+	wire [15:0]						S_line_groups1	;
+	wire							S_res_rstn_rx1	;
+
 	//---- cam1 的 RX 调试总线 ----
 	wire [7:0]						S_rx1_dbg_mipi	;
 	wire [7:0]						S_rx1_dbg_delay	;
@@ -445,16 +470,30 @@ wire [31:0] 					S_ud_rtdata		;  // RGBX8888 (1 像素/cyc) 出 dbuf 读侧
 					
 wire        					S_R_vrst		;
 					
-assign O_clk_rst				= 1'b1;
+assign O_clk_rst				= S_sensor_rst_n;
 // cam1 复位 (K13 = LA28_N = 子卡 DSI_RSTN -> J3 pin4)
-//   与 cam0 一致: 恒高(不复位), 真正复位交给 ui_cfg_imx415 初始化表里的 0x3000/0x3002
-assign O_clk_rst_1				= 1'b1;
+//   两颗共用同一根复位，才能"同时释放、同时重跑初始化表"把帧相位拉到一起
+assign O_clk_rst_1				= S_sensor_rst_n;
 	
 assign S_ud_wclk 				= S_hs_rx_clk	;
 assign S_ud_wtuser 				= S_yuv_sof		;
 assign S_ud_wtvalid 			= S_yuv_de		;
 assign S_ud_wtlast 				= S_yuv_last	;
-assign S_ud_wtdata 				= S_yuv_data	;
+//=============================================================================
+//  2026-10-21: 帧标记（双目模式下 web 靠它区分这一帧是 cam0 还是 cam1）
+//
+//  打在本帧第一个 64bit 组（= 头 4 个像素）上，只在 sof 那一拍覆盖。
+//  rgb_to_yuv422_quad 的输出位序: {Cr3, Y3, Cb2, Y2, Cr1, Y1, Cb0, Y0}
+//  所以三个 Y 字节被设为 magic，第 4 个 Y 字节带源号：
+//      Y0=0xA5  Y1=0x5A  Y2=src(0x00/0x11)  Y3=0xFF   色度=0x80(中性)
+//  RK 侧落到 NV16 后 Y 平面前 4 字节就是 0xA5 0x5A src 0xFF。
+//  代价：每帧损失 4 个像素（左上角），肉眼不可见。
+//=============================================================================
+wire [63:0] S_frame_mark = { 8'h80, 8'hFF,
+                              8'h80, S_out_src ? 8'h11 : 8'h00,
+                              8'h80, 8'h5A,
+                              8'h80, 8'hA5 };
+assign S_ud_wtdata 				= (S_mark_en && S_yuv_sof) ? S_frame_mark : S_yuv_data;
 
 
 //=============================================================================
@@ -664,7 +703,7 @@ ui_cfg_imx415#(
 	)
 X_ui_cfg_imx415(
 	.I_clk			(S_clk_24m		),  
-	.I_rst_n		(S_pll_lock		),  
+	.I_rst_n		(S_pll_lock & ~S_cfg_hold	),  
 	// V24: 传感器读出模式 + 整表重载
 	.I_ae_req		(S_ae_req_24	),
 	.I_cam_mode		(S_cam_mode_24	),
@@ -697,7 +736,7 @@ ui_cfg_imx415#(
 	)
 X_ui_cfg_imx415_1(
 	.I_clk			(S_clk_24m		),  
-	.I_rst_n		(S_pll_lock		),  
+	.I_rst_n		(S_pll_lock & ~S_cfg_hold	),  
 	.I_ae_req		(S_ae_req_24	),
 	.I_cam_mode		(S_cam_mode_24	),
 	.I_full_reload	(S_full_reload	),
@@ -775,12 +814,19 @@ always @(posedge S_hs_rx_clk or negedge S_pll_lock) begin
 	if (!S_pll_lock) S_res_win_rx <= 2'b00;
 	else             S_res_win_rx <= {S_res_win_rx[0], S_res_win25};
 end
+// 2026-10-21 双目: cam1 裁剪模块在 cam1 自己的恢复时钟域, 单独同步一份
+reg [1:0] S_res_win_rx1;
+always @(posedge S_hs_clk1 or negedge S_pll_lock) begin
+	if (!S_pll_lock) S_res_win_rx1 <= 2'b00;
+	else             S_res_win_rx1 <= {S_res_win_rx1[0], S_res_win25};
+end
 always @(posedge S_dsi_byte_clk or negedge S_pll_lock) begin
 	if (!S_pll_lock) S_res_win_byte <= 2'b00;
 	else             S_res_win_byte <= {S_res_win_byte[0], S_res_win25};
 end
 
 wire S_res_rstn_rx   = RES_RST_TX_SIDE ? ~S_res_win_rx[1]   : 1'b1;
+wire S_res_rstn_rx1  = RES_RST_TX_SIDE ? ~S_res_win_rx1[1]  : 1'b1;
 wire S_res_rstn_byte = ~S_res_win_byte[1];
 
 //=============================================================================
@@ -1035,12 +1081,30 @@ mipi_csi_rx #(
 );
 
 //--------------------------------------------------------------------------
+//  2026-10-21: 两颗传感器的"同步启动"
+//  双目交替要求两路帧/行对齐 —— 用"同时拉低两颗 RSTn、再同时重跑初始化表"
+//  把它们拉到同一个起点。平时（没写 0xDB bit1）O_rst_n=1、cfg 不压，
+//  和原来"RSTn 恒高、cfg 立即启动"完全一致，不影响单目上电即正常。
+//--------------------------------------------------------------------------
+sensor_sync_start #(
+	.HOLD_CYCLES (500_000),     // 20ms @ 25MHz
+	.CNTW        (20)
+) u_sensor_sync (
+	.I_clk        (I_sysclk_25m),
+	.I_rst_n      (S_pll_lock  ),
+	.I_start      (S_dual_start),
+	.O_rst_n      (S_sensor_rst_n),
+	.O_cfg_restart(S_cfg_hold  )
+);
+
+//--------------------------------------------------------------------------
 //  时钟二选一 + 强制过 BUFG
 //  ★ 不做 BUFG: S_ud_wclk 会落到普通布线网 -> 写侧偏斜丢拍 -> 画面向上滚动
 //    (0x450E 实测)。这里 S_rx_sel 是准静态寄存器，只有切换瞬间会毛刺，
 //    切换后立刻有 120ms 写侧复位窗兜住。
 //--------------------------------------------------------------------------
-assign S_hs_rx_clk_mux = S_rx_sel ? S_hs_clk1 : S_hs_clk0;
+assign S_hs_rx_clk_mux = S_dual_eff ? S_hs_clk0
+                       : (S_rx_sel ? S_hs_clk1 : S_hs_clk0);
 
 PH1_LOGIC_BUFG X_bufg_rx_clk (
 	.i ( S_hs_rx_clk_mux ),
@@ -1065,30 +1129,24 @@ end
 assign S_rx_sel_rx = S_rx_sel_rx_s[1];
 
 //--------------------------------------------------------------------------
-//  AXIS 数据二选一（选源）
-//  两路 RX 的 aclk 都是同一个 S_hs_rx_clk，所以这个 mux 是纯同域组合，
-//  不会引入亚稳态。被选中的那一路数据有效；没选中的那一路即使有输入也丢掉。
+//  两路各自裁剪（互不相干，各在自己的恢复时钟域）
+//
+//  为什么要两个 ui_image_correction：
+//    双目交替模式下两路都要独立地"按自己的帧首对齐 + 裁出有效区"，
+//    否则交替时下游看到的两路行/帧相位会打架。
+//    这个模块很便宜（77 LUT / 0 ERAM / 0 DSP），复制一份不影响资源。
+//
+//  调试总线**不按源选**：0xD6/D7/D8 固定是 cam0，0xDD/DE/DF 固定是 cam1。
+//    原因：按源选的话同步器挂在恢复时钟上，切到没摄像头的源时时钟停摆，
+//    选源位会卡住，寄存器一直显示上一个源的数据（实测踩过）。
 //--------------------------------------------------------------------------
-assign S_rx_tdata  = S_rx_sel_rx ? S_rx1_tdata  : S_rx0_tdata ;
-assign S_rx_tvalid = S_rx_sel_rx ? S_rx1_tvalid : S_rx0_tvalid;
-assign S_rx_tlast  = S_rx_sel_rx ? S_rx1_tlast  : S_rx0_tlast ;
-assign S_rx_tuser  = S_rx_sel_rx ? S_rx1_tuser  : S_rx0_tuser ;
-
-// 调试总线**不按源选**：0xD6/D7/D8 固定是 cam0，0xDD/DE/DF 固定是 cam1。
-// 原因：S_rx_sel_rx 的同步器挂在 S_hs_rx_clk 上，切到没摄像头的源时
-//   时钟 mux 切到空时钟 -> 同步器停摆 -> 选源位卡住 -> 调试寄存器一直
-//   显示上一个源的数据（实测踩过, 差点误判 cam0 有数据）。
-// 0xDC 额外提供两路打包状态，不用切源就能同时看到两路。
-
-// AXIS(40bit RAW10, tuser=帧首) -> ui_image_correction 的 raw10 接口
-assign S_raw10_valid       = S_rx_tvalid;
-assign S_raw10_data        = S_rx_tdata;
-assign S_raw10_frame_start = S_rx_tvalid & S_rx_tuser;
-assign S_raw10_frame_end   = 1'b0;                        // 该模块不使用
-assign S_csi_frame_start   = S_rx_tvalid & S_rx_tuser;    // 供 cfg_ctrl_top 统计真实帧率
+assign S_crop0_frame_start = S_rx0_tvalid & S_rx0_tuser;
+assign S_crop1_frame_start = S_rx1_tvalid & S_rx1_tuser;
+// 供 cfg_ctrl_top 统计"传感器真实帧率"：用 cam0 的帧首（双目下仍是传感器的 60fps）
+assign S_csi_frame_start   = S_crop0_frame_start;
 
 
-//图像大小裁剪模块
+//图像大小裁剪模块 (cam0)
 ui_image_correction #(
     .DATA_WIDTH  (40),
     .TDEST_WIDTH (10)
@@ -1104,16 +1162,75 @@ ui_image_correction #(
     // V39: 垂直起始裁剪 (4K=35, 1080p=19)
     .I_v_start        (S_v_start		  ),
 	
-    .I_raw_data       (S_raw10_data       ),       
-    .I_raw_valid      (S_raw10_valid      ),     
-    .I_raw_frame_start(S_raw10_frame_start),
-    .I_raw_frame_end  (S_raw10_frame_end  ),
+    .I_raw_data       (S_rx0_tdata        ),       
+    .I_raw_valid      (S_rx0_tvalid       ),     
+    .I_raw_frame_start(S_crop0_frame_start),
+    .I_raw_frame_end  (1'b0               ),
     
-    .O_raw_tdata 	  (S_axis_tdata 	  ),
-    .O_raw_tlast 	  (S_axis_tlast 	  ),
-    .O_raw_tvalid	  (S_axis_tvalid	  ),
-    .O_raw_tuser 	  (S_axis_tuser 	  )
+    .O_raw_tdata 	  (S_crop0_tdata 	  ),
+    .O_raw_tlast 	  (S_crop0_tlast 	  ),
+    .O_raw_tvalid	  (S_crop0_tvalid	  ),
+    .O_raw_tuser 	  (S_crop0_tuser 	  )
 
+);
+
+//图像大小裁剪模块 (cam1) —— 必须挂在 cam1 自己的恢复时钟上
+ui_image_correction #(
+    .DATA_WIDTH  (40),
+    .TDEST_WIDTH (10)
+)X_ui_image_correction1
+(
+    .O_line_groups    (S_line_groups1    ),
+    .I_clk            (S_hs_clk1		  ),
+    .I_rst_n          (S_pll_lock & S_res_rstn_rx1 ),
+    .I_img_width      (S_h_active		  ),
+    .I_img_height     (S_v_active		  ),
+    .I_v_start        (S_v_start		  ),
+    .I_raw_data       (S_rx1_tdata        ),
+    .I_raw_valid      (S_rx1_tvalid       ),
+    .I_raw_frame_start(S_crop1_frame_start),
+    .I_raw_frame_end  (1'b0               ),
+    .O_raw_tdata 	  (S_crop1_tdata 	  ),
+    .O_raw_tlast 	  (S_crop1_tlast 	  ),
+    .O_raw_tvalid	  (S_crop1_tvalid	  ),
+    .O_raw_tuser 	  (S_crop1_tuser 	  )
+);
+
+//=============================================================================
+//  双目交替帧调度 (2026-10-21)
+//
+//  单目 (S_dual_en=0): 按 0xDB[0] 二选一，全速推流 —— 与 0x4601 行为一致
+//  双目 (S_dual_en=1): cam0/cam1 逐帧交替，各 30fps，输出仍是 1080p60
+//                      （两路传感器仍按 60fps 采，FPGA 每路两帧取一帧）
+//
+//  ⚠ 4K 模式强制按单目处理（带宽装不下两路），见 S_dual_eff
+//=============================================================================
+assign S_dual_eff = S_dual_en & ~S_is_4k;
+
+dual_frame_sched #(
+    .DATA_WIDTH (40),
+    .LINE_GRP   (480)          // 1080p: 1920px / 4
+) X_dual_sched (
+    .I_clk        (S_hs_rx_clk      ),
+    .I_clk1       (S_hs_clk1        ),
+    .I_rst_n      (S_pll_lock       ),
+    .I_dual_en    (S_dual_eff       ),
+    .I_sel        (S_rx_sel_rx      ),
+    .I_d0         (S_crop0_tdata    ),
+    .I_v0         (S_crop0_tvalid   ),
+    .I_u0         (S_crop0_tuser    ),
+    .I_l0         (S_crop0_tlast    ),
+    .I_d1         (S_crop1_tdata    ),
+    .I_v1         (S_crop1_tvalid   ),
+    .I_u1         (S_crop1_tuser    ),
+    .I_l1         (S_crop1_tlast    ),
+    .O_d          (S_axis_tdata     ),
+    .O_v          (S_axis_tvalid    ),
+    .O_u          (S_axis_tuser     ),
+    .O_l          (S_axis_tlast     ),
+    .O_src        (S_out_src        ),
+    .O_ch1_lost   (S_ch1_lost       ),
+    .O_parity     (S_frame_parity   )
 );
 
 
@@ -1248,7 +1365,7 @@ cfg_ctrl_top #(
 	//           0x3807, 所以板上读到的仍是 0x3807 —— 不能只凭版本号判断是否
 	//           烧了新 bit, 要看画面/相位相关。
 	//   0x4509 = 2026-10-20 修 IDELAY 使能语义(电平) + eye-scan 只扫 32 tap
-	.CFG_VER  (16'h4601)
+	.CFG_VER  (16'h4700)
 ) u_cfg_ctrl (
 	.i_sys_clk    (I_sysclk_25m),
 	.i_sys_rst_n  (1'b1),
@@ -1276,6 +1393,10 @@ cfg_ctrl_top #(
 	.o_bayer_sel     (S_bayer_sel),
 	// 2026-10-21: 0xDB CSI 源选择 (0=cam0 1=cam1)
 	.o_rx_sel        (S_rx_sel),
+	// 2026-10-21 双目交替
+	.o_dual_en       (S_dual_en),
+	.o_mark_en       (S_mark_en),
+	.o_dual_start    (S_dual_start),
 	.o_pp_mode    (S_pp_mode),
 	.o_pp_sobel_gain (S_pp_sobel_sh),
 	.o_pp_thresh  (S_pp_thresh),

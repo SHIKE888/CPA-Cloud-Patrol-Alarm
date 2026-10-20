@@ -33,8 +33,9 @@ module cfg_ctrl_top #(
 	//     0x4600 = V46 第 0 次构建: 双路 CSI (0xDB 选源), 上电默认 cam0
 	//     0x4601 = V46 第 1 次构建: 调试寄存器 0xD6/D7/D8=cam0 固定,
 	//              cam1 走 0xDD/DE/DF, 新增 0xDC 两路打包状态
+	//     0x4700 = V47 第 0 次构建: 双目交替推流 (0xDB[1]) + 帧标记 (0xDB[2])
 	//=========================================================================
-	parameter [15:0] CFG_VER  = 16'h4601
+	parameter [15:0] CFG_VER  = 16'h4700
 )(
 	// ---- 系统时钟域 (25MHz 常开) ----
 	input  wire        i_sys_clk,
@@ -116,7 +117,11 @@ module cfg_ctrl_top #(
 	// 2026-10-21: CSI 源选择 (0xDB), 0=cam0(J2) 1=cam1(J3)。
 	//   这里只做**原样透出**, 同步与复位窗由 system_top 做 ——
 	//   因为它要同时驱动时钟 mux (必须在时钟域外) 和写侧复位窗。
-	output wire        o_rx_sel
+	output wire        o_rx_sel,
+	// 2026-10-21 双目交替
+	output wire        o_dual_en,      // 0xDB[1]: 1 = 双目交替, 各 30fps
+	output wire        o_mark_en,      // 0xDB[2] | dual: 帧标记使能
+	output wire        o_dual_start    // 写 0xDB 且进双目时的一拍脉冲
 );
 
 	//-------------------------------------------------------------------------
@@ -171,6 +176,9 @@ module cfg_ctrl_top #(
 	wire [7:0]  cfg_wb_r, cfg_wb_b;
 	wire [1:0]  cfg_bayer_sel;
 	wire        cfg_rx_sel;     // 2026-10-21: 0xDB CSI 源选择 (0=cam0 1=cam1)
+	wire        cfg_dual_en;    // 2026-10-21: 0xDB[1]
+	wire        cfg_mark_en;    // 2026-10-21: 帧标记
+	wire        cfg_dual_start; // 2026-10-21: 双目同步启动脉冲
 	// 2026-10-21: bsel 是 o_bayer_sel 的本源, 而 o_bayer_sel 的 assign 写在
 	//   第 274 行 —— 声明必须放在那里之前, 否则 Verilog 会把 bsel_s2 隐式
 	//   声明成 1bit, o_bayer_sel 只剩 bit0, GRBG(1)/GBRG(2)/BGGR(3) 全部混完。
@@ -299,6 +307,9 @@ module cfg_ctrl_top #(
 		.O_res_chg       (cfg_res_chg),    // V21
 		.O_cfg_bayer_sel (cfg_bayer_sel),  // 2026-10-21
 		.O_cfg_rx_sel    (cfg_rx_sel),     // 2026-10-21: 0xDB
+		.O_cfg_dual_en   (cfg_dual_en),    // 2026-10-21
+		.O_cfg_mark_en   (cfg_mark_en),    // 2026-10-21
+		.O_dual_start    (cfg_dual_start), // 2026-10-21
 		.I_st_cam_wr_cnt (st_corr_fc),
 		.I_st_cam_busy   (i_cam_busy),
           .I_st_line_groups(lg_max),
@@ -319,6 +330,9 @@ module cfg_ctrl_top #(
 	assign o_dbg_btn = cfg_dbg_btn;
 	assign o_bayer_sel = bsel_s2;   // 2026-10-21: 已在像素域
 	assign o_rx_sel    = cfg_rx_sel; // 2026-10-21: 25MHz 域原样透出
+	assign o_dual_en    = cfg_dual_en;
+	assign o_mark_en    = cfg_mark_en;
+	assign o_dual_start = cfg_dual_start;
 	assign o_rx_sel    = cfg_rx_sel; // 2026-10-21: 25MHz 域原样透出
 
 	//-------------------------------------------------------------------------
