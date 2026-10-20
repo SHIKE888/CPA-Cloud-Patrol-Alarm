@@ -234,22 +234,6 @@
                     <Attr Name="CompileOrder" Val="18"/>
                 </FileInfo>
             </File>
-            <File Path="uisrc/01_rtl/dual/dual_frame_sched.v">
-                <FileInfo>
-                    <Attr Name="UsedInSyn" Val="true"/>
-                    <Attr Name="UsedInP&R" Val="true"/>
-                    <Attr Name="BelongTo" Val="design_1"/>
-                    <Attr Name="CompileOrder" Val="79"/>
-                </FileInfo>
-            </File>
-            <File Path="uisrc/01_rtl/dual/sensor_sync_start.v">
-                <FileInfo>
-                    <Attr Name="UsedInSyn" Val="true"/>
-                    <Attr Name="UsedInP&R" Val="true"/>
-                    <Attr Name="BelongTo" Val="design_1"/>
-                    <Attr Name="CompileOrder" Val="80"/>
-                </FileInfo>
-            </File>
             <File Path="uisrc/03_ip/ui_isp/ui_BLC/ui_BLC.v">
                 <FileInfo>
                     <Attr Name="UsedInSyn" Val="true"/>
@@ -687,6 +671,22 @@
                     <Attr Name="UsedInP&R" Val="true"/>
                     <Attr Name="BelongTo" Val="design_1"/>
                     <Attr Name="CompileOrder" Val="76"/>
+                </FileInfo>
+            </File>
+            <File Path="uisrc/01_rtl/dual/dual_frame_sched.v">
+                <FileInfo>
+                    <Attr Name="UsedInSyn" Val="true"/>
+                    <Attr Name="UsedInP&R" Val="true"/>
+                    <Attr Name="BelongTo" Val="design_1"/>
+                    <Attr Name="CompileOrder" Val="91"/>
+                </FileInfo>
+            </File>
+            <File Path="uisrc/01_rtl/dual/sensor_sync_start.v">
+                <FileInfo>
+                    <Attr Name="UsedInSyn" Val="true"/>
+                    <Attr Name="UsedInP&R" Val="true"/>
+                    <Attr Name="BelongTo" Val="design_1"/>
+                    <Attr Name="CompileOrder" Val="92"/>
                 </FileInfo>
             </File>
         </Verilog>
