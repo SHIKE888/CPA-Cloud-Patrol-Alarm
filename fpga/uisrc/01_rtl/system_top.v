@@ -1786,9 +1786,55 @@ always @(posedge I_sysclk_25m) begin
 	S_dsi_en_sync <= {S_dsi_en_sync[0], I_dsi_en};
 end
 
-assign S_dsi_R_tdata32 = S_ud_rtdata;
+//=============================================================================
+//  2026-10-21 修正: 帧标记改到 dbuf **读侧**打
+//
+//  写侧那个做法 (S_mark_en && S_yuv_sof) 实测**完全没生效**:
+//  板上抓帧整帧搜不到 0xA5 / 0xFF, UV 平面也没有 0x80 —— 一个字节都没写进去。
+//  根因是 S_yuv_sof (rgb_to_yuv422_quad 的 o_user_sof) 在本机基本不来:
+//  uidbuf 的 wfifo_rst_done 只要上电时见过一次 I_W_tuser 就永久锁存,
+//  之后没有 tuser 也照常写 DDR, 所以**画面一直是好的**, 这个坑极其隐蔽。
+//  (写侧那段先留着不删 —— sof 若真不来它就是死代码, 来了也只是重复打标记。)
+//
+//  读侧的 O_R_tuser 是 dbuf 读状态机自己按"读地址回 0"产生的, 打包器靠它
+//  分行, 一定可靠。所以在这里覆盖:
+//    第 1 拍 -> Y0=0xA5  Cb0=0x80  Y1=0x5A  Cr1=0x80
+//    第 2..4 拍 -> Y=src/0xFF 交替, 见下面 S_mark_wA / S_mark_wB
+//  RK 侧落成 NV16 后 Y 平面头 4 字节就是  A5 5A src FF。
+//
+//  ★ 为什么要连打 4 拍: dbuf 读口受 S_dsi_pack_tready 背压, tuser 后一拍
+//    可能是空拍, 只打一拍很容易丢。web 端是"在前 64 字节里搜 A5 5A"的,
+//    多打几拍不增加任何解析难度, 只多损失 8 个像素。
+//=============================================================================
+reg  S_rtuser_d1, S_rtuser_d2, S_rtuser_d3;
+// 与打包器的 src_rst_n 用同一根复位, 保证标记窗口和打包器对齐
+wire S_mark_rst_n = S_pll_lock & S_res_rstn;
+always @(posedge S_pclkx1 or negedge S_mark_rst_n) begin
+	if (!S_mark_rst_n) begin
+		S_rtuser_d1 <= 1'b0;
+		S_rtuser_d2 <= 1'b0;
+		S_rtuser_d3 <= 1'b0;
+	end else begin
+		S_rtuser_d1 <= S_dsi_R_tuser;
+		S_rtuser_d2 <= S_rtuser_d1;
+		S_rtuser_d3 <= S_rtuser_d2;
+	end
+end
 
-//---- Layer-2: RGB32 -> YUV422 跨时钟域打包 ----
+wire [7:0]  S_mark_src_b = S_out_src ? 8'h11 : 8'h00;
+// 第 1 拍: Y0=0xA5 Cb0=0x80 Y1=0x5A Cr1=0x80  ->  NV16 的 Y[0],Y[1] = A5 5A
+wire [31:0] S_mark_w0 = { 8'h80, 8'h5A, 8'h80, 8'hA5 };
+// 后面几拍: Y=src,FF 交替          ->  NV16 的 Y[2],Y[3] = src FF
+wire [31:0] S_mark_wA = { 8'h80, 8'hFF, 8'h80, S_mark_src_b };
+wire [31:0] S_mark_wB = { 8'h80, S_mark_src_b, 8'h80, 8'hFF };
+
+assign S_dsi_R_tdata32 = !S_mark_en            ? S_ud_rtdata :
+                         S_dsi_R_tuser         ? S_mark_w0 :
+                         S_rtuser_d1           ? S_mark_wA :
+                         S_rtuser_d2           ? S_mark_wB :
+                         S_rtuser_d3           ? S_mark_wA :
+                                                 S_ud_rtdata;
+
 wire        S_pack_tvalid;
 wire        S_pack_tready;
 wire [31:0] S_pack_tdata;

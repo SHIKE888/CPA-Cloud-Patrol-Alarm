@@ -1813,23 +1813,40 @@ class OpenCVCapture(threading.Thread):
     # ---- 双目拼接 ----
     @staticmethod
     def _peek_dual_src(frame):
-        """从原始 NV16 缓冲的 Y 平面前 4 字节读出帧来自哪一路。
+        """从原始 NV16 缓冲的 Y 平面里读帧标记，判断这一帧来自哪一路。
 
-        返回 0=cam0 / 1=cam1 / None=没有标记(单目模式)。
-        只读 4 个字节, 不开销。
+        标记由 FPGA 在 dbuf **读侧**打在帧首（见 system_top.v）：
+            Y[0]=0xA5  Y[1]=0x5A  之后 src / 0xFF 交替几个字节
+            src = 0x00 -> cam0      0x11 -> cam1
+
+        因为 dbuf 读口受打包器背压、tuser 之后可能夹空拍，标记会连打 4 拍，
+        所以这里**搜 A5 5A 而不是死读固定下标**，能容错几个像素的偏移。
+
+        返回 0=cam0 / 1=cam1 / None=没有标记(单目模式或没开 mark_en)。
         """
         if frame is None:
             return None
         try:
             v = frame.reshape(-1)
-            if v.size < 4:
+            n = v.size
+            if n < 16:
                 return None
-            if (int(v[0]) != DUAL_MAGIC0 or int(v[1]) != DUAL_MAGIC1
-                    or int(v[3]) != DUAL_MAGIC3):
-                return None
-            return 1 if int(v[2]) == DUAL_SRC1 else 0
+            lim = min(n, 32)          # 标记一定在头 32 个 Y 字节内
+            for i in range(0, lim - 1):
+                if int(v[i]) != DUAL_MAGIC0 or int(v[i + 1]) != DUAL_MAGIC1:
+                    continue
+                # magic 命中: 往后找 src (中间可能夹 0xFF)
+                for j in range(i + 2, min(i + 12, lim)):
+                    a = int(v[j])
+                    if a == DUAL_MAGIC3:
+                        continue
+                    if a == 0x00 or a == DUAL_SRC1:
+                        return 1 if a == DUAL_SRC1 else 0
+                    break             # 既不是 FF 也不是 src -> 这是图像数据
+                return 0              # magic 在但 src 没跟上来 -> 当 cam0
         except Exception:                                          # noqa: BLE001
             return None
+        return None
 
     def _dual_compose(self, src, frame, t_cap, seq):
         """把当前帧和另一路最近一帧拼成一张。返回 (frame, t_cap, tag) 或 None。

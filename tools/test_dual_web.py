@@ -99,10 +99,34 @@ _bad = mk_raw(CAM0)
 _bad[0, 1] = 0x00                      # 破坏 magic
 check("magic 错 -> None", cap._peek_dual_src(_bad) is None)
 _bad2 = mk_raw(CAM0)
-_bad2[0, 3] = 0x7F                     # 破坏尾字节
-check("尾字节错 -> None", cap._peek_dual_src(_bad2) is None)
+_bad2[0, 2] = 0x7F                     # src 字节是非法值
+# 新解析放宽了尾字节要求(标记连打 4 拍, 排布不固定), 所以一律当 cam0
+check("src 非法 -> 当 cam0", cap._peek_dual_src(_bad2) == 0)
 check("空帧 -> None", cap._peek_dual_src(None) is None)
 check("太短 -> None", cap._peek_dual_src(np.zeros((1, 3), np.uint8)) is None)
+
+# FPGA 实际打的是连续 4 拍: A5 5A src FF FF src src FF
+print("[1b] 4 拍长标记 / 偏移容错")
+
+def mk_long(src, off=0, w=1920, h=1080):
+    b = np.zeros((1, w * h * 2), np.uint8)
+    pat = [M.DUAL_MAGIC0, M.DUAL_MAGIC1, src, 0xFF, 0xFF, src, src, 0xFF]
+    for i, v in enumerate(pat):
+        b[0, off + i] = v
+    return b
+
+check("长标记 cam0 -> 0", cap._peek_dual_src(mk_long(CAM0)) == 0)
+check("长标记 cam1 -> 1", cap._peek_dual_src(mk_long(CAM1)) == 1)
+check("偏移 2 像素 -> 仍能认(cam1)",
+      cap._peek_dual_src(mk_long(CAM1, off=2)) == 1)
+check("偏移 4 像素 -> 仍能认(cam0)",
+      cap._peek_dual_src(mk_long(CAM0, off=4)) == 0)
+_b3 = mk_long(CAM0)
+_b3[0, 2] = 0x33          # 破坏 src
+check("src 坏 -> 当 cam0", cap._peek_dual_src(_b3) == 0)
+_noise = np.zeros((1, 1920 * 1080 * 2), np.uint8)
+_noise[0, :] = 0x40       # 均匀图像, 没有 magic
+check("均匀图像 -> None", cap._peek_dual_src(_noise) is None)
 
 # ---------------------------------------------------------------- 交替流
 print("[2] _dual_compose 交替流 0,1,0,1,0,1,0,1")
