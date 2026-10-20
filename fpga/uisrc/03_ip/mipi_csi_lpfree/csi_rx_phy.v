@@ -80,6 +80,27 @@ reg        r_manual_mode;
 reg  [5:0] r_manual_delay;
 reg        r_manual_delay_load;
 
+// ------------------------------------------------------------------
+// 2026-10-21: eye-scan ?? + ??
+//   ??: ??? bit ?(????????, ?????)??????????
+//         ??, ???? tap=1 ????? -> ??; ?????????
+//         (best_len=32, tap=16)?????????????, ????
+//   ??:  ?????? best_len ?????(?? MAX_TRY ?);
+//         ????????????, ? ???? ? tap ??:
+//           ?? -> ????????  ??? -> ????? FIXED_TAP
+//         ????????????, ????????
+// ------------------------------------------------------------------
+localparam [5:0] GOOD_LEN  = 6'd8;    // best_len >= 8 ??????
+localparam [5:0] FIXED_TAP = 6'd16;   // ??: ?????
+localparam [2:0] MAX_TRY   = 3'd4;    // ??? 4 ?
+
+reg  [2:0] r_try;
+reg        r_rescan;      // 1 ?: ?????/??????
+reg        r_latched;     // ?????
+reg        r_fix_done;    // ????? tap ??????
+
+wire w_scan_rstn = w_reset_out & ~r_rescan;
+
 wire w_debug_release = (r_debug_button_sync == 2'b01);
 
 always @(posedge w_hs_clk or negedge w_reset_out) begin
@@ -88,6 +109,7 @@ always @(posedge w_hs_clk or negedge w_reset_out) begin
         r_manual_mode       <= 1'b0;
         r_manual_delay      <= 6'd0;
         r_manual_delay_load <= 1'b0;
+        r_fix_done          <= 1'b0;
     end else begin
         r_debug_button_sync <= {r_debug_button_sync[0], I_debug_button};
         r_manual_delay_load <= 1'b0;
@@ -100,6 +122,32 @@ always @(posedge w_hs_clk or negedge w_reset_out) begin
                 r_manual_delay <= w_auto_delay_value;
             else
                 r_manual_delay <= r_manual_delay + 1'b1;
+        end else if (r_latched && !r_fix_done && !r_manual_mode) begin
+            // ????: ?????? tap ??
+            r_fix_done          <= 1'b1;
+            r_manual_mode       <= 1'b1;
+            r_manual_delay      <= (w_auto_delay_best_len >= GOOD_LEN) ? w_auto_delay_value
+                                                                     : FIXED_TAP;
+            r_manual_delay_load <= 1'b1;
+        end
+    end
+end
+
+// ??????: ???????????????
+always @(posedge w_hs_clk or negedge w_reset_out) begin
+    if (!w_reset_out) begin
+        r_try     <= 3'd0;
+        r_rescan  <= 1'b0;
+        r_latched <= 1'b0;
+    end else begin
+        r_rescan <= 1'b0;
+        if (!r_latched && w_auto_delay_done) begin
+            if ((w_auto_delay_best_len >= GOOD_LEN) || (r_try >= (MAX_TRY - 1'b1)))
+                r_latched <= 1'b1;              // ?? ? ???? -> ??
+            else begin
+                r_try    <= r_try + 1'b1;
+                r_rescan <= 1'b1;               // ????
+            end
         end
     end
 end
@@ -132,7 +180,7 @@ auto_delay_ctl #(
   .LAN_DATA_CUNT(10'h3ff)  
 )u_auto_delay_ctl(
     .I_byte_clk        (w_hs_clk),
-    .I_reset_n         (w_reset_out),
+    .I_reset_n         (w_scan_rstn),
     .I_byte_align_done (w_rx_byte_data_align_vaild),
         .O_delay_value     (w_auto_delay_value),
         .O_delay_vaild     (w_auto_delay_vaild),
@@ -159,7 +207,7 @@ csi_rx_hs_data_phy #(
 
 csi_rx_byte_align u_csi_rx_byte_align(
     .I_clock           (w_hs_clk    ),
-    .I_reset_n         (w_reset_out     ),
+    .I_reset_n         (w_scan_rstn     ),
     .I_enable          (I_enable        ),
     .I_lan_data_in     (w_rx_byte_data[(8 * i) + 7:8 * i]),
     .I_wait_for_sync   (I_wait_for_sync ),
