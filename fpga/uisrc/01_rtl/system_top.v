@@ -826,7 +826,11 @@ end
 //      但 ref clock 只被 csi_rx_clock_det 用来计时 (判断 HS 时钟还在不在),
 //      100MHz 只影响"判丢时钟"的时间常数, 不影响采样与 eye-scan。
 //=============================================================================
-assign S_rx_rstn = S_pll_lock & ~S_dphy_rx_rst & S_res_rstn_rx;
+// ⚠ 复位只能依赖 25MHz 域的 S_pll_lock / S_dphy_rx_rst。
+//   绝不能把 S_res_rstn_rx (它是 S_hs_rx_clk 域里 2 级同步出来的寄存器)
+//   接进来: S_hs_rx_clk 就是 RX 自己分频出来的, RX 被复位 -> 没时钟 ->
+//   那个同步器永远不更新 -> 复位永远不放 -> 死锁。
+assign S_rx_rstn = S_pll_lock & ~S_dphy_rx_rst;
 
 mipi_csi_rx #(
 	.MIPI_LAN        ( 4      ),
