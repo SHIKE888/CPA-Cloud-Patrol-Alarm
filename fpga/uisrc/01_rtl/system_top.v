@@ -1046,9 +1046,8 @@ ui_image_correction #(
     .I_raw_valid      (S_raw10_valid      ),     
     .I_raw_frame_start(S_raw10_frame_start),
     .I_raw_frame_end  (S_raw10_frame_end  ),
-	// 2026-10-21: 分行主判据 = 每行固定组数 (1080p 实测 486, 4K ~966)
-	.I_raw_tlast      (S_rx_tlast         ),
-	.I_raw_line_groups(S_is_4k ? 16'd966 : 16'd486),
+    
+    .O_raw_tdata 	  (S_axis_tdata 	  ),
     .O_raw_tlast 	  (S_axis_tlast 	  ),
     .O_raw_tvalid	  (S_axis_tvalid	  ),
     .O_raw_tuser 	  (S_axis_tuser 	  )
@@ -1187,7 +1186,7 @@ cfg_ctrl_top #(
 	//           0x3807, 所以板上读到的仍是 0x3807 —— 不能只凭版本号判断是否
 	//           烧了新 bit, 要看画面/相位相关。
 	//   0x4509 = 2026-10-20 修 IDELAY 使能语义(电平) + eye-scan 只扫 32 tap
-	.CFG_VER  (16'h4513)
+	.CFG_VER  (16'h4511)
 ) u_cfg_ctrl (
 	.i_sys_clk    (I_sysclk_25m),
 	.i_sys_rst_n  (1'b1),
