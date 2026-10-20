@@ -32,8 +32,10 @@
 --
 -- 数据流:
 --   IMX415 摄像头
---     -> MIPI CSI-2 RX (4 lane)          : mipi_dphy_rx_over_lvds_wrapper
---     -> CSI-2 解包 + RAW10 还原          : ui_csi_unpacket_4lane / ui_raw10_unpacket_4lane
+--     -> MIPI CSI-2 RX (4 lane, 不用 LP) : mipi_csi_rx (uisrc/03_ip/mipi_csi_lpfree)
+--                                           2026-10-20 子卡去 LP 抽头后由原
+--                                           mipi_dphy_rx_over_lvds_wrapper 换过来
+--     -> CSI-2 解包 + RAW10 还原          : 已并入 mipi_csi_rx (直接输出 40bit RAW10)
 --     -> 图像裁剪                         : ui_image_correction
 --     -> 米联客 ISP (BLC/AWB/Demosaic..)  : ui_isp_top  (输出 RGB888 x4 = 128bit)
 --     -> RGB888 转 YUV422 (4 像素/拍)      : rgb_to_yuv422_quad
@@ -314,15 +316,17 @@ wire 							S_cam_cfg_done	;
 wire 							S_ae_cfg_done	;
 wire 							S_ae_req		;
 
-wire          					S_hs_rx_clk		;  
-wire          					S_hs_rx_valid	;  
-wire [31 : 0] 					S_hs_rx_data	; 
-wire [3 : 0]					S_lane_error	;
+wire          					S_hs_rx_clk		;   // 新 RX 的 byte clock (= HS clk / 4)
 
-wire        					S_csi_frame_start;       
-wire        					S_csi_frame_end	;         
-wire        					S_csi_valid		;             
-wire[31:0]  					S_csi_data		;  
+	//---- LP-free CSI-2 RX (03_ip/mipi_csi_lpfree) 的 AXIS 输出 ----
+	wire							S_rx_rstn		;
+	wire [39:0]						S_rx_tdata		;
+	wire							S_rx_tvalid		;
+	wire							S_rx_tlast		;
+	wire							S_rx_tuser		;
+
+	wire        					S_csi_frame_start;   // 供 cfg_ctrl_top 统计传感器真实帧率
+
 	
 wire          					S_raw10_frame_start;
 wire          					S_raw10_frame_end;
@@ -794,63 +798,71 @@ always @(posedge I_sysclk_25m or negedge S_pll_lock) begin
 	end
 end
 
-//mipi_rx
-mipi_dphy_rx_over_lvds_wrapper#(
-    .DEVICE           ( "PH1"		 ),
-    .LANE_NUM         ( 4    		 )
-)X_mipi_dphy_rx_over_lvds_wrapper(
-    .I_lp_clk         ( S_clk_70m    ),
-    // V24: 分辨率切换时也要复位 D-PHY RX (4K 改了 D-PHY 发送时序, lane 速率变)
-    .I_rst            ( S_dphy_rx_rst | ~S_pll_lock  ),
+//=============================================================================
+// 2026-10-20 子卡去掉 LP 抽头后的 CSI-2 接收: 换成 LP-free 的 mipi_csi_rx
+//
+// 背景: FMC_VID005 子卡按厂家方案去掉 CSI 的 100R LP 抽头
+//   (R5/R9/R11/R15/R17/R21/R23/R27/R29/R33) 之后, FPGA 的 I_data_lp_p/n
+//   变成悬空, 只能读到恒定的 LP-11; 原来那套 mipi_dphy_rx_over_lvds_wrapper
+//   的 HS/LP 状态机必须看到 LP 跳变 (11->01->00) 才能定位包边界, 所以永远
+//   解不出帧 (实测: 心跳正常, MIPI 出流 245.9MB/s, 但 FRAME_CNT 恒为 0)。
+//
+// 新方案 (源码来源: 07_异构方案/.../uisrc/03_ip/mipi_csi_2, 已拷到
+//   uisrc/03_ip/mipi_csi_lpfree/):
+//     只用 5 对差分 (CLK + D0~D3) + 一路参考时钟:
+//       PH1_LOGIC_DYNAMIC_IDELAY + PH1_LOGIC_IDDRx2 做 4:1 解串;
+//       auto_delay_ctl 用 eye-scan 自动挑采样 tap;
+//       csi_rx_packet_handler 直接在字节流里找 CSI-2 包头定位 burst —— 不用 LP。
+//     输出 40bit RAW10 (4 像素/时钟), 直接接 ui_image_correction,
+//     所以原来的 ui_csi_unpacket_4lane + ui_raw10_unpacket_4lane 一起删掉。
+//
+// 三个坑 (都写在代码里, 别改):
+//   1) I_debug_button 必须接 1'b1。07 工程里它是"上拉按键未按下"的电平;
+//      接 0 会在复位后产生一次 11->01 的边沿, 把 RX 锁进 manual delay 模式,
+//      自动 eye-scan 就不再执行了。
+//   2) m_axis_video_tready 恒 1。该 AXIS 的 tvalid = tready & ~empty,
+//      下游没有反压 (和原来的 raw10 通路一致)。
+//   3) 参考时钟用 I_ddr_clk (T13, 100MHz LVDS)。07 工程用 PLL 出 150MHz,
+//      但 ref clock 只被 csi_rx_clock_det 用来计时 (判断 HS 时钟还在不在),
+//      100MHz 只影响"判丢时钟"的时间常数, 不影响采样与 eye-scan。
+//=============================================================================
+assign S_rx_rstn = S_pll_lock & ~S_dphy_rx_rst & S_res_rstn_rx;
 
-    .I_mipi_clk_p     ( I_clk_hs_p   ),
-    .I_mipi_data_hs_p ( I_data_hs_p  ),
-    .I_mipi_data_lp_p ( I_data_lp_p  ),
-    .I_mipi_data_lp_n ( I_data_lp_n  ),
+mipi_csi_rx #(
+	.MIPI_LAN        ( 4      ),
+	.DEVICE          ( "PH1A" )
+)X_mipi_csi_rx(
+	.I_debug_button        ( 1'b1        ),
+	.I_ref_clock           ( I_ddr_clk   ),
+	.I_clk_hs_rx_p         ( I_clk_hs_p  ),
+	.I_reset_n             ( S_rx_rstn   ),
+	.I_hs_data_p           ( I_data_hs_p ),
+	.I_enable              ( 1'b1        ),
 
-    .I_lane_hs_invert ( 4'b0000      ),
-    .I_lane_lp_invert ( 4'b0000      ),
+	.O_hs_div_clk          ( S_hs_rx_clk ),
 
-    .O_hs_rx_clk      ( S_hs_rx_clk  ),
-    .O_hs_rx_valid    ( S_hs_rx_valid),
-    .O_hs_rx_data     ( S_hs_rx_data ),
+	.m_axis_video_aclk     ( S_hs_rx_clk   ),
+	.m_axis_video_aresetn  ( S_rx_rstn     ),
+	.m_axis_video_tready   ( 1'b1          ),
+	.m_axis_video_tuser    ( S_rx_tuser    ),
+	.m_axis_video_tlast    ( S_rx_tlast    ),
+	.m_axis_video_tvalid   ( S_rx_tvalid   ),
+	.m_axis_video_tdata    ( S_rx_tdata    ),
 
-    .O_lp_rx_lane0_p  (				 ),
-    .O_lp_rx_lane0_n  (				 ),
-
-    .O_lane_error     ( S_lane_error )
+	// 调试总线先不接 (需要时挂 ChipWatcher 或接到 I2C 只读寄存器)
+	.O_auto_delay_done     (               ),
+	.O_dbg_mipi            (               ),
+	.O_dbg_delay           (               ),
+	.O_dbg_best_len        (               )
 );
 
-//csi解码模块
-ui_csi_unpacket_4lane X_ui_csi_unpacket_4lane(
-	.I_clk            ( S_hs_rx_clk       ),
-	// V23: 模式切换时一起复位 (CSI-2 靠 FS/FE 短包重新同步, 不会卡)
-	.I_rst_n          ( S_pll_lock & S_res_rstn_rx ),
-	.I_hs_valid       ( S_hs_rx_valid     ),
-	.I_hs_data        ( S_hs_rx_data      ),
-		
-	.O_csi_frame_start( S_csi_frame_start ),
-	.O_csi_frame_end  ( S_csi_frame_end   ),
-	.O_csi_valid      ( S_csi_valid       ),
-	.O_csi_data       ( S_csi_data        )
-);
+// AXIS(40bit RAW10, tuser=帧首) -> ui_image_correction 的 raw10 接口
+assign S_raw10_valid       = S_rx_tvalid;
+assign S_raw10_data        = S_rx_tdata;
+assign S_raw10_frame_start = S_rx_tvalid & S_rx_tuser;
+assign S_raw10_frame_end   = 1'b0;                        // 该模块不使用
+assign S_csi_frame_start   = S_rx_tvalid & S_rx_tuser;    // 供 cfg_ctrl_top 统计真实帧率
 
-//转为RAW10数据格式
-ui_raw10_unpacket_4lane X_ui_raw10_unpacket_4lane (
-	.I_clk  			(S_hs_rx_clk		),
-	// V23: 模式切换时一起复位
-	.I_rst_n			(S_pll_lock & S_res_rstn_rx	),
-		
-	.I_csi_frame_start	(S_csi_frame_start	),
-	.I_csi_frame_end  	(S_csi_frame_end	),
-	.I_csi_valid      	(S_csi_valid		),
-	.I_csi_data       	(S_csi_data			),
-		
-	.O_raw10_frame_start(S_raw10_frame_start),
-	.O_raw10_frame_end  (S_raw10_frame_end  ),
-	.O_raw10_valid      (S_raw10_valid      ),
-	.O_raw10_data       (S_raw10_data       )
-);
 
 //图像大小裁剪模块
 ui_image_correction #(
