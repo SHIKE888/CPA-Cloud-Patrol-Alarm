@@ -11,6 +11,9 @@ module ui_isp_top (
     input  [12:0]   I_img_width ,   // V21: 运行时图像宽度 (替代硬编码 1920)
     input  [12:0]   I_img_height,   // V21: 运行时图像高度 (替代硬编码 1080)
     input           I_is_4k     ,   // V40: 1=4K(RGGB) 0=1080p(binning, GRBG)
+    // 2026-10-21: Bayer 相位运行时选择 (只作用于 1080p; 4K 固定 RGGB)
+    //   0=RGGB  1=GRBG  2=GBRG  3=BGGR
+    input  [1:0]    I_bayer_sel ,
     input           I_tlast,
     input           I_tuser,
     input  [39:0]   I_tdata,
@@ -124,6 +127,15 @@ wire         dem_rggb_tlast, dem_rggb_tuser, dem_rggb_tvalid;
 wire [127:0] dem_grbg_tdata;
 wire         dem_grbg_tlast, dem_grbg_tuser, dem_grbg_tvalid;
 
+// 2026-10-21: 用 "两条列相位不同的 demosaic + 行相位取反" 拼出全部 4 种顺序:
+//   sel=0 RGGB : RGGB分支, inv=0
+//   sel=1 GRBG : RGGB分支, inv=1
+//   sel=2 GBRG : GBRG分支, inv=0
+//   sel=3 BGGR : GBRG分支, inv=1
+wire [1:0] w_bsel   = I_is_4k ? 2'd0 : I_bayer_sel;  // 4K 仍固定 RGGB
+wire       w_use_rg = ~w_bsel[1];                   // 1=用 RGGB 分支
+wire       w_yinv   =  w_bsel[0];                   // 行相位取反
+
 ui_top_demosaic #(
     .data_complete_delay (50),
     .BAYER_MODE          ("RGGB")
@@ -132,6 +144,7 @@ ui_top_demosaic #(
     .I_rst_n      (I_rst_n),
     .I_img_width  (I_img_width ),
     .I_img_height (I_img_height),
+    .I_ypos_inv   (w_yinv      ),
     .I_axi4s_tdata(BLC_O_tdata),
     .I_axi4s_tdest(BLC_O_tdest),
     .I_axi4s_tlast(BLC_O_tlast),
@@ -153,6 +166,7 @@ ui_top_demosaic #(
     .I_rst_n      (I_rst_n),
     .I_img_width  (I_img_width ),
     .I_img_height (I_img_height),
+    .I_ypos_inv   (w_yinv      ),
     .I_axi4s_tdata(BLC_O_tdata),
     .I_axi4s_tdest(BLC_O_tdest),
     .I_axi4s_tlast(BLC_O_tlast),
@@ -166,10 +180,10 @@ ui_top_demosaic #(
     .O_tready     (m_aixs_tready)
 );
 
-assign m_aixs_tdata  = I_is_4k ? dem_rggb_tdata  : dem_grbg_tdata;
-assign m_aixs_tlast  = I_is_4k ? dem_rggb_tlast  : dem_grbg_tlast;
-assign m_aixs_tuser  = I_is_4k ? dem_rggb_tuser  : dem_grbg_tuser;
-assign m_aixs_tvalid = I_is_4k ? dem_rggb_tvalid : dem_grbg_tvalid;
+assign m_aixs_tdata  = w_use_rg ? dem_rggb_tdata  : dem_grbg_tdata;
+assign m_aixs_tlast  = w_use_rg ? dem_rggb_tlast  : dem_grbg_tlast;
+assign m_aixs_tuser  = w_use_rg ? dem_rggb_tuser  : dem_grbg_tuser;
+assign m_aixs_tvalid = w_use_rg ? dem_rggb_tvalid : dem_grbg_tvalid;
 
 // ------------------ width conversion ------------------
 ui_data128_96 X_ui_data128_96(
