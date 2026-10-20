@@ -903,10 +903,10 @@ assign S_rx_rstn = S_pll_lock & ~S_dphy_rx_rst;
 
 // ---------------------------------------------------------------------
 // 2026-10-21 临时测试: CSI 源切换 (0xDB[0]: 0=cam0/J2  1=cam1/J3)
-//   切换时先把两路 RX 按住 40ms (S_rx_sw_rst), 同时把 MUX 选择位寄存一拍,
-//   让"复位已建立"和"时钟/数据换源"发生在同一个 25MHz 沿上, 避开窄脉寘。
-//   ⚠ 这里用普通 LUT 做时钟二选一, 仅用于临时测试。
-//      真正双路并行时必须用异步 FIFO 做 CDC, 不能这样切时钟。
+//   切换时先把 RX 按住 40ms (S_rx_sw_rst), 同时把选择位寄存一拍,
+//   让"复位已建立"和"引脚换源"发生在同一个 25MHz 沿上。
+//   ★ 只切引脚, 不切时钟: 时钟始终由 RX 原语直接输出, 走全局时钟网络。
+//     (旧版把两路时钟做 LUT 二选一, 会让 S_ud_wclk 偏斜/丢拍 -> 画面滚动)
 // ---------------------------------------------------------------------
 reg  [1:0]  S_rxsel_d;
 reg  [21:0] S_rx_sw_cnt;
@@ -930,7 +930,12 @@ always @(posedge I_sysclk_25m or negedge S_pll_lock) begin
 end
 
 wire S_rx0_rstn = S_rx_rstn & ~S_rx_sw_rst;
-wire S_rx1_rstn = S_pll_lock & ~S_dphy_rx_rst & ~S_rx_sw_rst;
+// ★ 2026-10-21 修正: 切源只切 **输入引脚**, 只保留一个 RX 实例。
+//   原因: S_hs_rx_clk 就是 S_ud_wclk (写侧时钟)。原先把两路时钟做 LUT 二选一,
+//   TD 不会把它放到全局时钟网络 -> 写侧偏斜/丢拍 -> 写地址计数逐帧漂移
+//   -> 表现就是画面持续向上滚动。现在时钟始终是 RX 原语的直接输出。
+wire        S_rx_clk_in  = S_rx_sel_q ? I_clk1_hs_p  : I_clk_hs_p;
+wire [3:0]  S_rx_data_in = S_rx_sel_q ? I_data1_hs_p : I_data_hs_p;
 
 // 2026-10-21: 手动 tap 步进按钮 (来自 cfg_ctrl_top 的 0xD9, idle=1)
 wire S_dbg_btn;
@@ -941,14 +946,14 @@ mipi_csi_rx #(
 )X_mipi_csi_rx(
 	.I_debug_button        ( S_dbg_btn  ),
 	.I_ref_clock           ( I_ddr_clk   ),
-	.I_clk_hs_rx_p         ( I_clk_hs_p  ),
-	.I_reset_n             ( S_rx0_rstn  ),
-	.I_hs_data_p           ( I_data_hs_p ),
+	.I_clk_hs_rx_p         ( S_rx_clk_in  ),
+	.I_reset_n             ( S_rx0_rstn   ),
+	.I_hs_data_p           ( S_rx_data_in ),
 	.I_enable              ( 1'b1        ),
 
-	.O_hs_div_clk          ( S_hs_rx_clk0 ),
+	.O_hs_div_clk          ( S_hs_rx_clk ),
 
-	.m_axis_video_aclk     ( S_hs_rx_clk0  ),
+	.m_axis_video_aclk     ( S_hs_rx_clk  ),
 	.m_axis_video_aresetn  ( S_rx0_rstn    ),
 	.m_axis_video_tready   ( 1'b1          ),
 	.m_axis_video_tuser    ( S_rx_tuser    ),
@@ -964,53 +969,11 @@ mipi_csi_rx #(
 );
 
 // AXIS(40bit RAW10, tuser=帧首) -> ui_image_correction 的 raw10 接口
-//
-// 2026-10-21 临时测试: 第二路 CSI (J3) 接收
-//   与 cam0 完全同构 (同一个 mipi_csi_rx IP, 同样 5 对 LVDS)。
-//   两路各有独立的 byte clock, 用 0xDB 选一路接进下游。
-mipi_csi_rx #(
-	.MIPI_LAN        ( 4      ),
-	.DEVICE          ( "PH1A" )
-)X_mipi_csi_rx1(
-	.I_debug_button        ( S_dbg_btn   ),
-	.I_ref_clock           ( I_ddr_clk    ),
-	.I_clk_hs_rx_p         ( I_clk1_hs_p  ),
-	.I_reset_n             ( S_rx1_rstn   ),
-	.I_hs_data_p           ( I_data1_hs_p ),
-	.I_enable              ( 1'b1         ),
-
-	.O_hs_div_clk          ( S_hs_rx_clk1 ),
-
-	.m_axis_video_aclk     ( S_hs_rx_clk1  ),
-	.m_axis_video_aresetn  ( S_rx1_rstn    ),
-	.m_axis_video_tready   ( 1'b1          ),
-	.m_axis_video_tuser    ( S_rx1_tuser   ),
-	.m_axis_video_tlast    ( S_rx1_tlast   ),
-	.m_axis_video_tvalid   ( S_rx1_tvalid  ),
-	.m_axis_video_tdata    ( S_rx1_tdata   ),
-
-	.O_auto_delay_done     ( S_rx1_autodone  ),
-	.O_dbg_mipi            ( S_rx1_dbg_mipi  ),
-	.O_dbg_delay           ( S_rx1_dbg_delay ),
-	.O_dbg_best_len        ( S_rx1_dbg_blen  )
-);
-
-assign S_hs_rx_clk = S_rx_sel_q ? S_hs_rx_clk1 : S_hs_rx_clk0;
-
-// 选中源的信号 (数据 + 调试总线一起切, 读 0xD6~0xD8 看到的就是当前源)
-wire        S_rx_v_tvalid = S_rx_sel_q ? S_rx1_tvalid : S_rx_tvalid ;
-wire        S_rx_v_tuser  = S_rx_sel_q ? S_rx1_tuser  : S_rx_tuser  ;
-wire [39:0] S_rx_v_tdata  = S_rx_sel_q ? S_rx1_tdata  : S_rx_tdata  ;
-wire [7:0]  S_dbg_mipi_sel  = S_rx_sel_q ? S_rx1_dbg_mipi  : S_rx_dbg_mipi;
-wire [7:0]  S_dbg_delay_sel = S_rx_sel_q ? S_rx1_dbg_delay : S_rx_dbg_delay;
-wire [5:0]  S_dbg_blen_sel  = S_rx_sel_q ? S_rx1_dbg_blen  : S_rx_dbg_best_len;
-wire        S_dbg_adone_sel = S_rx_sel_q ? S_rx1_autodone  : S_rx_autodone;
-
-assign S_raw10_valid       = S_rx_v_tvalid;
-assign S_raw10_data        = S_rx_v_tdata;
-assign S_raw10_frame_start = S_rx_v_tvalid & S_rx_v_tuser;
+assign S_raw10_valid       = S_rx_tvalid;
+assign S_raw10_data        = S_rx_tdata;
+assign S_raw10_frame_start = S_rx_tvalid & S_rx_tuser;
 assign S_raw10_frame_end   = 1'b0;                          // 该模块不使用
-assign S_csi_frame_start   = S_rx_v_tvalid & S_rx_v_tuser;   // 供 cfg_ctrl_top 统计真实帧率
+assign S_csi_frame_start   = S_rx_tvalid & S_rx_tuser;       // 供 cfg_ctrl_top 统计真实帧率
 
 
 //图像大小裁剪模块
@@ -1173,7 +1136,7 @@ cfg_ctrl_top #(
 	//           0x3807, 所以板上读到的仍是 0x3807 —— 不能只凭版本号判断是否
 	//           烧了新 bit, 要看画面/相位相关。
 	//   0x4509 = 2026-10-20 修 IDELAY 使能语义(电平) + eye-scan 只扫 32 tap
-	.CFG_VER  (16'h450F)
+	.CFG_VER  (16'h4510)
 ) u_cfg_ctrl (
 	.i_sys_clk    (I_sysclk_25m),
 	.i_sys_rst_n  (1'b1),
@@ -1188,10 +1151,10 @@ cfg_ctrl_top #(
 	.i_fs_corr    (S_axis_tuser),        // 裁剪模块输出帧首
 	.i_last_corr  (S_axis_tlast),        // 裁剪模块输出行尾
 	// 2026-10-20: LP-free RX 调试总线 (只读 0xD6/0xD7/0xD8)
-	.i_dbg_mipi      (S_dbg_mipi_sel),
-	.i_dbg_delay     (S_dbg_delay_sel),
-	.i_dbg_best_len  (S_dbg_blen_sel),
-	.i_dbg_autodone  (S_dbg_adone_sel),
+	.i_dbg_mipi      (S_rx_dbg_mipi),
+	.i_dbg_delay     (S_rx_dbg_delay),
+	.i_dbg_best_len  (S_rx_dbg_best_len),
+	.i_dbg_autodone  (S_rx_autodone),
 	.o_dbg_btn       (S_dbg_btn),
 	.o_rx_sel        (S_rx_sel),
 	.o_bayer_sel     (S_bayer_sel),
