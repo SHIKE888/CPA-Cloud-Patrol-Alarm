@@ -325,6 +325,12 @@ wire          					S_hs_rx_clk		;   // 新 RX 的 byte clock (= HS clk / 4)
 	wire							S_rx_tlast		;
 	wire							S_rx_tuser		;
 
+	//---- RX 调试总线 (只读寄存器 0xD6/0xD7/0xD8) ----
+	wire [7:0]						S_rx_dbg_mipi	;
+	wire [7:0]						S_rx_dbg_delay	;
+	wire [5:0]						S_rx_dbg_best_len;
+	wire							S_rx_autodone	;
+
 	wire        					S_csi_frame_start;   // 供 cfg_ctrl_top 统计传感器真实帧率
 
 	
@@ -853,11 +859,11 @@ mipi_csi_rx #(
 	.m_axis_video_tvalid   ( S_rx_tvalid   ),
 	.m_axis_video_tdata    ( S_rx_tdata    ),
 
-	// 调试总线先不接 (需要时挂 ChipWatcher 或接到 I2C 只读寄存器)
-	.O_auto_delay_done     (               ),
-	.O_dbg_mipi            (               ),
-	.O_dbg_delay           (               ),
-	.O_dbg_best_len        (               )
+	// 调试总线 -> I2C 只读寄存器 0xD6/0xD7/0xD8
+	.O_auto_delay_done     ( S_rx_autodone     ),
+	.O_dbg_mipi            ( S_rx_dbg_mipi     ),
+	.O_dbg_delay           ( S_rx_dbg_delay    ),
+	.O_dbg_best_len        ( S_rx_dbg_best_len )
 );
 
 // AXIS(40bit RAW10, tuser=帧首) -> ui_image_correction 的 raw10 接口
@@ -1026,7 +1032,8 @@ cfg_ctrl_top #(
 	//           ⚠ 注意: 4:36 那次构建虽然已经是 V43 的 RTL, 但当时这里还是
 	//           0x3807, 所以板上读到的仍是 0x3807 —— 不能只凭版本号判断是否
 	//           烧了新 bit, 要看画面/相位相关。
-	.CFG_VER  (16'h4506)
+	//   0x4508 = 2026-10-20 换成 LP-free mipi_csi_rx (子卡去 LP) + 调试寄存器
+	.CFG_VER  (16'h4508)
 ) u_cfg_ctrl (
 	.i_sys_clk    (I_sysclk_25m),
 	.i_sys_rst_n  (1'b1),
@@ -1040,6 +1047,11 @@ cfg_ctrl_top #(
 	.i_fs_csi     (S_csi_frame_start),   // CSI-2 FS 短包 -> 传感器真实帧率
 	.i_fs_corr    (S_axis_tuser),        // 裁剪模块输出帧首
 	.i_last_corr  (S_axis_tlast),        // 裁剪模块输出行尾
+	// 2026-10-20: LP-free RX 调试总线 (只读 0xD6/0xD7/0xD8)
+	.i_dbg_mipi      (S_rx_dbg_mipi),
+	.i_dbg_delay     (S_rx_dbg_delay),
+	.i_dbg_best_len  (S_rx_dbg_best_len),
+	.i_dbg_autodone  (S_rx_autodone),
 	.o_pp_mode    (S_pp_mode),
 	.o_pp_sobel_gain (S_pp_sobel_sh),
 	.o_pp_thresh  (S_pp_thresh),

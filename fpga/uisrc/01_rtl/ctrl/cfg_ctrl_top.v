@@ -52,6 +52,12 @@ module cfg_ctrl_top #(
 	// V21 诊断: 一行的像素组数 (来自 i_pix_clk 域)
 	input  wire [15:0] i_line_groups,
 
+	// 2026-10-20: LP-free RX 调试总线 (i_pix_clk 域, 内部 2 级同步到 i_sys_clk)
+	input  wire [7:0]  i_dbg_mipi,
+	input  wire [7:0]  i_dbg_delay,
+	input  wire [5:0]  i_dbg_best_len,
+	input  wire        i_dbg_autodone,
+
 	// ---- 同步到像素域的配置输出 ----
 	output wire [3:0]  o_pp_mode,          // 高级单选 0..8
 	output wire [4:0]  o_pp_sobel_gain,
@@ -160,6 +166,26 @@ module cfg_ctrl_top #(
 	reg  [31:0] csi_t1, csi_t2, corr_t1, corr_t2, line_t1, line_t2;
 	wire [15:0] st_corr_fc = corr_t2[15:0];
 
+	// 2026-10-20: RX 调试总线 2 级同步 (i_pix_clk -> i_sys_clk)
+	//   值都是慢变化的电平, 2 级同步足够; 读 0xD6~0xD8 即可。
+	reg  [7:0] dbg_mipi_s1,  dbg_mipi_s2;
+	reg  [7:0] dbg_delay_s1, dbg_delay_s2;
+	reg  [5:0] dbg_blen_s1,  dbg_blen_s2;
+	reg        dbg_adone_s1, dbg_adone_s2;
+	always @(posedge i_sys_clk or negedge sys_rst_n) begin
+		if (!sys_rst_n) begin
+			dbg_mipi_s1  <= 8'd0; dbg_mipi_s2  <= 8'd0;
+			dbg_delay_s1 <= 8'd0; dbg_delay_s2 <= 8'd0;
+			dbg_blen_s1  <= 6'd0; dbg_blen_s2  <= 6'd0;
+			dbg_adone_s1 <= 1'b0; dbg_adone_s2 <= 1'b0;
+		end else begin
+			dbg_mipi_s1  <= i_dbg_mipi;      dbg_mipi_s2  <= dbg_mipi_s1;
+			dbg_delay_s1 <= i_dbg_delay;     dbg_delay_s2 <= dbg_delay_s1;
+			dbg_blen_s1  <= i_dbg_best_len;  dbg_blen_s2  <= dbg_blen_s1;
+			dbg_adone_s1 <= i_dbg_autodone;  dbg_adone_s2 <= dbg_adone_s1;
+		end
+	end
+
 	jpeg_regfile #(.JPEG_VER(CFG_VER)) u_regfile (
 		.I_clk           (i_sys_clk),
 		.I_rst_n         (sys_rst_n),
@@ -219,9 +245,12 @@ module cfg_ctrl_top #(
 		.O_res_chg       (cfg_res_chg),    // V21
 		.I_st_cam_wr_cnt (st_corr_fc),
 		.I_st_cam_busy   (i_cam_busy),
-		.I_st_line_groups(lg_max)
-	);
-
+          .I_st_line_groups(lg_max),
+          // 2026-10-20: RX 调试总线 (已 2 级同步到 i_sys_clk)
+          .I_dbg_mipi      (dbg_mipi_s2),
+          .I_dbg_delay     (dbg_delay_s2),
+          .I_dbg_best_len  (dbg_blen_s2),
+          .I_dbg_autodone  (dbg_adone_s2)
 	//-------------------------------------------------------------------------
 	// I2C 从机
 	//-------------------------------------------------------------------------

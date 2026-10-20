@@ -150,7 +150,17 @@ module jpeg_regfile #(
     input  wire [15:0]  I_st_cam_wr_cnt,    // 摄像头寄存器写成功次数
     // V21 诊断: 一行的像素组数 (只读, 历史最大值)
     input  wire [15:0]  I_st_line_groups,
-    input  wire         I_st_cam_busy
+    input  wire         I_st_cam_busy,
+
+    // 2026-10-20: LP-free RX 调试总线 (只读)
+    //   0xD6 = dbg_mipi  : [3:0]各lane字节对齐 [4]word对齐 [5]in_frame
+    //                      [6]payload_valid [7]10bit解包有效
+    //   0xD7 = dbg_delay : [5:0]当前生效 tap [6]manual模式 [7]本拍 load 脉冲
+    //   0xD8 = {1'b0, autodone, best_len[5:0]}  eye-scan 最宽 tap 区间长度
+    input  wire [7:0]   I_dbg_mipi,
+    input  wire [7:0]   I_dbg_delay,
+    input  wire [5:0]   I_dbg_best_len,
+    input  wire         I_dbg_autodone
 );
 
     // ---------------------------------------------------------------- 控制寄存器
@@ -444,6 +454,11 @@ module jpeg_regfile #(
                 // V21 诊断: 每行像素组数 (历史最大值, 小端)
                 8'hD4: O_rd_data <= I_st_line_groups[ 7:0];
                 8'hD5: O_rd_data <= I_st_line_groups[15:8];
+
+                // 2026-10-20: LP-free RX 调试 (见文件头说明)
+                8'hD6: O_rd_data <= I_dbg_mipi;
+                8'hD7: O_rd_data <= I_dbg_delay;
+                8'hD8: O_rd_data <= {1'b0, I_dbg_autodone, I_dbg_best_len};
 
                 default: O_rd_data <= 8'h00;
             endcase
