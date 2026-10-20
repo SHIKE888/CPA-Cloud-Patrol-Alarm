@@ -170,7 +170,6 @@ parameter CS_WIDTH        = 1
 	//  1080p 下两者恰好都是 1920; 4K 下图像是 3840, 但 VTC 的 de 窗口只需
 	//  >= R_BEATS(1920) 个字节时钟 —— 所以仍取 1920。这就是两者必须分开的原因。
 	wire [1:0]  S_res_mode;                          // 由 cfg_ctrl_top 驱动
-	wire [1:0]  S_bayer_sel;                         // 2026-10-21: 0xDA Bayer 相位
 	wire        S_res_chg;                           // 模式写入脉冲 (25MHz 域)
 	wire        S_res_rstn;                          // 模式切换复位窗 (S_pclkx1 域)
 	wire [15:0] S_line_groups;                       // V21 诊断: 每行像素组数
@@ -918,8 +917,7 @@ ui_isp_top X_ui_isp_top (
 	.I_rst_n         (S_pll_lock & S_res_rstn_rx		),
 	.I_img_width     (S_h_active		),
 	.I_img_height    (S_v_active		),
-	.I_is_4k         (S_is_4k			),  // V40: 4K=RGGB, 1080p 由 0xDA 选
-	.I_bayer_sel     (S_bayer_sel		),  // 2026-10-21: 0=RGGB 1=GRBG 2=GBRG 3=BGGR
+	.I_is_4k         (S_is_4k			),  // V40: 4K=RGGB, 1080p binning=GRBG
 	.I_tlast         (S_axis_tlast 		),
 	.I_tuser         (S_axis_tuser 		),
 	.I_tdata         (S_axis_tdata 		),
@@ -1041,7 +1039,7 @@ cfg_ctrl_top #(
 	//           0x3807, 所以板上读到的仍是 0x3807 —— 不能只凭版本号判断是否
 	//           烧了新 bit, 要看画面/相位相关。
 	//   0x4509 = 2026-10-20 修 IDELAY 使能语义(电平) + eye-scan 只扫 32 tap
-	.CFG_VER  (16'h450B)
+	.CFG_VER  (16'h450A)
 ) u_cfg_ctrl (
 	.i_sys_clk    (I_sysclk_25m),
 	.i_sys_rst_n  (1'b1),
@@ -1061,7 +1059,6 @@ cfg_ctrl_top #(
 	.i_dbg_best_len  (S_rx_dbg_best_len),
 	.i_dbg_autodone  (S_rx_autodone),
 	.o_dbg_btn       (S_dbg_btn),
-	.o_bayer_sel     (S_bayer_sel),
 	.o_pp_mode    (S_pp_mode),
 	.o_pp_sobel_gain (S_pp_sobel_sh),
 	.o_pp_thresh  (S_pp_thresh),

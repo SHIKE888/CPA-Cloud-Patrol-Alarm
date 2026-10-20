@@ -150,11 +150,6 @@ module jpeg_regfile #(
     output wire [7:0]   O_cfg_cam_trig,     // 写任意值 -> 触发一次摄像头参数下发
     // V21: 分辨率模式 0=1080p60 (默认) 1=4K30; o_res_chg 在写入时给一拍脉冲
     output wire [1:0]   O_cfg_res_mode,
-
-    // 2026-10-21: Bayer 相位运行时选择 (0xDA)
-    //   0 = RGGB   1 = GRBG   2 = GBRG   3 = BGGR
-    //   4K 模式固定用 RGGB (V40 已验证), 本寄存器只作用于 1080p。
-    output wire [1:0]   O_cfg_bayer_sel,
     output wire         O_res_chg,
 
     // ---------------- 摄像头通道状态回读 ----------------
@@ -221,7 +216,6 @@ module jpeg_regfile #(
     reg [6:0]  r_roi_pct;
     reg [7:0]  r_cam_trig;
     reg [1:0]  r_res_mode;     // V21: 0=1080p60, 1=4K30, 2=4K25
-    reg [1:0]  r_bayer_sel;    // 2026-10-21: 0=RGGB 1=GRBG 2=GBRG 3=BGGR
     reg        res_chg;        // V21: 模式寄存器写入脉冲 (自清)
     reg [15:0] s_cam_wr_cnt;
     reg        s_cam_busy;
@@ -311,9 +305,6 @@ module jpeg_regfile #(
             // 想上 4K: 运行时写 RES_MODE=2 即可(这条热切换路径已实测通)。
             // V39: 恢复 1080p 上电 (V31 的 2'd2 是临时诊断值，已整改)。
             r_res_mode   <= 2'd0;
-            // 换新 CSI RX 后 1080p 的 Bayer 相位变了, 默认从 GBRG 改为 RGGB。
-            // 若颜色仍不对, 依次试 1(GRBG) / 2(GBRG) / 3(BGGR)。
-            r_bayer_sel  <= 2'd0;
             res_chg      <= 1'b0;
             // 注: r_heartbeat 不在这里复位, 它由上面那个自由运行计数块统一驱动
         end else begin
@@ -375,8 +366,6 @@ module jpeg_regfile #(
                                          : ((I_wr_data[6:0] > 7'd100) ? 7'd100
                                                                       : I_wr_data[6:0]);
                     8'hC9: r_cam_trig   <= I_wr_data;
-                    // ---- 2026-10-21: Bayer 相位选择 ----
-                    8'hDA: r_bayer_sel  <= I_wr_data[1:0];
                     // ---- V21: 分辨率模式 ----
                     8'hE0: begin
                         r_res_mode <= I_wr_data[1:0];
@@ -474,7 +463,6 @@ module jpeg_regfile #(
                 8'hC7: O_rd_data <= {5'b0, r_fps_div};
                 8'hC8: O_rd_data <= {1'b0, r_roi_pct};
                 8'hC9: O_rd_data <= r_cam_trig;
-                8'hDA: O_rd_data <= {6'b0, r_bayer_sel};
                 8'hE0: O_rd_data <= {6'b0, r_res_mode};
                 8'hD0: O_rd_data <= s_cam_wr_cnt[ 7:0];
                 8'hD1: O_rd_data <= s_cam_wr_cnt[15:8];
@@ -547,7 +535,6 @@ module jpeg_regfile #(
     assign O_cfg_roi_pct   = r_roi_pct;
     assign O_cfg_cam_trig  = r_cam_trig;
     assign O_cfg_res_mode  = r_res_mode;   // V21
-    assign O_cfg_bayer_sel = r_bayer_sel;  // 2026-10-21
     assign O_res_chg       = res_chg;      // V21
 
 endmodule
