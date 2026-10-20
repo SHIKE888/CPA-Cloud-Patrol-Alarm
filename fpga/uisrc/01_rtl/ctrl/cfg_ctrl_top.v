@@ -35,7 +35,7 @@ module cfg_ctrl_top #(
 	//              cam1 走 0xDD/DE/DF, 新增 0xDC 两路打包状态
 	//     0x4700 = V47 第 0 次构建: 双目交替推流 (0xDB[1]) + 帧标记 (0xDB[2])
 	//=========================================================================
-	parameter [15:0] CFG_VER  = 16'h4701
+	parameter [15:0] CFG_VER  = 16'h4702
 )(
 	// ---- 系统时钟域 (25MHz 常开) ----
 	input  wire        i_sys_clk,
@@ -107,6 +107,9 @@ module cfg_ctrl_top #(
 	input  wire [7:0]  i_diag_vs,
 	input  wire [15:0] i_diag_lg1,
 	input  wire [7:0]  i_diag_tlast,
+	input  wire [7:0]  i_diag_rxck,
+	input  wire [7:0]  i_diag_c1ck,
+	input  wire [7:0]  i_diag_rtv,
 
 	// ---- 画质参数 (同步到像素域) ----
 	output wire [7:0]  o_wb_r,
@@ -324,6 +327,9 @@ module cfg_ctrl_top #(
 		.I_diag_vs       (i_diag_vs),
 		.I_diag_lg1      (i_diag_lg1),
 		.I_diag_tlast    (i_diag_tlast),
+		.I_diag_rxck     (i_diag_rxck),
+		.I_diag_c1ck     (i_diag_c1ck),
+		.I_diag_rtv      (i_diag_rtv),
           .I_st_line_groups(lg_max),
           // 2026-10-20: RX 调试总线 (已 2 级同步到 i_sys_clk)
           // 2026-10-21: 0xD6/D7/D8 固定是 cam0, cam1 固定走 0xDD/DE/DF
@@ -345,7 +351,10 @@ module cfg_ctrl_top #(
 	assign o_dual_en    = cfg_dual_en;
 	assign o_mark_en    = cfg_mark_en;
 	assign o_dual_start = cfg_dual_start;
-	assign o_rx_sel    = cfg_rx_sel; // 2026-10-21: 25MHz 域原样透出
+	// ⚠ 2026-10-21 修: 这里原来重复写了一行 `assign o_rx_sel = cfg_rx_sel;`，
+	//   同一个 wire 两个驱动 -> 综合后 o_rx_sel 可能被优化掉/取错值 ->
+	//   S_rx_sel 恒 0 -> 时钟 mux 永远选 cam0(没插的) -> S_hs_rx_clk 停摆 ->
+	//   整个写侧不工作, RK 端只能反复读 DDR 里同一帧(画面冻结)。已删重复行。
 
 	//-------------------------------------------------------------------------
 	// I2C 从机

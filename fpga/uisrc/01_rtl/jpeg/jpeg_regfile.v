@@ -186,6 +186,12 @@ module jpeg_regfile #(
     //   0xE6 = S_axis_tlast 计数 (tlast 到底有没有进 dbuf)
     input  wire [15:0]  I_diag_lg1,
     input  wire [7:0]   I_diag_tlast,
+    //   0xE7 = S_hs_rx_clk 自由计数  (不变 = 全局 byte clock 停摆)
+    //   0xE8 = S_hs_clk1  自由计数  (不变 = cam1 恢复时钟停摆)
+    //   0xE9 = S_rx1_tvalid 计数    (不变 = RX 没有输出有效数据)
+    input  wire [7:0]   I_diag_rxck,
+    input  wire [7:0]   I_diag_c1ck,
+    input  wire [7:0]   I_diag_rtv,
 
     // 2026-10-20: LP-free RX 调试总线 (只读)
     //   0xD6 = dbg_mipi  : [3:0]各lane字节对齐 [4]word对齐 [5]in_frame
@@ -539,6 +545,9 @@ module jpeg_regfile #(
                 8'hE4: O_rd_data <= I_diag_lg1[ 7:0];
                 8'hE5: O_rd_data <= I_diag_lg1[15:8];
                 8'hE6: O_rd_data <= I_diag_tlast;
+                8'hE7: O_rd_data <= I_diag_rxck;
+                8'hE8: O_rd_data <= I_diag_c1ck;
+                8'hE9: O_rd_data <= I_diag_rtv;
                 8'hD0: O_rd_data <= s_cam_wr_cnt[ 7:0];
                 8'hD1: O_rd_data <= s_cam_wr_cnt[15:8];
                 8'hD2: O_rd_data <= {7'b0, s_cam_busy};

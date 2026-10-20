@@ -25,7 +25,7 @@ module tb_reg_db;
     wire cfg_rx_sel;
     wire [1:0] cfg_bayer_sel;
 
-    jpeg_regfile #(.JPEG_VER(16'h4701)) u_reg (
+    jpeg_regfile #(.JPEG_VER(16'h4702)) u_reg (
         .I_clk           (clk),
         .I_rst_n         (rstn),
         .I_wr_en         (wr_en),
@@ -128,7 +128,7 @@ module tb_reg_db;
         expect8(8'hDB, 8'h01, "rx_sel untouched by 0xDA");
 
         // 4. 版本号
-        expect8(8'hA9, 8'h01, "ver low");
+        expect8(8'hA9, 8'h02, "ver low");
         expect8(8'hAA, 8'h47, "ver high");
         // 恢复默认
         wr(8'hDB, 8'h00);

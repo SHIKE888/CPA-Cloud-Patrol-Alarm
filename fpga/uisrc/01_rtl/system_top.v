@@ -477,10 +477,17 @@ wire        					S_R_vrst		;
 reg  [7:0]  D_sof_cnt;      // S_yuv_sof 帧首计数 (进 dbuf 写侧的 sof)
 reg  [7:0]  D_vs_cnt;       // S_vtc_vs 场同步计数
 reg  [7:0]  D_tl_cnt;       // S_axis_tlast 行尾计数
+reg  [7:0]  D_rxck_cnt = 8'd0;     // S_hs_rx_clk 自由计数 (证明时钟活着)
+reg  [7:0]  D_c1ck_cnt = 8'd0;     // S_hs_clk1  自由计数 (证明 cam1 恢复时钟活着)
+reg  [7:0]  D_rtv_cnt;      // S_rx1_tvalid 计数 (证明数据到了)
+reg         S_clk_sel_r;    // 时钟 mux 选择(寄存)
 reg  [7:0]  D_sof_s1, D_sof_s2;
 reg  [7:0]  D_vs_s1,  D_vs_s2;
 reg  [7:0]  D_wb_s1,  D_wb_s2;
 reg  [7:0]  D_tl_s1,  D_tl_s2;
+reg  [7:0]  D_rxck_s1, D_rxck_s2;
+reg  [7:0]  D_c1ck_s1, D_c1ck_s2;
+reg  [7:0]  D_rtv_s1,  D_rtv_s2;
 reg  [15:0] D_lg1_s1, D_lg1_s2;   // cam1 每行组数
 					
 assign O_clk_rst				= S_sensor_rst_n;
@@ -1120,10 +1127,15 @@ sensor_sync_start #(
 //    (0x450E 实测)。这里 S_rx_sel 是准静态寄存器，只有切换瞬间会毛刺，
 //    切换后立刻有 120ms 写侧复位窗兜住。
 //--------------------------------------------------------------------------
-// ⚠ 这里用 BUFG 之前的 S_hs_clk1（原设计就这样）: S_hs_rx_clk 是它的 BUFG 输出，
-//   不能反过来把 BUFG 输出再喂给 BUFG。
-assign S_hs_rx_clk_mux = S_dual_eff ? S_hs_clk0
-                       : (S_rx_sel ? S_hs_clk1 : S_hs_clk0);
+// ⚠ 时钟 mux 的选择端必须是**寄存器**直接驱动, 否则 BUFG 前面多一级组合逻辑,
+//   时钟路径上会带出毛刺/偏斜。这里先把选择位打一拍再送 mux。
+//   位义: dual_eff=1 -> 看 cam0；否则看 sel (1=cam1, 0=cam0)
+//   (声明在文件前部信号区, 这里只放逻辑)
+always @(posedge I_sysclk_25m or negedge S_pll_lock) begin
+	if (!S_pll_lock) S_clk_sel_r <= 1'b0;
+	else             S_clk_sel_r <= S_dual_eff ? 1'b0 : S_rx_sel;
+end
+assign S_hs_rx_clk_mux = S_clk_sel_r ? S_hs_clk1 : S_hs_clk0;
 
 PH1_LOGIC_BUFG X_bufg_rx_clk (
 	.i ( S_hs_rx_clk_mux ),
@@ -1402,7 +1414,7 @@ cfg_ctrl_top #(
 	//           0x3807, 所以板上读到的仍是 0x3807 —— 不能只凭版本号判断是否
 	//           烧了新 bit, 要看画面/相位相关。
 	//   0x4509 = 2026-10-20 修 IDELAY 使能语义(电平) + eye-scan 只扫 32 tap
-	.CFG_VER  (16'h4701)
+	.CFG_VER  (16'h4702)
 ) u_cfg_ctrl (
 	.i_sys_clk    (I_sysclk_25m),
 	.i_sys_rst_n  (1'b1),
@@ -1420,6 +1432,9 @@ cfg_ctrl_top #(
 	.i_diag_vs    (D_vs_s2),
 	.i_diag_lg1   (D_lg1_s2),
 	.i_diag_tlast (D_tl_s2),
+	.i_diag_rxck  (D_rxck_s2),
+	.i_diag_c1ck  (D_c1ck_s2),
+	.i_diag_rtv   (D_rtv_s2),
 	.i_fs_corr    (S_axis_tuser),        // 裁剪模块输出帧首
 	.i_last_corr  (S_axis_tlast),        // 裁剪模块输出行尾
 	// 2026-10-20: LP-free RX 调试总线 (只读 0xD6/0xD7/0xD8) = 固定 cam0
@@ -1505,6 +1520,14 @@ always @(posedge S_hs_rx_clk or negedge S_pll_lock) begin
 	else if (S_axis_tlast)        D_tl_cnt <= D_tl_cnt + 8'd1;
 end
 
+// 时钟活性 + 数据到达 (0xE7/0xE8/0xE9)
+always @(posedge S_hs_rx_clk)  D_rxck_cnt <= D_rxck_cnt + 8'd1;   // 自由跑
+always @(posedge S_hs_clk1)    D_c1ck_cnt <= D_c1ck_cnt  + 8'd1;  // 自由跑
+always @(posedge S_hs_rx_clk or negedge S_pll_lock) begin
+	if (!S_pll_lock)              D_rtv_cnt <= 8'd0;
+	else if (S_rx1_tvalid)        D_rtv_cnt <= D_rtv_cnt + 8'd1;
+end
+
 // 跨到 25MHz 域 (只读快照; 8bit 二进制同步, 变化很慢, 撕裂概率可忽略)
 always @(posedge I_sysclk_25m or negedge S_pll_lock) begin
 	if (!S_pll_lock) begin
@@ -1512,12 +1535,18 @@ always @(posedge I_sysclk_25m or negedge S_pll_lock) begin
 		D_vs_s1  <= 8'd0; D_vs_s2  <= 8'd0;
 		D_wb_s1  <= 8'd0; D_wb_s2  <= 8'd0;
 		D_tl_s1  <= 8'd0; D_tl_s2  <= 8'd0;
+		D_rxck_s1<= 8'd0; D_rxck_s2<= 8'd0;
+		D_c1ck_s1<= 8'd0; D_c1ck_s2<= 8'd0;
+		D_rtv_s1 <= 8'd0; D_rtv_s2 <= 8'd0;
 		D_lg1_s1 <= 16'd0; D_lg1_s2 <= 16'd0;
 	end else begin
 		D_sof_s1 <= D_sof_cnt;   D_sof_s2 <= D_sof_s1;
 		D_vs_s1  <= D_vs_cnt;    D_vs_s2  <= D_vs_s1;
 		D_wb_s1  <= S_wbuf_sync; D_wb_s2  <= D_wb_s1;
 		D_tl_s1  <= D_tl_cnt;    D_tl_s2  <= D_tl_s1;
+		D_rxck_s1<= D_rxck_cnt;  D_rxck_s2<= D_rxck_s1;
+		D_c1ck_s1<= D_c1ck_cnt;  D_c1ck_s2<= D_c1ck_s1;
+		D_rtv_s1 <= D_rtv_cnt;   D_rtv_s2 <= D_rtv_s1;
 		D_lg1_s1 <= S_line_groups1; D_lg1_s2 <= D_lg1_s1;
 	end
 end
