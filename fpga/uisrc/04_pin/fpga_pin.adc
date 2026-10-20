@@ -122,6 +122,51 @@ set_pin_assignment	{ O_mipi_dsi_lp_data_n[2] }	{ LOCATION = R17; IOSTANDARD = LV
 set_pin_assignment	{ O_mipi_dsi_lp_data_p[3] }	{ LOCATION = T18; IOSTANDARD = LVCMOS18; DRIVESTRENGTH = 8; SLEWRATE = FAST; }
 set_pin_assignment	{ O_mipi_dsi_lp_data_n[3] }	{ LOCATION = R18; IOSTANDARD = LVCMOS18; DRIVESTRENGTH = 8; SLEWRATE = FAST; }
 
+# =============================================================
+# 2026-10-21 双路 CSI —— cam1 (子卡 J3 / 原 DSI 座复用为 CSI_RX)
+#
+# 引脚权威来源: docs/MLK_FMC_MIPI_250530.pdf (子卡原理图, 未改版原件)
+#   P01_CON   页: FMC 引脚 <-> CSI_*/DSI_* 网络 的直连表
+#   P03_MIPITX 页: J3 40pin 脚号 -> 网络
+# 与 AND 手册第 41~43 页 FMC-HPC 表交叉核对一致。
+#
+#   J3 pin | 网络          | FMC 网络      | FPGA
+#   -------+---------------+--------------+------
+#    18/17 | DSI_HS_CKP/N  | CLK1_M2C    | E16/F16
+#    14/15 | DSI_HS_D0P/N  | LA29        | F18/G18
+#    20/19 | DSI_HS_D1P/N  | LA31        | K16/K17
+#    22/23 | DSI_HS_D2P/N  | LA30        | D17/E17
+#    27/28 | DSI_HS_D3P/N  | LA33        | J17/J18
+#       8 | DSI_CLK (MCLK)| LA28_P      | J13     <- 输出
+#       4 | DSI_RSTN      | LA28_N      | K13     <- 输出, 恒高
+#      35 | DSI_IIC_SDA   | LA32_P      | N11     <- ECN 的 R671/R672 就是为它
+#      38 | DSI_IIC_SCL   | LA32_N      | N10
+#
+#   ⚠ 手册「CSI 连接器表」和 docs/AFC03双路IMX415竞赛方案 2.2 表
+#     都把 cam1 的 HS 数据对写成 LA22/LA25/LA29/LA31 —— **是错的**。
+#     LA22/LA25 在子卡上接的是 DSI_LP_CKP/N 和 DSI_LP_D2P/N, 不是 HS 数据。
+#
+#   ⚠ LP 对 (LA19/LA21/LA22/LA24/LA25) 在 ECN 之后板载悬空,
+#     本工程用 LP-free 的 mipi_csi_rx, 不需要约束它们。
+# =============================================================
+
+# ---- cam1 MIPI CSI-2 RX HS lanes ----
+set_pin_assignment	{ I_clk1_hs_p }		{ LOCATION = E16; IOSTANDARD = LVDS18; PULLTYPE = NONE; }
+set_pin_assignment	{ I_data1_hs_p[0] }	{ LOCATION = F18; IOSTANDARD = LVDS18; PULLTYPE = NONE; INDEL = 20; }
+set_pin_assignment	{ I_data1_hs_p[1] }	{ LOCATION = K16; IOSTANDARD = LVDS18; PULLTYPE = NONE; INDEL = 20; }
+set_pin_assignment	{ I_data1_hs_p[2] }	{ LOCATION = D17; IOSTANDARD = LVDS18; PULLTYPE = NONE; INDEL = 20; }
+set_pin_assignment	{ I_data1_hs_p[3] }	{ LOCATION = J17; IOSTANDARD = LVDS18; PULLTYPE = NONE; INDEL = 20; }
+
+# ---- cam1 控制 (MCLK / RSTn / SCCB) ----
+# MCLK/RST 与 cam0 一样: 挂在 LA28 这一对差分脚上做两路单端LVCMOS18
+# (cam0 就是 A18=MCLK / B18=RSTn, 同一对脚两个单端信号, 已验证可用)
+set_pin_assignment	{ O_clk_24m_1 }		{ LOCATION = J13; IOSTANDARD = LVCMOS18; DRIVESTRENGTH = 8; PULLTYPE = NONE; }
+set_pin_assignment	{ O_clk_rst_1 }		{ LOCATION = K13; IOSTANDARD = LVCMOS18; DRIVESTRENGTH = 8; PULLTYPE = NONE; }
+# ⚠ N11 = LA32_P: ECN 之前被 R671(0R) 接到 INT_ALM_1V8 电源上。
+#   必须已拆 R671 / 贴 R672, 否则这一脚上挂着 1.8V, 当输出驱动会拉垮电源。
+set_pin_assignment	{ O_cam_scl_1 }		{ LOCATION = N10; IOSTANDARD = LVCMOS18; DRIVESTRENGTH = 8; PULLTYPE = PULLUP; }
+set_pin_assignment	{ IO_cam_sda_1 }	{ LOCATION = N11; IOSTANDARD = LVCMOS18; DRIVESTRENGTH = 8; PULLTYPE = PULLUP; }
+
 
 
 

@@ -29,8 +29,10 @@ module cfg_ctrl_top #(
 	//   编码: 高字节 = 大版本(hex), 低字节 = 该版本内的构建序号
 	//     0x3504 = V35 第 4 次构建 (V35d: 4K VMAX=2788 想拿 25fps)
 	//     0x4301 = V43 第 1 次构建 (修 4K 每行多 1~2 个 word 导致的斜向撕裂)
+	//     0x450D = 单路最佳版 (已上板验证 1080p/4K 画面与颜色正常)
+	//     0x4600 = V46 第 0 次构建: 双路 CSI (0xDB 选源), 上电默认 cam0
 	//=========================================================================
-	parameter [15:0] CFG_VER  = 16'h4507
+	parameter [15:0] CFG_VER  = 16'h4600
 )(
 	// ---- 系统时钟域 (25MHz 常开) ----
 	input  wire        i_sys_clk,
@@ -99,7 +101,11 @@ module cfg_ctrl_top #(
 	// 2026-10-21: CSI RX 手动 tap 步进按钮 (idle=1, 写 0xD9 产生一次按下->释放)
 	output wire        o_dbg_btn,
 	// 2026-10-21: Bayer 相位 (0=RGGB 1=GRBG 2=GBRG 3=BGGR), 已同步到像素域
-	output wire [1:0]  o_bayer_sel
+	output wire [1:0]  o_bayer_sel,
+	// 2026-10-21: CSI 源选择 (0xDB), 0=cam0(J2) 1=cam1(J3)。
+	//   这里只做**原样透出**, 同步与复位窗由 system_top 做 ——
+	//   因为它要同时驱动时钟 mux (必须在时钟域外) 和写侧复位窗。
+	output wire        o_rx_sel
 );
 
 	//-------------------------------------------------------------------------
@@ -153,6 +159,12 @@ module cfg_ctrl_top #(
 	wire [7:0]  cfg_cam_trig;
 	wire [7:0]  cfg_wb_r, cfg_wb_b;
 	wire [1:0]  cfg_bayer_sel;
+	wire        cfg_rx_sel;     // 2026-10-21: 0xDB CSI 源选择 (0=cam0 1=cam1)
+	// 2026-10-21: bsel 是 o_bayer_sel 的本源, 而 o_bayer_sel 的 assign 写在
+	//   第 274 行 —— 声明必须放在那里之前, 否则 Verilog 会把 bsel_s2 隐式
+	//   声明成 1bit, o_bayer_sel 只剩 bit0, GRBG(1)/GBRG(2)/BGGR(3) 全部混完。
+	//   (和之前 S_pp_* / 模式切换复位窗踩的是同一个坑)
+	reg  [1:0]  bsel_s1, bsel_s2;
 	wire [6:0]  cfg_roi_pct;
 	wire [2:0]  cfg_fps_div;
 	reg  [15:0] lg_s1, lg_s2;   // V21 诊断同步器
@@ -251,6 +263,7 @@ module cfg_ctrl_top #(
 		.O_cfg_res_mode  (cfg_res_mode),   // V21
 		.O_res_chg       (cfg_res_chg),    // V21
 		.O_cfg_bayer_sel (cfg_bayer_sel),  // 2026-10-21
+		.O_cfg_rx_sel    (cfg_rx_sel),     // 2026-10-21: 0xDB
 		.I_st_cam_wr_cnt (st_corr_fc),
 		.I_st_cam_busy   (i_cam_busy),
           .I_st_line_groups(lg_max),
@@ -264,6 +277,8 @@ module cfg_ctrl_top #(
 
 	assign o_dbg_btn = cfg_dbg_btn;
 	assign o_bayer_sel = bsel_s2;   // 2026-10-21: 已在像素域
+	assign o_rx_sel    = cfg_rx_sel; // 2026-10-21: 25MHz 域原样透出
+	assign o_rx_sel    = cfg_rx_sel; // 2026-10-21: 25MHz 域原样透出
 
 	//-------------------------------------------------------------------------
 	// I2C 从机
@@ -349,7 +364,7 @@ module cfg_ctrl_top #(
 	reg [7:0] wbb_s1,  wbb_s2;
 	reg [6:0] roi_s1,  roi_s2;
 	reg [2:0] fps_s1,  fps_s2;
-	reg [1:0] bsel_s1, bsel_s2;
+	// bsel_s1/bsel_s2 的声明已上提到 cfg_* 那一节 (o_bayer_sel 的 assign 更早)
 
 	always @(posedge i_pix_clk or negedge i_pix_rst_n) begin
 		if (!i_pix_rst_n) begin

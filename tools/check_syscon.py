@@ -41,7 +41,10 @@ TARGETS = [
 ]
 
 # 新增的 RTL 源文件 (浅层文件名, 脚本会递归找)
-SRC_NAMES = ['preproc_top.v', 'preproc_win3x3.v', 'preproc_edge.v',
+# 2026-10-21: 补上 preproc_basic.v / preproc_linefix.v —— preproc_top 里例化了
+#   它们, 但列表里一直没有, 导致预检永远在 "Unknown module type" 上报错退出。
+SRC_NAMES = ['preproc_top.v', 'preproc_win3x3.v', 'preproc_win3x3_rgb.v',
+             'preproc_edge.v', 'preproc_basic.v', 'preproc_linefix.v',
              'preproc_post.v', 'cfg_ctrl_top.v', 'i2c_slave.v',
              'jpeg_regfile.v', 'cam_param.v']
 
