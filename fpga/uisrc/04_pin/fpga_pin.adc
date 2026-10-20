@@ -44,6 +44,42 @@ set_pin_assignment	{ I_data_hs_p[1] }	{ LOCATION = D14; IOSTANDARD = LVDS18; PUL
 set_pin_assignment	{ I_data_hs_p[2] }	{ LOCATION = A15; IOSTANDARD = LVDS18; PULLTYPE = NONE; INDEL = 20; }
 set_pin_assignment	{ I_data_hs_p[3] }	{ LOCATION = G17; IOSTANDARD = LVDS18; PULLTYPE = NONE; INDEL = 20; }
 
+# =============================================================
+# 2026-10-21 临时测试: 第二路 CSI (子卡 J3, 原 DSI 座按厂家方案复用为 CSI 输入)
+#
+#   子卡 J3 的高速对在 FPGA 侧走 FMC-HPC 网络, 与核心板内部的 MIPIB_* (DSI_TX->RK)
+#   是**两套不同的网络和引脚**, 所以互不冲突。
+#
+#   引脚依据: 硬件手册 FMC-HPC 引脚表(page 41-42) x 子卡 J3 原理图
+#     HS_CLK = FMC_HPC_CLK1_M2C_P/N = E16 / F16
+#     HS_D0  = FMC_HPC_LA22_P/N     = A13 / B13
+#     HS_D1  = FMC_HPC_LA25_P/N     = D18 / E18
+#     HS_D2  = FMC_HPC_LA29_P/N     = F18 / G18   (* 设计文档写的 G18/K16 不是差分对, 已修正)
+#     HS_D3  = FMC_HPC_LA31_P/N     = K16 / K17
+#
+#   接法与 cam0 完全一致 (LVDS18 差分输入, data lane 加 INDEL = 20)。
+#   JJ 注意: 子卡 J3 原为 DSI 方向, 厂家方案已把串联电阻 150R 改 0R、去掉 LP 分压,
+#   所以这里按 **输入** 约束即可; 若 J3 的某对实际未改, 改这里不影响 cam0。
+# =============================================================
+set_pin_assignment	{ I_clk1_hs_p }		{ LOCATION = E16; IOSTANDARD = LVDS18; PULLTYPE = NONE; }
+set_pin_assignment	{ I_data1_hs_p[0] }	{ LOCATION = A13; IOSTANDARD = LVDS18; PULLTYPE = NONE; INDEL = 20; }
+set_pin_assignment	{ I_data1_hs_p[1] }	{ LOCATION = D18; IOSTANDARD = LVDS18; PULLTYPE = NONE; INDEL = 20; }
+set_pin_assignment	{ I_data1_hs_p[2] }	{ LOCATION = F18; IOSTANDARD = LVDS18; PULLTYPE = NONE; INDEL = 20; }
+set_pin_assignment	{ I_data1_hs_p[3] }	{ LOCATION = K16; IOSTANDARD = LVDS18; PULLTYPE = NONE; INDEL = 20; }
+
+# =============================================================
+# 2026-10-21 临时测试: 第二路摄像头的控制口 (子卡 J3)
+#   MCLK   -> FMC_HPC_LA32_P = N11
+#             (厂家改板文档里的 J3_A1 跳线: 去掉 INT_ALM_1V8 的 R671, 贴 R672
+#              把 FMC_HPC_LA32_P 引到 J3_A1, 作为 CSI 的功能信号 —— 这里当 MCLK 用)
+#   RESETn -> FMC_HPC_LA21_P = H14   (与 cam0 一样恒为 1)
+#   SCL/SDA-> FMC_HPC_LA19_P/N = G14/G13 (与 cam0 的 LA20_P/N 接法一致: P=SCL)
+# =============================================================
+set_pin_assignment	{ O_clk1_24m }		{ LOCATION = N11; IOSTANDARD = LVCMOS18; DRIVESTRENGTH = 8; SLEWRATE = FAST; }
+set_pin_assignment	{ O_clk1_rst }		{ LOCATION = H14; IOSTANDARD = LVCMOS18; DRIVESTRENGTH = 8; }
+set_pin_assignment	{ O_cam1_scl }		{ LOCATION = G14; IOSTANDARD = LVCMOS18; DRIVESTRENGTH = 8; PULLTYPE = PULLUP; }
+set_pin_assignment	{ IO_cam1_sda }		{ LOCATION = G13; IOSTANDARD = LVCMOS18; DRIVESTRENGTH = 8; PULLTYPE = PULLUP; }
+
 # LP 8 脚 (B16/C16, C15/D15, C17/B17, F15/F14) 板载已断开, 且 RTL 已不再使用
 # (mipi_csi_rx 只用 5 对 LVDS 解 MIPI), 所以**不再约束** —— 留空即高阻, 与板子现状一致。
 # 将来若要恢复 LP 方式的 D-PHY, 把下面 8 条加回来并把 100R 装回即可:
