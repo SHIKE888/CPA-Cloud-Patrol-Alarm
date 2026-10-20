@@ -360,7 +360,8 @@ wire 							S_ae_req		;
 //    改动时 system_top 会给写侧一个 120ms 复位窗，让行/帧计数重新对齐。
 //=============================================================================
 wire          					S_hs_clk0		;   // cam0 RX 恢复时钟
-wire          					S_hs_clk1		;   // cam1 RX 恢复时钟
+wire          					S_hs_clk1_raw	;   // cam1 RX 原始恢复时钟 (只做 BUFG 输入)
+wire          					S_hs_clk1		;   // cam1 RX 恢复时钟 (BUFG 后, 全局网)
 wire          					S_hs_rx_clk_mux	;   // 二选一（LUT）
 wire          					S_hs_rx_clk		;   // BUFG 后的全局 byte clock (= HS clk / 4)
 
@@ -1064,9 +1065,13 @@ mipi_csi_rx #(
 	.I_hs_data_p           ( I_data1_hs_p),
 	.I_enable              ( 1'b1        ),
 
-	.O_hs_div_clk          ( S_hs_clk1   ),
+	.O_hs_div_clk          ( S_hs_clk1_raw   ),
 
-	.m_axis_video_aclk     ( S_hs_rx_clk   ),
+	// 2026-10-21: 必须用 cam1 **自己**的时钟。原来接的 S_hs_rx_clk 在双目模式下
+	//   是 cam0 的时钟(S_dual_eff 时 mux 固定选 clk0), 而下游 ui_image_correction1
+	//   跑在 S_hs_clk1 上 —— 两路数据被异域采样, 行/列计数器和 tuser 全乱,
+	//   直接导致 dbuf 不再轮转、RK 侧画面冻结。
+	.m_axis_video_aclk     ( S_hs_clk1     ),
 	.m_axis_video_aresetn  ( S_rx_rstn     ),
 	.m_axis_video_tready   ( 1'b1          ),
 	.m_axis_video_tuser    ( S_rx1_tuser   ),
@@ -1103,12 +1108,31 @@ sensor_sync_start #(
 //    (0x450E 实测)。这里 S_rx_sel 是准静态寄存器，只有切换瞬间会毛刺，
 //    切换后立刻有 120ms 写侧复位窗兜住。
 //--------------------------------------------------------------------------
+// ⚠ 这里必须用 **BUFG 之前**的 S_hs_clk1_raw: S_hs_clk1 已经是 X_bufg_clk1 的
+//   输出, 再喂给 X_bufg_rx_clk 就是 BUFG 串 BUFG, TD 会报错/时序崩。
 assign S_hs_rx_clk_mux = S_dual_eff ? S_hs_clk0
-                       : (S_rx_sel ? S_hs_clk1 : S_hs_clk0);
+                       : (S_rx_sel ? S_hs_clk1_raw : S_hs_clk0);
 
 PH1_LOGIC_BUFG X_bufg_rx_clk (
 	.i ( S_hs_rx_clk_mux ),
 	.o ( S_hs_rx_clk     )
+);
+
+//--------------------------------------------------------------------------
+//  cam1 自己的恢复时钟也必须过 BUFG (2026-10-21 补)
+//
+//  0x4700 新增了挂在 cam1 域上的 ui_image_correction1 + dual_frame_sched.I_clk1,
+//  它们直接吃 mipi_csi_rx1 的原始 .O_hs_div_clk。这个时钟不走全局网的话
+//  偏斜大、扇出受限, 裁剪模块的行/列计数器和 tuser 生成会不可靠 ——
+//  一旦 tuser 丢了, dbuf 写状态机的 w_fs 就不来, 三帧缓存不再轮转,
+//  RK 端会**永远读到 DDR 里同一帧**(画面冻结), 而帧率/标记一切正常, 极难排查。
+//
+//  ⚠ S_hs_clk1_raw 只允许作为 BUFG 的输入, 下面一律用 S_hs_clk1。
+//  ⚠ 声明必须放在第一个使用点(例化)之前, 否则会被隐式声明成 1bit wire。
+//--------------------------------------------------------------------------
+PH1_LOGIC_BUFG X_bufg_clk1 (
+	.i ( S_hs_clk1_raw ),
+	.o ( S_hs_clk1     )
 );
 
 //--------------------------------------------------------------------------
