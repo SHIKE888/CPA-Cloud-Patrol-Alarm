@@ -13,12 +13,38 @@ set_pin_assignment	{ O_clk_rst }		{ LOCATION = B18; IOSTANDARD = LVCMOS18; DRIVE
 set_pin_assignment	{ O_clk_24m }		{ LOCATION = A18; IOSTANDARD = LVCMOS18; DRIVESTRENGTH = 8; PULLTYPE = NONE; }
 
 # IMX415 MIPI CSI-2 RX HS lanes (同步参考工程 imx415_dsi.adc)
+#
+# ---------------------------------------------------------------------------
+# 2026-10-20 子卡 FMC_VID005_MIPI 改版 (依据 FMC_VID005_MIPI修改方案.docx 内的子卡原理图)
+#   CSI 座 J2 侧: 去掉 100R 的 LP 抽头 (R5/R9/R11/R15/R17/R21/R23/R27/R29/R33),
+#                 保留 0R 的 HS 串联 (R6/R7/R12/R13/R18/R19/R24/R25/R30/R31),
+#                 终端 R95~R99 (150R/NC) 不动。
+#   ==> 网络名与 FMC 引脚号 **一个都没变**, 下面 5 条 HS 约束不用改。
+#       P/N 极性也没有翻转 (CSI_DxP -> CSI_HS_DxP 直连)。
+#
+#   ==> 但 CSI_LP_D0..D3 这 4 对 (8 个脚) 在板子上已经和连接器断开 (悬空):
+#         lane0: FMC_HPC_LA07_P/N = B16 / C16
+#         lane1: FMC_HPC_LA11_P/N = C15 / D15
+#         lane2: FMC_HPC_LA16_P/N = C17 / B17
+#         lane3: FMC_HPC_LA15_P/N = F15 / F14
+#       (CSI_LP_CKP/CKN 本来就没接 FPGA, 一直没用)
+#
+#   这 8 条约束保留, 但上下拉决定了 IP 看到的 LP 电平 (板载已悬空, 只能靠这里):
+#      PULLUP   -> P/N 恒为 1 = LP-11 = 总线空闲
+#      PULLDOWN -> P/N 恒为 0 = LP-00 = HS 忙态
+#   *** 2026-10-20 实测: PULLDOWN(LP-00) 也不行 —— 帧计数仍为 0, 画面纯色块。
+#       结论: IP 需要的是 LP 的 **跳变序列** (11->01->00), 恒定电平无论 11/01/00/10
+#       都产生不了包边界; 而且 ui_csi_unpacket_4lane 的 S_head_en 要 hs_valid 的
+#       上升沿, 恒定 LP 也拿不到。=> "只改 IO 约束" 救不了 cam0。
+#       下面已恢复为原来的 PULLUP (装回 100R 后这就是已验证可用状态)。
+# ---------------------------------------------------------------------------
 set_pin_assignment	{ I_clk_hs_p }		{ LOCATION = E13; IOSTANDARD = LVDS18; PULLTYPE = NONE; }
 set_pin_assignment	{ I_data_hs_p[0] }	{ LOCATION = C14; IOSTANDARD = LVDS18; PULLTYPE = NONE; INDEL = 20; }
 set_pin_assignment	{ I_data_hs_p[1] }	{ LOCATION = D14; IOSTANDARD = LVDS18; PULLTYPE = NONE; INDEL = 20; }
 set_pin_assignment	{ I_data_hs_p[2] }	{ LOCATION = A15; IOSTANDARD = LVDS18; PULLTYPE = NONE; INDEL = 20; }
 set_pin_assignment	{ I_data_hs_p[3] }	{ LOCATION = G17; IOSTANDARD = LVDS18; PULLTYPE = NONE; INDEL = 20; }
 
+# 以下 LP 8 脚: 板载已悬空; 恢复为原 PULLUP (LP-11), 装回 100R 后由传感器驱动
 set_pin_assignment	{ I_data_lp_n[0] }	{ LOCATION = C16; IOSTANDARD = LVCMOS18; PULLTYPE = PULLUP; }
 set_pin_assignment	{ I_data_lp_n[1] }	{ LOCATION = D15; IOSTANDARD = LVCMOS18; PULLTYPE = PULLUP; }
 set_pin_assignment	{ I_data_lp_n[2] }	{ LOCATION = B17; IOSTANDARD = LVCMOS18; PULLTYPE = PULLUP; }
@@ -68,6 +94,21 @@ set_pin_assignment	{ O_mipi_dsi_hs_data_p[1] }	{ LOCATION = V17; IOSTANDARD = LV
 set_pin_assignment	{ O_mipi_dsi_hs_data_p[2] }	{ LOCATION = U13; IOSTANDARD = LVDS18; PRE_EMP = ON; VOCM = L2; VOD = 300M; }
 set_pin_assignment	{ O_mipi_dsi_hs_data_p[3] }	{ LOCATION = V15; IOSTANDARD = LVDS18; PRE_EMP = ON; VOCM = L2; VOD = 300M; }
 
+#
+# ---------------------------------------------------------------------------
+# 2026-10-20 子卡改版, DSI 座 J3 侧 (子卡原理图 2/2):
+#   原 150R 的 HS 串联 R36/R37/R42/R43/R46/R47/R48/R49/R54/R55/R60/R61 -> 改为 0R;
+#   原 120R/60R 的 LP 分压 R34/R35/R38~R41/R44/R45/R50~R53/R56~R59/R62/R63 -> 全去掉。
+#   ==> HS 引脚号不变 (T15/P13/V17/U13/V15 以及各自的 N 脚 R15/R13/U17/V12/V16),
+#       MIPIB_FLANEn 网络名不变, 极性不变, 下面 5 条 HS 约束不用改。
+#   ==> LP 的 5 对 (10 个脚) 板载悬空:
+#         PLB_DSI_CLK_P/N = P17 / P18
+#         PLB_LANE0_P/N   = T11 / U12
+#         PLB_LANE1_P/N   = R11 / R12
+#         PLB_LANE2_P/N   = R16 / R17
+#         PLB_LANE3_P/N   = T18 / R18
+#       这几条也先保留 (输出脚, 悬空无副作用), 免得 TD 自动布线到别的脚。
+# ---------------------------------------------------------------------------
 set_pin_assignment	{ O_mipi_dsi_lp_clk_p }		{ LOCATION = P17; IOSTANDARD = LVCMOS18; DRIVESTRENGTH = 8; SLEWRATE = FAST; }
 set_pin_assignment	{ O_mipi_dsi_lp_clk_n }		{ LOCATION = P18; IOSTANDARD = LVCMOS18; DRIVESTRENGTH = 8; SLEWRATE = FAST; }
 set_pin_assignment	{ O_mipi_dsi_lp_data_p[0] }	{ LOCATION = T11; IOSTANDARD = LVCMOS18; DRIVESTRENGTH = 8; SLEWRATE = FAST; }
