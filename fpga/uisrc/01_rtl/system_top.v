@@ -469,6 +469,19 @@ wire 							S_vtc_last      ;
 wire [31:0] 					S_ud_rtdata		;  // RGBX8888 (1 像素/cyc) 出 dbuf 读侧
 					
 wire        					S_R_vrst		;
+
+//=============================================================================
+//  2026-10-21 画面冻结定位 (只读 0xE1~0xE6)
+//  ⚠ 声明必须放在第一个使用点(cfg_ctrl_top 例化)之前, 否则隐式 1bit wire
+//=============================================================================
+reg  [7:0]  D_sof_cnt;      // S_yuv_sof 帧首计数 (进 dbuf 写侧的 sof)
+reg  [7:0]  D_vs_cnt;       // S_vtc_vs 场同步计数
+reg  [7:0]  D_tl_cnt;       // S_axis_tlast 行尾计数
+reg  [7:0]  D_sof_s1, D_sof_s2;
+reg  [7:0]  D_vs_s1,  D_vs_s2;
+reg  [7:0]  D_wb_s1,  D_wb_s2;
+reg  [7:0]  D_tl_s1,  D_tl_s2;
+reg  [15:0] D_lg1_s1, D_lg1_s2;   // cam1 每行组数
 					
 assign O_clk_rst				= S_sensor_rst_n;
 // cam1 复位 (K13 = LA28_N = 子卡 DSI_RSTN -> J3 pin4)
@@ -1405,6 +1418,8 @@ cfg_ctrl_top #(
 	.i_diag_sof   (D_sof_s2),
 	.i_diag_wbuf  (D_wb_s2),
 	.i_diag_vs    (D_vs_s2),
+	.i_diag_lg1   (D_lg1_s2),
+	.i_diag_tlast (D_tl_s2),
 	.i_fs_corr    (S_axis_tuser),        // 裁剪模块输出帧首
 	.i_last_corr  (S_axis_tlast),        // 裁剪模块输出行尾
 	// 2026-10-20: LP-free RX 调试总线 (只读 0xD6/0xD7/0xD8) = 固定 cam0
@@ -1473,8 +1488,8 @@ cfg_ctrl_top #(
 //     0xE1 不变          -> sof 根本没进 dbuf (tuser 丢在更上游)
 //     0xE3 不变          -> VTC 没跑, 读侧不启动(连带写侧卡住)
 //=============================================================================
-reg  [7:0] D_sof_cnt;
-reg  [7:0] D_vs_cnt;
+//  (声明已上移到文件前部的 S_R_vrst 之后, 这里只放 always 块)
+//=============================================================================
 always @(posedge S_hs_rx_clk or negedge S_pll_lock) begin
 	if (!S_pll_lock)     D_sof_cnt <= 8'd0;
 	else if (S_yuv_sof)  D_sof_cnt <= D_sof_cnt + 8'd1;
@@ -1484,16 +1499,26 @@ always @(posedge S_pclkx1 or negedge S_pll_lock) begin
 	else if (S_vtc_vs)   D_vs_cnt <= D_vs_cnt + 8'd1;
 end
 
+// tlast 计数: 确认行尾有没有真的传下去(行宽不够 481 组时 tlast 永不出)
+always @(posedge S_hs_rx_clk or negedge S_pll_lock) begin
+	if (!S_pll_lock)              D_tl_cnt <= 8'd0;
+	else if (S_axis_tlast)        D_tl_cnt <= D_tl_cnt + 8'd1;
+end
+
 // 跨到 25MHz 域 (只读快照; 8bit 二进制同步, 变化很慢, 撕裂概率可忽略)
 always @(posedge I_sysclk_25m or negedge S_pll_lock) begin
 	if (!S_pll_lock) begin
 		D_sof_s1 <= 8'd0; D_sof_s2 <= 8'd0;
 		D_vs_s1  <= 8'd0; D_vs_s2  <= 8'd0;
 		D_wb_s1  <= 8'd0; D_wb_s2  <= 8'd0;
+		D_tl_s1  <= 8'd0; D_tl_s2  <= 8'd0;
+		D_lg1_s1 <= 16'd0; D_lg1_s2 <= 16'd0;
 	end else begin
 		D_sof_s1 <= D_sof_cnt;   D_sof_s2 <= D_sof_s1;
 		D_vs_s1  <= D_vs_cnt;    D_vs_s2  <= D_vs_s1;
 		D_wb_s1  <= S_wbuf_sync; D_wb_s2  <= D_wb_s1;
+		D_tl_s1  <= D_tl_cnt;    D_tl_s2  <= D_tl_s1;
+		D_lg1_s1 <= S_line_groups1; D_lg1_s2 <= D_lg1_s1;
 	end
 end
 

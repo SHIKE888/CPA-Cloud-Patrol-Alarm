@@ -105,6 +105,8 @@ module cfg_ctrl_top #(
 	input  wire [7:0]  i_diag_sof,
 	input  wire [7:0]  i_diag_wbuf,
 	input  wire [7:0]  i_diag_vs,
+	input  wire [15:0] i_diag_lg1,
+	input  wire [7:0]  i_diag_tlast,
 
 	// ---- 画质参数 (同步到像素域) ----
 	output wire [7:0]  o_wb_r,
@@ -320,6 +322,8 @@ module cfg_ctrl_top #(
 		.I_diag_sof      (i_diag_sof),
 		.I_diag_wbuf     (i_diag_wbuf),
 		.I_diag_vs       (i_diag_vs),
+		.I_diag_lg1      (i_diag_lg1),
+		.I_diag_tlast    (i_diag_tlast),
           .I_st_line_groups(lg_max),
           // 2026-10-20: RX 调试总线 (已 2 级同步到 i_sys_clk)
           // 2026-10-21: 0xD6/D7/D8 固定是 cam0, cam1 固定走 0xDD/DE/DF

@@ -1,6 +1,7 @@
 #=============================================================================
 # run_dual.ps1 -- one-shot entry for the dual-CSI simulations (Windows/iverilog)#
 #   .\run_dual.ps1 dual    source select + per-channel isolation
+#   .\run_dual.ps1 chain   crop + scheduler end-to-end (tuser/tlast/valid)
 #   .\run_dual.ps1 regdb   0xDB register + version
 #   .\run_dual.ps1 full    LP-free RX chain regression
 #   .\run_dual.ps1 all     everything
@@ -60,11 +61,13 @@ function Run-Sim([string]$title, [string]$tb, [string[]]$srcs) {
 switch ($Target) {
     "dual" { Run-Sim "tb_dual_src : source select / per-channel isolation" "tb_dual_src" @($CORR) }
     "sched" { Run-Sim "tb_dual_sched : alternating-frame scheduler"        "tb_dual_sched" @((Join-Path $RTL "01_rtl\dual\dual_frame_sched.v")) }
+    "chain" { Run-Sim "tb_dual_chain : crop + sched end-to-end (tuser/tlast)" "tb_dual_chain" @($CORR, (Join-Path $RTL "01_rtl\dual\dual_frame_sched.v")) }
     "regdb" { Run-Sim "tb_reg_db   : 0xDB register + version 0x4700"        "tb_reg_db"  @((Join-Path $JPEG "jpeg_regfile.v")) }
-    "full"  { Run-Sim "tb_csi_full : LP-free RX chain regression"           "tb_csi_full" $LPSRC }
-    "all"   {
+    "full" { Run-Sim "tb_csi_full : LP-free RX chain regression"           "tb_csi_full" $LPSRC }
+    "all" {
         Run-Sim "tb_dual_src : source select / per-channel isolation" "tb_dual_src" @($CORR)
         Run-Sim "tb_dual_sched : alternating-frame scheduler"        "tb_dual_sched" @((Join-Path $RTL "01_rtl\dual\dual_frame_sched.v"))
+        Run-Sim "tb_dual_chain : crop + sched end-to-end (tuser/tlast)" "tb_dual_chain" @($CORR, (Join-Path $RTL "01_rtl\dual\dual_frame_sched.v"))
         Run-Sim "tb_reg_db   : 0xDB register + version 0x4700"        "tb_reg_db"  @((Join-Path $JPEG "jpeg_regfile.v"))
         Run-Sim "tb_csi_full : LP-free RX chain regression"           "tb_csi_full" $LPSRC
     }

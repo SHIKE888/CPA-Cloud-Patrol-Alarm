@@ -182,6 +182,10 @@ module jpeg_regfile #(
     input  wire [7:0]   I_diag_sof,
     input  wire [7:0]   I_diag_wbuf,
     input  wire [7:0]   I_diag_vs,
+    //   0xE4/0xE5 = cam1 每行组数 (小端, 判断是否 >=481, 否则 tlast 永不产生)
+    //   0xE6 = S_axis_tlast 计数 (tlast 到底有没有进 dbuf)
+    input  wire [15:0]  I_diag_lg1,
+    input  wire [7:0]   I_diag_tlast,
 
     // 2026-10-20: LP-free RX 调试总线 (只读)
     //   0xD6 = dbg_mipi  : [3:0]各lane字节对齐 [4]word对齐 [5]in_frame
@@ -532,6 +536,9 @@ module jpeg_regfile #(
                 8'hE1: O_rd_data <= I_diag_sof;
                 8'hE2: O_rd_data <= I_diag_wbuf;
                 8'hE3: O_rd_data <= I_diag_vs;
+                8'hE4: O_rd_data <= I_diag_lg1[ 7:0];
+                8'hE5: O_rd_data <= I_diag_lg1[15:8];
+                8'hE6: O_rd_data <= I_diag_tlast;
                 8'hD0: O_rd_data <= s_cam_wr_cnt[ 7:0];
                 8'hD1: O_rd_data <= s_cam_wr_cnt[15:8];
                 8'hD2: O_rd_data <= {7'b0, s_cam_busy};
