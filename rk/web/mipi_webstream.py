@@ -440,6 +440,9 @@ DEFAULT_PARAMS = {
     # 双目拼接 (0x4700): 1=自动, 0=关。开的时候如果源帧没有帧标记(单目模式),
     # 会自动退化成直通, 所以默认开着不影响单目/4K 模式。
     "dual":       1,      #  0/1
+    # 双目**演示**模式: 1 = 把当前这一路复制成左右两半(右边色偏并标注 DEMO-R),
+    # 只为看排版/分辨率/帧率, 数据是假的。FPGA 出真双目后设回 0。
+    "dual_demo":  0,      #  0/1
 }
 
 PARAM_RANGE = {
@@ -458,6 +461,7 @@ PARAM_RANGE = {
     # 想真的超过 60 得改 FPGA 侧 (ui_vtc 时序 / PLL / D-PHY byte clk)。
     "fps":        (1, 120),
     "dual":       (0, 1),
+    "dual_demo":  (0, 1),
 }
 
 
@@ -471,7 +475,7 @@ def _clamp_params(p):
             v = float(p[k])
         except (TypeError, ValueError):
             continue
-        if k in ("mirror", "flipv", "rotate", "dual"):
+        if k in ("mirror", "flipv", "rotate", "dual", "dual_demo"):
             v = int(round(v))
         if k == "rotate":
             v = min((0, 90, 180, 270), key=lambda x: abs(x - v))
@@ -1764,6 +1768,12 @@ class OpenCVCapture(threading.Thread):
                 jpg = payload
             else:
                 frame = payload
+                # 关掉演示后把页面排版尺寸还原, 否则一直按 32:9
+                if (getattr(self, "_demo_info", False)
+                        and not int(p.get("dual_demo", 0))):
+                    self._demo_info = False
+                    self.hub.update_info(width=self._w, height=self._h)
+
                 # ---- 双目拼接: 左 cam0 / 右 cam1 ----
                 # 源帧是左右交替的, 每帧只含一路, 所以这里做配对。
                 # 返回 None = 这一帧被判定为"和上一对重复", 直接跳过(不发布),
@@ -1775,6 +1785,29 @@ class OpenCVCapture(threading.Thread):
                     else:
                         frame, t_cap, _tag = got
                         self._dual_tag = _tag
+                elif int(p.get("dual_demo", 0)):
+                    # 双目**演示**: 把这一路复制成左右两半, 右边加色偏 + 标注,
+                    # 只为看 1920x540 的排版/帧率/页面自适应。数据是假的。
+                    h, w = frame.shape[:2]
+                    hw = max(64, (w // 4) * 2)
+                    hh = max(64, (h // 4) * 2)
+                    left = cv2.resize(frame, (hw, hh),
+                                      interpolation=cv2.INTER_LINEAR)
+                    right = left.copy()
+                    _b = right[:, :, 0].astype(np.int16) + 60
+                    right[:, :, 0] = np.clip(_b, 0, 255).astype(np.uint8)
+                    for _img, _txt in ((left, "DEMO-L"), (right, "DEMO-R")):
+                        cv2.putText(_img, _txt, (10, 28),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.75,
+                                    (0, 255, 255), 2, cv2.LINE_AA)
+                    frame = cv2.hconcat([left, right])
+                    cv2.line(frame, (hw, 0), (hw, hh - 1), (0, 255, 0), 2)
+                    self._dual_tag = "demo"
+                    if not getattr(self, "_demo_info", False):
+                        self._demo_info = True
+                        # 只改一次: 让前端按 32:9 排版, 不然 16:9 的容器会加黑边
+                        self.hub.update_info(width=frame.shape[1],
+                                             height=frame.shape[0])
 
                 if frame is not None:
                     # ---- 可选 AI 叠加 ----
