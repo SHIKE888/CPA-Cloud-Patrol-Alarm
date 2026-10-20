@@ -209,6 +209,12 @@ parameter CS_WIDTH        = 1
 	//      1080p 厂商参考 v_start=19。首行必须是偶数，否则 RGGB Bayer 相位错。
 	wire [12:0] S_v_start      = S_is_4k ? 13'd35  : 13'd19;
 
+	// 2026-10-21: 每行**实际**像素组数(含尾部被裁掉的部分), 用 0xD4/0xD5 实测值。
+	//   ui_image_correction 用它做「固定行宽分行」——cam1 的 valid 在行间不会掉,
+	//   原来"空闲 10 拍才分行"的机制永不触发, 会导致 v_cnt 不递增、tuser 不来、
+	//   画面冻结。传 0 则退回纯空闲判据。
+	wire [12:0] S_grp_per_line = S_is_4k ? 13'd966 : 13'd486;
+
 	// ---- VTC 读取时序 (S_pclkx1 = 147.5MHz) ----
 	//  帧率 = 147.5e6 / (H_FrameSize * V_FrameSize)
 	//    1080p60: 2200 * 1125 = 2.475e6 -> 59.6 fps  (实测 59.4)
@@ -1202,6 +1208,8 @@ ui_image_correction #(
     .I_img_height     (S_v_active		  ),
     // V39: 垂直起始裁剪 (4K=35, 1080p=19)
     .I_v_start        (S_v_start		  ),
+    // 2026-10-21: 每行实际组数 (1080p=486 / 4K=966), 不依赖行间空闲分行
+    .I_grp_per_line   (S_grp_per_line     ),
 	
     .I_raw_data       (S_rx0_tdata        ),       
     .I_raw_valid      (S_rx0_tvalid       ),     
@@ -1232,6 +1240,7 @@ ui_image_correction #(
     .I_img_width      (S_h_active		  ),
     .I_img_height     (S_v_active		  ),
     .I_v_start        (S_v_start		  ),
+    .I_grp_per_line   (S_grp_per_line     ),
     .I_raw_data       (S_rx1_tdata        ),
     .I_raw_valid      (S_rx1_tvalid       ),
     .I_raw_frame_start(S_crop1_frame_start),
@@ -1414,7 +1423,7 @@ cfg_ctrl_top #(
 	//           0x3807, 所以板上读到的仍是 0x3807 —— 不能只凭版本号判断是否
 	//           烧了新 bit, 要看画面/相位相关。
 	//   0x4509 = 2026-10-20 修 IDELAY 使能语义(电平) + eye-scan 只扫 32 tap
-	.CFG_VER  (16'h4702)
+	.CFG_VER  (16'h4703)
 ) u_cfg_ctrl (
 	.i_sys_clk    (I_sysclk_25m),
 	.i_sys_rst_n  (1'b1),

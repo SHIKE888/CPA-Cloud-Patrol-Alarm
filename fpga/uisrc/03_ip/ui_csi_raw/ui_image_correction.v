@@ -43,6 +43,13 @@ module ui_image_correction #(
     //      (v_start=35)，1080p 厂商参考 v_start=19。缺这个参数会把顶部
     //      OB/EBD 当图像，并把最后 35/19 行有效像素切掉；Bayer 相位也会错。
     input    [12:0]                    	I_v_start  		,
+    // 2026-10-21: 每行实际像素组数 (含被裁掉的尾部), 0 = 用行间空闲分行。
+    //   1080p 实测 486, 4K 实测 966 (见 0xD4/0xD5)。
+    //   ★ 为什么必须有这个: cam1 的 valid 在行间**不会掉**, 于是原来的
+    //     "空闲 10 拍 -> last" 永远不触发 -> h_cnt 不清零, v_cnt 永不递增
+    //     -> tuser 永远不来 -> dbuf 写状态机不轮转 -> 画面冻结。
+    //     cam0 的 valid 行间会掉, 所以同一套逻辑在 cam0 上是好的, 极具欺骗性。
+    input    [12:0]                    	I_grp_per_line		,
     input    [DATA_WIDTH - 1:0]       	I_raw_data			,       
     input                             	I_raw_valid 		,     
     input                             	I_raw_frame_start	,
@@ -109,11 +116,23 @@ module ui_image_correction #(
     end
 
     wire last = (cnt == 10);
+
+    // 2026-10-21: 双判据分行
+    //   line_end_fix: 收到固定组数就分行 (valid 行间不掉时靠这条)
+    //   last        : 行间空闲 10 拍 (原来的机制, 保留作兜底)
+    //   悬空(x/z, 比如老 tb 没连这个端口)时归 0 -> 退回纯空闲判据
+    wire grp_bad = ((^I_grp_per_line) === 1'bx) || ((^I_grp_per_line) === 1'bz);
+    wire [12:0] grp_pl = grp_bad ? 13'd0 : I_grp_per_line;
+    wire line_end_fix = (h_cnt == grp_pl - 15'd1) && I_raw_tvalid_d;
+    // ★ 两种判据只能二选一, 不能取或:
+    //   固定行宽模式下如果还让 last 生效, 同一行会 v_cnt+1 两次
+    //   (固定判据一次 + 行间空闲一次) -> 行数翻倍 -> 只有一半行有效。
+    wire line_end     = (grp_pl != 13'd0) ? line_end_fix : last;
     // 计算行数
     always @(posedge I_clk or negedge I_rst_n) begin
         if(!I_rst_n || I_raw_frame_start)
             v_cnt <= 0;
-        else if(last)
+        else if(line_end)
             v_cnt  <=  v_cnt + 1;
     end
 
@@ -123,7 +142,7 @@ module ui_image_correction #(
     always @(posedge I_clk or negedge I_rst_n) begin
         if(!I_rst_n || I_raw_frame_start) 
             h_cnt <= 0;
-        else if(last)
+        else if(line_end)
             h_cnt <= 0;
         else if(I_raw_tvalid_d)
             h_cnt <=  h_cnt + 1;
@@ -149,7 +168,7 @@ module ui_image_correction #(
     //--------------------------------------------------------------------------
     always @(posedge I_clk or negedge I_rst_n) begin
         if (!I_rst_n)      O_line_groups <= 16'd0;
-        else if (last)     O_line_groups <= h_cnt;
+        else if (line_end) O_line_groups <= h_cnt;
     end
 
 endmodule

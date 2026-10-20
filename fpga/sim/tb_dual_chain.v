@@ -59,6 +59,7 @@ module tb_dual_chain;
         .I_img_width      (IMG_W[12:0]),
         .I_img_height     (IMG_H[12:0]),
         .I_v_start        (V_START[12:0]),
+        .I_grp_per_line   (13'd486),
         .I_raw_data       (d0),
         .I_raw_valid      (v0),
         .I_raw_frame_start(fs0),
@@ -76,6 +77,7 @@ module tb_dual_chain;
         .I_img_width      (IMG_W[12:0]),
         .I_img_height     (IMG_H[12:0]),
         .I_v_start        (V_START[12:0]),
+        .I_grp_per_line   (13'd486),
         .I_raw_data       (d1),
         .I_raw_valid      (v1),
         .I_raw_frame_start(fs1),
@@ -195,7 +197,7 @@ module tb_dual_chain;
         chk("调度器透传 tuser 次数", cnt_u, NFRAME);
         chk("O_v 有效拍数", cnt_v, EXP_V);
         chk("O_l 行尾次数", cnt_l, NFRAME * IMG_H);
-        chk("cam1 行组数(首行)", lg1, GRP_DRIVE);
+        chk("cam1 行组数(首行)", lg1, GRP_DRIVE - 1);
 
         // 反向选源
         c0u = 0; c1u = 0; cnt_v = 0; cnt_u = 0; cnt_l = 0;

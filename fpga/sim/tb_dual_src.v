@@ -150,6 +150,7 @@ module tb_dual_src;
         .I_img_width      (W_PIX[12:0]),
         .I_img_height     (H_PIX[12:0]),
         .I_v_start        (V_START[12:0]),
+        .I_grp_per_line   (13'd0),          // 0 = 用行间空闲分行(原行为)
         .I_raw_data       (m_tdata),
         .I_raw_valid      (m_tvalid),
         .I_raw_frame_start(m_tvalid & m_tuser),
