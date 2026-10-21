@@ -1821,12 +1821,16 @@ class OpenCVCapture(threading.Thread):
                 _demo = int(p.get("dual_demo", 0)) and int(p.get("dual", 0))
                 if _demo:
                     # 双目**演示**: 把这一路复制成左右两半, 右边加色偏 + 标注,
-                    # 只为看 1920x540 的排版/帧率/页面自适应。数据是假的。
-                    h, w = frame.shape[:2]
-                    hw = max(64, (w // 4) * 2)
-                    hh = max(64, (h // 4) * 2)
-                    left = cv2.resize(frame, (hw, hh),
-                                      interpolation=cv2.INTER_LINEAR)
+                    # 只为看排版/分辨率/帧率/页面自适应。数据是假的。
+                    #
+                    # ⚠ 这里**绝对不能再 resize**: 进到本分支的 frame 已经是
+                    #   _target_size() 算好的"每路半宽"(--stream-width=3840 时
+                    #   就是 960x540, 因为 _dual_now=1 已经缩过半了)。
+                    #   早先这里又写了一刀 (w//4)*2 / (h//4)*2, 等于二次缩半,
+                    #   拼完只剩 960x270 —— 就是"双目演示分辨率只有 960x270"
+                    #   的原因。直接复制拼起来才是正确的 1920x540。
+                    hh, hw = frame.shape[:2]
+                    left = frame.copy()
                     right = left.copy()
                     _b = right[:, :, 0].astype(np.int16) + 60
                     right[:, :, 0] = np.clip(_b, 0, 255).astype(np.uint8)
