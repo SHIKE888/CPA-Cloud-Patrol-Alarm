@@ -68,25 +68,22 @@ module jpeg_headers (
     reg [9:0] cnt;
     reg       run;
 
-    //---------------------------------------------------------------- 地址预取
-    // 提前一拍: cnt 时刻摆的地址, 是 cnt+1 时刻要输出的那一位
-    //
-    //   cnt 24      输出 Tq=0,       摆 zigzag(0)   -> cnt 25 用
-    //   cnt 25..87  输出亮 Q,        摆 zigzag(1..63)
-    //   cnt 88      输出亮 Q(第 63 个), 摆 0 (空摆, 这一拍没有下一拍要用的亮度)
-    //   cnt 89      输出 Tq=1,       摆 64          -> cnt 90 用
-    //   cnt 90..152 输出色 Q,        摆 64+zigzag(1..63)
-    //
-    //  ⚠ 原来漏了 cnt=89 这一拍的空档: cnt 88 摆的 64 数据在 cnt 89 到达,
-    //    但 cnt 89 输出的是 Tq=1 字节, 这个数据被丢掉; cnt 89 又摆了 65,
-    //    结果色度第一个值变成 Q_CHR[1] (18 而不是 17), 整个 DQT 段错位。
+    //---------------------------------------------------------------- 地址
+    //  ★ 这里必须用【同拍异步读】的 qtable: I_rd_idx_a(O_rd_data_a_asyn 那个口)。
+    //    原来用寄存器读口 + 提前一拍摆地址, 不反压时正好对齐; 一旦下游 m_ready
+    //    拉低把 cnt 冻结, 寄存器口的数据会比 cnt 超前 1 字节, 每停一次就丢一个
+    //    Q 值 (实测 0x28 -> 0x1a)。改成同拍读之后, 地址是 cnt 的纯函数,
+    //    cnt 冻多久都没关系。
+    //      cnt 25..88  -> 亮 Q (zigzag 0..63)
+    //      cnt 90..153 -> 色 Q (zigzag 0..63)
+    wire [5:0] qk_l = cnt[5:0] - 6'd25;    // 25..88  -> 0..63
+    wire [5:0] qk_c = cnt[5:0] - 6'd26;    // 90..153 -> 0..63
+
     always @(*) begin
         if (!run)                                     o_qt_idx = 7'd0;
-        else if (cnt == 10'd24)                       o_qt_idx = {1'b0, jpeg_zigzag(6'd0)};
-        else if (cnt >= 10'd25 && cnt <= 10'd87)      o_qt_idx = {1'b0, jpeg_zigzag(cnt[5:0] - 6'd24)};
-        else if (cnt == 10'd88)                       o_qt_idx = 7'd0;
-        else if (cnt == 10'd89)                       o_qt_idx = 7'd64;
-        else if (cnt >= 10'd90 && cnt <= 10'd152)     o_qt_idx = 7'd64 + {1'b0, jpeg_zigzag(cnt[5:0] - 6'd25)};
+        else if (ll)                                  o_qt_idx = 7'd0;
+        else if (cnt >= 10'd25 && cnt <= 10'd88)      o_qt_idx = {1'b0, jpeg_zigzag(qk_l)};
+        else if (cnt >= 10'd90 && cnt <= 10'd153)     o_qt_idx = 7'd64 + {1'b0, jpeg_zigzag(qk_c)};
         else                                          o_qt_idx = 7'd0;
     end
 

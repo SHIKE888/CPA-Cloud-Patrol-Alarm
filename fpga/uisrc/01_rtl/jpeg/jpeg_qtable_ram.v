@@ -32,7 +32,12 @@ module jpeg_qtable_ram (
     // ---------------- 读口 A: 寄存器回读 ----------------
     input  wire [6:0]   I_rd_idx_a,
     output reg  [7:0]   O_rd_data_a,
-
+    // ---------------- 读口 A 的同拍异步版本 (与 I_rd_idx_a 共用地址) ----------------
+    //  ★ 给 jpeg_headers 用。header 的 DQT 字节必须和 cnt 同拍对齐:
+    //    一旦下游反压把 i_ready 拉低、cnt 冻结, 寄存器读口的数据就会比 cnt
+    //    超前 1 个字节 —— 实测每停一次就丢一个 Q 值 (0x28 变成下一个 0x1a)。
+    //    小 RAM 异步读代价极低, 换成同拍读后反压完全不影响 header。
+    output wire [7:0]   O_rd_data_a_asyn,
     // ---------------- 读口 B: 码率控制顺序读 ----------------
     input  wire [6:0]   I_rd_idx_b,
     output reg  [7:0]   O_rd_data_b
@@ -68,6 +73,8 @@ module jpeg_qtable_ram (
         if (!I_rst_n) O_rd_data_a <= 8'h00;
         else          O_rd_data_a <= ram[I_rd_idx_a];
     end
+
+    assign O_rd_data_a_asyn = ram[I_rd_idx_a];
 
     // 读口 B (1 拍延迟)
     always @(posedge I_clk or negedge I_rst_n) begin

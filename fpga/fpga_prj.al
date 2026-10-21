@@ -551,84 +551,104 @@
                     <Attr Name="CompileOrder" Val="80"/>
                 </FileInfo>
             </File>
-<File Path="uisrc/01_rtl/jpeg/jpeg_defs.vh">
-<FileInfo>
-<Attr Name="UsedInSyn" Val="true"/>
-<Attr Name="UsedInP&R" Val="true"/>
-<Attr Name="BelongTo" Val="design_1"/>
-<Attr Name="CompileOrder" Val="81"/>
-</FileInfo>
-</File><File Path="uisrc/01_rtl/jpeg/jpeg_range.v">
-<FileInfo>
-<Attr Name="UsedInSyn" Val="true"/>
-<Attr Name="UsedInP&R" Val="true"/>
-<Attr Name="BelongTo" Val="design_1"/>
-<Attr Name="CompileOrder" Val="82"/>
-</FileInfo>
-</File><File Path="uisrc/01_rtl/jpeg/jpeg_dct2d.v">
-<FileInfo>
-<Attr Name="UsedInSyn" Val="true"/>
-<Attr Name="UsedInP&R" Val="true"/>
-<Attr Name="BelongTo" Val="design_1"/>
-<Attr Name="CompileOrder" Val="83"/>
-</FileInfo>
-</File><File Path="uisrc/01_rtl/jpeg/jpeg_quant_zz.v">
-<FileInfo>
-<Attr Name="UsedInSyn" Val="true"/>
-<Attr Name="UsedInP&R" Val="true"/>
-<Attr Name="BelongTo" Val="design_1"/>
-<Attr Name="CompileOrder" Val="84"/>
-</FileInfo>
-</File><File Path="uisrc/01_rtl/jpeg/jpeg_bitpack.v">
-<FileInfo>
-<Attr Name="UsedInSyn" Val="true"/>
-<Attr Name="UsedInP&R" Val="true"/>
-<Attr Name="BelongTo" Val="design_1"/>
-<Attr Name="CompileOrder" Val="85"/>
-</FileInfo>
-</File><File Path="uisrc/01_rtl/jpeg/jpeg_huff_enc.v">
-<FileInfo>
-<Attr Name="UsedInSyn" Val="true"/>
-<Attr Name="UsedInP&R" Val="true"/>
-<Attr Name="BelongTo" Val="design_1"/>
-<Attr Name="CompileOrder" Val="86"/>
-</FileInfo>
-</File><File Path="uisrc/01_rtl/jpeg/jpeg_headers.v">
-<FileInfo>
-<Attr Name="UsedInSyn" Val="true"/>
-<Attr Name="UsedInP&R" Val="true"/>
-<Attr Name="BelongTo" Val="design_1"/>
-<Attr Name="CompileOrder" Val="87"/>
-</FileInfo>
-</File><File Path="uisrc/01_rtl/jpeg/jpeg_linebuf.v">
-<FileInfo>
-<Attr Name="UsedInSyn" Val="true"/>
-<Attr Name="UsedInP&R" Val="true"/>
-<Attr Name="BelongTo" Val="design_1"/>
-<Attr Name="CompileOrder" Val="88"/>
-</FileInfo>
-</File><File Path="uisrc/01_rtl/jpeg/jpeg_lossless_enc.v">
-<FileInfo>
-<Attr Name="UsedInSyn" Val="true"/>
-<Attr Name="UsedInP&R" Val="true"/>
-<Attr Name="BelongTo" Val="design_1"/>
-<Attr Name="CompileOrder" Val="89"/>
-</FileInfo>
-</File><File Path="uisrc/01_rtl/jpeg/jpeg_qtable_ram.v">
-<FileInfo>
-<Attr Name="UsedInSyn" Val="true"/>
-<Attr Name="UsedInP&R" Val="true"/>
-<Attr Name="BelongTo" Val="design_1"/>
-<Attr Name="CompileOrder" Val="90"/>
-</FileInfo>
-</File><File Path="uisrc/01_rtl/jpeg/jpeg_encoder_top.v">
-<FileInfo>
-<Attr Name="UsedInSyn" Val="true"/>
-<Attr Name="UsedInP&R" Val="true"/>
-<Attr Name="BelongTo" Val="design_1"/>
-<Attr Name="CompileOrder" Val="91"/>
-</FileInfo>
-</File>
+            <File Path="uisrc/01_rtl/jpeg/jpeg_defs.vh">
+                <FileInfo>
+                    <Attr Name="AutoExcluded" Val="true"/>
+                    <Attr Name="UsedInSyn" Val="true"/>
+                    <Attr Name="UsedInP&R" Val="true"/>
+                    <Attr Name="BelongTo" Val="design_1"/>
+                    <Attr Name="CompileOrder" Val="82"/>
+                </FileInfo>
+            </File>
+            <File Path="uisrc/01_rtl/jpeg/jpeg_range.v">
+                <FileInfo>
+                    <Attr Name="AutoExcluded" Val="true"/>
+                    <Attr Name="UsedInSyn" Val="true"/>
+                    <Attr Name="UsedInP&R" Val="true"/>
+                    <Attr Name="BelongTo" Val="design_1"/>
+                    <Attr Name="CompileOrder" Val="84"/>
+                </FileInfo>
+            </File>
+            <File Path="uisrc/01_rtl/jpeg/jpeg_dct2d.v">
+                <FileInfo>
+                    <Attr Name="UsedInSyn" Val="true"/>
+                    <Attr Name="UsedInP&R" Val="true"/>
+                    <Attr Name="BelongTo" Val="design_1"/>
+                    <Attr Name="CompileOrder" Val="86"/>
+                </FileInfo>
+            </File>
+            <File Path="uisrc/01_rtl/jpeg/jpeg_quant_zz.v">
+                <FileInfo>
+                    <Attr Name="UsedInSyn" Val="true"/>
+                    <Attr Name="UsedInP&R" Val="true"/>
+                    <Attr Name="BelongTo" Val="design_1"/>
+                    <Attr Name="CompileOrder" Val="88"/>
+                </FileInfo>
+            </File>
+            <File Path="uisrc/01_rtl/jpeg/jpeg_bitpack.v">
+                <FileInfo>
+                    <Attr Name="UsedInSyn" Val="true"/>
+                    <Attr Name="UsedInP&R" Val="true"/>
+                    <Attr Name="BelongTo" Val="design_1"/>
+                    <Attr Name="CompileOrder" Val="90"/>
+                </FileInfo>
+            </File>
+            <File Path="uisrc/01_rtl/jpeg/jpeg_huff_enc.v">
+                <FileInfo>
+                    <Attr Name="UsedInSyn" Val="true"/>
+                    <Attr Name="UsedInP&R" Val="true"/>
+                    <Attr Name="BelongTo" Val="design_1"/>
+                    <Attr Name="CompileOrder" Val="92"/>
+                </FileInfo>
+            </File>
+            <File Path="uisrc/01_rtl/jpeg/jpeg_headers.v">
+                <FileInfo>
+                    <Attr Name="UsedInSyn" Val="true"/>
+                    <Attr Name="UsedInP&R" Val="true"/>
+                    <Attr Name="BelongTo" Val="design_1"/>
+                    <Attr Name="CompileOrder" Val="94"/>
+                </FileInfo>
+            </File>
+            <File Path="uisrc/01_rtl/jpeg/jpeg_linebuf.v">
+                <FileInfo>
+                    <Attr Name="UsedInSyn" Val="true"/>
+                    <Attr Name="UsedInP&R" Val="true"/>
+                    <Attr Name="BelongTo" Val="design_1"/>
+                    <Attr Name="CompileOrder" Val="96"/>
+                </FileInfo>
+            </File>
+            <File Path="uisrc/01_rtl/jpeg/jpeg_lossless_enc.v">
+                <FileInfo>
+                    <Attr Name="UsedInSyn" Val="true"/>
+                    <Attr Name="UsedInP&R" Val="true"/>
+                    <Attr Name="BelongTo" Val="design_1"/>
+                    <Attr Name="CompileOrder" Val="98"/>
+                </FileInfo>
+            </File>
+            <File Path="uisrc/01_rtl/jpeg/jpeg_qtable_ram.v">
+                <FileInfo>
+                    <Attr Name="UsedInSyn" Val="true"/>
+                    <Attr Name="UsedInP&R" Val="true"/>
+                    <Attr Name="BelongTo" Val="design_1"/>
+                    <Attr Name="CompileOrder" Val="100"/>
+                </FileInfo>
+            </File>
+            <File Path="uisrc/01_rtl/jpeg/jpeg_encoder_top.v">
+                <FileInfo>
+                    <Attr Name="UsedInSyn" Val="true"/>
+                    <Attr Name="UsedInP&R" Val="true"/>
+                    <Attr Name="BelongTo" Val="design_1"/>
+                    <Attr Name="CompileOrder" Val="102"/>
+                </FileInfo>
+            </File>
+            <File Path="uisrc/01_rtl/csi2_frame_tx_var.v">
+                <FileInfo>
+                    <Attr Name="UsedInSyn" Val="true"/>
+                    <Attr Name="UsedInP&R" Val="true"/>
+                    <Attr Name="BelongTo" Val="design_1"/>
+                    <Attr Name="CompileOrder" Val="104"/>
+                </FileInfo>
+            </File>
             <File Path="uisrc/01_rtl/ctrl/i2c_slave.v">
                 <FileInfo>
                     <Attr Name="UsedInSyn" Val="true"/>
@@ -642,7 +662,7 @@
                     <Attr Name="UsedInSyn" Val="true"/>
                     <Attr Name="UsedInP&R" Val="true"/>
                     <Attr Name="BelongTo" Val="design_1"/>
-                    <Attr Name="CompileOrder" Val="82"/>
+                    <Attr Name="CompileOrder" Val="83"/>
                 </FileInfo>
             </File>
             <File Path="uisrc/01_rtl/preproc/preproc_win3x3.v">
@@ -650,7 +670,7 @@
                     <Attr Name="UsedInSyn" Val="true"/>
                     <Attr Name="UsedInP&R" Val="true"/>
                     <Attr Name="BelongTo" Val="design_1"/>
-                    <Attr Name="CompileOrder" Val="83"/>
+                    <Attr Name="CompileOrder" Val="85"/>
                 </FileInfo>
             </File>
             <File Path="uisrc/01_rtl/preproc/preproc_edge.v">
@@ -658,7 +678,7 @@
                     <Attr Name="UsedInSyn" Val="true"/>
                     <Attr Name="UsedInP&R" Val="true"/>
                     <Attr Name="BelongTo" Val="design_1"/>
-                    <Attr Name="CompileOrder" Val="84"/>
+                    <Attr Name="CompileOrder" Val="87"/>
                 </FileInfo>
             </File>
             <File Path="uisrc/01_rtl/preproc/preproc_top.v">
@@ -666,7 +686,7 @@
                     <Attr Name="UsedInSyn" Val="true"/>
                     <Attr Name="UsedInP&R" Val="true"/>
                     <Attr Name="BelongTo" Val="design_1"/>
-                    <Attr Name="CompileOrder" Val="85"/>
+                    <Attr Name="CompileOrder" Val="89"/>
                 </FileInfo>
             </File>
             <File Path="uisrc/01_rtl/preproc/preproc_basic.v">
@@ -674,7 +694,7 @@
                     <Attr Name="UsedInSyn" Val="true"/>
                     <Attr Name="UsedInP&R" Val="true"/>
                     <Attr Name="BelongTo" Val="design_1"/>
-                    <Attr Name="CompileOrder" Val="88"/>
+                    <Attr Name="CompileOrder" Val="95"/>
                 </FileInfo>
             </File>
             <File Path="uisrc/01_rtl/preproc/preproc_win3x3_rgb.v">
@@ -682,7 +702,7 @@
                     <Attr Name="UsedInSyn" Val="true"/>
                     <Attr Name="UsedInP&R" Val="true"/>
                     <Attr Name="BelongTo" Val="design_1"/>
-                    <Attr Name="CompileOrder" Val="89"/>
+                    <Attr Name="CompileOrder" Val="97"/>
                 </FileInfo>
             </File>
             <File Path="uisrc/01_rtl/preproc/preproc_linefix.v">
@@ -690,7 +710,7 @@
                     <Attr Name="UsedInSyn" Val="true"/>
                     <Attr Name="UsedInP&R" Val="true"/>
                     <Attr Name="BelongTo" Val="design_1"/>
-                    <Attr Name="CompileOrder" Val="90"/>
+                    <Attr Name="CompileOrder" Val="99"/>
                 </FileInfo>
             </File>
             <File Path="uisrc/01_rtl/ctrl/cam_param.v">
@@ -698,7 +718,7 @@
                     <Attr Name="UsedInSyn" Val="true"/>
                     <Attr Name="UsedInP&R" Val="true"/>
                     <Attr Name="BelongTo" Val="design_1"/>
-                    <Attr Name="CompileOrder" Val="86"/>
+                    <Attr Name="CompileOrder" Val="91"/>
                 </FileInfo>
             </File>
             <File Path="uisrc/01_rtl/preproc/preproc_post.v">
@@ -706,7 +726,7 @@
                     <Attr Name="UsedInSyn" Val="true"/>
                     <Attr Name="UsedInP&R" Val="true"/>
                     <Attr Name="BelongTo" Val="design_1"/>
-                    <Attr Name="CompileOrder" Val="87"/>
+                    <Attr Name="CompileOrder" Val="93"/>
                 </FileInfo>
             </File>
             <File Path="uisrc/03_ip/al_fifo/fifo_32b_async_2.v">
@@ -756,7 +776,7 @@
                     <Attr Name="UsedInSyn" Val="true"/>
                     <Attr Name="UsedInP&R" Val="true"/>
                     <Attr Name="BelongTo" Val="design_1"/>
-                    <Attr Name="CompileOrder" Val="91"/>
+                    <Attr Name="CompileOrder" Val="101"/>
                 </FileInfo>
             </File>
             <File Path="uisrc/01_rtl/dual/sensor_sync_start.v">
@@ -764,7 +784,7 @@
                     <Attr Name="UsedInSyn" Val="true"/>
                     <Attr Name="UsedInP&R" Val="true"/>
                     <Attr Name="BelongTo" Val="design_1"/>
-                    <Attr Name="CompileOrder" Val="92"/>
+                    <Attr Name="CompileOrder" Val="103"/>
                 </FileInfo>
             </File>
         </Verilog>

@@ -89,6 +89,10 @@ module jpeg_regfile #(
     output wire [23:0]  O_cfg_target_bytes, // 0 = 不限
     output wire         O_cfg_rc_en,
     output wire [3:0]   O_cfg_rc_speed,
+    // 2026-10-21: 0x0B JPG_TX —— MIPI 发哪一路
+    //   0 = 原 NV16 直通流 (默认, 保持现有 1080p/4K 显示不受影响)
+    //   1 = FPGA 硬件 JPEG 码流 (DT=0x18, 走 csi2_frame_tx_var)
+    output wire         O_cfg_jpg_tx,
     output wire [1:0]   O_cfg_subsample,
     output wire [7:0]   O_cfg_restart_int,
     output wire [2:0]   O_cfg_predictor,
@@ -225,12 +229,10 @@ module jpeg_regfile #(
     reg [23:0] r_target;
     reg        r_rc_en;
     reg [3:0]  r_rc_speed;
+    reg        r_jpg_tx;       // 2026-10-21: 0x0B MIPI 发 NV16(0) 还是 JPEG(1)
     reg [1:0]  r_subsample;
     reg [7:0]  r_restart;
     reg [2:0]  r_predictor;
-    reg        r_soft_rst;
-
-    // 预处理寄存器
     reg        r_pp_en;
     reg [3:0]  r_pp_mode;
     reg [4:0]  r_pp_sobel_sh;
@@ -317,6 +319,7 @@ module jpeg_regfile #(
             r_target     <= 24'd0;     // 0 = 不限码率
             r_rc_en      <= 1'b0;
             r_rc_speed   <= 4'd8;
+            r_jpg_tx     <= 1'b0;      // 默认走原 NV16 通路
             r_subsample  <= 2'd1;      // 默认 4:2:2
             r_restart    <= 8'd0;
             r_predictor  <= 3'd0;      // 0 = MED
@@ -392,6 +395,7 @@ module jpeg_regfile #(
                     8'h08: r_restart   <= I_wr_data;
                     8'h09: r_predictor <= I_wr_data[2:0];
                     8'h0A: r_soft_rst  <= I_wr_data[0];
+                    8'h0B: r_jpg_tx    <= I_wr_data[0];
                     // ---- 高级预处理 (单选) ----
                     8'hB0: r_pp_en      <= I_wr_data[0];
                     8'hB1: r_pp_mode    <= (I_wr_data[3:0] > 4'd8) ? 4'd8 : I_wr_data[3:0];
@@ -463,6 +467,9 @@ module jpeg_regfile #(
     end
     assign O_dbg_btn = (r_dbg_btn_cnt == 16'd0);
 
+    // 2026-10-21: MIPI 输出源选择 (0 = 原 NV16 直通, 1 = 硬件 JPEG 码流)
+    assign O_cfg_jpg_tx = r_jpg_tx;
+
     // ---------------------------------------------------------------- 读 (1 拍延迟)
     // 量化表整段占 0x10~0x8F (128 项 = 亮度 64 + 色度 64), 单独判断,
     // 免得在 case 里写 128 条标签。
@@ -486,6 +493,7 @@ module jpeg_regfile #(
                 8'h08: O_rd_data <= r_restart;
                 8'h09: O_rd_data <= {5'b0, r_predictor};
                 8'h0A: O_rd_data <= 8'h00;
+                8'h0B: O_rd_data <= {7'b0, r_jpg_tx};
 
                 8'hA0: O_rd_data <= s_frame_bytes[ 7:0];
                 8'hA1: O_rd_data <= s_frame_bytes[15:8];

@@ -42,7 +42,7 @@ module tb_jpeg_csi2_e2e;
     jpeg_qtable_ram u_qt (
         .I_clk(clk), .I_rst_n(rst_n), .I_wr_en(1'b0),
         .I_wr_addr(8'd0), .I_wr_data(8'd0),
-        .I_rd_idx_a(qt_a), .O_rd_data_a(qta),
+        .I_rd_idx_a(qt_a), .O_rd_data_a(), .O_rd_data_a_asyn(qta),
         .I_rd_idx_b(qt_b), .O_rd_data_b(qtb)
     );
 

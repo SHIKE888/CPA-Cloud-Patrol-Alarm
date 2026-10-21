@@ -614,6 +614,10 @@ wire [23:0] S_jpeg_st_bytes;
 wire        S_jpeg_st_busy;
 wire        S_jpeg_st_done;
 
+// 2026-10-21: 0x0B JPG_TX —— MIPI 输出源选择 (0=原 NV16, 1=硬件 JPEG 码流)
+wire        S_jpeg_tx_sel;
+wire        S_jpeg_m_ready;
+
 `ifdef JPEG_EN
 	wire        S_jpeg_s_ready;
 	wire [6:0]  S_jpeg_qt_a, S_jpeg_qt_b;
@@ -629,7 +633,8 @@ wire        S_jpeg_st_done;
 		.I_wr_addr   (8'd0        ),
 		.I_wr_data   (8'd0        ),
 		.I_rd_idx_a  (S_jpeg_qt_a ),
-		.O_rd_data_a (S_jpeg_qta  ),
+		.O_rd_data_a (             ),
+		.O_rd_data_a_asyn (S_jpeg_qta ),
 		.I_rd_idx_b  (S_jpeg_qt_b ),
 		.O_rd_data_b (S_jpeg_qtb  )
 	);
@@ -652,10 +657,38 @@ wire        S_jpeg_st_done;
 		.m_valid        (S_jpeg_m_valid ),
 		.m_data         (S_jpeg_m_data  ),
 		.m_last         (S_jpeg_m_last  ),
+		.m_ready        (S_jpeg_m_ready ),
 		.st_frame_bytes (S_jpeg_st_bytes),
 		.st_busy        (S_jpeg_st_busy ),
 		.st_done        (S_jpeg_st_done ),
 		.st_frame_cnt   (S_jpeg_cnt     )
+	);
+
+	// CSI-2 可变长发送 (DT=0x18, 乒乓双缓冲): 编码器输出是连续字节流,
+	// 也不知道每包多大, 所以走 csi2_frame_tx_var。乒乓让攒包和发包并行,
+	// s_tready 基本一直为 1, 避免编码器的 block 流水被长停顿打乱。
+	wire        S_jv_hs_en, S_jv_hs_last;
+	wire [31:0] S_jv_hs_data;
+
+	csi2_frame_tx_var #(
+		.PKT_BYTES (1024),
+		.GAP_FRAME (200 ),
+		.DT        (6'h18),
+		.VC        (2'b00)
+	) X_jv (
+		.clk        (S_hs_rx_clk    ),
+		.rst_n      (S_pll_lock     ),
+		.enable     (S_jpeg_tx_sel  ),
+		.s_tvalid   (S_jpeg_m_valid ),
+		.s_tdata    (S_jpeg_m_data  ),
+		.s_tlast    (S_jpeg_m_last  ),
+		.s_tready   (S_jpeg_m_ready ),
+		.hs_en      (S_jv_hs_en     ),
+		.hs_data    (S_jv_hs_data   ),
+		.hs_last    (S_jv_hs_last   ),
+		.frame_cnt  (               ),
+		.packet_cnt (               ),
+		.byte_cnt   (               )
 	);
 `endif
 
@@ -664,6 +697,10 @@ wire        S_jpeg_st_done;
 	assign S_jpeg_st_bytes = 24'd0;
 	assign S_jpeg_st_busy  = 1'b0;
 	assign S_jpeg_st_done  = 1'b0;
+	wire        S_jv_hs_en   = 1'b0;
+	wire        S_jv_hs_last = 1'b0;
+	wire [31:0] S_jv_hs_data = 32'd0;
+	assign S_jpeg_m_ready    = 1'b0;
 `endif
 
 
@@ -1577,6 +1614,7 @@ cfg_ctrl_top #(
 	.i_jpeg_bytes (S_jpeg_st_bytes),
 	.i_jpeg_busy  (S_jpeg_st_busy ),
 	.i_jpeg_done  (S_jpeg_st_done ),
+	.o_jpeg_tx    (S_jpeg_tx_sel  ),
 	.i_diag_wbuf  (D_wb_s2),
 	.i_diag_vs    (D_vs_s2),
 	.i_diag_lg1   (D_lg1_s2),
@@ -2281,9 +2319,9 @@ mipi_dphy_tx_wrapper #(
 	.I_rst			(~S_dphy_rst_n			),
 
 	// HS TX from Layer-1
-	.I_hs_tx_valid	(S_hs_en				),
-	.I_hs_tx_data	(S_hs_data				),
-	.I_hs_tx_last	(S_hs_last				),
+	.I_hs_tx_valid	(S_jpeg_tx_sel ? S_jv_hs_en : S_hs_en),
+	.I_hs_tx_data	(S_jpeg_tx_sel ? S_jv_hs_data : S_hs_data),
+	.I_hs_tx_last	(S_jpeg_tx_sel ? S_jv_hs_last : S_hs_last),
 	.O_hs_tx_ready	(						),
 
 	// LP TX: 不发 LP 配置 (CSI-2 host 不需)

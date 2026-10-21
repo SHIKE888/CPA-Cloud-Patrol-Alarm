@@ -107,6 +107,8 @@ module cfg_ctrl_top #(
 	input  wire [23:0] i_jpeg_bytes,
 	input  wire        i_jpeg_busy,
 	input  wire        i_jpeg_done,
+	// 2026-10-21: MIPI 输出源选择 (0x0B) —— 0=原 NV16 直通, 1=JPEG 码流
+	output wire        o_jpeg_tx,
 	input  wire [7:0]  i_diag_wbuf,
 	input  wire [7:0]  i_diag_vs,
 	input  wire [15:0] i_diag_lg1,
@@ -203,6 +205,8 @@ module cfg_ctrl_top #(
 	reg  [15:0] lg_max;         // V21 诊断: 历史最大行组数
 	wire [1:0]  cfg_res_mode;   // V21
 	wire        cfg_res_chg;    // V21
+	wire        cfg_jpg_tx;     // 2026-10-21: 0x0B MIPI 输出源选择
+	assign o_jpeg_tx = cfg_jpg_tx;
 
 	// 帧计数 (像素域), 同步回系统域供回读
 	// ★★ V37: 这些声明必须放在 jpeg_regfile 例化**之前**。
@@ -276,6 +280,7 @@ module cfg_ctrl_top #(
 		.O_cfg_target_bytes (cfg_target),
 		.O_cfg_rc_en     (cfg_rc_en),
 		.O_cfg_rc_speed  (cfg_rc_speed),
+		.O_cfg_jpg_tx    (cfg_jpg_tx),
 		.O_cfg_subsample (cfg_subsample),
 		.O_cfg_restart_int(cfg_restart),
 		.O_cfg_predictor (cfg_predictor),

@@ -1,30 +1,28 @@
 `timescale 1ns/1ps
 //==============================================================================
-//  csi2_frame_tx_var.v
+//  csi2_frame_tx_var.v   (v2: 乒乓双缓冲)
 //  CSI-2 可变长帧发送 (JPEG 码流专用, DT=0x18)
 //
-//  为什么需要这个模块
-//  ------------------
-//  现有的 csi2_frame_tx 是**定长**的: 每行一个 long packet, WC 由
-//  I_h_active 算出, 行数由 I_v_active 决定。而 JPEG 一帧是 N 个字节的连续流,
-//  既不知道每包多大, 也不知道总共几包 —— 所以必须新写一个"边收边打包"的版本。
+//  为什么要 v2
+//  -----------
+//  v1 是"攒满一包 -> 停住上游 -> 发包 -> 再攒"。发包一个 PKT_BYTES 的包要
+//  PKT_BYTES/4 + 3 拍, 对 PKT=1024 就是 259 拍。上游 JPEG 编码器在这种
+//  几百拍的长停顿下会打乱 block 级流水 (实测 320x40 一帧 3797 字节变成 3760),
+//  所以发送侧必须做到"几乎不让上游停"。
 //
-//  关键约束: long packet 的 Word Count 写在**包头里**, 所以必须先把整包攒齐
-//  才能发头。这里用单缓冲 + 反压:
-//      攒包时 s_tready=1, 攒满 PKT_BYTES 后 s_tready=0 去发包。
-//  JPEG 编码器的位打包端口有 bp_ready 反压能力, 所以停一下是安全的。
+//  v2 用两个 bank 乒乓: 写完 A 立刻切到 B 继续收, 同时把 A 发出去。
+//  D-PHY 一拍发 4 字节, 编码器平均一拍只产 0.5 字节 —— 发永远比收快,
+//  所以正常运行时 s_tready 一直是 1, 只有"收得比发快两包以上"才短暂拉低。
 //
 //  帧结构:
 //      FS 短包(DT=0x00) -> [long packet(DT=0x18) ...] -> FE 短包(DT=0x01) -> 消隐
-//  最后一包通常不满 PKT_BYTES, WC = 实际字节数; 不足 4 字节的部分补 0,
-//  补出来的 0 **也计入 CRC**(CSI-2 校验是对实际发出去的 payload 算的)。
-//  接收端靠 JPEG 的 EOI(FFD9) 判断真实长度, 填充字节不影响解码。
+//  最后一个包通常不满 PKT_BYTES, WC = 实际字节数; 不足 4 字节补 0,
+//  补出来的 0 也计入 CRC。
 //
-//  字节序沿用 csi2_frame_tx: hs_data[7:0] 先发, 包头一拍 4 字节,
-//  payload 一拍 4 字节, 最后一拍低 16 位放 CRC 并拉 hs_last。
+//  hs_last 的用法与板上已验证的 csi2_frame_tx 保持一致 (FS/FE/CRC 三处拉高)。
 //==============================================================================
 module csi2_frame_tx_var #(
-    parameter integer PKT_BYTES = 1024,     // 每个 long packet 的目标载荷字节数 (4 的倍数)
+    parameter integer PKT_BYTES = 1024,     // 每个 long packet 的目标载荷字节数 (2 的幂, >= 4)
     parameter integer GAP_FRAME = 200,      // FE 之后到下一帧 FS 的空闲拍数
     parameter [5:0]   DT        = 6'h18,    // 0x18 = JPEG
     parameter [1:0]   VC        = 2'b00
@@ -50,8 +48,7 @@ module csi2_frame_tx_var #(
     output reg  [31:0] byte_cnt
 );
 
-    localparam integer PW = PKT_BYTES;                 // 缓冲深度
-    // 写指针位宽: PKT_BYTES 必须 >= 4 (综合/py 侧都会保证), 所以直接 $clog2
+    localparam integer PW = PKT_BYTES;
     localparam integer WW = $clog2(PW);
 
     //==========================================================================
@@ -113,18 +110,29 @@ module csi2_frame_tx_var #(
     endfunction
 
     //==========================================================================
-    //  包缓冲
+    //  双 bank 缓冲
     //==========================================================================
-    reg [7:0] pbuf [0:PW-1];
+    reg [7:0] pbuf [0:2*PW-1];
+
+    // ---------------- 写侧 ----------------
+    reg          wsel;          // 正在写的 bank
     reg [WW-1:0] wptr;
-    reg [15:0]   wc;            // 本包实际字节数
-    reg [15:0]   words;         // 本包要发多少拍 (补齐到 4 字节)
-    reg          frame_end;     // 收到 s_tlast (本帧最后一个包)
-    reg [15:0]   pcnt;
+    reg [15:0]   wc;            // 本 bank 已收字节数
+
+    reg          pend_v;        // 有一个 bank 攒满, 等发
+    reg          pend_bank;
+    reg [15:0]   pend_wc;
+    reg          pend_fe;       // 该 bank 内含帧尾
+
+    // ---------------- 发侧 ----------------
+    reg          tx_busy;
+    reg          tx_bank;
+    reg [15:0]   t_wc;
+    reg          t_fe;
+    reg          frame_started;
 
     localparam [3:0] S_IDLE = 4'd0;
     localparam [3:0] S_FS   = 4'd1;
-    localparam [3:0] S_COL  = 4'd2;
     localparam [3:0] S_HDR  = 4'd3;
     localparam [3:0] S_PL   = 4'd4;
     localparam [3:0] S_CRC  = 4'd5;
@@ -133,101 +141,131 @@ module csi2_frame_tx_var #(
 
     reg [3:0]  state;
     reg [15:0] gap_cnt;
-    reg [31:0] word_idx;
+    reg [15:0] ridx;            // 本包内字节偏移
+    reg [15:0] wcnt;            // 已发的 payload 拍数
+    reg [15:0] words;           // 本包 payload 总拍数
     reg [15:0] crc;
 
     wire [31:0] fs_word = build_short_hdr(6'h00, frame_cnt[15:0]);
     wire [31:0] fe_word = build_short_hdr(6'h01, frame_cnt[15:0]);
-    wire [31:0] lp_hdr  = build_long_hdr(DT, wc);
+    wire [31:0] lp_hdr  = build_long_hdr(DT, t_wc);
 
-    // 发包时一次取 4 字节 (越界补 0)
+    // ★ 只有"待发 bank == 正在写的 bank" 或 "正在发的 bank == 正在写的 bank" 时才停。
+    //   前者不会发生 (写完立刻切 bank), 后者只有收得比发快两包以上才会出现。
+    assign s_tready = !((pend_v && (pend_bank == wsel)) ||
+                        (tx_busy && (tx_bank  == wsel)));
+
+    // 一次取 4 字节 (越界补 0)
+    wire [WW-1:0] ri0 = ridx[WW-1:0];
+    wire [WW-1:0] ri1 = ridx[WW-1:0] + 1'b1;
+    wire [WW-1:0] ri2 = ridx[WW-1:0] + 2'd2;
+    wire [WW-1:0] ri3 = ridx[WW-1:0] + 2'd3;
+
     wire [31:0] pl_word = {
-        (word_idx*4+3 < wc) ? pbuf[word_idx*4+3] : 8'h00,
-        (word_idx*4+2 < wc) ? pbuf[word_idx*4+2] : 8'h00,
-        (word_idx*4+1 < wc) ? pbuf[word_idx*4+1] : 8'h00,
-        pbuf[word_idx*4]
+        (ridx + 16'd3 < t_wc) ? pbuf[{tx_bank, ri3}] : 8'h00,
+        (ridx + 16'd2 < t_wc) ? pbuf[{tx_bank, ri2}] : 8'h00,
+        (ridx + 16'd1 < t_wc) ? pbuf[{tx_bank, ri1}] : 8'h00,
+        pbuf[{tx_bank, ri0}]
     };
 
-    // 收集期间一直 ready; S_IDLE 也 ready, 否则上位机"先等 ready 再给数据"
-    // 的握手会和 S_IDLE 等 valid 形成死锁。S_IDLE 收到首字节时直接锁存。
-    assign s_tready = (state == S_COL) || (state == S_IDLE);
-
+    //==========================================================================
+    //  写侧: 与状态机完全独立, 只有撞 bank 时才停
+    //==========================================================================
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            state      <= S_IDLE;
-            wptr       <= {WW{1'b0}};
-            wc         <= 16'd0;
-            words      <= 16'd0;
-            frame_end  <= 1'b0;
-            pcnt       <= 16'd0;
-            gap_cnt    <= 16'd0;
-            word_idx   <= 32'd0;
-            crc        <= 16'hFFFF;
-            hs_en      <= 1'b0;
-            hs_data    <= 32'd0;
-            hs_last    <= 1'b0;
-            frame_cnt  <= 32'd0;
-            packet_cnt <= 32'd0;
-            byte_cnt   <= 32'd0;
+            wsel <= 1'b0; wptr <= {WW{1'b0}}; wc <= 16'd0;
+            pend_v <= 1'b0; pend_bank <= 1'b0; pend_wc <= 16'd0; pend_fe <= 1'b0;
+        end else if (!enable) begin
+            wsel <= 1'b0; wptr <= {WW{1'b0}}; wc <= 16'd0;
+            pend_v <= 1'b0; pend_bank <= 1'b0; pend_wc <= 16'd0; pend_fe <= 1'b0;
+        end else if (s_tvalid && s_tready) begin
+            pbuf[{wsel, wptr}] <= s_tdata;
+            wptr <= wptr + 1'b1;
+            wc   <= wc + 16'd1;
+
+            if (s_tlast) begin
+                // 帧尾: 立刻交出这个 (可能不满的) bank
+                pend_v    <= 1'b1;
+                pend_bank <= wsel;
+                pend_wc   <= wc + 16'd1;
+                pend_fe   <= 1'b1;
+                wsel      <= ~wsel;
+                wptr      <= {WW{1'b0}};
+                wc        <= 16'd0;
+            end else if (wc == PKT_BYTES[15:0] - 16'd1) begin
+                pend_v    <= 1'b1;
+                pend_bank <= wsel;
+                pend_wc   <= PKT_BYTES[15:0];
+                pend_fe   <= 1'b0;
+                wsel      <= ~wsel;
+                wptr      <= {WW{1'b0}};
+                wc        <= 16'd0;
+            end
+        end
+    end
+
+    //==========================================================================
+    //  发侧状态机
+    //==========================================================================
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            state         <= S_IDLE;
+            hs_en         <= 1'b0;
+            hs_data       <= 32'd0;
+            hs_last       <= 1'b0;
+            gap_cnt       <= 16'd0;
+            ridx          <= 16'd0;
+            wcnt          <= 16'd0;
+            words         <= 16'd0;
+            crc           <= 16'hFFFF;
+            tx_busy       <= 1'b0;
+            tx_bank       <= 1'b0;
+            t_wc          <= 16'd0;
+            t_fe          <= 1'b0;
+            frame_started <= 1'b0;
+            frame_cnt     <= 32'd0;
+            packet_cnt    <= 32'd0;
+            byte_cnt      <= 32'd0;
         end else if (!enable) begin
             state   <= S_IDLE;
             hs_en   <= 1'b0;
             hs_last <= 1'b0;
-            wptr    <= {WW{1'b0}};
-            wc      <= 16'd0;
+            tx_busy <= 1'b0;
         end else begin
             hs_en   <= 1'b0;
             hs_last <= 1'b0;
 
             case (state)
             //------------------------------------------------------------------
-            // ★ 必须等真的有数据才发 FS。原来无条件进 S_FS, 结果一帧发完后
-            //   立刻又开始下一帧, 空中多发一个 FS 短包 (实测多 4 字节)。
+            // 等一个攒满的 bank。取走的同时把 pend_v 清掉, 让写侧可以继续攒下一个。
+            // (bank 的所有权在 tx_busy 期间由 tx_bank 保护, 写侧不会误写)
             S_IDLE: begin
-                wptr      <= {WW{1'b0}};
-                wc        <= 16'd0;
-                frame_end <= 1'b0;
-                if (s_tvalid) begin
-                    // 首字节直接锁存进缓冲(这一拍 S_COL 还没开始, 不能丢)
-                    pbuf[0]   <= s_tdata;
-                    wptr      <= {{(WW-1){1'b0}}, 1'b1};
-                    wc        <= 16'd1;
-                    frame_end <= s_tlast;
-                    state     <= S_FS;
+                if (pend_v) begin
+                    t_wc    <= pend_wc;
+                    t_fe    <= pend_fe;
+                    tx_bank <= pend_bank;
+                    tx_busy <= 1'b1;
+                    pend_v  <= 1'b0;
+                    words   <= (pend_wc + 16'd3) >> 2;
+                    ridx    <= 16'd0;
+                    wcnt    <= 16'd0;
+                    crc     <= 16'hFFFF;
+                    if (!frame_started) begin
+                        frame_started <= 1'b1;
+                        byte_cnt      <= 32'd0;
+                        state         <= S_FS;
+                    end else begin
+                        state <= S_HDR;
+                    end
                 end
             end
 
             //------------------------------------------------------------------
             S_FS: begin
-                hs_en    <= 1'b1;
-                hs_data  <= fs_word;
-                byte_cnt <= 32'd0;
-                state    <= S_COL;
-            end
-
-            //------------------------------------------------------------------
-            // 攒包。写满 PKT_BYTES 或收到帧尾就转去发送。
-            S_COL: begin
-                if (s_tvalid) begin
-                    pbuf[wptr] <= s_tdata;
-                    wptr      <= wptr + 1'b1;
-                    wc        <= wc + 16'd1;
-                    if (s_tlast) begin
-                        // 帧尾: 立刻发这一个 (可能不满的) 包
-                        frame_end <= 1'b1;
-                        words     <= ((wc + 16'd4) >> 2);   // 含本拍, ceil(wc/4)
-                        word_idx  <= 32'd0;
-                        crc       <= 16'hFFFF;
-                        state     <= S_HDR;
-                    end else if (wc == PKT_BYTES[15:0] - 16'd1) begin
-                        // 用 wc 判断而不是 wptr: wptr 的起点会因为首字节在 S_IDLE
-                        // 先被锁存而与 wc 差 1。
-                        words    <= PKT_BYTES[15:0] >> 2;
-                        word_idx <= 32'd0;
-                        crc      <= 16'hFFFF;
-                        state    <= S_HDR;
-                    end
-                end
+                hs_en   <= 1'b1;
+                hs_data <= fs_word;
+                hs_last <= 1'b1;
+                state   <= S_HDR;
             end
 
             //------------------------------------------------------------------
@@ -238,21 +276,19 @@ module csi2_frame_tx_var #(
             end
 
             //------------------------------------------------------------------
-            // 每拍发 4 字节, 同时把 CRC 累加上去 (补齐的 0 也计入)
             S_PL: begin
-                hs_en    <= 1'b1;
-                hs_data  <= pl_word;
-                crc      <= crc16_byte(
-                              crc16_byte(
-                                crc16_byte(
-                                  crc16_byte(crc, pl_word[7:0]),
-                                  pl_word[15:8]),
-                                pl_word[23:16]),
-                              pl_word[31:24]);
-                word_idx <= word_idx + 32'd1;
-                if (word_idx == words - 1) begin
-                    state <= S_CRC;
-                end
+                hs_en   <= 1'b1;
+                hs_data <= pl_word;
+                crc     <= crc16_byte(
+                             crc16_byte(
+                               crc16_byte(
+                                 crc16_byte(crc, pl_word[7:0]),
+                                 pl_word[15:8]),
+                               pl_word[23:16]),
+                             pl_word[31:24]);
+                ridx    <= ridx + 16'd4;
+                wcnt    <= wcnt + 16'd1;
+                if (wcnt == words - 16'd1) state <= S_CRC;
             end
 
             //------------------------------------------------------------------
@@ -261,25 +297,24 @@ module csi2_frame_tx_var #(
                 hs_data    <= {16'h0000, crc};
                 hs_last    <= 1'b1;
                 packet_cnt <= packet_cnt + 32'd1;
-                byte_cnt   <= byte_cnt + {16'd0, wc};
-                wptr       <= {WW{1'b0}};
-                wc         <= 16'd0;
-                // 本帧还有数据 -> 接着攒下一包; 否则收尾
-                if (frame_end) begin
-                    frame_end <= 1'b0;
-                    state     <= S_FE;
+                byte_cnt   <= byte_cnt + {16'd0, t_wc};
+                tx_busy    <= 1'b0;
+                if (t_fe) begin
+                    state <= S_FE;
                 end else begin
-                    state     <= S_COL;
+                    state <= S_IDLE;
                 end
             end
 
             //------------------------------------------------------------------
             S_FE: begin
-                hs_en     <= 1'b1;
-                hs_data   <= fe_word;
-                frame_cnt <= frame_cnt + 32'd1;
-                gap_cnt   <= 16'd0;
-                state     <= S_GAP;
+                hs_en         <= 1'b1;
+                hs_data       <= fe_word;
+                hs_last       <= 1'b1;
+                frame_cnt     <= frame_cnt + 32'd1;
+                gap_cnt       <= 16'd0;
+                frame_started <= 1'b0;
+                state         <= S_GAP;
             end
 
             //------------------------------------------------------------------

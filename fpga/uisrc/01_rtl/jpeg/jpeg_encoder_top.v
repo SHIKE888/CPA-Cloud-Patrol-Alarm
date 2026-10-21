@@ -114,10 +114,12 @@ module jpeg_encoder_top #(
 
     //=============================================================== 无损 DPCM 编码器
 
-    // ★ bp_ready = 位打包器内部还有余量(它自己的 i_ready 输出) && 下游接得住。
-    //   少了后半项, 下游一停就把熵字节丢了。
+    // ★ bp_ready = 位打包器内部还有余量(它自己的 i_ready 输出)。
+    //   这里【不能】再 & m_ready: 位打包器现在 put 无条件落地, 下游冻结只影响
+    //   o_valid/o_data 的吐出, acc 照收。把 m_ready 挂进来只会让熵编码提前停,
+    //   白白拉低吞吐, 对正确性没有帮助。
     wire        bp_ok;
-    wire        bp_ready = bp_ok & m_ready;
+    wire        bp_ready = bp_ok;
     reg         ll_start;
     wire        ll_valid;
     wire [31:0] ll_code;
