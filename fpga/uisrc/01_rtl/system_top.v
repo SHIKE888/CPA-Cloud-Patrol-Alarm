@@ -581,6 +581,72 @@ rgb_to_yuv422_quad u_rgb2yuv_quad (
 );
 
 
+//=============================================================================
+//  FPGA 硬件 JPEG 编码器接线 (2026-10-21)
+//
+//  ★ 默认**不**编译进设计 (`JPEG_EN 未定义), 因为还有两个硬约束没解决:
+//
+//  1) 吞吐/反压: 1080p60 的 S_yuv_data 是每拍一个 64bit word 的连续流,
+//     而 jpeg_encoder_top 的有损路径约 312 clk/MCU -> 约 29fps, 而且节奏
+//     不恒定 (DCT 固定 30 拍 + 熵编码变长)。直接串进这条流必然反压,
+//     会冲垮已经调好的 CSI-2 定时 (GAP_LINE=200 是板上验证过的基线)。
+//     要真正接进来, 必须先有帧缓冲 (DDR) 或把 DCT/熵编码改成 block 级并行。
+//
+//  2) 资源: 现有设计 DSP 已用 80%, 2D DCT 需要大量乘法器, 打开前必须先
+//     综合一次看余量。
+//
+//  所以这里留一套**完整且能直接编译**的接线, 在文件头加
+//      `define JPEG_EN 1
+//  即可打开, 用来做资源评估或后续接入。
+//=============================================================================
+`ifdef JPEG_EN
+	wire        S_jpeg_s_ready;
+	wire [6:0]  S_jpeg_qt_a, S_jpeg_qt_b;
+	wire [7:0]  S_jpeg_qta, S_jpeg_qtb;
+	wire        S_jpeg_m_valid, S_jpeg_m_last;
+	wire [7:0]  S_jpeg_m_data;
+	wire [23:0] S_jpeg_bytes;
+	wire        S_jpeg_busy, S_jpeg_done;
+	wire [31:0] S_jpeg_cnt;
+
+	jpeg_qtable_ram X_jpeg_qt (
+		.I_clk       (S_hs_rx_clk ),
+		.I_rst_n     (S_pll_lock  ),
+		.I_wr_en     (1'b0        ),
+		.I_wr_addr   (8'd0        ),
+		.I_wr_data   (8'd0        ),
+		.I_rd_idx_a  (S_jpeg_qt_a ),
+		.O_rd_data_a (S_jpeg_qta  ),
+		.I_rd_idx_b  (S_jpeg_qt_b ),
+		.O_rd_data_b (S_jpeg_qtb  )
+	);
+
+	jpeg_encoder_top #(.W(1920), .H(1080)) X_jpeg (
+		.clk            (S_hs_rx_clk    ),
+		.rst_n          (S_pll_lock     ),
+		.i_en           (1'b1           ),
+		.i_soft_rst     (1'b0           ),
+		.i_lossless     (1'b0           ),
+		.i_width        (12'd1920       ),
+		.i_height       (12'd1080       ),
+		.o_qt_idx_a     (S_jpeg_qt_a    ),
+		.i_qt_data_a    (S_jpeg_qta     ),
+		.o_qt_idx_b     (S_jpeg_qt_b    ),
+		.i_qt_data_b    (S_jpeg_qtb     ),
+		.s_valid        (S_yuv_de       ),
+		.s_data         (S_yuv_data[31:0]),
+		.s_ready        (S_jpeg_s_ready ),
+		.m_valid        (S_jpeg_m_valid ),
+		.m_data         (S_jpeg_m_data  ),
+		.m_last         (S_jpeg_m_last  ),
+		.st_frame_bytes (S_jpeg_bytes   ),
+		.st_busy        (S_jpeg_busy    ),
+		.st_done        (S_jpeg_done    ),
+		.st_frame_cnt   (S_jpeg_cnt     )
+	);
+`endif
+
+
 //PLL时钟管理IP 
 ui_pll X_ui_pll (
     .refclk  	(I_sysclk_25m	),
