@@ -233,6 +233,9 @@ module jpeg_regfile #(
     reg [1:0]  r_subsample;
     reg [7:0]  r_restart;
     reg [2:0]  r_predictor;
+    reg        r_soft_rst;
+
+    // 预处理寄存器
     reg        r_pp_en;
     reg [3:0]  r_pp_mode;
     reg [4:0]  r_pp_sobel_sh;
