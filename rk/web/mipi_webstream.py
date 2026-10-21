@@ -1505,6 +1505,7 @@ class OpenCVCapture(threading.Thread):
         self._skel_ts = 0.0         # 上次开始渲染的时刻(显示限帧用)
         self._skel_ok = 0.0         # 上次渲染成功的时刻(调试用)
         self._skel_sub_ts = 0.0     # 上次提交推理的时刻(防多线程重复喂)
+        self._skel_pose = None      # 最新骨架坐标(给 /api/pose, 前端自己画)
 
     # ------------------------------------------------------------------
     #  三级流水线
@@ -2038,27 +2039,37 @@ class OpenCVCapture(threading.Thread):
             else:
                 small = None
 
-            # ---- 只有渲染/编码按 SKEL_FPS 限帧 ----
+            # ---- 把骨架坐标序列化给前端自己画 ----
+            # 不在这里画图/编 JPEG 了: 前端 canvas 矢量绘制不掉分辨率、
+            # 不占编码线程, 也不用每帧做一次 960x540 的 imencode。
             if now - self._skel_ts < 1.0 / self.SKEL_FPS:
                 return
             self._skel_ts = now
-            if small is None:           # 本轮没 submit, 用最新结果画就行
-                hw = frame.shape[1] // 2
-                x0 = 0 if int(half) == 0 else hw
-                roi = frame[:, x0:x0 + hw]
-                small = cv2.resize(roi, (self.SKEL_W, self.SKEL_H),
-                                   interpolation=cv2.INTER_LINEAR)
-            blank = np.zeros_like(small)        # 黑底, 只要骨架线条
-            drawn = ai.draw(blank)
-            if drawn is None:
-                drawn = blank
-            ok, buf = cv2.imencode(
-                ".jpg", drawn, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
-            if ok:
-                self._skel_jpg = buf.tobytes()
-                self._skel_ok = now
+            res = getattr(ai, "_result", None) or []
+            persons = []
+            for d in res:
+                kps = d.get("kps")
+                box = d.get("box")
+                if kps is None or box is None:
+                    continue
+                try:
+                    persons.append({
+                        "b": [round(float(v), 1) for v in box],
+                        "s": round(float(d.get("score", 0.0)), 3),
+                        "t": d.get("tid"),
+                        "k": [[round(float(p[0]), 1), round(float(p[1]), 1),
+                               round(float(p[2]), 2)] for p in kps],
+                    })
+                except (TypeError, ValueError, IndexError):
+                    continue
+            self._skel_pose = {
+                "ok": True,
+                "w": int(self.SKEL_W), "h": int(self.SKEL_H),
+                "ts": now, "persons": persons,
+            }
+            self._skel_ok = now
         except Exception as e:                                 # noqa: BLE001
-            print("[ai] 骨架渲染异常: %s" % e, file=sys.stderr)
+            print("[ai] 骨架坐标异常: %s" % e, file=sys.stderr)
 
     def _ai_dual_draw(self, ai, frame, half=0):
         """双目模式: AI 只喂指定那一路(cam0=左半边 / cam1=右半边), 画完再贴回去。
@@ -3465,6 +3476,15 @@ class Handler(BaseHTTPRequestHandler):
                 return self._serve_viewer()
             if path == "/stream":
                 return self._serve_stream()
+            if path == "/api/pose":
+                # 双目下左框: 骨架坐标。前端用 canvas 自己画连线 ——
+                # 比传 JPEG 省带宽、不掉分辨率、后端也不用编码。
+                cap = Handler.capture
+                pose = (getattr(cap, "_skel_pose", None)
+                        if cap is not None else None)
+                if not pose:
+                    return self._json({"ok": False, "persons": []})
+                return self._json(pose)
             if path == "/skel.jpg":
                 # 双目下左框: 黑底纯骨架。图片很小(640x360), 前端用
                 # setInterval 拉, 不走 MJPEG 长连接 —— 这样不用动 hub 的

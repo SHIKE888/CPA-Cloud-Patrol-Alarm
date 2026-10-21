@@ -318,7 +318,7 @@
           <div class="qc"><b>cam1</b>
             <div class="qb"><canvas id="cvR"></canvas></div></div>
           <div class="qc"><b>骨架</b>
-            <div class="qb"><img id="cvSkel" alt="skel"></div></div>
+            <div class="qb"><canvas id="cvSkel"></canvas></div></div>
           <div class="qc"><b>深度（预留）</b>
             <div class="qb dph">双目融合测距<br>待实现</div></div>
         </div>
@@ -1003,6 +1003,61 @@ document.querySelectorAll("[data-rot]").forEach(b => {
 // "同 IP 只留最新一路", 第二个 img 会把第一个顶掉, 两个都黑。
 let _quadTimer = null, _skelTimer = null;
 
+// COCO-17 骨架连接(0-based), 与板端 det_core.py 的 SKELETON 一致
+const COCO_EDGES = [[15, 13], [13, 11], [16, 14], [14, 12], [11, 12], [5, 11],
+  [6, 12], [5, 6], [5, 7], [6, 8], [7, 9], [8, 10], [1, 2], [0, 1], [0, 2],
+  [1, 3], [2, 4], [3, 5], [4, 6]];
+const KP_CONF = 0.3;          // 低于这个置信度的关节点不画
+
+// 后端只给坐标(JSON), 这里自己用 canvas 画 —— 比传 JPEG 省带宽、
+// 放大不糊、后端也不用每帧 imencode。
+function drawPose(data) {
+  const c = $("cvSkel"); if (!c) return;
+  const W = +data.w || 960, H = +data.h || 540;
+  // 只在尺寸变化时设, 否则每次都会清空重来(浪费)
+  if (c.width !== W || c.height !== H) { c.width = W; c.height = H; }
+  const g = c.getContext("2d");
+  g.fillStyle = "#000"; g.fillRect(0, 0, W, H);
+  const ps = data.persons || [];
+  if (!ps.length) {
+    g.fillStyle = "#556"; g.font = "16px sans-serif";
+    g.textAlign = "center";
+    g.fillText("无人体", W / 2, H / 2);
+    g.textAlign = "start";
+    return;
+  }
+  ps.forEach(function (p) {
+    const k = p.k || [], b = p.b || [];
+    // 人体框
+    if (b.length >= 4) {
+      g.strokeStyle = "#0f0"; g.lineWidth = 3;
+      g.strokeRect(b[0], b[1], b[2] - b[0], b[3] - b[1]);
+      if (p.t != null) {
+        g.fillStyle = "#0f0"; g.font = "bold 20px sans-serif";
+        g.fillText("ID" + p.t, b[0] + 4, Math.max(20, b[1] - 6));
+      }
+    }
+    // 骨架连线
+    g.strokeStyle = "#0ff"; g.lineWidth = 4; g.lineCap = "round";
+    COCO_EDGES.forEach(function (e) {
+      const a = k[e[0]], d = k[e[1]];
+      if (!a || !d || a[2] < KP_CONF || d[2] < KP_CONF) return;
+      g.beginPath(); g.moveTo(a[0], a[1]); g.lineTo(d[0], d[1]); g.stroke();
+    });
+    // 关节点
+    g.fillStyle = "#ff0";
+    k.forEach(function (q) {
+      if (q[2] < KP_CONF) return;
+      g.beginPath(); g.arc(q[0], q[1], 5, 0, 6.2832); g.fill();
+    });
+  });
+}
+
+async function skelTick() {
+  if (!base) return;
+  try { drawPose(await api("/api/pose")); } catch (e) { /* 静默 */ }
+}
+
 function quadDraw() {
   const src = document.querySelector('img[id="stream"]');
   if (!src || !src.naturalWidth) return;
@@ -1025,10 +1080,7 @@ function syncQuad() {
   if (on) {
     if (!_quadTimer) _quadTimer = setInterval(quadDraw, 33);
     if (!_skelTimer) {
-      _skelTimer = setInterval(function () {
-        const im = $("cvSkel");
-        if (im && base) im.src = base + "/skel.jpg?t=" + Date.now();
-      }, 250);
+      _skelTimer = setInterval(skelTick, 100);
     }
   } else {
     if (_quadTimer) { clearInterval(_quadTimer); _quadTimer = null; }
