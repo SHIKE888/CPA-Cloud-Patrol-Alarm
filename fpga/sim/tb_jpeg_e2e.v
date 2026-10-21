@@ -44,13 +44,19 @@ module tb_jpeg_e2e;
 
     // ---- 死锁定位用 (只在无损模式下打印) ----
     integer dbg_cyc = 0;
+    integer dbg_xready = 0;     // negedge 上 s_ready 为 X 的次数
+    integer dbg_accept = 0;     // posedge 上 (s_valid && s_ready) 成立的次数
+    integer dbg_waitcyc = 0;    // for 循环内 while(!s_ready) 自旋的拍数
     always @(posedge clk) begin
         dbg_cyc <= dbg_cyc + 1;
+        if (s_valid === 1'b1 && s_ready === 1'b1) dbg_accept <= dbg_accept + 1;
         if (`SIM_LL && (dbg_cyc % 20000) == 0)
-            $display("DBG t=%0d tstate=%0d llwcnt=%0d llready=%b svld=%b llstate=%0d inhv=%b ovld=%b",
+            $display("DBG t=%0d tstate=%0d llwcnt=%0d llready=%b svld=%b llstate=%0d inhv=%b xrdy=%0d acc=%0d wait=%0d",
                      $time, dut.tstate, dut.ll_wcnt, dut.ll_ready,
-                     dut.s_valid, dut.u_ll.state, dut.u_ll.in_have, dut.bp_valid);
+                     dut.s_valid, dut.u_ll.state, dut.u_ll.in_have,
+                     dbg_xready, dbg_accept, dbg_waitcyc);
     end
+    always @(negedge clk) if (s_ready === 1'bx) dbg_xready = dbg_xready + 1;
 
     jpeg_encoder_top #(.W(W), .H(H)) dut (
         .clk          (clk),
@@ -155,7 +161,9 @@ module tb_jpeg_e2e;
         $fclose(fin);
 
         wait (st_done == 1'b1);
-        repeat (10) @(posedge clk);
+        // st_done 与 m_last (EOI 的 D9) 同拍拉高, 再多等 1 拍让写文件块落盘即可。
+        // 原来等 10 拍会把下一帧的 SOI/APP0 前 6 字节也写进文件。
+        repeat (2) @(posedge clk);
 
         $fclose(fd);
         $display("RTL: %0d bytes, st_frame_bytes=%0d, frames=%0d",
@@ -164,7 +172,8 @@ module tb_jpeg_e2e;
     end
 
     initial begin
-        #400_000_000;
+        // 超时按画面大小自适应: 无损 4 clk/word, 加余量取 W*H*8
+        #(W * H * 8 + 200_000);
         $display("TIMEOUT: only %0d bytes", nout);
         $fclose(fd);
         $finish;

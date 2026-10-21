@@ -89,7 +89,7 @@ module jpeg_encoder_top #(
         .rst_n       (rst_n),
         .i_valid     (s_valid & ~use_ll),
         .i_data      (s_data),
-        .o_wr_ready  (s_ready),
+        .o_wr_ready  (lb_ready),
         .i_rd_row    (rd_row),
         .i_rd_grp    (rd_grp),
         .i_rd_sel    (rd_sel),
@@ -108,11 +108,20 @@ module jpeg_encoder_top #(
     wire        ll_done;
     wire        ll_ready;
 
+    // ★ u_ll 的 i_valid 必须用 "本拍真的可以收" 来门控, 不能只用 s_valid。
+    //   上游 (tb / system_top) 在 ready 为低时会一直保持 valid=1, 这是合法的
+    //   AXI 风格握手。而 s_ready 里带了 "header 发完" 这一项, u_ll 自己不知道。
+    //   如果只给 s_valid, header 阶段 u_ll 会按 ll_ready=1 把第一个 word 偷偷收下,
+    //   上游却还在等 s_ready, 于是同一份数据被重发/错位, ll_wcnt 只涨了 37。
+    //   用 ll_run (而不是 tstate) 是因为它在此处就能声明, 不踩声明顺序的坑。
+    reg         ll_run;             // 1 = 无损模式 header 已发完, 可以收 YUV
+    wire ll_accept = use_ll & ll_run;
+
     jpeg_lossless_enc #(.W(W)) u_ll (
         .clk         (clk),
         .rst_n       (rst_n),
         .i_start     (ll_start),
-        .i_valid     (s_valid & use_ll),
+        .i_valid     (s_valid & ll_accept),
         .i_data      (s_data),
         .i_ready     (ll_ready),
         .o_valid     (ll_valid),
@@ -300,7 +309,7 @@ module jpeg_encoder_top #(
     reg [2:0]  fin_cnt;
     reg [31:0] ll_wcnt;
 
-    assign s_ready = use_ll ? (ll_ready && (tstate == T_LLRUN)) : lb_ready;
+    assign s_ready = use_ll ? (ll_ready && ll_run) : lb_ready;
 
     // 输出 mux
     always @(*) begin
@@ -317,7 +326,7 @@ module jpeg_encoder_top #(
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n)              ll_wcnt <= 32'd0;
         else if (ll_start)       ll_wcnt <= 32'd0;
-        else if (use_ll && s_valid && ll_ready)
+        else if (s_valid && ll_ready && ll_run)
                                  ll_wcnt <= ll_wcnt + 32'd1;
     end
 
@@ -339,6 +348,7 @@ module jpeg_encoder_top #(
             ll_start      <= 1'b0;   // ★ 必须在复位里清, 否则复位期间是 X
                                      //   会把 u_ll 的 i_ready 污染成 X,
                                      //   上游握手 while(!s_ready) 永久卡死
+            ll_run        <= 1'b0;
             eoi_ph        <= 1'b0;
             fin_cnt       <= 3'd0;
             ll_wcnt       <= 32'd0;
@@ -370,6 +380,7 @@ module jpeg_encoder_top #(
                     st_busy       <= 1'b1;
                     if (use_ll) begin
                         ll_start <= 1'b1;       // 清预测器/行缓冲
+                        ll_run   <= 1'b0;       // header 没发完之前不许收数据
                         tstate   <= T_HDR2;
                     end else begin
                         q_load <= 1'b1;
@@ -386,7 +397,12 @@ module jpeg_encoder_top #(
 
             //----------------------------------------------------
             T_LLRUN: begin
-                if (ll_wcnt >= NWORD) begin
+                // ★ 必须等 u_ll 把最后一个 word 的码也吐出来 (ll_ready 回到 1)
+                //   才能 flush。u_ll 是 4 clk/word 的流水, 收到第 NWORD 个时
+                //   最后一个 word 的码还在流水线里; 此时就 flush 出来的是半个码
+                //   —— 实测末尾 2 字节 0C 03 变成 1 字节 1F。
+                if (ll_wcnt >= NWORD && ll_ready) begin
+                    ll_run   <= 1'b0;        // 停止接收, 不再允许上游推进
                     bp_flush <= 1'b1;
                     tstate   <= T_FIN;
                 end
@@ -405,7 +421,8 @@ module jpeg_encoder_top #(
             T_HDR: begin
                 if (hdr_done) begin
                     if (use_ll) begin
-                        tstate  <= T_LLRUN;
+                        ll_run <= 1'b1;      // header 发完, 现在才允许收 YUV
+                        tstate <= T_LLRUN;
                     end else begin
                         mx_reg <= 8'd0;
                         my     <= 9'd0;
@@ -491,8 +508,8 @@ module jpeg_encoder_top #(
             //   就丢了 (实测: 861 字节 vs 参考 862, 只差最后 0x63)
             T_FIN: begin
                 // bp_flush 是寄存的, bitpack 的输出又晚一拍, 再加可能的
-                // 0xFF->00 填充, 最多 3 拍; 固定等 4 拍最稳
-                if (fin_cnt == 3'd4) begin
+                // 0xFF->00 填充; 无损最后可能还剩 2 字节, 等 8 拍最稳
+                if (fin_cnt == 3'd7) begin
                     fin_cnt <= 3'd0;
                     eoi_ph  <= 1'b0;
                     tstate  <= T_EOI;
