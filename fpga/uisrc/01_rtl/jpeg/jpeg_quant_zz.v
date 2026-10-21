@@ -259,10 +259,29 @@ module jpeg_quant_zz (
     assign o_rd_data_n = (i_rd_idx == 6'd63) ? 16'd0 : qzz[i_rd_idx + 6'd1];
 
     genvar gz;
+    wire [63:0] nz_mask_c;
     generate
         for (gz = 0; gz < 64; gz = gz + 1) begin : g_nz
-            assign o_nz_mask[gz] = (qzz[gz] != 16'sd0);
+            assign nz_mask_c[gz] = (qzz[gz] != 16'sd0);
         end
     endgenerate
+
+    // ★ 位图必须在**块结束时锁存**, 不能直接组合输出。
+    //   qzz 是分 i_t=0..7 八个阶段写入的, i_t=7 那一拍的 posedge 之前,
+    //   最后 8 项还是**上一个块**的值 —— 组合输出的位图会是新旧混合的中间态,
+    //   熵编码器照着它跳零就会把真正非零的系数当成零跳过 (实测少 8 字节)。
+    //   q_blk_done 打一拍后 qzz 才全部更新完, 那时锁存才是本块的真值。
+    reg [63:0] nz_mask_r;
+    reg        q_done_d;
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            nz_mask_r <= 64'd0;
+            q_done_d  <= 1'b0;
+        end else begin
+            q_done_d  <= i_valid && (i_t == 3'd7);
+            if (q_done_d) nz_mask_r <= nz_mask_c;
+        end
+    end
+    assign o_nz_mask = nz_mask_r;
 
 endmodule
