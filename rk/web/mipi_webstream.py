@@ -1502,8 +1502,9 @@ class OpenCVCapture(threading.Thread):
         # _skel_jpg: 最新一帧黑底纯骨架 JPEG, 由 /skel.jpg 取走。
         # 为什么单独一路而不画在原图上: 用户要求上面两块是干净视频流。
         self._skel_jpg = None
-        self._skel_ts = 0.0         # 上次开始渲染的时刻(限帧用)
+        self._skel_ts = 0.0         # 上次开始渲染的时刻(显示限帧用)
         self._skel_ok = 0.0         # 上次渲染成功的时刻(调试用)
+        self._skel_sub_ts = 0.0     # 上次提交推理的时刻(防多线程重复喂)
 
     # ------------------------------------------------------------------
     #  三级流水线
@@ -2002,7 +2003,8 @@ class OpenCVCapture(threading.Thread):
 
     # 双目骨架图: 很小的分辨率就够 —— 骨架只有几条线, 看不出像素感,
     # 但推理开销和编码开销都按平方降。8fps 也够看(骨架不会有剧烈运动)。
-    SKEL_W, SKEL_H = 640, 360
+    # ⚠ 960x540 而不是 640x360: ai.submit 喂的就是这张图, 太小会漏远处的人。
+    SKEL_W, SKEL_H = 960, 540
     SKEL_FPS = 8.0
 
     def _skel_update(self, ai, frame, half=0):
@@ -2011,23 +2013,41 @@ class OpenCVCapture(threading.Thread):
         ⚠ 关键: 双目下 **不把骨架画在视频帧上**。上面两块要干净视频,
           骨架单独一块(用户明确要求)。单目模式仍然照旧叠在原图上。
 
-        ai.submit 喂的仍然是"选中的那一路"(ai_src), 所以 NPU 只跑一路,
-        和之前一样省一半算力; 只是喂进去的尺寸小了, 描点精度会略降,
-        这是"只给人看骨架"的合理取舍。
+        ⚠⚠ ai.submit() 必须**每帧都调**, 不能跟着 SKEL_FPS 一起限帧 ——
+           AI 的输入帧率 = submit 频率。早先把 submit 放在限帧判断后面,
+           结果 YOLO 直接掉到 7.4fps(实测 det_ms 才 25.4ms, 理论上限 39fps,
+           说明瓶颈就是喂帧太少, 不是推理慢)。
+           限帧只该管"渲染骨架 + JPEG 编码"这部分纯显示开销。
         """
         if not HAVE_CV2:
             return
-        now = time.time()
-        if now - self._skel_ts < 1.0 / self.SKEL_FPS:
-            return                      # 限帧: 编码线程不要被它拖慢
-        self._skel_ts = now
         try:
-            hw = frame.shape[1] // 2
-            x0 = 0 if int(half) == 0 else hw
-            roi = frame[:, x0:x0 + hw]
-            small = cv2.resize(roi, (self.SKEL_W, self.SKEL_H),
-                               interpolation=cv2.INTER_LINEAR)
-            ai.submit(small)
+            # _enc_loop 是 N 个线程跑同一段代码, 不加闸的话 3 个线程会
+            # 各自 resize+submit 一遍。30fps 高于 AI 实际能力(~26fps),
+            # 所以不会变成新瓶颈。
+            now = time.time()
+            if now - self._skel_sub_ts >= 1.0 / 30.0:
+                self._skel_sub_ts = now
+                hw = frame.shape[1] // 2
+                x0 = 0 if int(half) == 0 else hw
+                roi = frame[:, x0:x0 + hw]
+                small = cv2.resize(roi, (self.SKEL_W, self.SKEL_H),
+                                   interpolation=cv2.INTER_LINEAR)
+                # ---- 喂给 AI (它内部按 ai-fps 再自己限一次) ----
+                ai.submit(small)
+            else:
+                small = None
+
+            # ---- 只有渲染/编码按 SKEL_FPS 限帧 ----
+            if now - self._skel_ts < 1.0 / self.SKEL_FPS:
+                return
+            self._skel_ts = now
+            if small is None:           # 本轮没 submit, 用最新结果画就行
+                hw = frame.shape[1] // 2
+                x0 = 0 if int(half) == 0 else hw
+                roi = frame[:, x0:x0 + hw]
+                small = cv2.resize(roi, (self.SKEL_W, self.SKEL_H),
+                                   interpolation=cv2.INTER_LINEAR)
             blank = np.zeros_like(small)        # 黑底, 只要骨架线条
             drawn = ai.draw(blank)
             if drawn is None:
