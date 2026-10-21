@@ -91,6 +91,7 @@ module tb_jpeg_e2e;
         .m_valid      (m_valid),
         .m_data       (m_data),
         .m_last       (m_last),
+        .m_ready      (1'b1),          // 纯编码器测试: 下游永远接得住
         .st_frame_bytes(st_bytes),
         .st_busy      (st_busy),
         .st_done      (st_done),

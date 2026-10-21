@@ -35,6 +35,9 @@ module jpeg_headers (
 
     output reg          o_valid,
     output reg  [7:0]   o_data,
+    // ★ 下游能否接住本拍字节。接 CSI-2 后发包时会拉低, 不尊重就会丢掉
+    //   一整段 header (实测少 138 字节)。
+    input  wire         i_ready,
     output reg          o_done
 );
 
@@ -121,13 +124,16 @@ module jpeg_headers (
             o_data  <= 8'd0;
             o_done  <= 1'b0;
         end else begin
-            o_valid <= 1'b0;
-            o_done  <= 1'b0;
+            // 只有握手成功才撤销 valid / 前进; 下游没接住时保持数据和 cnt 不动
+            if (i_ready) begin
+                o_valid <= 1'b0;
+                o_done  <= 1'b0;
+            end
 
             if (i_start) begin
                 cnt <= 10'd0;
                 run <= 1'b1;
-            end else if (run) begin
+            end else if (run && i_ready) begin
                 o_valid <= 1'b1;
                 o_data  <= d2;
                 if (cnt == hdr_len - 10'd1) begin

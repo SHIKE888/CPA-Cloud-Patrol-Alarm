@@ -55,6 +55,9 @@ module jpeg_encoder_top #(
     output reg         m_valid,
     output reg  [7:0]  m_data,
     output reg         m_last,
+    // 下游能否接住本拍字节。接 CSI-2 可变长发送时必须用上 ——
+    // 它在攒满一个包去发包的 200+ 拍里 ready=0, 不反压就会丢掉那一整段熵字节。
+    input  wire        m_ready,
 
     // ---------------- 状态 ----------------
     output reg  [23:0] st_frame_bytes,
@@ -111,11 +114,10 @@ module jpeg_encoder_top #(
 
     //=============================================================== 无损 DPCM 编码器
 
-    // ★ bp_ready 由 jpeg_bitpack 的 i_ready **输出**驱动 (它自己算"累加器还有没有余量"),
-    //   这里只声明 net 再扇出给熵编码/无损编码器的反压输入。
-    //   千万不要再写 `assign bp_ready = 1'b1;` —— 那是双驱动, iverilog 能过,
-    //   Anlogic TD 直接报 HDL-8007 (constantly driven from multiple places)。
-    wire        bp_ready;
+    // ★ bp_ready = 位打包器内部还有余量(它自己的 i_ready 输出) && 下游接得住。
+    //   少了后半项, 下游一停就把熵字节丢了。
+    wire        bp_ok;
+    wire        bp_ready = bp_ok & m_ready;
     reg         ll_start;
     wire        ll_valid;
     wire [31:0] ll_code;
@@ -259,9 +261,10 @@ module jpeg_encoder_top #(
         .i_valid    (use_ll ? ll_valid : huff_valid),
         .i_code     (use_ll ? ll_code  : huff_code),
         .i_len      (use_ll ? ll_len   : huff_len),
-        .i_ready    (bp_ready),
+        .i_ready    (bp_ok),
         .o_valid    (bp_valid),
         .o_data     (bp_data),
+        .o_ready    (m_ready),
         .o_byte_cnt (bp_cnt)
     );
 
@@ -281,6 +284,7 @@ module jpeg_encoder_top #(
         .o_qt_idx (o_qt_idx_a),
         .i_qt_data(i_qt_data_a),
         .o_valid  (hdr_valid),
+        .i_ready  (m_ready),
         .o_data   (hdr_data),
         .o_done   (hdr_done)
     );
@@ -605,8 +609,10 @@ module jpeg_encoder_top #(
             //   就丢了 (实测: 861 字节 vs 参考 862, 只差最后 0x63)
             T_FIN: begin
                 // bp_flush 是寄存的, bitpack 的输出又晚一拍, 再加可能的
-                // 0xFF->00 填充; 无损最后可能还剩 2 字节, 等 8 拍最稳
-                if (fin_cnt == 3'd7) begin
+                // 0xFF->00 填充; 无损最后可能还剩 2 字节, 等 8 拍最稳。
+                // ★ 还要求 bp_valid 已经下去 —— 接 CSI-2 后 m_ready 会在发包时
+                //   拉低把 bitpack 冻结, 只看固定拍数会把没吐完的字节切断。
+                if (fin_cnt == 3'd7 && !bp_valid) begin
                     fin_cnt <= 3'd0;
                     eoi_ph  <= 1'b0;
                     tstate  <= T_EOI;
@@ -616,13 +622,16 @@ module jpeg_encoder_top #(
             end
 
             T_EOI: begin
-                eoi_ph <= ~eoi_ph;
-                if (eoi_ph) begin
-                    st_frame_bytes <= bp_cnt[23:0];
-                    st_frame_cnt   <= st_frame_cnt + 32'd1;
-                    st_done        <= 1'b1;
-                    st_busy        <= 1'b0;
-                    tstate         <= T_IDLE;
+                // ★ FF/D9 也要等下游接住; 否则发包期间这两个字节会丢。
+                if (m_ready) begin
+                    eoi_ph <= ~eoi_ph;
+                    if (eoi_ph) begin
+                        st_frame_bytes <= bp_cnt[23:0];
+                        st_frame_cnt   <= st_frame_cnt + 32'd1;
+                        st_done        <= 1'b1;
+                        st_busy        <= 1'b0;
+                        tstate         <= T_IDLE;
+                    end
                 end
             end
 

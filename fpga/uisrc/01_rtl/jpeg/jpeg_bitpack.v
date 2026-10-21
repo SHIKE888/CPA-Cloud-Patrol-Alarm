@@ -36,6 +36,7 @@ module jpeg_bitpack (
     // 字节流输出
     output reg         o_valid,
     output reg  [7:0]  o_data,
+    input  wire        o_ready,         // 下游能接住这拍字节 (0 时冻结)
 
     output reg  [31:0] o_byte_cnt   // 本帧已输出字节数 (不含头部)
 );
@@ -88,7 +89,10 @@ module jpeg_bitpack (
             o_valid    <= 1'b0;
             o_data     <= 8'd0;
             o_byte_cnt <= 32'd0;
-        end else begin
+        end else if (!o_valid || o_ready) begin
+            // ★ 2026-10-21 加输出握手: 下游(CSI-2 发包时会停 200+ 拍)没接住时
+            //   整个打包器冻结 (acc/n/o_data/o_valid 全部保持), 不会丢字节。
+            //   原来 o_valid 是 1 拍脉冲且无 ready, 输出接任何带反压的模块都会丢数据。
             o_valid <= 1'b0;
 
             if (pend_00) begin
