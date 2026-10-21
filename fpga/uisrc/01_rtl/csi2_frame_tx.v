@@ -470,7 +470,15 @@ module csi2_frame_tx_var #(
     reg [WW-1:0] wptr;
     reg [15:0]   wc;            // 本 bank 已收字节数
 
-    reg          pend_v;        // 有一个 bank 攒满, 等发
+    // ★ pend_v 不能再当寄存器用 —— 写侧要置位、发侧要清零, 两个 always 块
+    //   同时驱动同一个 reg 会被 TD 判成 HDL-8007 'constantly driven from
+    //   multiple places' (iverilog 不报, 所以仿真一直是绿的)。
+    //   改成指针握扌: d_wr 只由写侧翻, d_rd 只由发侧翻, pend_v 纯组合。
+    reg          d_wr;
+    reg          d_rd;
+    wire         pend_v = (d_wr != d_rd);
+
+    // 描述符 (只由写侧写, 发侧只读)
     reg          pend_bank;
     reg [15:0]   pend_wc;
     reg          pend_fe;       // 该 bank 内含帧尾
@@ -501,10 +509,10 @@ module csi2_frame_tx_var #(
     wire [31:0] fe_word = build_short_hdr(6'h01, frame_cnt[15:0]);
     wire [31:0] lp_hdr  = build_long_hdr(DT, t_wc);
 
-    // ★ 只有"待发 bank == 正在写的 bank" 或 "正在发的 bank == 正在写的 bank" 时才停。
-    //   前者不会发生 (写完立刻切 bank), 后者只有收得比发快两包以上才会出现。
-    assign s_tready = !((pend_v && (pend_bank == wsel)) ||
-                        (tx_busy && (tx_bank  == wsel)));
+    // ★ 队列最多排 1 个 (描述符只有一组), 所以写侧只能在 pend_v=0 时写。
+    //   这不影响吞吐: 发侧在 S_IDLE 一拍就把描述符取走, 写侧只停 1~2 拍;
+    //   真正需要 259 拍的“发包”是并行在后台做的。
+    assign s_tready = !pend_v && !(tx_busy && (tx_bank == wsel));
 
     // 一次取 4 字节 (越界补 0)
     wire [WW-1:0] ri0 = ridx[WW-1:0];
@@ -525,10 +533,10 @@ module csi2_frame_tx_var #(
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             wsel <= 1'b0; wptr <= {WW{1'b0}}; wc <= 16'd0;
-            pend_v <= 1'b0; pend_bank <= 1'b0; pend_wc <= 16'd0; pend_fe <= 1'b0;
+            d_wr <= 1'b0; pend_bank <= 1'b0; pend_wc <= 16'd0; pend_fe <= 1'b0;
         end else if (!enable) begin
             wsel <= 1'b0; wptr <= {WW{1'b0}}; wc <= 16'd0;
-            pend_v <= 1'b0; pend_bank <= 1'b0; pend_wc <= 16'd0; pend_fe <= 1'b0;
+            d_wr <= 1'b0; pend_bank <= 1'b0; pend_wc <= 16'd0; pend_fe <= 1'b0;
         end else if (s_tvalid && s_tready) begin
             pbuf[{wsel, wptr}] <= s_tdata;
             wptr <= wptr + 1'b1;
@@ -536,7 +544,7 @@ module csi2_frame_tx_var #(
 
             if (s_tlast) begin
                 // 帧尾: 立刻交出这个 (可能不满的) bank
-                pend_v    <= 1'b1;
+                d_wr      <= ~d_wr;
                 pend_bank <= wsel;
                 pend_wc   <= wc + 16'd1;
                 pend_fe   <= 1'b1;
@@ -544,7 +552,7 @@ module csi2_frame_tx_var #(
                 wptr      <= {WW{1'b0}};
                 wc        <= 16'd0;
             end else if (wc == PKT_BYTES[15:0] - 16'd1) begin
-                pend_v    <= 1'b1;
+                d_wr      <= ~d_wr;
                 pend_bank <= wsel;
                 pend_wc   <= PKT_BYTES[15:0];
                 pend_fe   <= 1'b0;
@@ -571,6 +579,7 @@ module csi2_frame_tx_var #(
             crc           <= 16'hFFFF;
             tx_busy       <= 1'b0;
             tx_bank       <= 1'b0;
+            d_rd          <= 1'b0;
             t_wc          <= 16'd0;
             t_fe          <= 1'b0;
             frame_started <= 1'b0;
@@ -582,6 +591,7 @@ module csi2_frame_tx_var #(
             hs_en   <= 1'b0;
             hs_last <= 1'b0;
             tx_busy <= 1'b0;
+            d_rd    <= 1'b0;
         end else begin
             hs_en   <= 1'b0;
             hs_last <= 1'b0;
@@ -596,7 +606,7 @@ module csi2_frame_tx_var #(
                     t_fe    <= pend_fe;
                     tx_bank <= pend_bank;
                     tx_busy <= 1'b1;
-                    pend_v  <= 1'b0;
+                    d_rd    <= d_wr;
                     words   <= (pend_wc + 16'd3) >> 2;
                     ridx    <= 16'd0;
                     wcnt    <= 16'd0;
