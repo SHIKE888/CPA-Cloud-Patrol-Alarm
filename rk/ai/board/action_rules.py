@@ -288,6 +288,15 @@ class TrackState(object):
         sw_l = max(0.0, w_disp_l - sh_disp)
         sw_r = max(0.0, w_disp_r - sh_disp)
         sw_max, sw_min = max(sw_l, sw_r), min(sw_l, sw_r)
+        # 原始手腕位移的最大值(不扣肩位移) —— photo 用:
+        #   "双手捧在眼前保持不动" 要看的是**绝对**幅度, 人整体平移时
+        #   手确实也跟着动了(虽然相对肩没动), 但仍不该算"稳定拍照"。
+        # ⚠ 2026-10-21: 这一行是补回来的。早先把旧版的
+        #   `dmax, dmin = max(w_disp_l, w_disp_r), min(...)` 改成 sw_max/sw_min 时
+        #   忘了 photo 那边还在用 dmax, 导致 NameError: name 'dmax' is not defined
+        #   —— 只要人脸+双手都检测到就必崩(那一帧所有动作识别丢失),
+        #   而 n_kpt 少时被 `if nose and lw and rw` 短路, 所以现场很难复现。
+        dmax = max(w_disp_l, w_disp_r)
         # ⚠ 必须**两只手都有有效关键点**才能判 swing。
         #   否则“单侧性”完全是假的: 手无效时 w_disp 保持 0 → sw_min = 0 →
         #   “sw_min < sw_max * 0.4”恒为真, 只剩 sw_max 一个条件在把关。
