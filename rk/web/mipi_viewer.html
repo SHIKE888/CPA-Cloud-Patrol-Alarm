@@ -1020,6 +1020,8 @@ function syncQuad() {
   q.style.display = on ? "grid" : "none";
   const s = document.querySelector('img[id="stream"]');
   if (s) s.style.display = on ? "none" : "block";
+  // 立即应用外框比例(不等下一轮 poll): 四宫格每格 16:9 => 整体 16:9
+  if (on) $("stage").style.aspectRatio = "16 / 9";
   if (on) {
     if (!_quadTimer) _quadTimer = setInterval(quadDraw, 33);
     if (!_skelTimer) {
@@ -2023,8 +2025,15 @@ async function poll() {
     $("sBackend").textContent = (st.backend || "?") + " / " + (st.device || "?");
     $("sSize").textContent    = (st.width || "?") + " × " + (st.height || "?");
     // 黑框比例跟着实际分辨率走, 换模式时不会突然变形
+    // ⚠ 双目例外: 推流是 3840x1080(32:9), 但界面是 2x2 四宫格,
+    //   每格要 16:9 => 整体也是 32:18 = 16:9。直接用 32:9 会把
+    //   每个格子压成 32:9 的扁条。
     const _aw = +st.width, _ah = +st.height;
-    if (_aw > 0 && _ah > 0) $("stage").style.aspectRatio = _aw + " / " + _ah;
+    if (+(st.params && st.params.dual ? st.params.dual : 0) > 0) {
+      $("stage").style.aspectRatio = "16 / 9";
+    } else if (_aw > 0 && _ah > 0) {
+      $("stage").style.aspectRatio = _aw + " / " + _ah;
+    }
     $("sFps").textContent     = (st.fps ?? "?") + " fps";
     // ---- 双目状态 ----
     const _d = st.dual;
