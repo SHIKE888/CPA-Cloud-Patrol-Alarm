@@ -254,6 +254,7 @@ module jpeg_encoder_top #(
     reg [3:0]  rc;
     reg [8:0]  my;
     reg        eoi_ph;
+    reg [2:0]  fin_cnt;
 
     // 输出 mux
     always @(*) begin
@@ -282,6 +283,7 @@ module jpeg_encoder_top #(
             bp_flush      <= 1'b0;
             grp_done      <= 1'b0;
             eoi_ph        <= 1'b0;
+            fin_cnt       <= 3'd0;
             rd_row        <= 3'd0;
             st_busy       <= 1'b0;
             st_done       <= 1'b0;
@@ -401,9 +403,20 @@ module jpeg_encoder_top #(
             end
 
             //----------------------------------------------------
+            // ★ 必须等 bitpack 把 flush 的那个字节真正吐出去再进 EOI。
+            //   bp_flush 在 T_NEXT 拍拉高, bitpack 下一拍才输出 o_valid;
+            //   若此时直接进 T_EOI, 输出 mux 会被 EOI 抢占, 最后一个熵字节
+            //   就丢了 (实测: 861 字节 vs 参考 862, 只差最后 0x63)
             T_FIN: begin
-                eoi_ph <= 1'b0;
-                tstate <= T_EOI;
+                // bp_flush 是寄存的, bitpack 的输出又晚一拍, 再加可能的
+                // 0xFF->00 填充, 最多 3 拍; 固定等 4 拍最稳
+                if (fin_cnt == 3'd4) begin
+                    fin_cnt <= 3'd0;
+                    eoi_ph  <= 1'b0;
+                    tstate  <= T_EOI;
+                end else begin
+                    fin_cnt <= fin_cnt + 3'd1;
+                end
             end
 
             T_EOI: begin

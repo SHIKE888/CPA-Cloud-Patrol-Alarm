@@ -84,9 +84,9 @@ module jpeg_headers (
         if (!run)                                        d2 = 8'd0;
         else if (cnt >= 10'd25 && cnt <= 10'd88)         d2 = i_qt_data;      // 亮度 Q
         else if (cnt >= 10'd90 && cnt <= 10'd153)        d2 = i_qt_data;      // 色度 Q
-        else if (cnt == 10'd159)                         d2 = 8'h00;
+        else if (cnt == 10'd159)                         d2 = {4'h0, i_height[11:8]};
         else if (cnt == 10'd160)                         d2 = i_height[7:0];
-        else if (cnt == 10'd161)                         d2 = 8'h00;
+        else if (cnt == 10'd161)                         d2 = {4'h0, i_width[11:8]};
         else if (cnt == 10'd162)                         d2 = i_width[7:0];
         else                                             d2 = jpeg_hdr_rom(cnt);
     end

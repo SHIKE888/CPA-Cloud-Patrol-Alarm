@@ -2,17 +2,23 @@
  * tb_jpeg_e2e.v —— JPEG 编码器端到端仿真
  *
  *  1. 从 jpeg_in.hex 读 YUV422, 按行扫进 jpeg_encoder_top
- *  2. 收集输出的 JPEG 字节流到 rtl.jpg
- *  3. 用 tools/cmp_jpeg.py 与 ref.jpg 逐字节比对 (或直接跑 cmp_jpeg.py)
+ *  2. 把输出的 JPEG 字节流写到 rtl.jpg
+ *  3. 用 Python 与 ref.jpg 逐字节比对
  *
- *  尺寸由 tb 顶部的 W/H 决定, 必须与 gen_jpeg_e2e.py 的参数一致
+ *  尺寸通过参数覆盖:
+ *      iverilog -Ptb_jpeg_e2e.W=128 -Ptb_jpeg_e2e.H=32 ...
+ *  必须与 tools/gen_jpeg_e2e.py 的参数一致 (W%16==0, H%8==0)。
  *===========================================================================*/
 `timescale 1ns / 1ps
 
 module tb_jpeg_e2e;
 
-    localparam integer W = 64;
-    localparam integer H = 16;
+    // 尺寸由 tools/gen_jpeg_e2e.py 生成的 jpeg_sim_cfg.vh 提供
+    // (iverilog 在 PowerShell 下 -D/-P 参数传递不可靠, 用头文件最稳)
+`include "jpeg_sim_cfg.vh"
+
+    parameter integer W = `SIM_W;
+    parameter integer H = `SIM_H;
 
     reg         clk;
     reg         rst_n;
@@ -73,7 +79,9 @@ module tb_jpeg_e2e;
     always #3.3 clk = ~clk;         // ~150MHz
 
     //--------------------------------------------------------------- 输入向量
-    reg [31:0] mem [0:65535];
+    // ★ 数组大小必须按实际尺寸算 —— 写死 65536 时 1920x96 需要 92160 项,
+    //   $readmemh 越界读到 X, 整帧系数全废 (实测每组字节数暴涨 10 倍)
+    reg [31:0] mem [0:((W/2)*H)-1];
     integer nwords;
     integer i;
     integer fd;
@@ -81,7 +89,7 @@ module tb_jpeg_e2e;
 
     initial begin
         nwords = (W / 2) * H;
-        $readmemh("jpeg_in.hex", mem);
+        $readmemh("jpeg_in.hex", mem, 0, nwords - 1);
     end
 
     //--------------------------------------------------------------- 输出收集
@@ -108,73 +116,40 @@ module tb_jpeg_e2e;
         rst_n = 1'b1;
         repeat (4) @(posedge clk);
 
-        // 按行扫描喂
+        // 必须尊重 s_ready: 行缓冲是 8 行乒乓, 编码跟不上时上游要被反压。
+        // 原来无条件每拍喂, 长图 (H>16) 时第 3 组起的数据会被静默丢弃。
         for (i = 0; i < nwords; i = i + 1) begin
             @(negedge clk);
             s_valid = 1'b1;
             s_data  = mem[i];
+            #1;
+            while (!s_ready) begin
+                @(negedge clk);
+                #1;
+            end
         end
         @(negedge clk);
         s_valid = 1'b0;
 
-        // 等帧结束
         wait (st_done == 1'b1);
         repeat (10) @(posedge clk);
 
         $fclose(fd);
-        $display("RTL: %0d bytes output, st_frame_bytes=%0d, frames=%0d",
+        $display("RTL: %0d bytes, st_frame_bytes=%0d, frames=%0d",
                  nout, st_bytes, st_cnt);
         $finish;
     end
 
-    //--------------------------------------------------------------- 超时
     initial begin
-        #20_000_000;
+        #400_000_000;
         $display("TIMEOUT: only %0d bytes", nout);
         $fclose(fd);
         $finish;
     end
 
-    //--------------------------------------------------------------- 探针 (调试)
-    integer hcnt;
-    initial hcnt = 0;
+    // 帧完成日志
     always @(posedge clk) begin
-        if (dut.huff_valid && hcnt < 10) begin
-            $display("HUFF #%0d state=%0d kk=%0d run=%0d rd=%0d code=%08x len=%0d",
-                     hcnt, dut.u_huff.state, dut.u_huff.kk, dut.u_huff.run,
-                     dut.u_huff.o_rd_idx, dut.huff_code, dut.huff_len);
-            hcnt = hcnt + 1;
-        end
-    end
-
-    // 第一个块的量化系数 (zigzag 序), 与 Python 参考比对
-    integer z;
-    initial begin
-        wait (dut.huff_start == 1'b1);
-        #1;
-        $write("QZZ:");
-        for (z = 0; z < 16; z = z + 1)
-            $write(" %0d", $signed(dut.u_quant.qzz[z]));
-        $write("\n");
-    end
-
-    initial begin
-        wait (st_done == 1'b1);
-        $display("PROBE rz_y[0..3]=%0d %0d %0d %0d  rz_c[0]=%0d",
-                 dut.u_quant.rz_y[0], dut.u_quant.rz_y[1],
-                 dut.u_quant.rz_y[2], dut.u_quant.rz_y[3],
-                 dut.u_quant.rz_c[0]);
-        $display("PROBE bp_cnt=%0d", dut.bp_cnt);
-    end
-
-    initial begin
-        #15_000_000;
-        $display("STUCK tstate=%0d mx=%0d my=%0d blk=%0d rc=%0d | n=%0d acc=%016x pend=%b bpv=%b | huff st=%0d kk=%0d run=%0d ov=%b ilen=%0d ir=%b | nout=%0d",
-                 dut.tstate, dut.mx_reg, dut.my, dut.blk, dut.rc,
-                 dut.u_bitpack.n, dut.u_bitpack.acc, dut.u_bitpack.pend_00, dut.bp_valid,
-                 dut.u_huff.state, dut.u_huff.kk, dut.u_huff.run,
-                 dut.u_huff.o_valid, dut.huff_len, dut.bp_ready, nout);
-        $finish;
+        if (st_done) $display("FRAME DONE t=%0t nout=%0d", $time, nout);
     end
 
 endmodule

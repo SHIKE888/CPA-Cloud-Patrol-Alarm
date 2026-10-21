@@ -54,11 +54,16 @@ module jpeg_linebuf #(
     localparam integer GY  = W / 8;     // 亮度每组像素数
     localparam integer GC  = W / 16;    // 色度每组像素数
     localparam integer WX  = W / 2;     // 每行 word 数
-    localparam integer GYW = $clog2(GY);   // ★ 必须参数化: W=64 时只有 3 位,
-    localparam integer GCW = $clog2(GC);   //   写死 8 位会让地址越界 (实测 y_mem[896] out of bounds)
+    localparam integer GYW = $clog2(GY);   // 组索引位宽
+    localparam integer GCW = $clog2(GC);
+    // ★ 每行的组数必须补齐到 2 的幂, 因为地址靠位拼接 {buf,row,grp} 形成。
+    //   W=192 时 GY=24 ($clog2=5 -> 可表示 32), 拼出来的地址与
+    //   buf*8*GY + row*GY + grp 不等, 会写错行/读错行 (实测多输出 3 倍字节)
+    localparam integer GYP = 1 << GYW;
+    localparam integer GCP = 1 << GCW;
 
-    localparam integer YDEP = 16 * GY;
-    localparam integer CDEP = 16 * GC;
+    localparam integer YDEP = 16 * GYP;
+    localparam integer CDEP = 16 * GCP;
 
     //=============================================================== 存储
     (* ram_style = "block" *) reg [63:0] y_mem  [0:YDEP-1];

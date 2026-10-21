@@ -51,6 +51,14 @@ module jpeg_quant_zz (
     reg [20:0] rz_y [0:63];
     reg [20:0] rz_c [0:63];
 
+    integer ri;
+    initial begin
+        for (ri = 0; ri < 64; ri = ri + 1) begin
+            rz_y[ri] = 21'd0;
+            rz_c[ri] = 21'd0;
+        end
+    end
+
     // round(2^20 / Q), Q >= 1
     function [20:0] recip_of;
         input [7:0] q;
@@ -155,6 +163,10 @@ module jpeg_quant_zz (
     reg [15:0] qzz [0:63];
 
     integer m;
+    integer qi;
+    initial begin
+        for (qi = 0; qi < 64; qi = qi + 1) qzz[qi] = 16'd0;
+    end
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
