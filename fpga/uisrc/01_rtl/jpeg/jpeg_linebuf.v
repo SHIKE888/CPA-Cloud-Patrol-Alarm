@@ -66,19 +66,16 @@ module jpeg_linebuf #(
     localparam integer CDEP = 16 * GCP;
 
     //=============================================================== 存储
+    // ★ 2026-10-21 为省 slice 改: 去掉 initial 循环清零。
+    //   原来用 `for zi ... mem[zi] = 0` 做仿真初始化, 但这会让综合器**无法**
+    //   把这些数组推断成 ERAM(块 RAM 不支持这种任意初值), 于是一律退回
+    //   寄存器实现 —— 128 Kbit 的缓冲变成 8192 个 FF + 大 mux,
+    //   实测打开 JPEG_EN 后 slice 从 44624 直接涨到 63363 (98.5%), 根本布不通线。
+    //   上电未写位置是 X 没关系: 读侧只在 full0/full1 置位后才被允许读,
+    //   而 full 标志只有在整 8 行写满后才拉高, 永远读不到没写过的位置。
     (* ram_style = "block" *) reg [63:0] y_mem  [0:YDEP-1];
     (* ram_style = "block" *) reg [63:0] cb_mem [0:CDEP-1];
     (* ram_style = "block" *) reg [63:0] cr_mem [0:CDEP-1];
-
-    // 仿真初始化: 未写入的位置保持 0 而不是 X, 便于定位"哪一行没写到"
-    integer zi;
-    initial begin
-        for (zi = 0; zi < YDEP; zi = zi + 1) y_mem[zi] = 64'd0;
-        for (zi = 0; zi < CDEP; zi = zi + 1) begin
-            cb_mem[zi] = 64'd0;
-            cr_mem[zi] = 64'd0;
-        end
-    end
 
     //=============================================================== 写侧
     reg [10:0] wx;              // word 列 0..WX-1
