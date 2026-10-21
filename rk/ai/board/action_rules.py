@@ -96,6 +96,26 @@ def clip_to_box(kps, box, margin=0.35):
     return k
 
 
+def _zone_px(poly, size):
+    """把警戒区统一成**像素**坐标：归一化(0~1)就乘尺寸，已经是像素就原样返回。
+
+    判据：所有坐标都 ≤ 1.5 就当成归一化（没人会用 1px 画警戒区）。
+
+    历史 bug（2026-10-19）：配置里存的是**归一化**坐标，而越界判定用的是
+    脚踝关键点的**原图像素**坐标，两边直接相比永远为 False → `intrude`
+    从来没被触发过。现在在 `ActionRecognizer.update(frame_size=)` 里统一换算。
+    """
+    if not poly or not size:
+        return poly
+    try:
+        if all(abs(float(x)) <= 1.5 and abs(float(y)) <= 1.5 for x, y in poly):
+            w, h = size
+            return [(float(x) * w, float(y) * h) for x, y in poly]
+    except (TypeError, ValueError):
+        pass
+    return poly
+
+
 class TrackState(object):
     """单个跟踪目标的历史与状态机。"""
 
@@ -201,9 +221,14 @@ class TrackState(object):
         #   改成取 ~0.13s（≈4 帧）的位移，足以分辨一次挥动。
         rec_s = self._at(0.13, t)
         w_disp_l = w_disp_r = w_rise = 0.0
+        sh_disp = 0.0      # 肩中点整体位移：剔除“人平移/整体抖动/跟踪跳变”的假位移
+        arm_ext = 0.0      # 手腕到同侧肩的最大距离：手臂是否真的伸出去
         if rec_s is not None:
             k0 = rec_s[3]
-            for i, side in ((LW, 'l'), (RW, 'r')):
+            sh0 = _mid(_pt(k0, LS), _pt(k0, RS))
+            if sh and sh0:
+                sh_disp = math.hypot(sh[0] - sh0[0], sh[1] - sh0[1]) / bh
+            for i, si, side in ((LW, LS, 'l'), (RW, RS, 'r')):
                 p1, p0 = _pt(kps, i), _pt(k0, i)
                 if not (p1 and p0):
                     continue
@@ -212,6 +237,11 @@ class TrackState(object):
                     w_disp_l = d
                 else:
                     w_disp_r = d
+                sp, sp0 = _pt(kps, si), _pt(k0, si)
+                for q, s in ((p1, sp), (p0, sp0)):
+                    if q and s:
+                        arm_ext = max(
+                            arm_ext, math.hypot(q[0] - s[0], q[1] - s[1]) / bh)
                 r = (p0[1] - p1[1]) / bh          # 向上为正
                 if r > w_rise:
                     w_rise = r
@@ -245,12 +275,20 @@ class TrackState(object):
         s_swing = max(0.3, self.tune.get('swing', 1.0))
         s_throw = max(0.3, self.tune.get('throw', 1.0))
 
-        # 挥砍：**单侧**手臂大幅位移（另一侧明显小），与 fight 的双手高频区分。
-        #   阈值 0.45 身高 / 0.13s（≈ 3.5 身高/秒以上）；hold 0.15s 去抖。
-        dmax, dmin = max(w_disp_l, w_disp_r), min(w_disp_l, w_disp_r)
+        # 挥砍：**单侧**手臂在 0.13s 内大幅位移（另一侧明显小），且必须同时满足：
+        #   a) 扣除肩中点整体位移后仍有 0.5 身高（≈3.8 身高/秒）
+        #      —— 人平移/相机动/骨架整体跳变时肩也在动，减掉就不算了；
+        #   b) 手腕离同侧肩 >= 0.3 身高（手臂真的伸出去）；
+        #      走路摆臂、双手放身侧时的贴近移动达不到。
+        #   c) 单侧性：另一侧 < 本侧 40%（原 50%，更强调“单侧挥”）。
+        #   hold 0.2s（原 0.15）：一次挥砍是往返，能连续维持；偶发抖动/伸手不能。
+        sw_l = max(0.0, w_disp_l - sh_disp)
+        sw_r = max(0.0, w_disp_r - sh_disp)
+        sw_max, sw_min = max(sw_l, sw_r), min(sw_l, sw_r)
         self._mark(acts, 'swing',
-                   dmax > 0.45 / s_swing and dmin < dmax * 0.5,
-                   t, 0.15, score=min(1.0, dmax / 0.8))
+                   sw_max > 0.5 / s_swing and sw_min < sw_max * 0.4
+                   and arm_ext > 0.3,
+                   t, 0.2, score=min(1.0, sw_max / 0.85))
 
         # 投掷：0.13s 内手腕**上撩**超过 0.35 身高，且已经过肩。
         #   与 climb 的区别：climb 要髖部抬升/脚高于髖，投掷只要手上撩。
@@ -258,16 +296,20 @@ class TrackState(object):
                    w_rise > 0.35 / s_throw and hands_above_shoulder,
                    t, 0.1, score=min(1.0, w_rise / 0.6))
 
-        # 拍照/手持设备：双手都举到**脸高附近**（鼻点 ±0.18 身高）、两手靠拢、
+        # 拍照/手持设备：双手都举到**脸高附近**（鼻点 ±0.18 身高）、两手**靠得很拢**、
         #   且幅度很小保持 1.5s。
         #   与 handup 的区别：handup 是双手高举过头（手腕会高出鼻点 0.05 身高以上）；
         #   拍照是“双手捧在眼前”，手腕基本不超过鼻点太多。
+        #   注意：两手距离原来是 0.40 身高（≈肩宽），太宽松，坐着双手放腿上、
+        #   抱臂、叉腰都会被误识别 → 收紧到 0.22 身高（真拿手机/相机时约 0.13~0.18），
+        #   并额外要求两手**纵向也对齐**（<0.15 身高），一侧抬一例垂不成立。
         nose = _pt(kps, NOSE)
         photo_hold = False
         if nose and lw and rw:
             near_face = (abs(lw[1] - nose[1]) < 0.18 * bh and
                          abs(rw[1] - nose[1]) < 0.18 * bh)
-            hands_close = abs(lw[0] - rw[0]) < 0.40 * bh
+            hands_close = (abs(lw[0] - rw[0]) < 0.22 * bh and
+                           abs(lw[1] - rw[1]) < 0.15 * bh)
             not_too_high = (lw[1] > nose[1] - 0.05 * bh and
                             rw[1] > nose[1] - 0.05 * bh)
             photo_hold = near_face and hands_close and not_too_high and dmax < 0.25
@@ -329,8 +371,13 @@ class ActionRecognizer(object):
         # 可在线调节的灵敏度（1.0 为默认；越大越容易触发）
         self.tune = {'fall': 1.0, 'run': 1.0, 'swing': 1.0, 'throw': 1.0}
 
-    def update(self, t, results):
-        """results: [ {tid, box, score, kps}, ... ]；原样返回并附加 actions。"""
+    def update(self, t, results, frame_size=None):
+        """results: [ {tid, box, score, kps}, ... ]；原样返回并附加 actions。
+
+        frame_size=(宽, 高)：用于把**归一化**的警戒多边形换算成像素。
+        “越界”的判定用的是脚踝关键点（原图像素），而配置里存的是归一化坐标，
+        两边直接比永远不成立 —— 历史 bug，2026-10-19 修。
+        """
         alive = set()
         for r in results:
             tid = r.get('tid', -1)
@@ -341,7 +388,7 @@ class ActionRecognizer(object):
                                                    box_margin=self.box_margin)
             acts = st.update(t, r['box'], r.get('kps'))
             if self.alert_polygon:
-                st.mark_intrude(t, self.alert_polygon, acts)
+                st.mark_intrude(t, _zone_px(self.alert_polygon, frame_size), acts)
 
             labels = []
             for label, (score, dur) in acts.items():

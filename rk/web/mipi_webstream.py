@@ -72,6 +72,30 @@ def _schedule_self_restart(width, height, delay=1.2):
 
     threading.Thread(target=_do, daemon=True).start()
 
+
+def _schedule_service_restart(delay=1.5):
+    """换 CSI 源后只能走完整服务重启，不能只用 execv 重跑 python。
+
+    execv 只重建 python 进程，不重跑 boot_start.sh 里的
+    `media-ctl --set-v4l2` —— 换源后 media 通路的 pad format/链接状态
+    已错乱，新进程重新 open 能拿到 caps、也能抓到第一帧，然后就再没有
+    新帧了（实测: 快照 md5 永远不变，但快照接口还返回图画，很容易误判
+    成“正常”）。systemctl restart 会重新走一遍完整初始化。
+
+    用 start_new_session 隔开，否则 kill 到当前进程时连带把这条命令干掉。
+    """
+    def _do():
+        time.sleep(delay)
+        try:
+            subprocess.Popen(["/bin/systemctl", "restart", "mipi-webstream"],
+                             stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL,
+                             start_new_session=True)
+        except Exception:                                          # noqa: BLE001
+            os._exit(1)
+
+    threading.Thread(target=_do, daemon=True).start()
+
 # ------------------------------------------------------------------ 依赖
 try:
     import cv2
@@ -437,12 +461,15 @@ DEFAULT_PARAMS = {
     "scale":      1.0,    #  0.25 .. 1.5       (相对 --stream-width 的缩放)
     "quality":    80,     #  30 .. 95          (JPEG 质量)
     "fps":        60,     #  1 .. 120          (推流帧率上限, 默认 60 = 当前链路上限)
-    # 双目拼接 (0x4700): 1=自动, 0=关。开的时候如果源帧没有帧标记(单目模式),
-    # 会自动退化成直通, 所以默认开着不影响单目/4K 模式。
-    "dual":       1,      #  0/1
+    # 双目拼接: 0 = 单目全屏(默认), 1 = 双目拼接(左 cam0 / 右 cam1)。
+    #   ★ 完全显式, 不会自动切 —— 页面上三档: 单目 / 双目 / 双目演示。
+    "dual":       0,      #  0/1
     # 双目**演示**模式: 1 = 把当前这一路复制成左右两半(右边色偏并标注 DEMO-R),
     # 只为看排版/分辨率/帧率, 数据是假的。FPGA 出真双目后设回 0。
     "dual_demo":  0,      #  0/1
+    # 双目模式下 AI 跑哪一路 (0=cam0/左半边, 1=cam1/右半边)。
+    #   单目模式下不需要这个 —— 帧本身就是当前选中的那一路, AI 自动跟着走。
+    "ai_src":     0,      #  0/1
 }
 
 PARAM_RANGE = {
@@ -462,6 +489,7 @@ PARAM_RANGE = {
     "fps":        (1, 120),
     "dual":       (0, 1),
     "dual_demo":  (0, 1),
+    "ai_src":     (0, 1),
 }
 
 
@@ -475,7 +503,7 @@ def _clamp_params(p):
             v = float(p[k])
         except (TypeError, ValueError):
             continue
-        if k in ("mirror", "flipv", "rotate", "dual", "dual_demo"):
+        if k in ("mirror", "flipv", "rotate", "dual", "dual_demo", "ai_src"):
             v = int(round(v))
         if k == "rotate":
             v = min((0, 90, 180, 270), key=lambda x: abs(x - v))
@@ -1585,38 +1613,38 @@ class OpenCVCapture(threading.Thread):
             # t_cap: 这一帧从 V4L2 拿到的时刻, 一路传到发布, 用来算传输延时
 
             # ---- 双目: 先读帧标记, 决定这一帧来自哪一路 ----
-            #     没有标记(单目 / 没开 mark_en) -> src=None, 后面完全直通。
+            #     没有标记(单目 / 没开 mark_en) -> 一律当 cam0。
             src = self._peek_dual_src(frame)
             now_cap = time.time()
             if src is None:
                 DUAL_STAT["nomark"] += 1
-                if self._dual_now:
-                    self._dual_now = False
-                    self._dual_slot = {0: None, 1: None}
-                    print("[dual] 帧标记消失 -> 关闭拼接(直通)")
-            else:
-                DUAL_STAT["cam%d" % src] += 1
-                self._dual_ts[src] = now_cap
-                self._dual_last_src = src
-                self._last_raw_by_src[src] = (seq, frame, now_cap)
-                # 两路都在 DUAL_STALE 内出现过, 才算真的双目
-                both = ((now_cap - self._dual_ts[0]) < DUAL_STALE
-                        and (now_cap - self._dual_ts[1]) < DUAL_STALE)
-                want = bool(int(self.params.get().get("dual", 1))) and both
-                if want != self._dual_now:
-                    self._dual_now = want
-                    self._dual_slot = {0: None, 1: None}
-                    self._dual_last_pair = None
-                    print("[dual] %s" % ("开启拼接: 左 cam0 / 右 cam1"
-                                         if want else "关闭拼接(直通)"))
-                    # 输出尺寸变了(单目 1920x1080 -> 双目 1920x540), 告诉前端
-                    try:
-                        tw, th = self._target_size(self.params.get()["scale"])
-                        self.hub.update_info(
-                            width=(tw * 2 if want else self._w),
-                            height=(th if want else self._h))
-                    except Exception:                              # noqa: BLE001
-                        pass
+                src = 0                       # 无标记 -> 当 cam0
+            DUAL_STAT["cam%d" % src] += 1
+            self._dual_ts[src] = now_cap
+            self._dual_last_src = src
+            self._last_raw_by_src[src] = (seq, frame, now_cap)
+
+            # ★ 显式模式: 完全由 params.dual 决定, 不再"看到两路标记就自动切"。
+            #   用户要的是能手动选「单目 / 双目」, 而不是被自动改。
+            want = bool(int(self.params.get().get("dual", 0)))
+            # 4K 带宽装不下两路(YUV422 1280MB/s > 452MB/s 可用), FPGA 那边也会把
+            # S_dual_eff 强制为 0, 所以 RK 侧跟着强制单目, 免得白算。
+            if want and self._w > 2000:
+                want = False
+            if want != self._dual_now:
+                self._dual_now = want
+                self._dual_slot = {0: None, 1: None}
+                self._dual_last_pair = None
+                print("[dual] %s" % ("开启拼接: 左 cam0 / 右 cam1"
+                                     if want else "关闭拼接(直通)"))
+                # 输出尺寸变了(单目 1920x1080 -> 双目 1920x540), 告诉前端
+                try:
+                    tw, th = self._target_size(self.params.get()["scale"])
+                    self.hub.update_info(
+                        width=(tw * 2 if want else self._w),
+                        height=(th if want else self._h))
+                except Exception:                                  # noqa: BLE001
+                    pass
 
             self._put(self._raw_q, (seq, frame, now_cap, src))
 
@@ -1778,14 +1806,9 @@ class OpenCVCapture(threading.Thread):
                 # 源帧是左右交替的, 每帧只含一路, 所以这里做配对。
                 # 返回 None = 这一帧被判定为"和上一对重复", 直接跳过(不发布),
                 # 于是输出帧率正好是输入的一半 = 30fps。
-                if self._dual_now and src is not None:
-                    got = self._dual_compose(src, frame, t_cap, seq)
-                    if got is None:
-                        frame = None
-                    else:
-                        frame, t_cap, _tag = got
-                        self._dual_tag = _tag
-                elif int(p.get("dual_demo", 0)):
+                # ★ 演示优先: dual_demo=1 时不做真拼接, 免得真拼接把演示挡掉。
+                _demo = int(p.get("dual_demo", 0)) and int(p.get("dual", 0))
+                if _demo:
                     # 双目**演示**: 把这一路复制成左右两半, 右边加色偏 + 标注,
                     # 只为看 1920x540 的排版/帧率/页面自适应。数据是假的。
                     h, w = frame.shape[:2]
@@ -1808,6 +1831,14 @@ class OpenCVCapture(threading.Thread):
                         # 只改一次: 让前端按 32:9 排版, 不然 16:9 的容器会加黑边
                         self.hub.update_info(width=frame.shape[1],
                                              height=frame.shape[0])
+                elif self._dual_now:
+                    # 真双目拼接
+                    got = self._dual_compose(src, frame, t_cap, seq)
+                    if got is None:
+                        frame = None
+                    else:
+                        frame, t_cap, _tag = got
+                        self._dual_tag = _tag
 
                 if frame is not None:
                     # ---- 可选 AI 叠加 ----
@@ -1818,7 +1849,8 @@ class OpenCVCapture(threading.Thread):
                     if _ai is not None and _ai.active:
                         try:
                             if self._dual_now:
-                                frame = self._ai_dual_draw(_ai, frame)
+                                frame = self._ai_dual_draw(
+                                    _ai, frame, int(p.get("ai_src", 0)))
                             else:
                                 _ai.submit(frame)
                                 frame = _ai.draw(frame)
@@ -1943,22 +1975,27 @@ class OpenCVCapture(threading.Thread):
             canvas[:, x:x + f.shape[1]] = f
             return canvas, me[1], "cam%d" % src
 
-    def _ai_dual_draw(self, ai, frame):
-        """双目模式: AI 只喂左半边(cam0), 画完再贴回去。
+    def _ai_dual_draw(self, ai, frame, half=0):
+        """双目模式: AI 只喂指定那一路(cam0=左半边 / cam1=右半边), 画完再贴回去。
+
+        half 由 params.ai_src 决定 —— 单目模式下帧本身就是选中的那一路,
+        AI 天然跟着走; 只有双目(左右拼在一起)时才需要选喂哪半边。
 
         必须 copy 一份再贴: frame 的左右两半是 _dual_slot 里那两帧本身,
         原地改会把还在用于下一对配对的帧也改脏。
         """
         hw = frame.shape[1] // 2
-        left = frame[:, :hw]
-        ai.submit(left)
-        drawn = ai.draw(left)
+        x0 = 0 if int(half) == 0 else hw
+        roi = frame[:, x0:x0 + hw]
+        ai.submit(roi)
+        drawn = ai.draw(roi)
         if drawn is None:
             return frame
         out = frame.copy()
         dh, dw = drawn.shape[:2]
-        out[:min(dh, out.shape[0]), :min(dw, hw)] = \
-            drawn[:min(dh, out.shape[0]), :min(dw, hw)]
+        dh = min(dh, out.shape[0])
+        dw = min(dw, hw)
+        out[:dh, x0:x0 + dw] = drawn[:dh, :dw]
         return out
 
     def dual_status(self):
@@ -2706,6 +2743,20 @@ FPGA_STATUS = [
 ]
 
 # ============================================================================
+#  复合寄存器里的单个位
+#
+#  ★ 0xDB 一个字节装了 3 个独立开关, 必须**读-改-写**;
+#    如果当成普通寄存器整字节写, 会把其它两位一起清掉
+#    (比如只切通道, 会顺手把 mark_en 关掉, web 就再也分不出左右)。
+# ============================================================================
+FPGA_BITS = [
+    # name, addr, bit, 说明
+    ("MARK_EN", 0xDB, 2, "帧标记 (1=每帧 Y[0..1]=A5 5A, web 靠它分左右)"),
+    ("DUAL_EN", 0xDB, 1, "双目交替 (1=两路各30fps; 4K 下 FPGA 强制忽略)"),
+    ("RX_SEL",  0xDB, 0, "CSI 源 (0=cam0/J2, 1=cam1/J3)"),
+]
+
+# ============================================================================
 #  分辨率 / 帧率 模式表  —— 网页两个下拉框的单一事实来源
 #
 #  限制关系有三处, 缺一不可:
@@ -3096,6 +3147,14 @@ class FpgaI2C(object):
                     out["status"][name] = int.from_bytes(
                         bytes(self.read_multi(a, n)), "little")
             out["phys"] = cam_phys(out["regs"], out["status"])
+            # 0xDB 的位字段拆开显示, 页面直接用 regs.RX_SEL 判当前通道
+            try:
+                _db = self.read(0xDB)
+                out["status"]["DB_RAW"] = _db
+                for name, _a, b, _d in FPGA_BITS:
+                    out["regs"][name] = (_db >> b) & 1
+            except Exception:                                      # noqa: BLE001
+                pass
             out["ok"] = True
         except Exception as e:
             out["ok"] = False
@@ -3169,7 +3228,21 @@ class FpgaI2C(object):
                 flat[str(k).strip()] = v
 
         writes = []
+        bitwr = []          # (addr, bit, val) —— 复合寄存器位操作, 读-改-写
         for name, v in flat.items():
+            bhit = None
+            for bn, ba, bbit, _bd in FPGA_BITS:
+                if str(name).strip().upper() == bn:
+                    bhit = (bn, ba, bbit)
+                    break
+            if bhit is not None:
+                bn, ba, bbit = bhit
+                try:
+                    iv = int(round(float(v)))
+                except (TypeError, ValueError):
+                    return False, "%s 值非法: %r" % (bn, v)
+                bitwr.append((ba, bbit, 1 if iv else 0))
+                continue
             hit = None
             for rn, ra, lo, hi, ro, _d in FPGA_REGS:
                 if name == rn or name.upper() in ("0X%02X" % ra, str(ra)):
@@ -3186,14 +3259,18 @@ class FpgaI2C(object):
                 return False, "%s 值非法: %r" % (rn, v)
             writes.append((rn, ra, min(max(iv, lo), hi)))
 
-        if not writes:
+        if not writes and not bitwr:
             return True, "无变化"
         try:
+            for ba, bbit, bv in bitwr:
+                cur = self.read(ba)
+                cur = (cur | (1 << bbit)) if bv else (cur & ~(1 << bbit) & 0xFF)
+                self.write(ba, cur)
             for _rn, ra, iv in writes:
                 self.write(ra, iv)
         except Exception as e:
             return False, "%s: %s" % (type(e).__name__, e)
-        return True, "已写入 %d 个寄存器" % len(writes)
+        return True, "已写入 %d 个寄存器" % (len(writes) + len(bitwr))
 
 
 def fpga_meta():
@@ -3511,6 +3588,20 @@ class Handler(BaseHTTPRequestHandler):
                         {"ok": False, "error": "FPGA I2C 未启用 (--fpga-bus -1)"},
                         503)
                 body = self._read_json()
+                # 切 CSI 通道前先记下旧值。
+                #
+                # 为什么只换源也要重启进程: 换源后 FPGA 的 S_hs_rx_clk 跟着换，
+                # 新那路如果没插模组就根本没有像素时钟，V4L2 的 dqbuf 会一直
+                # 等不到帧 —— 采集线程卡在 read()/select() 里，request_reopen
+                # 标志永远没人处理。实测: 切到空通道再切回来，画面不会自己恢复，
+                # 必须重新 open /dev/video22。
+                _old_sel = None
+                if isinstance(body, dict) and any(
+                        str(k).strip().upper() == "RX_SEL" for k in body):
+                    try:
+                        _old_sel = self.fpga.read(0xDB) & 0x01
+                    except Exception:                              # noqa: BLE001
+                        _old_sel = None
                 wok, msg = self.fpga.apply(body)
                 # 写完立刻回读 —— FPGA 侧可能把值夹过, 前端以回读为准
                 _ok, snap = self.fpga.snapshot()
@@ -3529,6 +3620,17 @@ class Handler(BaseHTTPRequestHandler):
                 snap["write_ok"] = wok
                 snap["message"] = msg
                 snap["meta"] = fpga_meta()
+                # 通道真的变了才重启采集（写同样的值不折腾）
+                if _old_sel is not None:
+                    try:
+                        _new_sel = self.fpga.read(0xDB) & 0x01
+                    except Exception:                              # noqa: BLE001
+                        _new_sel = _old_sel
+                    if _new_sel != _old_sel:
+                        snap["rx_switched"] = _new_sel
+                        snap["message"] = ("%s; 已切到 cam%d, 服务重启中(约 10s)…"
+                                           % (msg, _new_sel))
+                        _schedule_service_restart(1.5)
                 _bump_rev("fpga")           # 通知其它在线前端
                 return self._json(snap, 200 if (wok and snap.get("ok")) else 500)
             if path == "/api/mode":

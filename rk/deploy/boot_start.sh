@@ -8,7 +8,8 @@
 #  这里只做“上电初始化”三件事，然后把 python 用 exec 换成前台进程：
 #    1) 复位 FPGA（写 0xE0，等 sensor 重新锁相）
 #    2) 配 RK 侧 media 通路（3 个 pad）
-#    3) exec start_webstream.sh（内部最后一行就是 exec python）
+#    3) 叫 start.sh cloud 把云端推送代理拉起来（幂等）
+#    4) exec start_webstream.sh（内部最后一行就是 exec python）
 #
 #  可用环境变量（systemd unit 里设置）：
 #    RES=0|2     0=1080p60（默认）, 2=4K25
@@ -66,7 +67,19 @@ media-ctl -d /dev/media2 --set-v4l2 "\"m02_back_FPGA-MIPI 9-001a\":0[fmt:YUYV8_2
 media-ctl -d /dev/media2 --set-v4l2 "\"rockchip-csi2-dphy3\":0[fmt:YUYV8_2X8/${W}x${H}]"      >/dev/null 2>&1
 media-ctl -d /dev/media2 --set-v4l2 "\"rockchip-mipi-csi2\":0[fmt:YUYV8_2X8/${W}x${H}]"       >/dev/null 2>&1
 
-# ---- 4. 前台运行推流服务（exec：PID 不变，systemd 能直接管理） ----
+# ---- 4. 拉起云端推送代理（与网页推流同一个入口：start.sh cloud）----
+#   为什么在这里而不是再写一份命令：代理的启动/重试/日志规则只在 start.sh
+#   里维护一份；本脚本只负责“开机时叫一声”。有 systemd 单元时 start.sh 会
+#   交给 systemd（幂等：已在运行就直接返回，不会起第二个进程）。
+START=${START:-/root/rk/deploy/start.sh}
+if [ -f "$START" ]; then
+    log "拉起云端推送代理 (start.sh cloud)"
+    CLOUD=${CLOUD:-1} PORT="$PORT" bash "$START" cloud 2>&1 | sed 's/^/[cloud] /'
+else
+    log "警告: 找不到 $START，跳过云端推送"
+fi
+
+# ---- 5. 前台运行推流服务（exec：PID 不变，systemd 能直接管理） ----
 log "启动推流服务 $DEV :$PORT ${W}x${H}"
 cd "$WEB" || exit 1
 exec bash ./start_webstream.sh "$DEV" "$PORT" --width "$W" --height "$H"

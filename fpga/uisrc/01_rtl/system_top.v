@@ -209,11 +209,17 @@ parameter CS_WIDTH        = 1
 	//      1080p 厂商参考 v_start=19。首行必须是偶数，否则 RGGB Bayer 相位错。
 	wire [12:0] S_v_start      = S_is_4k ? 13'd35  : 13'd19;
 
-	// 2026-10-21: 每行**实际**像素组数(含尾部被裁掉的部分), 用 0xD4/0xD5 实测值。
-	//   ui_image_correction 用它做「固定行宽分行」——cam1 的 valid 在行间不会掉,
-	//   原来"空闲 10 拍才分行"的机制永不触发, 会导致 v_cnt 不递增、tuser 不来、
-	//   画面冻结。传 0 则退回纯空闲判据。
-	wire [12:0] S_grp_per_line = S_is_4k ? 13'd966 : 13'd486;
+	// 2026-10-21: 每行**实际**像素组数(含尾部被裁掉的部分)。
+	//   ⚠ 0x4704 起**强制传 0**，退回"行间空闲 10 拍才分行"的原判据。
+	//
+	//   历史: 0x4703 曾传 486/966 做「固定行宽分行」，理由是"cam1 的 valid
+	//   在行间不会掉，空闲判据永不触发"。**那个理由是错的** —— 当时 E4/E6
+	//   读数恒 0, 被误读成"分行失败"；真实原因是切 CSI 源后 D-PHY RX 的
+	//   AXIS 输出状态机被冻住、tlast 再也不出（见 S_src_rx_rst 那段注释）。
+	//   修好换源复位之后，cam1 单目本来就是靠空闲判据正常工作过的，
+	//   硬塞一个固定 486 反而在元组数不等于 486 时把行切错。
+	//   ui_image_correction 里 grp_pl==0 就走原路径，端口留着便于以后再试。
+	wire [12:0] S_grp_per_line = 13'd0;
 
 	// ---- VTC 读取时序 (S_pclkx1 = 147.5MHz) ----
 	//  帧率 = 147.5e6 / (H_FrameSize * V_FrameSize)
@@ -816,6 +822,52 @@ localparam [23:0] SRC_RST_CYCLES = 24'd3_000_000;   // 120 ms @ 25MHz
 // 把这一个常量置 0 即可退回"只复位读侧"的旧行为, 不用改别的地方。
 localparam        RES_RST_TX_SIDE = 1'b1;
 
+//--------------------------------------------------------------------------
+//  2026-10-21: "换源"检测 + D-PHY RX 复位脉冲
+//
+//  ⚠ 为什么必须复位 RX IP（不只是下游的 ui_image_correction）:
+//    m_axis_video_aclk 接的是 S_hs_rx_clk，而它就是 mux 在
+//    S_hs_clk0 / S_hs_clk1 之间选出来的。一旦切到没插模组的那一路，
+//    S_hs_rx_clk 直接停摆 —— RX 的 AXIS 输出侧状态机被冻在"行中途"。
+//    再切回来之后: tvalid 照常出(E9 在涨)、tlast 再也不出(E6 恒 0)、
+//    ui_image_correction 的 O_line_groups 恒 0(E4/E5 = 0) =>
+//    dbuf 写侧永不轮转(E2 = 0) => 画面永远停在同一帧。
+//    现象极具欺骗性: fps 显示 60、快照 24 万字节都正常，
+//    只有两帧快照 md5 完全一样才能看出来。
+//
+//  ⚠ 复位窗放在 25MHz 域（S_pll_lock 域），不依赖任何 RX 恢复时钟，
+//    所以 RX 被复位 -> 没时钟 -> 复位照样能按时释放，不会死锁。
+//    这就是下面 X_mipi_csi_rx 注释里说的"复位只能依赖 25MHz 域"。
+//
+//  ⚠ 触发源用 S_clk_sel_r 而不是 S_rx_sel:
+//    mux 实际选哪一路取决于 S_clk_sel_r = dual_eff ? 0 : rx_sel，
+//    所以 dual_eff 变化导致的换源也必须复位（单目<->双目切换）。
+//--------------------------------------------------------------------------
+// (S_rx_sel_d / S_src_chg 已在前部信号区声明, 这里只放逻辑)
+always @(posedge I_sysclk_25m or negedge S_pll_lock) begin
+	if (!S_pll_lock) S_rx_sel_d <= 1'b0;
+	else             S_rx_sel_d <= S_rx_sel;
+end
+assign S_src_chg = (S_rx_sel != S_rx_sel_d);   // 配置位变化(给下游复位窗用)
+
+reg  S_clk_sel_d;
+always @(posedge I_sysclk_25m or negedge S_pll_lock) begin
+	if (!S_pll_lock) S_clk_sel_d <= 1'b0;
+	else             S_clk_sel_d <= S_clk_sel_r;
+end
+wire S_clk_chg = (S_clk_sel_r != S_clk_sel_d);   // 时钟源真的换了
+
+// 20 ms @ 25MHz。够 RX 的 HS 检测 + byte 对齐重新跑一遍，
+// 又远短于下面的 120ms 写侧窗，不会互相对抗。
+localparam [19:0] SRC_RX_RST_CYCLES = 20'd500_000;
+reg  [19:0] S_src_rx_hold;
+always @(posedge I_sysclk_25m or negedge S_pll_lock) begin
+	if (!S_pll_lock)                   S_src_rx_hold <= 20'd0;
+	else if (S_clk_chg)                S_src_rx_hold <= SRC_RX_RST_CYCLES;
+	else if (S_src_rx_hold != 20'd0)   S_src_rx_hold <= S_src_rx_hold - 20'd1;
+end
+wire S_src_rx_rst = (S_src_rx_hold != 20'd0);
+
 reg  [1:0]  S_res_chg_d;
 reg  [23:0] S_res_hold25;
 always @(posedge I_sysclk_25m or negedge S_pll_lock) begin
@@ -825,7 +877,7 @@ always @(posedge I_sysclk_25m or negedge S_pll_lock) begin
 	end else begin
 		S_res_chg_d <= {S_res_chg_d[0], S_res_chg};
 		if (S_res_chg_d == 2'b01)          S_res_hold25 <= RES_RST_CYCLES;
-		else if (S_src_chg)                S_res_hold25 <= SRC_RST_CYCLES;  // 2026-10-21 换源
+		else if (S_src_chg || S_clk_chg)   S_res_hold25 <= SRC_RST_CYCLES;  // 2026-10-21 换源
 		else if (S_res_hold25 != 24'd0)    S_res_hold25 <= S_res_hold25 - 24'd1;
 	end
 end
@@ -852,9 +904,12 @@ always @(posedge S_dsi_byte_clk or negedge S_pll_lock) begin
 	else             S_res_win_byte <= {S_res_win_byte[0], S_res_win25};
 end
 
-wire S_res_rstn_rx   = RES_RST_TX_SIDE ? ~S_res_win_rx[1]   : 1'b1;
-wire S_res_rstn_rx1  = RES_RST_TX_SIDE ? ~S_res_win_rx1[1]  : 1'b1;
-wire S_res_rstn_byte = ~S_res_win_byte[1];
+// ⚠ 这三个只能写 assign, 不能写 "wire X = ..." —— 它们已在前部信号区声明过
+//   (wire S_res_rstn_rx1; 等), 再写一遍 "wire ... =" 就是重复声明。
+//   TD 碰巧容忍, 但 iverilog 直接 error, 挡住本地语法检查。
+assign S_res_rstn_rx   = RES_RST_TX_SIDE ? ~S_res_win_rx[1]   : 1'b1;
+assign S_res_rstn_rx1  = RES_RST_TX_SIDE ? ~S_res_win_rx1[1]  : 1'b1;
+assign S_res_rstn_byte = ~S_res_win_byte[1];
 
 //=============================================================================
 //  V30 (2026-10-17): 模式切换时必须也复位 ui_dbuf + ui_FDMA
@@ -1028,11 +1083,11 @@ end
 //      但 ref clock 只被 csi_rx_clock_det 用来计时 (判断 HS 时钟还在不在),
 //      100MHz 只影响"判丢时钟"的时间常数, 不影响采样与 eye-scan。
 //=============================================================================
-// ⚠ 复位只能依赖 25MHz 域的 S_pll_lock / S_dphy_rx_rst。
+// ⚠ 复位只能依赖 25MHz 域的 S_pll_lock / S_dphy_rx_rst / S_src_rx_rst。
 //   绝不能把 S_res_rstn_rx (它是 S_hs_rx_clk 域里 2 级同步出来的寄存器)
 //   接进来: S_hs_rx_clk 就是 RX 自己分频出来的, RX 被复位 -> 没时钟 ->
 //   那个同步器永远不更新 -> 复位永远不放 -> 死锁。
-assign S_rx_rstn = S_pll_lock & ~S_dphy_rx_rst;
+assign S_rx_rstn = S_pll_lock & ~S_dphy_rx_rst & ~S_src_rx_rst;
 
 // 2026-10-21: 手动 tap 步进按钮 (来自 cfg_ctrl_top 的 0xD9, idle=1)
 wire S_dbg_btn;
@@ -1159,16 +1214,11 @@ PH1_LOGIC_BUFG X_bufg_rx_clk (
 //--------------------------------------------------------------------------
 
 //--------------------------------------------------------------------------
-//  "换源"检测 (25MHz 域) + 把选源位同步进 RX 时钟域
+//  把选源位同步进 RX 时钟域
 //--------------------------------------------------------------------------
-always @(posedge I_sysclk_25m or negedge S_pll_lock) begin
-	if (!S_pll_lock) S_rx_sel_d <= 1'b0;
-	else             S_rx_sel_d <= S_rx_sel;
-end
-assign S_src_chg = (S_rx_sel != S_rx_sel_d);
-
 // ⚠ 若选中的那一路没有摄像头(没有 HS 时钟)，S_hs_rx_clk 会停摆，
-//   这个同步器就不动了 —— 写侧本来就是死的，不影响通过 0xDB 切回 cam0 恢复。
+//   这个同步器就不动了 —— 无所谓: 换回有信号的源时 S_src_rx_rst 会把
+//   整颗 RX(含它的 AXIS 输出状态机)重新复位一遍，起来就是干净的。
 always @(posedge S_hs_rx_clk or negedge S_pll_lock) begin
 	if (!S_pll_lock) S_rx_sel_rx_s <= 2'b00;
 	else             S_rx_sel_rx_s <= {S_rx_sel_rx_s[0], S_rx_sel};
@@ -1423,7 +1473,7 @@ cfg_ctrl_top #(
 	//           0x3807, 所以板上读到的仍是 0x3807 —— 不能只凭版本号判断是否
 	//           烧了新 bit, 要看画面/相位相关。
 	//   0x4509 = 2026-10-20 修 IDELAY 使能语义(电平) + eye-scan 只扫 32 tap
-	.CFG_VER  (16'h4703)
+	.CFG_VER  (16'h4704)
 ) u_cfg_ctrl (
 	.i_sys_clk    (I_sysclk_25m),
 	.i_sys_rst_n  (1'b1),

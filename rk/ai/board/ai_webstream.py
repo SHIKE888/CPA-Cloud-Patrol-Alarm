@@ -333,7 +333,9 @@ class InferThread(threading.Thread):
                 img = frame.copy() if self.args.copy_frame else frame
                 dets = self.det.run(img)                    # Stage1 + Stage2
                 dets = self.tracker.update(t_start, dets)     # 跟踪 + 平滑
-                dets = self.actions.update(t_start, dets)     # 危险动作
+                # frame_size: 把**归一化**的警戒区换算成像素（越界判定用脚踝像素坐标）
+                dets = self.actions.update(t_start, dets,
+                                           frame_size=(img.shape[1], img.shape[0]))
             except Exception as e:  # noqa: BLE001
                 print('[infer] 异常: %s' % e)
                 time.sleep(0.2)

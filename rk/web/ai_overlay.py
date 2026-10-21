@@ -210,8 +210,14 @@ class AiOverlay(object):
     # ------------------------------------------------------------------ 生命周期
     @property
     def active(self):
-        """编码线程只需判断这个：假 = 完全不碰帧。"""
-        return bool(self.enabled and self.source == "ai")
+        """编码线程只需判断这个：假 = 完全不碰帧。
+
+        source 三种取值：
+          raw    = 不推理、不叠加（最省）
+          detect = 只推理、不叠加（云端报警用：本地画面保持干净）
+          ai     = 推理 + 把框/骨架画到推流帧上
+        """
+        return bool(self.enabled and self.source in ("ai", "detect"))
 
     def start(self):
         if self._thr is not None:
@@ -394,6 +400,8 @@ class AiOverlay(object):
         """把最近一次的标注画到 frame 上（就地）。无结果时原样返回。"""
         if not self.active or frame is None:
             return frame
+        if self.source != "ai":          # detect: 只推理，不往推流帧上画
+            return frame
         res = self._result                 # 无锁读引用（同上，不跟推理线程抢锁）
         if not res and not self.skeleton_only:
             # 没结果（画面里没人）时直接返回。这一行很关键：
@@ -538,8 +546,11 @@ class AiOverlay(object):
                 with self._det_lock:
                     dets = self.detector.run(img, prepared)
                     t2 = time.time()
+                    # frame_size 用来把**归一化**的警戒区换算成像素 ——
+                    # 判定用脚踝关键点(原图像素)，不换算的话越界永远不触发。
                     dets = self.tracker.update(t0, dets)
-                    dets = self.actions.update(t0, dets)
+                    dets = self.actions.update(t0, dets,
+                                               frame_size=(img.shape[1], img.shape[0]))
                 t3 = time.time()
             except Exception as e:                                  # noqa: BLE001
                 self.last_error = "%s: %s" % (type(e).__name__, e)
@@ -702,7 +713,7 @@ class AiOverlay(object):
             self.enabled = bool(patch["enabled"])
         if "source" in patch:
             src = str(patch["source"]).lower()
-            if src in ("raw", "ai"):
+            if src in ("raw", "ai", "detect"):
                 self.source = src
         for k in ("show_skeleton", "show_score", "show_label", "show_hud",
                   "skeleton_only"):
@@ -780,7 +791,7 @@ class AiOverlay(object):
                     self.actions.tune[k] = float(v)
                 except (TypeError, ValueError):
                     pass
-        if self.source != "ai":
+        if self.source == "raw":
             with self._lock:                 # 切回原图: 清掉残留结果, 不再画
                 self._result = []
             # 顺手把统计归零, 免得页面上还显示着停止前的帧率

@@ -537,10 +537,30 @@
 
         <div class="sep"></div>
 
-        <div class="row"><label>双目拼接</label>
-          <button class="ghost" id="btnDual" style="flex:1">左 cam0 / 右 cam1</button>
+        <div class="row"><label>推流模式</label>
+          <div style="flex:1;display:flex;gap:6px">
+            <button class="ghost" data-mode="mono" style="flex:1">单目</button>
+            <button class="ghost" data-mode="dual" style="flex:1">双目</button>
+            <button class="ghost" data-mode="demo" style="flex:1">双目演示</button>
+          </div>
         </div>
         <p class="hint" id="dualLine">—</p>
+
+        <div class="row"><label>单目通道</label>
+          <div style="flex:1;display:flex;gap:6px">
+            <button class="ghost" data-cam="0" style="flex:1">cam0 (J2)</button>
+            <button class="ghost" data-cam="1" style="flex:1">cam1 (J3)</button>
+          </div>
+        </div>
+        <div class="row"><label>AI 通道</label>
+          <div style="flex:1;display:flex;gap:6px">
+            <button class="ghost" data-aisrc="0" style="flex:1">cam0 / 左</button>
+            <button class="ghost" data-aisrc="1" style="flex:1">cam1 / 右</button>
+          </div>
+        </div>
+        <p class="hint">单目模式下 AI 自动走当前选中的那一路；双目模式下按上面的「AI 通道」
+          只喂左或右半边（省一半 NPU/CPU）。切通道直接写 FPGA 的 0xDB[0]，
+          会保留 0xDB 的其它位。</p>
 
         <div class="grid2" style="margin-bottom:8px">
           <button class="ghost" id="btnMirror">水平镜像</button>
@@ -896,9 +916,15 @@ function syncLabel(k) {
 function syncToggles() {
   $("btnMirror").classList.toggle("on", !!params.mirror);
   $("btnFlipv").classList.toggle("on", !!params.flipv);
-  $("btnDual").classList.toggle("on", Number(params.dual ?? 1) !== 0);
+  // 单目 / 双目 / 双目演示 三档
+  const _m = Number(params.dual ?? 0)
+    ? (Number(params.dual_demo ?? 0) ? "demo" : "dual") : "mono";
+  document.querySelectorAll("[data-mode]").forEach(b =>
+    b.classList.toggle("on", b.dataset.mode === _m));
   document.querySelectorAll("[data-rot]").forEach(b =>
     b.classList.toggle("on", Number(b.dataset.rot) === Number(params.rotate || 0)));
+  document.querySelectorAll("[data-aisrc]").forEach(b =>
+    b.classList.toggle("on", Number(b.dataset.aisrc) === Number(params.ai_src || 0)));
 }
 
 function schedulePush() {
@@ -923,15 +949,55 @@ function schedulePush() {
 /* 开关 / 旋转 */
 $("btnMirror").onclick = () => { params.mirror = params.mirror ? 0 : 1; syncToggles(); schedulePush(); };
 $("btnFlipv").onclick  = () => { params.flipv  = params.flipv  ? 0 : 1; syncToggles(); schedulePush(); };
-/* 双目: 只切开关, 拼接本身在服务端自动做(靠 FPGA 的帧标记认路)。
-   源帧没有标记(单目 / 4K 模式)时会自动退化成直通, 所以打开也不影响单目。 */
-$("btnDual").onclick = () => {
-  params.dual = Number(params.dual ?? 1) ? 0 : 1;
-  syncToggles(); schedulePush();
-  toast(params.dual ? "双目拼接: 开 (左 cam0 / 右 cam1)" : "双目拼接: 关");
-};
+/* 三档推流模式: 单目全屏 / 双目拼接(左cam0右cam1) / 双目演示(复制一路)
+   ★ 完全显式, 不会自动切 —— 想单目就点单目, 不会因为看到两路标记被改掉。 */
+document.querySelectorAll("[data-mode]").forEach(b => {
+  b.onclick = () => {
+    const m = b.dataset.mode;
+    params.dual      = (m === "mono") ? 0 : 1;
+    params.dual_demo = (m === "demo") ? 1 : 0;
+    syncToggles(); schedulePush();
+    toast(m === "mono" ? "单目 全屏"
+         : (m === "dual" ? "双目拼接 1920×540 @30" : "双目演示 (复制一路, 假数据)"));
+  };
+});
 document.querySelectorAll("[data-rot]").forEach(b => {
   b.onclick = () => { params.rotate = Number(b.dataset.rot); syncToggles(); schedulePush(); };
+});
+
+/* 单目通道: 写 FPGA 的 0xDB[0] (走 /api/fpga 的位操作, 保留 mark_en/dual_en) */
+async function syncCam() {
+  if (!base) return;
+  try {
+    const d = await api("/api/fpga");
+    const r = (d.regs || {});
+    const rs = Number(r.RX_SEL || 0);
+    document.querySelectorAll("[data-cam]").forEach(b =>
+      b.classList.toggle("on", Number(b.dataset.cam) === rs));
+  } catch (e) { /* 静默: FPGA 没启用时不影响页面 */ }
+}
+document.querySelectorAll("[data-cam]").forEach(b => {
+  b.onclick = async () => {
+    const c = Number(b.dataset.cam);
+    try {
+      await api("/api/fpga", {
+        method: "POST", body: JSON.stringify({ RX_SEL: c })
+      });
+      toast("已切到 cam" + c + " (" + (c ? "J3" : "J2") + ")");
+      syncCam();
+    } catch (e) { toast("切通道失败: " + e.message, true); }
+  };
+});
+
+/* AI 通道: 双目模式下喂哪半边 */
+document.querySelectorAll("[data-aisrc]").forEach(b => {
+  b.onclick = () => {
+    params.ai_src = Number(b.dataset.aisrc);
+    document.querySelectorAll("[data-aisrc]").forEach(x =>
+      x.classList.toggle("on", x === b));
+    schedulePush();
+    toast("AI 通道 -> " + (params.ai_src ? "cam1 / 右" : "cam0 / 左"));
+  };
 });
 
 $("btnReset").onclick = async () => {
@@ -1880,6 +1946,7 @@ $("a_run").addEventListener("input", e => {
 });
 
 /* ---------------- 状态轮询 ---------------- */
+let _camTick = 0;
 async function poll() {
   if (!base) return;
   try {
@@ -1918,6 +1985,9 @@ async function poll() {
   } catch (e) {
     if (connected) setDot(false, "服务无响应");
   }
+  // 通道状态跟着 FPGA 走（可能被命令行 i2cset 改过），每 3 拍刷一次
+  _camTick = (_camTick + 1) % 3;
+  if (_camTick === 0) syncCam();
   setTimeout(poll, 2000);
 }
 
