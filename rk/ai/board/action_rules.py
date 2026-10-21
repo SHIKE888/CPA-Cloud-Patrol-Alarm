@@ -221,6 +221,7 @@ class TrackState(object):
         #   改成取 ~0.13s（≈4 帧）的位移，足以分辨一次挥动。
         rec_s = self._at(0.13, t)
         w_disp_l = w_disp_r = w_rise = 0.0
+        ok_l = ok_r = False    # 左右手腕各自的 0.13s 位移是否真的拿到了
         sh_disp = 0.0      # 肩中点整体位移：剔除“人平移/整体抖动/跟踪跳变”的假位移
         arm_ext = 0.0      # 手腕到同侧肩的最大距离：手臂是否真的伸出去
         if rec_s is not None:
@@ -235,8 +236,10 @@ class TrackState(object):
                 d = math.hypot(p1[0] - p0[0], p1[1] - p0[1]) / bh
                 if side == 'l':
                     w_disp_l = d
+                    ok_l = True
                 else:
                     w_disp_r = d
+                    ok_r = True
                 sp, sp0 = _pt(kps, si), _pt(k0, si)
                 for q, s in ((p1, sp), (p0, sp0)):
                     if q and s:
@@ -285,10 +288,20 @@ class TrackState(object):
         sw_l = max(0.0, w_disp_l - sh_disp)
         sw_r = max(0.0, w_disp_r - sh_disp)
         sw_max, sw_min = max(sw_l, sw_r), min(sw_l, sw_r)
+        # ⚠ 必须**两只手都有有效关键点**才能判 swing。
+        #   否则“单侧性”完全是假的: 手无效时 w_disp 保持 0 → sw_min = 0 →
+        #   “sw_min < sw_max * 0.4”恒为真, 只剩 sw_max 一个条件在把关。
+        #   侧身站/手被身体挡住/距离远检测不全时经常只只手有效,
+        #   现场表现就是“好多动作都识别成挥砸”(实测反馈)。
+        # arm_ext 阈值 0.3 → 0.5: 人正常站立时手腕在身侧, 离同侧肩本来就有
+        #   0.35~0.45 身高, 所以 0.3 这个条件几乎恒成立、毫无区分力;
+        #   提到 0.5 才真的要求“手臂抬起来伸出去”。
+        # hold 0.2 → 0.3: 一次挥砸是往返, 能连续维持; 走路摆臂/偶发抖动不行。
         self._mark(acts, 'swing',
-                   sw_max > 0.5 / s_swing and sw_min < sw_max * 0.4
-                   and arm_ext > 0.3,
-                   t, 0.2, score=min(1.0, sw_max / 0.85))
+                   ok_l and ok_r
+                   and sw_max > 0.5 / s_swing and sw_min < sw_max * 0.4
+                   and arm_ext > 0.5,
+                   t, 0.3, score=min(1.0, sw_max / 0.85))
 
         # 投掷：0.13s 内手腕**上撩**超过 0.35 身高，且已经过肩。
         #   与 climb 的区别：climb 要髖部抬升/脚高于髖，投掷只要手上撩。
