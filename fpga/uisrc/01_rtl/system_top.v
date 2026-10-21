@@ -607,14 +607,19 @@ rgb_to_yuv422_quad u_rgb2yuv_quad (
 //=============================================================================
 `define JPEG_EN 1        // ← 打开硬件 JPEG 编码器 (要做资源评估就保持 1)
 
+// ★ 这三根状态线必须在 ifdef **外**声明: cfg_ctrl_top 的例化在 ifdef 外,
+//   而且它们的存在本身就是防止综合器把整个 JPEG 编码器优化掉的关键 ——
+//   输出全悬空时 TD 会把 jpeg_encoder_top 整块删掉，资源数字和基线一模一样。
+wire [23:0] S_jpeg_st_bytes;
+wire        S_jpeg_st_busy;
+wire        S_jpeg_st_done;
+
 `ifdef JPEG_EN
 	wire        S_jpeg_s_ready;
 	wire [6:0]  S_jpeg_qt_a, S_jpeg_qt_b;
 	wire [7:0]  S_jpeg_qta, S_jpeg_qtb;
 	wire        S_jpeg_m_valid, S_jpeg_m_last;
 	wire [7:0]  S_jpeg_m_data;
-	wire [23:0] S_jpeg_bytes;
-	wire        S_jpeg_busy, S_jpeg_done;
 	wire [31:0] S_jpeg_cnt;
 
 	jpeg_qtable_ram X_jpeg_qt (
@@ -647,11 +652,18 @@ rgb_to_yuv422_quad u_rgb2yuv_quad (
 		.m_valid        (S_jpeg_m_valid ),
 		.m_data         (S_jpeg_m_data  ),
 		.m_last         (S_jpeg_m_last  ),
-		.st_frame_bytes (S_jpeg_bytes   ),
-		.st_busy        (S_jpeg_busy    ),
-		.st_done        (S_jpeg_done    ),
+		.st_frame_bytes (S_jpeg_st_bytes),
+		.st_busy        (S_jpeg_st_busy ),
+		.st_done        (S_jpeg_st_done ),
 		.st_frame_cnt   (S_jpeg_cnt     )
 	);
+`endif
+
+`ifndef JPEG_EN
+	// 未启用时给 cfg 只读寄存器一个确定值 (否则读到 X)
+	assign S_jpeg_st_bytes = 24'd0;
+	assign S_jpeg_st_busy  = 1'b0;
+	assign S_jpeg_st_done  = 1'b0;
 `endif
 
 
@@ -1561,6 +1573,10 @@ cfg_ctrl_top #(
 	.i_fs_csi     (S_csi_frame_start),   // CSI-2 FS 短包 -> 传感器真实帧率
 	// 2026-10-21 画面冻结定位 (只读 0xE1~0xE3)
 	.i_diag_sof   (D_sof_s2),
+	// 2026-10-21: JPEG 状态回读 (jpeg_regfile 0xA0 帧字节数 / 0xA8 STATUS)
+	.i_jpeg_bytes (S_jpeg_st_bytes),
+	.i_jpeg_busy  (S_jpeg_st_busy ),
+	.i_jpeg_done  (S_jpeg_st_done ),
 	.i_diag_wbuf  (D_wb_s2),
 	.i_diag_vs    (D_vs_s2),
 	.i_diag_lg1   (D_lg1_s2),
