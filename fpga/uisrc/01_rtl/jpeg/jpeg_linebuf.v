@@ -101,36 +101,35 @@ module jpeg_linebuf #(
     wire [11:0] yaddr = {wr_buf, wrow, ygrp};
     wire [11:0] caddr = {wr_buf, wrow, cgrp};
 
-    always @(posedge clk) begin
-        if (i_valid) begin
-            case (ysub)
-            2'd0: y_mem[yaddr][15: 0] <= {w_y1, w_y0};
-            2'd1: y_mem[yaddr][31:16] <= {w_y1, w_y0};
-            2'd2: y_mem[yaddr][47:32] <= {w_y1, w_y0};
-            2'd3: y_mem[yaddr][63:48] <= {w_y1, w_y0};
-            endcase
+    // ★ 2026-10-21 改: 原来这里是**窄写** —— 每次只写 64 位存储字里的 16 位
+    //   (Y) 或 8 位 (Cb/Cr)。块 RAM 推断不了这种写法, 综合器只能退回寄存器实现,
+    //   128 Kbit 的缓冲变成一大堆 FF + mux, slice 直接爆到 98.5%。
+    //   现在改成"攒满再整字写": Y 每 4 个输入 word 凑一个 64 位存储字,
+    //   Cb/Cr 每 8 个字节凑一个。
+    //   ★ 写入时机不变: ysub==3 / csub==7 正好是每个存储字的最后一个分量
+    //   (WX 是 4 和 8 的整数倍), 所以 full0/full1 的置位和原来完全一样。
+    reg [47:0] y_shift;         // 已收到的前 3 个 16 位分量
+    reg [55:0] cb_shift;        // 已收到的前 7 个字节
+    reg [55:0] cr_shift;
 
-            case (csub)
-            3'd0: cb_mem[caddr][ 7: 0] <= w_cb;
-            3'd1: cb_mem[caddr][15: 8] <= w_cb;
-            3'd2: cb_mem[caddr][23:16] <= w_cb;
-            3'd3: cb_mem[caddr][31:24] <= w_cb;
-            3'd4: cb_mem[caddr][39:32] <= w_cb;
-            3'd5: cb_mem[caddr][47:40] <= w_cb;
-            3'd6: cb_mem[caddr][55:48] <= w_cb;
-            default: cb_mem[caddr][63:56] <= w_cb;
-            endcase
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            y_shift  <= 48'd0;
+            cb_shift <= 56'd0;
+            cr_shift <= 56'd0;
+        end else if (i_valid) begin
+            // ★ 移位方向: sub 越大越靠**高位** (原来 csub=0 写 bit[7:0]),
+            //   所以新数据从高位进, 旧数据往低位挤。
+            y_shift  <= {w_y1, w_y0, y_shift[47:16]};
+            cb_shift <= {w_cb, cb_shift[55:8]};
+            cr_shift <= {w_cr, cr_shift[55:8]};
 
-            case (csub)
-            3'd0: cr_mem[caddr][ 7: 0] <= w_cr;
-            3'd1: cr_mem[caddr][15: 8] <= w_cr;
-            3'd2: cr_mem[caddr][23:16] <= w_cr;
-            3'd3: cr_mem[caddr][31:24] <= w_cr;
-            3'd4: cr_mem[caddr][39:32] <= w_cr;
-            3'd5: cr_mem[caddr][47:40] <= w_cr;
-            3'd6: cr_mem[caddr][55:48] <= w_cr;
-            default: cr_mem[caddr][63:56] <= w_cr;
-            endcase
+            if (ysub == 2'd3)
+                y_mem[yaddr]  <= {w_y1, w_y0, y_shift[47:0]};
+            if (csub == 3'd7) begin
+                cb_mem[caddr] <= {w_cb, cb_shift[55:0]};
+                cr_mem[caddr] <= {w_cr, cr_shift[55:0]};
+            end
         end
     end
 
