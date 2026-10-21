@@ -764,6 +764,7 @@ def lamp_state():
         return {
             "state": st, "text": text,
             "online": online, "age": round(age, 1) if hb_ts else None,
+            "hb_ts": hb_ts or None,          # 最近一次心跳的服务器时间（epoch 秒）
             "since": since, "hold": CFG["alarm_hold_sec"],
             "unacked": len(unacked),
             "alarms24": sum(1 for a in S["alarms"] if now() - float(a.get("ts") or 0) < 86400),

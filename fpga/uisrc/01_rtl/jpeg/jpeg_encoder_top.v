@@ -1,0 +1,426 @@
+/*===========================================================================
+ * Filename     : jpeg_encoder_top.v
+ * Description  : JPEG 编码器顶层 (baseline 4:2:2, SOF0 有损)
+ *
+ *  数据流:
+ *      YUV422 word -> jpeg_linebuf (8 行乒乓)
+ *                  -> jpeg_dct2d   (每个 MCU: Y0,Y1,Cb,Cr 四块)
+ *                  -> jpeg_quant_zz (量化 + zigzag, 直接跟随 DCT 的 8 拍输出)
+ *                  -> jpeg_huff_enc (熵编码, 1 符号/拍)
+ *                  -> jpeg_bitpack  (位打包 + 0xFF 填充)
+ *      jpeg_headers -> 帧首 607 字节标记段
+ *      FF D9        -> 帧尾
+ *
+ *  帧结构:  [headers 607B] [熵编码字节] [FF D9]
+ *
+ *  ★ 量化器【不能】由状态机驱动:
+ *      jpeg_dct2d 的 o_valid 在 S_P2 阶段连续 8 拍就吐完了, 而 o_done 是
+ *      第 8 拍同拍。若状态机先等 o_done 再开量化, 这 8 拍数据已经错过。
+ *      所以 q_valid / q_t 直接由 dct_ovalid 驱动, 与状态机解耦。
+ *
+ *  吞吐 (W=1920, H=1080, 147.5MHz):
+ *      每块 8 拍读 + 30 拍 DCT + ~40 拍熵编码 = 78 拍
+ *      每 MCU = 4 块 = 312 拍 -> 16200 MCU -> 5.05M 拍 -> 29 fps
+ *      ★ 串行版。要 60fps 需让"块 i 的 DCT/量化"与"块 i-1 的熵编码"并行,
+ *        中间加一块 64x16bit 双缓冲 RAM, 吞吐即变 max(120,150)=150 拍/MCU。
+ *===========================================================================*/
+`timescale 1ns / 1ps
+
+module jpeg_encoder_top #(
+    parameter integer W = 1920,
+    parameter integer H = 1080
+) (
+    input  wire        clk,
+    input  wire        rst_n,
+
+    input  wire        i_en,
+    input  wire        i_soft_rst,
+
+    input  wire [11:0] i_width,
+    input  wire [11:0] i_height,
+
+    // ---------------- 量化表读口 ----------------
+    output wire [6:0]  o_qt_idx_a,      // headers 用 (读口 A)
+    input  wire [7:0]  i_qt_data_a,
+    output wire [6:0]  o_qt_idx_b,      // quant 装载 recip 用 (读口 B)
+    input  wire [7:0]  i_qt_data_b,
+
+    // ---------------- 输入 YUV422 ----------------
+    input  wire        s_valid,
+    input  wire [31:0] s_data,
+    output wire        s_ready,
+
+    // ---------------- 输出 JPEG 字节流 ----------------
+    output reg         m_valid,
+    output reg  [7:0]  m_data,
+    output reg         m_last,
+
+    // ---------------- 状态 ----------------
+    output reg  [23:0] st_frame_bytes,
+    output reg         st_busy,
+    output reg         st_done,
+    output reg  [31:0] st_frame_cnt
+);
+
+    localparam integer MCU_X = W / 16;
+    localparam integer MCU_Y = H / 8;
+
+    // 块号 / MCU 列 (块属性逻辑与控制状态机共用, 必须提前声明)
+    reg [1:0] blk;
+    reg [7:0] mx_reg;
+
+    //=============================================================== linebuf
+    wire        lb_ready;
+    wire        lb_avail;
+    wire [63:0] lb_rd_data;
+    wire        lb_grp_ready;
+
+    reg  [2:0]  rd_row;
+    reg  [7:0]  rd_grp;
+    reg  [1:0]  rd_sel;
+    reg         grp_done;
+
+    jpeg_linebuf #(.W(W)) u_linebuf (
+        .clk         (clk),
+        .rst_n       (rst_n),
+        .i_valid     (s_valid),
+        .i_data      (s_data),
+        .o_wr_ready  (s_ready),
+        .i_rd_row    (rd_row),
+        .i_rd_grp    (rd_grp),
+        .i_rd_sel    (rd_sel),
+        .o_rd_data   (lb_rd_data),
+        .o_rd_avail  (lb_avail),
+        .o_grp_ready (lb_grp_ready),
+        .i_grp_done  (grp_done)
+    );
+
+    //=============================================================== DCT
+    reg          dct_start;
+    reg          dct_valid;
+    wire [127:0] dct_row;
+    wire         dct_ovalid;
+    wire [143:0] dct_col;
+    wire         dct_odone;
+
+    genvar gp;
+    generate
+    for (gp = 0; gp < 8; gp = gp + 1) begin : g_px
+        wire [7:0]  p  = lb_rd_data[gp*8 +: 8];
+        wire [15:0] sv = {8'd0, p} - 16'd128;   // 0..255 -> -128..127
+        assign dct_row[gp*16 +: 16] = sv;
+    end
+    endgenerate
+
+    jpeg_dct2d #(.NENG(8)) u_dct (
+        .clk     (clk),
+        .rst_n   (rst_n),
+        .i_start (dct_start),
+        .i_valid (dct_valid),
+        .i_row   (dct_row),
+        .i_ready (),
+        .o_busy  (),
+        .o_valid (dct_ovalid),
+        .o_col   (dct_col),
+        .o_done  (dct_odone)
+    );
+
+    //=============================================================== 量化 (直接跟随 DCT)
+    reg         q_load;
+    wire        q_load_done;
+    reg  [2:0]  q_t;
+    reg         q_chroma;
+    wire        q_blk_done;
+    wire [15:0] q_rd_data;
+    wire [5:0]  huff_rd_idx;
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n)          q_t <= 3'd0;
+        else if (dct_ovalid) q_t <= (q_t == 3'd7) ? 3'd0 : (q_t + 3'd1);
+        else                 q_t <= 3'd0;
+    end
+
+    jpeg_quant_zz u_quant (
+        .clk         (clk),
+        .rst_n       (rst_n),
+        .i_load      (q_load),
+        .o_qt_idx    (o_qt_idx_b),
+        .i_qt_data   (i_qt_data_b),
+        .o_load_done (q_load_done),
+        .i_valid     (dct_ovalid),
+        .i_col       (dct_col),
+        .i_t         (q_t),
+        .i_chroma    (q_chroma),
+        .o_wr        (),
+        .o_blk_done  (q_blk_done),
+        .i_rd_idx    (huff_rd_idx),
+        .o_rd_data   (q_rd_data)
+    );
+
+    //=============================================================== 熵编码
+    reg         huff_start;
+    reg  [1:0]  huff_comp;
+    reg         huff_chroma;
+    wire        huff_valid;
+    wire [31:0] huff_code;
+    wire [5:0]  huff_len;
+    wire        huff_done;
+    reg         huff_rst_pred;
+    wire        bp_ready;
+
+    jpeg_huff_enc u_huff (
+        .clk          (clk),
+        .rst_n        (rst_n),
+        .i_blk_start  (huff_start),
+        .i_comp       (huff_comp),
+        .i_chroma_tbl (huff_chroma),
+        .o_rd_idx     (huff_rd_idx),
+        .i_rd_data    (q_rd_data),
+        .o_valid      (huff_valid),
+        .o_code       (huff_code),
+        .o_len        (huff_len),
+        .i_ready      (bp_ready),
+        .o_blk_done   (huff_done),
+        .i_rst_pred   (huff_rst_pred)
+    );
+
+    //=============================================================== 位打包
+    reg         bp_flush;
+    wire        bp_valid;
+    wire [7:0]  bp_data;
+    wire [31:0] bp_cnt;
+
+    jpeg_bitpack u_bitpack (
+        .clk        (clk),
+        .rst_n      (rst_n),
+        .i_flush    (bp_flush),
+        .i_valid    (huff_valid),
+        .i_code     (huff_code),
+        .i_len      (huff_len),
+        .i_ready    (bp_ready),
+        .o_valid    (bp_valid),
+        .o_data     (bp_data),
+        .o_byte_cnt (bp_cnt)
+    );
+
+    //=============================================================== 头部
+    reg         hdr_start;
+    wire        hdr_valid;
+    wire [7:0]  hdr_data;
+    wire        hdr_done;
+
+    jpeg_headers u_hdr (
+        .clk      (clk),
+        .rst_n    (rst_n),
+        .i_start  (hdr_start),
+        .i_width  (i_width),
+        .i_height (i_height),
+        .o_qt_idx (o_qt_idx_a),
+        .i_qt_data(i_qt_data_a),
+        .o_valid  (hdr_valid),
+        .o_data   (hdr_data),
+        .o_done   (hdr_done)
+    );
+
+    //=============================================================== 块属性
+    always @(*) begin
+        case (blk)
+        2'd0: begin q_chroma = 1'b0; huff_comp = 2'd0; huff_chroma = 1'b0; end
+        2'd1: begin q_chroma = 1'b0; huff_comp = 2'd0; huff_chroma = 1'b0; end
+        2'd2: begin q_chroma = 1'b1; huff_comp = 2'd1; huff_chroma = 1'b1; end
+        default: begin q_chroma = 1'b1; huff_comp = 2'd2; huff_chroma = 1'b1; end
+        endcase
+        case (blk)
+        2'd0:    rd_grp = {mx_reg[6:0], 1'b0};
+        2'd1:    rd_grp = {mx_reg[6:0], 1'b1};
+        default: rd_grp = {1'b0, mx_reg[6:0]};
+        endcase
+        rd_sel = blk;
+    end
+
+    //=============================================================== 控制
+    localparam [3:0] T_IDLE  = 4'd0;
+    localparam [3:0] T_LOADQ = 4'd1;
+    localparam [3:0] T_HDR   = 4'd2;
+    localparam [3:0] T_WGRP  = 4'd3;
+    localparam [3:0] T_RD    = 4'd4;
+    localparam [3:0] T_WDCT  = 4'd5;
+    localparam [3:0] T_HUFF  = 4'd6;
+    localparam [3:0] T_NEXT  = 4'd7;
+    localparam [3:0] T_FIN   = 4'd8;
+    localparam [3:0] T_EOI   = 4'd9;
+
+    reg [3:0]  tstate;
+    reg [3:0]  rc;
+    reg [8:0]  my;
+    reg        eoi_ph;
+
+    // 输出 mux
+    always @(*) begin
+        if (hdr_valid) begin
+            m_valid = 1'b1;  m_data = hdr_data;  m_last = 1'b0;
+        end else if (tstate == T_EOI) begin
+            m_valid = 1'b1;  m_data = eoi_ph ? 8'hD9 : 8'hFF;  m_last = eoi_ph;
+        end else begin
+            m_valid = bp_valid;  m_data = bp_data;  m_last = 1'b0;
+        end
+    end
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            tstate        <= T_IDLE;
+            rc            <= 4'd0;
+            mx_reg        <= 8'd0;
+            my            <= 9'd0;
+            blk           <= 2'd0;
+            dct_start     <= 1'b0;
+            dct_valid     <= 1'b0;
+            q_load        <= 1'b0;
+            huff_start    <= 1'b0;
+            huff_rst_pred <= 1'b1;
+            hdr_start     <= 1'b0;
+            bp_flush      <= 1'b0;
+            grp_done      <= 1'b0;
+            eoi_ph        <= 1'b0;
+            rd_row        <= 3'd0;
+            st_busy       <= 1'b0;
+            st_done       <= 1'b0;
+            st_frame_bytes<= 24'd0;
+            st_frame_cnt  <= 32'd0;
+        end else begin
+            dct_start <= 1'b0;
+            dct_valid <= 1'b0;
+            q_load    <= 1'b0;
+            huff_start<= 1'b0;
+            hdr_start <= 1'b0;
+            bp_flush  <= 1'b0;
+            grp_done  <= 1'b0;
+            st_done   <= 1'b0;
+
+            if (i_soft_rst) begin
+                tstate  <= T_IDLE;
+                st_busy <= 1'b0;
+            end else begin
+            case (tstate)
+            //----------------------------------------------------
+            T_IDLE: begin
+                if (i_en) begin
+                    huff_rst_pred <= 1'b1;
+                    st_busy       <= 1'b1;
+                    q_load        <= 1'b1;
+                    tstate        <= T_LOADQ;
+                end
+            end
+
+            //----------------------------------------------------
+            T_LOADQ: begin
+                huff_rst_pred <= 1'b0;
+                if (q_load_done) begin
+                    hdr_start <= 1'b1;
+                    tstate    <= T_HDR;
+                end
+            end
+
+            //----------------------------------------------------
+            T_HDR: begin
+                if (hdr_done) begin
+                    mx_reg <= 8'd0;
+                    my     <= 9'd0;
+                    blk    <= 2'd0;
+                    tstate <= T_WGRP;
+                end
+            end
+
+            //----------------------------------------------------
+            // 等当前读 buffer 有完整 8 行 (电平, 不是脉冲)
+            T_WGRP: begin
+                if (lb_avail) begin
+                    rc     <= 4'd0;
+                    tstate <= T_RD;
+                end
+            end
+
+            //----------------------------------------------------
+            // rc=0    : 摆第 0 行地址 + DCT start
+            // rc=1..8 : DCT 收第 rc-1 行 (RAM 数据晚一拍到)
+            // rc=9    : 收尾
+            T_RD: begin
+                if (rc == 4'd0) begin
+                    dct_start <= 1'b1;
+                    rd_row    <= 3'd0;
+                    rc        <= 4'd1;
+                end else if (rc <= 4'd8) begin
+                    dct_valid <= 1'b1;
+                    // rc=1 摆 row1 (row0 已于 rc=0 摆出), 依此类推; rc=8 摆 0 并收尾
+                    rd_row    <= rc[2:0];
+                    rc        <= rc + 4'd1;
+                end else begin
+                    rd_row <= 3'd0;
+                    tstate <= T_WDCT;
+                end
+            end
+
+            //----------------------------------------------------
+            // DCT 跑完 + 量化跑完 (q_blk_done 比 dct_odone 晚一拍)
+            T_WDCT: begin
+                if (q_blk_done) begin
+                    huff_start <= 1'b1;
+                    tstate     <= T_HUFF;
+                end
+            end
+
+            //----------------------------------------------------
+            T_HUFF: begin
+                if (huff_done) tstate <= T_NEXT;
+            end
+
+            //----------------------------------------------------
+            T_NEXT: begin
+                if (blk != 2'd3) begin
+                    blk    <= blk + 2'd1;
+                    rc     <= 4'd0;
+                    tstate <= T_RD;
+                end else begin
+                    blk <= 2'd0;
+                    if (mx_reg == MCU_X - 1) begin
+                        mx_reg   <= 8'd0;
+                        my       <= my + 9'd1;
+                        grp_done <= 1'b1;       // 释放一个 8 行组
+                        if (my == MCU_Y - 1) begin
+                            bp_flush <= 1'b1;
+                            tstate   <= T_FIN;
+                        end else begin
+                            tstate   <= T_WGRP;
+                        end
+                    end else begin
+                        mx_reg <= mx_reg + 8'd1;
+                        rc     <= 4'd0;
+                        tstate <= T_RD;
+                    end
+                end
+            end
+
+            //----------------------------------------------------
+            T_FIN: begin
+                eoi_ph <= 1'b0;
+                tstate <= T_EOI;
+            end
+
+            T_EOI: begin
+                eoi_ph <= ~eoi_ph;
+                if (eoi_ph) begin
+                    st_frame_bytes <= bp_cnt[23:0];
+                    st_frame_cnt   <= st_frame_cnt + 32'd1;
+                    st_done        <= 1'b1;
+                    st_busy        <= 1'b0;
+                    tstate         <= T_IDLE;
+                end
+            end
+
+            default: tstate <= T_IDLE;
+            endcase
+            end
+        end
+    end
+
+endmodule

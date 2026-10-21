@@ -153,7 +153,7 @@ Range: bytes=0-99  ->  206 + Content-Range: bytes 0-99/57479
  "node":{...},
  "tel":{...},
  "lamp":{"state":"alarm","text":"报警","online":true,"age":2.1,
-         "since":1792479687,"hold":180,"unacked":1,"alarms24":1,
+         "hb_ts":1792479665.4,"since":1792479687,"hold":180,"unacked":1,"alarms24":1,
          "risk":0,"focus":{"label":"fall","cn":"跌倒","tid":3,"ts":...},
          "notes":[]},
  "alarms":[{"id":"20261020-150127-001","ts":...,"age":20,"lvl":2,
@@ -165,6 +165,8 @@ Range: bytes=0-99  ->  206 + Content-Range: bytes 0-99/57479
 ```
 
 `lamp.state` ∈ `ok | warn | alarm | offline`。
+`lamp.hb_ts` 是最近一次心跳的服务器时间（epoch 秒，看板用它显示“最近心跳”），
+`lamp.age` 是距今秒数。
 
 ### `GET /api/history`
 

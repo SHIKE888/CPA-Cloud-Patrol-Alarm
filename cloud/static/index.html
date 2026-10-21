@@ -96,6 +96,24 @@ body[data-lamp="alarm"] .lamp-state{animation:blink 1s steps(2,end) infinite}
 .lamp-sub{color:var(--tx);font-size:16px;font-weight:600;min-height:24px;text-align:center;padding:0 6px}
 .lamp-meta{color:var(--mut);font-size:12px;text-align:center;min-height:18px}
 .lamp-actions{display:flex;gap:8px;flex-wrap:wrap;justify-content:center;margin-top:8px}
+.lamp-legend{display:flex;flex-wrap:wrap;justify-content:center;align-items:center;
+  gap:4px 14px;margin-top:auto;width:100%;padding-top:10px;border-top:1px solid var(--line);
+  font-size:11.5px;line-height:1.4}
+.lamp-legend span{display:inline-flex;align-items:center;gap:5px;color:var(--mut);
+  opacity:.5;transition:opacity .3s}
+.lamp-legend i{width:9px;height:9px;border-radius:50%;background:currentColor;
+  box-shadow:0 0 7px currentColor;flex:0 0 auto}
+.lamp-legend .lg-ok{color:#22c55e}
+.lamp-legend .lg-warn{color:#f59e0b}
+.lamp-legend .lg-alarm{color:#ef4444}
+.lamp-legend .lg-off{color:#94a3b8}
+body[data-lamp="ok"] .lg-ok,body[data-lamp="warn"] .lg-warn,
+body[data-lamp="alarm"] .lg-alarm,body[data-lamp="offline"] .lg-off{opacity:1}
+/* 当前状态用光圈强调，不用 bold —— 避免字宽变化让整行抖动 */
+body[data-lamp="ok"] .lg-ok i,body[data-lamp="warn"] .lg-warn i,
+body[data-lamp="alarm"] .lg-alarm i,body[data-lamp="offline"] .lg-off i{
+  outline:2px solid currentColor;outline-offset:2px}
+@media (max-width:480px){.lamp-legend{gap:3px 10px;font-size:11px}}
 
 .metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
 @media (max-width:520px){.metrics{grid-template-columns:repeat(2,1fr)}}
@@ -284,6 +302,12 @@ footer{color:#5a6b80;font-size:11.5px;text-align:center;margin-top:18px;line-hei
       <button id="btnAck" class="bad">确认报警</button>
       <button id="btnSnap" class="ghost sm">抓拍一张</button>
     </div>
+    <div class="lamp-legend" id="lampLegend" aria-label="颜色图例">
+      <span class="lg-ok" title="正常：有心跳、无未确认报警、当前画面无风险"><i></i>正常</span>
+      <span class="lg-warn" title="预警：画面风险（越界/奔跑/举手）或资源告警（磁盘>85%、温度>72℃、AI 无结果）"><i></i>预警</span>
+      <span class="lg-alarm" title="报警：有未确认事件，或 crit 异常（无帧/磁盘>92%/温度>85℃12）"><i></i>报警</span>
+      <span class="lg-off" title="离线：超过 30s 没收到板端心跳"><i></i>离线</span>
+    </div>
   </div>
 
   <div style="display:flex;flex-direction:column;gap:14px;min-width:0">
@@ -331,7 +355,7 @@ footer{color:#5a6b80;font-size:11.5px;text-align:center;margin-top:18px;line-hei
     <div id="kCam"></div>
   </div>
   <div class="card info">
-    <div class="ih">硬件预处理<span class="sub" id="subPp">—</span></div>
+    <div class="ih">FPGA硬件预处理<span class="sub" id="subPp">—</span></div>
     <div id="kPp"></div>
   </div>
 </section>
@@ -551,6 +575,10 @@ function render(s) {
     "</div>";
   $("#subAi").textContent = aiOn ? fmt(ai.fps, 1) + " fps" : "未启用";
 
+  // 最近一次心跳的绝对时间：优先后端给的 hb_ts，老服务端就按 age 反推
+  const hbTs = (s.lamp && (s.lamp.hb_ts || (s.lamp.age != null
+    ? Date.now() / 1000 - s.lamp.age : 0))) || 0;
+
   $("#kSys").innerHTML =
     res("CPU", sy.cpu, "%") + res("NPU", aiOn ? sy.npu : null, "%") +
     res("内存", sy.mem, "%") + res("磁盘", sy.disk, "%") +
@@ -558,7 +586,8 @@ function render(s) {
     kv("芯片温度", fmt(sy.temp, 1) + " °C", sy.temp > 85 ? "bad" : sy.temp > 70 ? "warn" : "") +
     kv("运行时长", sy.uptime ? (Math.floor(sy.uptime / 3600) + " 小时 " + Math.floor(sy.uptime % 3600 / 60) + " 分") : "—") +
     kv("心跳延时", s.lamp.age == null ? "—" : ageText(s.lamp.age),
-       s.lamp.age > 15 ? "warn" : "");
+       s.lamp.age > 15 ? "warn" : "") +
+    kv("最近心跳", hbTs ? dstr(hbTs) : "—", s.lamp.online ? "" : "warn");
   $("#subSys").textContent = fmt(sy.cpu, 0) + "% CPU";
 
   const last = (s.alarms || [])[0];

@@ -38,8 +38,10 @@ module jpeg_qtable_ram (
     output reg  [7:0]   O_rd_data_b
 );
 
-// ⚠ include 必须放在 module 内部 —— jpeg_defs.vh 里是 localparam 和 function,
-//   每个用到的模块都要展开一份自己的副本 (该文件故意不加 include guard)。
+// ⚠ include 必须放在 module 内部, 且前面要 undef 掉保护宏 ——
+//   jpeg_defs.vh 有 `ifndef JPEG_DEFS_VH 保护, 多文件编译时第二个模块
+//   会因宏已定义而整个文件被跳过, 表现为 "No function named jpeg_q_lum"。
+`undef JPEG_DEFS_VH
 `include "jpeg_defs.vh"
 
     reg [7:0] ram [0:127];
