@@ -360,6 +360,27 @@
 
       <!-- ======== 摄像头 / 输出 ======== -->
       <div class="tabbody" id="tab-cam">
+        <div class="row"><label>推流模式</label>
+          <div style="flex:1;display:flex;gap:6px">
+            <button class="ghost" data-mode="mono" style="flex:1">单目</button>
+            <button class="ghost" data-mode="dual" style="flex:1">双目</button>
+          </div>
+        </div>
+        <div class="row"><label>单目通道</label>
+          <div style="flex:1;display:flex;gap:6px">
+            <button class="ghost" data-cam="0" style="flex:1">cam0 (J2)</button>
+            <button class="ghost" data-cam="1" style="flex:1">cam1 (J3)</button>
+          </div>
+        </div>
+        <div class="row"><label>AI 通道</label>
+          <div style="flex:1;display:flex;gap:6px">
+            <button class="ghost" data-aisrc="0" style="flex:1">cam0 / 左</button>
+            <button class="ghost" data-aisrc="1" style="flex:1">cam1 / 右</button>
+          </div>
+        </div>
+
+        <div class="sep"></div>
+
         <div class="row"><label>曝光时间</label>
           <input type="range" id="f_cam_exp" min="0.05" max="16.7" step="0.05" value="16">
           <span class="val" id="fv_cam_exp">16.0 ms</span></div>
@@ -564,31 +585,6 @@
           <span class="val" id="v_fps">60</span></div>
 
         <div class="sep"></div>
-
-        <div class="row"><label>推流模式</label>
-          <div style="flex:1;display:flex;gap:6px">
-            <button class="ghost" data-mode="mono" style="flex:1">单目</button>
-            <button class="ghost" data-mode="dual" style="flex:1">双目</button>
-            <button class="ghost" data-mode="demo" style="flex:1">双目演示</button>
-          </div>
-        </div>
-        <p class="hint" id="dualLine">—</p>
-
-        <div class="row"><label>单目通道</label>
-          <div style="flex:1;display:flex;gap:6px">
-            <button class="ghost" data-cam="0" style="flex:1">cam0 (J2)</button>
-            <button class="ghost" data-cam="1" style="flex:1">cam1 (J3)</button>
-          </div>
-        </div>
-        <div class="row"><label>AI 通道</label>
-          <div style="flex:1;display:flex;gap:6px">
-            <button class="ghost" data-aisrc="0" style="flex:1">cam0 / 左</button>
-            <button class="ghost" data-aisrc="1" style="flex:1">cam1 / 右</button>
-          </div>
-        </div>
-        <p class="hint">单目模式下 AI 自动走当前选中的那一路；双目模式下按上面的「AI 通道」
-          只喂左或右半边（省一半 NPU/CPU）。切通道直接写 FPGA 的 0xDB[0]，
-          会保留 0xDB 的其它位。</p>
 
         <div class="grid2" style="margin-bottom:8px">
           <button class="ghost" id="btnMirror">水平镜像</button>
@@ -945,9 +941,8 @@ function syncLabel(k) {
 function syncToggles() {
   $("btnMirror").classList.toggle("on", !!params.mirror);
   $("btnFlipv").classList.toggle("on", !!params.flipv);
-  // 单目 / 双目 / 双目演示 三档
-  const _m = Number(params.dual ?? 0)
-    ? (Number(params.dual_demo ?? 0) ? "demo" : "dual") : "mono";
+  // 单目 / 双目 两档
+  const _m = Number(params.dual ?? 0) ? "dual" : "mono";
   document.querySelectorAll("[data-mode]").forEach(b =>
     b.classList.toggle("on", b.dataset.mode === _m));
   document.querySelectorAll("[data-rot]").forEach(b =>
@@ -979,16 +974,15 @@ function schedulePush() {
 /* 开关 / 旋转 */
 $("btnMirror").onclick = () => { params.mirror = params.mirror ? 0 : 1; syncToggles(); schedulePush(); };
 $("btnFlipv").onclick  = () => { params.flipv  = params.flipv  ? 0 : 1; syncToggles(); schedulePush(); };
-/* 三档推流模式: 单目全屏 / 双目拼接(左cam0右cam1) / 双目演示(复制一路)
+/* 推流模式: 单目 / 双目拼接(左cam0右cam1)
    ★ 完全显式, 不会自动切 —— 想单目就点单目, 不会因为看到两路标记被改掉。 */
 document.querySelectorAll("[data-mode]").forEach(b => {
   b.onclick = () => {
     const m = b.dataset.mode;
     params.dual      = (m === "mono") ? 0 : 1;
-    params.dual_demo = (m === "demo") ? 1 : 0;
+    params.dual_demo = 0;          // 演示模式已从界面移除, 保持关闭
     syncToggles(); schedulePush();
-    toast(m === "mono" ? "单目 全屏"
-         : (m === "dual" ? "双目拼接 1920×540 @30" : "双目演示 (复制一路, 假数据)"));
+    toast(m === "mono" ? "单目 全屏" : "双目拼接 3840×1080");
   };
 });
 document.querySelectorAll("[data-rot]").forEach(b => {
