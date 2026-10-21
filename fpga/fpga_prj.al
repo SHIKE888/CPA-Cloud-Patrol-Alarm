@@ -641,14 +641,6 @@
                     <Attr Name="CompileOrder" Val="102"/>
                 </FileInfo>
             </File>
-            <File Path="uisrc/01_rtl/csi2_frame_tx_var.v">
-                <FileInfo>
-                    <Attr Name="UsedInSyn" Val="true"/>
-                    <Attr Name="UsedInP&R" Val="true"/>
-                    <Attr Name="BelongTo" Val="design_1"/>
-                    <Attr Name="CompileOrder" Val="104"/>
-                </FileInfo>
-            </File>
             <File Path="uisrc/01_rtl/ctrl/i2c_slave.v">
                 <FileInfo>
                     <Attr Name="UsedInSyn" Val="true"/>

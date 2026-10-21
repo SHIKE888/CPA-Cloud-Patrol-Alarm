@@ -6,7 +6,7 @@ $env:PATH = "$s\bin;$s\lib;" + $env:PATH
 $env:YOSYSHQ_ROOT = $s
 $src = "$root\fpga\uisrc\01_rtl"
 $jl = @(
-    "$src\csi2_frame_tx_var.v",
+    "$src\csi2_frame_tx.v",
     "$src\jpeg\jpeg_dct2d.v", "$src\jpeg\jpeg_quant_zz.v", "$src\jpeg\jpeg_bitpack.v",
     "$src\jpeg\jpeg_huff_enc.v", "$src\jpeg\jpeg_headers.v", "$src\jpeg\jpeg_linebuf.v",
     "$src\jpeg\jpeg_lossless_enc.v", "$src\jpeg\jpeg_encoder_top.v", "$src\jpeg\jpeg_qtable_ram.v"
