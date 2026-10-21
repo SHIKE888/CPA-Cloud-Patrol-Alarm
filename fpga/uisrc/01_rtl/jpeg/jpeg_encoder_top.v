@@ -110,7 +110,12 @@ module jpeg_encoder_top #(
     );
 
     //=============================================================== 无损 DPCM 编码器
-    wire        bp_ready;       // bitpack 反压 (被 u_ll 引用, 必须提前声明)
+
+    // ★ bp_ready 由 jpeg_bitpack 的 i_ready **输出**驱动 (它自己算"累加器还有没有余量"),
+    //   这里只声明 net 再扇出给熵编码/无损编码器的反压输入。
+    //   千万不要再写 `assign bp_ready = 1'b1;` —— 那是双驱动, iverilog 能过,
+    //   Anlogic TD 直接报 HDL-8007 (constantly driven from multiple places)。
+    wire        bp_ready;
     reg         ll_start;
     wire        ll_valid;
     wire [31:0] ll_code;
@@ -143,10 +148,7 @@ module jpeg_encoder_top #(
     );
 
     //=============================================================== 输入就绪
-    // ★ 本模块输出无背压 (m_valid 一直保持到下游取走), bitpack 的反压恒放行。
-    //   少了这一句 bp_ready 就是悬空 wire, i_ready 恒为 X -> u_ll 永远不 ready
-    //   -> 无损路径一个字节都吐不出来。
-    assign bp_ready = 1'b1;
+    // 本模块输出无背压 (m_valid 一直保持到下游取走), 位打包的反压由它自己算。
 
     //=============================================================== DCT
     reg          dct_start;
