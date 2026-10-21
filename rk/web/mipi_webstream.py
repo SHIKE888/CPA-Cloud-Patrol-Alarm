@@ -1498,6 +1498,12 @@ class OpenCVCapture(threading.Thread):
         self._dual_lock = threading.Lock()
         self._last_raw_by_src = {}
         self._dual_tag = "single"
+        # ---- 双目骨架单独一路 (前端下左框) ----
+        # _skel_jpg: 最新一帧黑底纯骨架 JPEG, 由 /skel.jpg 取走。
+        # 为什么单独一路而不画在原图上: 用户要求上面两块是干净视频流。
+        self._skel_jpg = None
+        self._skel_ts = 0.0         # 上次开始渲染的时刻(限帧用)
+        self._skel_ok = 0.0         # 上次渲染成功的时刻(调试用)
 
     # ------------------------------------------------------------------
     #  三级流水线
@@ -1865,7 +1871,10 @@ class OpenCVCapture(threading.Thread):
                     if _ai is not None and _ai.active:
                         try:
                             if self._dual_now:
-                                frame = self._ai_dual_draw(
+                                # 双目: 骨架**不画在原图上** —— 上面两块要是
+                                # 干净视频, 骨架单独跑一路黑底小图(下左框),
+                                # 所以这里只刷新 _skel_jpg, frame 原样往下走。
+                                self._skel_update(
                                     _ai, frame, int(p.get("ai_src", 0)))
                             else:
                                 _ai.submit(frame)
@@ -1990,6 +1999,46 @@ class OpenCVCapture(threading.Thread):
             x = 0 if src == 0 else f.shape[1]
             canvas[:, x:x + f.shape[1]] = f
             return canvas, me[1], "cam%d" % src
+
+    # 双目骨架图: 很小的分辨率就够 —— 骨架只有几条线, 看不出像素感,
+    # 但推理开销和编码开销都按平方降。8fps 也够看(骨架不会有剧烈运动)。
+    SKEL_W, SKEL_H = 640, 360
+    SKEL_FPS = 8.0
+
+    def _skel_update(self, ai, frame, half=0):
+        """双目模式: 把骨架单独渲染到一张黑底小图上, 供前端下左框显示。
+
+        ⚠ 关键: 双目下 **不把骨架画在视频帧上**。上面两块要干净视频,
+          骨架单独一块(用户明确要求)。单目模式仍然照旧叠在原图上。
+
+        ai.submit 喂的仍然是"选中的那一路"(ai_src), 所以 NPU 只跑一路,
+        和之前一样省一半算力; 只是喂进去的尺寸小了, 描点精度会略降,
+        这是"只给人看骨架"的合理取舍。
+        """
+        if not HAVE_CV2:
+            return
+        now = time.time()
+        if now - self._skel_ts < 1.0 / self.SKEL_FPS:
+            return                      # 限帧: 编码线程不要被它拖慢
+        self._skel_ts = now
+        try:
+            hw = frame.shape[1] // 2
+            x0 = 0 if int(half) == 0 else hw
+            roi = frame[:, x0:x0 + hw]
+            small = cv2.resize(roi, (self.SKEL_W, self.SKEL_H),
+                               interpolation=cv2.INTER_LINEAR)
+            ai.submit(small)
+            blank = np.zeros_like(small)        # 黑底, 只要骨架线条
+            drawn = ai.draw(blank)
+            if drawn is None:
+                drawn = blank
+            ok, buf = cv2.imencode(
+                ".jpg", drawn, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
+            if ok:
+                self._skel_jpg = buf.tobytes()
+                self._skel_ok = now
+        except Exception as e:                                 # noqa: BLE001
+            print("[ai] 骨架渲染异常: %s" % e, file=sys.stderr)
 
     def _ai_dual_draw(self, ai, frame, half=0):
         """双目模式: AI 只喂指定那一路(cam0=左半边 / cam1=右半边), 画完再贴回去。
@@ -3396,6 +3445,25 @@ class Handler(BaseHTTPRequestHandler):
                 return self._serve_viewer()
             if path == "/stream":
                 return self._serve_stream()
+            if path == "/skel.jpg":
+                # 双目下左框: 黑底纯骨架。图片很小(640x360), 前端用
+                # setInterval 拉, 不走 MJPEG 长连接 —— 这样不用动 hub 的
+                # 客户端限流(同 IP 只留一路流), 两边互不干扰。
+                cap = Handler.capture
+                jpg = (getattr(cap, "_skel_jpg", None)
+                       if cap is not None else None)
+                if not jpg:
+                    return self._json({"error": "no skeleton"}, 503)
+                self.send_response(200)
+                self.send_header("Content-Type", "image/jpeg")
+                self.send_header("Content-Length", str(len(jpg)))
+                self.send_header("Cache-Control", "no-store, no-cache, "
+                                 "must-revalidate")
+                self.send_header("Pragma", "no-cache")
+                self._cors()
+                self.end_headers()
+                self.wfile.write(jpg)
+                return
             if path == "/api/params":
                 return self._json(self.params.get())
             if path == "/api/status":

@@ -108,6 +108,24 @@
     overflow:hidden; position:relative;
   }
   #stream{width:100%; height:100%; object-fit:contain; display:block}
+  /* ---- 双目四宫格 ----
+     上左 cam0 / 上右 cam1 / 下左 骨架 / 下右 深度(预留)
+     两路上视频用 canvas 从同一条 MJPEG 流裁出来 —— 不能建两个 <img>,
+     服务端 _stream_acquire(ip) 是"同 IP 只留最新一路", 第二个会顶掉第一个。 */
+  #quad{position:absolute; inset:0; display:none;
+        grid-template-columns:1fr 1fr; grid-template-rows:1fr 1fr;
+        gap:4px; padding:4px; box-sizing:border-box; background:#000}
+  .qc{position:relative; background:#000; border:1px solid var(--line);
+      border-radius:6px; overflow:hidden;
+      display:flex; align-items:center; justify-content:center}
+  .qc>b{position:absolute; left:6px; top:4px; z-index:2;
+        font-size:11px; font-weight:600; color:#9fe;
+        background:rgba(0,0,0,.55); padding:1px 6px; border-radius:4px}
+  .qb{width:100%; height:100%; display:flex;
+      align-items:center; justify-content:center; overflow:hidden}
+  .qb canvas, .qb img{max-width:100%; max-height:100%;
+                      object-fit:contain; display:block}
+  .dph{color:var(--dim); font-size:12px; text-align:center; line-height:1.8}
   #placeholder{color:var(--dim); text-align:center; padding:0 16px; font-size:13px;
                line-height:1.9}
 
@@ -294,6 +312,16 @@
           <span style="font-size:12px;opacity:.7">地址应为 RK3576 上运行的 mipi_webstream.py 的 IP:9012</span>
         </div>
         <img id="stream" alt="stream" style="display:none">
+        <div id="quad">
+          <div class="qc"><b>cam0</b>
+            <div class="qb"><canvas id="cvL"></canvas></div></div>
+          <div class="qc"><b>cam1</b>
+            <div class="qb"><canvas id="cvR"></canvas></div></div>
+          <div class="qc"><b>骨架</b>
+            <div class="qb"><img id="cvSkel" alt="skel"></div></div>
+          <div class="qc"><b>深度（预留）</b>
+            <div class="qb dph">双目融合测距<br>待实现</div></div>
+        </div>
       </div>
       <!-- 画面下方指标区: 等分网格, 整齐对齐 -->
       <div class="mgroup">运行</div>
@@ -835,6 +863,7 @@ function startStream(force) {
     deadStrikes = 0;
     lastFrameId = null; lastFrameAdvAt = Date.now();   // 重新开始看门狗计时
     setDot(true, "已连接");
+    syncQuad();          // 新建的 <img> 要重新应用四宫格显隐
   };
   img.onerror = () => {
     if (gen !== streamGen) return;
@@ -925,6 +954,7 @@ function syncToggles() {
     b.classList.toggle("on", Number(b.dataset.rot) === Number(params.rotate || 0)));
   document.querySelectorAll("[data-aisrc]").forEach(b =>
     b.classList.toggle("on", Number(b.dataset.aisrc) === Number(params.ai_src || 0)));
+  syncQuad();        // 双目/单目切换时重排：四宫格 <-> 单画面
 }
 
 function schedulePush() {
@@ -966,6 +996,44 @@ document.querySelectorAll("[data-rot]").forEach(b => {
 });
 
 /* 单目通道: 写 FPGA 的 0xDB[0] (走 /api/fpga 的位操作, 保留 mark_en/dual_en) */
+/* ---------------- 双目四宫格 ---------------- */
+// 上左 cam0 / 上右 cam1 / 下左 骨架 / 下右 深度(预留)
+// 两路上视频用 canvas 从【同一条】MJPEG 流裁左/右半边 ——
+// 不能建两个 <img src=/stream>: 服务端 _stream_acquire(ip) 是
+// "同 IP 只留最新一路", 第二个 img 会把第一个顶掉, 两个都黑。
+let _quadTimer = null, _skelTimer = null;
+
+function quadDraw() {
+  const src = document.querySelector('img[id="stream"]');
+  if (!src || !src.naturalWidth) return;
+  const w = src.naturalWidth, h = src.naturalHeight, hw = w >> 1;
+  [["cvL", 0], ["cvR", hw]].forEach(function (p) {
+    const c = $(p[0]); if (!c) return;
+    if (c.width !== hw || c.height !== h) { c.width = hw; c.height = h; }
+    c.getContext("2d").drawImage(src, p[1], 0, hw, h, 0, 0, hw, h);
+  });
+}
+
+function syncQuad() {
+  const q = $("quad"); if (!q) return;
+  const on = !!Number(params.dual ?? 0);
+  q.style.display = on ? "grid" : "none";
+  const s = document.querySelector('img[id="stream"]');
+  if (s) s.style.display = on ? "none" : "block";
+  if (on) {
+    if (!_quadTimer) _quadTimer = setInterval(quadDraw, 33);
+    if (!_skelTimer) {
+      _skelTimer = setInterval(function () {
+        const im = $("cvSkel");
+        if (im && base) im.src = base + "/skel.jpg?t=" + Date.now();
+      }, 250);
+    }
+  } else {
+    if (_quadTimer) { clearInterval(_quadTimer); _quadTimer = null; }
+    if (_skelTimer) { clearInterval(_skelTimer); _skelTimer = null; }
+  }
+}
+
 async function syncCam() {
   if (!base) return;
   try {
