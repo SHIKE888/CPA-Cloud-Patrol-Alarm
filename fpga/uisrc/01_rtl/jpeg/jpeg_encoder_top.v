@@ -35,6 +35,7 @@ module jpeg_encoder_top #(
 
     input  wire        i_en,
     input  wire        i_soft_rst,
+    input  wire        i_lossless,      // 1 = 无损 (SOF3 + DPCM), 0 = 有损 (SOF0 + DCT)
 
     input  wire [11:0] i_width,
     input  wire [11:0] i_height,
@@ -64,6 +65,9 @@ module jpeg_encoder_top #(
 
     localparam integer MCU_X = W / 16;
     localparam integer MCU_Y = H / 8;
+    localparam integer NWORD = (W / 2) * H;   // 无损模式的总 word 数
+
+    wire use_ll = i_lossless;
 
     // 块号 / MCU 列 (块属性逻辑与控制状态机共用, 必须提前声明)
     reg [1:0] blk;
@@ -83,7 +87,7 @@ module jpeg_encoder_top #(
     jpeg_linebuf #(.W(W)) u_linebuf (
         .clk         (clk),
         .rst_n       (rst_n),
-        .i_valid     (s_valid),
+        .i_valid     (s_valid & ~use_ll),
         .i_data      (s_data),
         .o_wr_ready  (s_ready),
         .i_rd_row    (rd_row),
@@ -94,6 +98,36 @@ module jpeg_encoder_top #(
         .o_grp_ready (lb_grp_ready),
         .i_grp_done  (grp_done)
     );
+
+    //=============================================================== 无损 DPCM 编码器
+    wire        bp_ready;       // bitpack 反压 (被 u_ll 引用, 必须提前声明)
+    reg         ll_start;
+    wire        ll_valid;
+    wire [31:0] ll_code;
+    wire [5:0]  ll_len;
+    wire        ll_done;
+    wire        ll_ready;
+
+    jpeg_lossless_enc #(.W(W)) u_ll (
+        .clk         (clk),
+        .rst_n       (rst_n),
+        .i_start     (ll_start),
+        .i_valid     (s_valid & use_ll),
+        .i_data      (s_data),
+        .i_ready     (ll_ready),
+        .o_valid     (ll_valid),
+        .o_code      (ll_code),
+        .o_len       (ll_len),
+        .i_out_ready (bp_ready),
+        .o_done      (ll_done),
+        .o_sample_cnt()
+    );
+
+    //=============================================================== 输入就绪
+    // ★ 本模块输出无背压 (m_valid 一直保持到下游取走), bitpack 的反压恒放行。
+    //   少了这一句 bp_ready 就是悬空 wire, i_ready 恒为 X -> u_ll 永远不 ready
+    //   -> 无损路径一个字节都吐不出来。
+    assign bp_ready = 1'b1;
 
     //=============================================================== DCT
     reg          dct_start;
@@ -166,7 +200,6 @@ module jpeg_encoder_top #(
     wire [5:0]  huff_len;
     wire        huff_done;
     reg         huff_rst_pred;
-    wire        bp_ready;
 
     jpeg_huff_enc u_huff (
         .clk          (clk),
@@ -194,9 +227,9 @@ module jpeg_encoder_top #(
         .clk        (clk),
         .rst_n      (rst_n),
         .i_flush    (bp_flush),
-        .i_valid    (huff_valid),
-        .i_code     (huff_code),
-        .i_len      (huff_len),
+        .i_valid    (use_ll ? ll_valid : huff_valid),
+        .i_code     (use_ll ? ll_code  : huff_code),
+        .i_len      (use_ll ? ll_len   : huff_len),
         .i_ready    (bp_ready),
         .o_valid    (bp_valid),
         .o_data     (bp_data),
@@ -213,6 +246,7 @@ module jpeg_encoder_top #(
         .clk      (clk),
         .rst_n    (rst_n),
         .i_start  (hdr_start),
+        .i_lossless(i_lossless),
         .i_width  (i_width),
         .i_height (i_height),
         .o_qt_idx (o_qt_idx_a),
@@ -249,12 +283,24 @@ module jpeg_encoder_top #(
     localparam [3:0] T_NEXT  = 4'd7;
     localparam [3:0] T_FIN   = 4'd8;
     localparam [3:0] T_EOI   = 4'd9;
+    localparam [3:0] T_HDR2  = 4'd10;   // 无损: T_IDLE 后一拍再发 hdr_start
+    localparam [3:0] T_LLRUN = 4'd11;   // 无损: 等收满 NWORD 个 word
+
+    //=============================================================== 输入就绪
+    // ★ 无损路径必须等 header 发完、ll_start 已经把 line_buf/col/wr_buf 清干净
+    //   之后才允许收数据。否则 header 期间 s_ready=ll_ready=1, 上游先把数据喂进来,
+    //   紧接着 T_HDR2 的 ll_start 把 line_buf/col 全清, 那批数据就丢了 ——
+    //   实测表现为整个最前面一段样本凭空消失、之后全部错位。
+    //   (必须放在 tstate/T_LLRUN 声明之后, 否则 iverilog 报 bind 错误)
 
     reg [3:0]  tstate;
     reg [3:0]  rc;
     reg [8:0]  my;
     reg        eoi_ph;
     reg [2:0]  fin_cnt;
+    reg [31:0] ll_wcnt;
+
+    assign s_ready = use_ll ? (ll_ready && (tstate == T_LLRUN)) : lb_ready;
 
     // 输出 mux
     always @(*) begin
@@ -265,6 +311,14 @@ module jpeg_encoder_top #(
         end else begin
             m_valid = bp_valid;  m_data = bp_data;  m_last = 1'b0;
         end
+    end
+
+    // 无损模式: 统计已接收的 word 数 (ll_start 之后开始计)
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n)              ll_wcnt <= 32'd0;
+        else if (ll_start)       ll_wcnt <= 32'd0;
+        else if (use_ll && s_valid && ll_ready)
+                                 ll_wcnt <= ll_wcnt + 32'd1;
     end
 
     always @(posedge clk or negedge rst_n) begin
@@ -282,8 +336,12 @@ module jpeg_encoder_top #(
             hdr_start     <= 1'b0;
             bp_flush      <= 1'b0;
             grp_done      <= 1'b0;
+            ll_start      <= 1'b0;   // ★ 必须在复位里清, 否则复位期间是 X
+                                     //   会把 u_ll 的 i_ready 污染成 X,
+                                     //   上游握手 while(!s_ready) 永久卡死
             eoi_ph        <= 1'b0;
             fin_cnt       <= 3'd0;
+            ll_wcnt       <= 32'd0;
             rd_row        <= 3'd0;
             st_busy       <= 1'b0;
             st_done       <= 1'b0;
@@ -297,6 +355,7 @@ module jpeg_encoder_top #(
             hdr_start <= 1'b0;
             bp_flush  <= 1'b0;
             grp_done  <= 1'b0;
+            ll_start  <= 1'b0;
             st_done   <= 1'b0;
 
             if (i_soft_rst) begin
@@ -309,8 +368,27 @@ module jpeg_encoder_top #(
                 if (i_en) begin
                     huff_rst_pred <= 1'b1;
                     st_busy       <= 1'b1;
-                    q_load        <= 1'b1;
-                    tstate        <= T_LOADQ;
+                    if (use_ll) begin
+                        ll_start <= 1'b1;       // 清预测器/行缓冲
+                        tstate   <= T_HDR2;
+                    end else begin
+                        q_load <= 1'b1;
+                        tstate <= T_LOADQ;
+                    end
+                end
+            end
+
+            //----------------------------------------------------
+            T_HDR2: begin
+                hdr_start <= 1'b1;
+                tstate    <= T_HDR;
+            end
+
+            //----------------------------------------------------
+            T_LLRUN: begin
+                if (ll_wcnt >= NWORD) begin
+                    bp_flush <= 1'b1;
+                    tstate   <= T_FIN;
                 end
             end
 
@@ -326,10 +404,14 @@ module jpeg_encoder_top #(
             //----------------------------------------------------
             T_HDR: begin
                 if (hdr_done) begin
-                    mx_reg <= 8'd0;
-                    my     <= 9'd0;
-                    blk    <= 2'd0;
-                    tstate <= T_WGRP;
+                    if (use_ll) begin
+                        tstate  <= T_LLRUN;
+                    end else begin
+                        mx_reg <= 8'd0;
+                        my     <= 9'd0;
+                        blk    <= 2'd0;
+                        tstate <= T_WGRP;
+                    end
                 end
             end
 

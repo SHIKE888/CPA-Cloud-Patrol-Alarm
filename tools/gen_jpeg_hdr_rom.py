@@ -28,6 +28,7 @@ if HERE not in sys.path:
 from gen_jpeg_tables import (      # noqa: E402
     DC_LUM_BITS, DC_LUM_VALS, DC_CHR_BITS, DC_CHR_VALS,
     AC_LUM_BITS, AC_LUM_VALS, AC_CHR_BITS, AC_CHR_VALS,
+    LOSSLESS_BITS, LOSSLESS_VALS,
 )
 
 OUT = os.path.normpath(os.path.join(
@@ -95,42 +96,89 @@ def build():
     return rom, off
 
 
+def build_ll():
+    """无损 (SOF3) 头部。
+
+    与有损的区别:
+      * 标记是 SOF3 (0xC3) 而不是 SOF0
+      * **没有 DQT 段** (不做 DCT/量化)
+      * DHT 只有一张 lossless DC 表 (tc=0, th=0), 17 个符号 0..16
+      * SOS 的 Ss=Se=0, 表示 lossless 过程
+    """
+    rom = bytearray()
+    off = {}
+
+    rom += bytearray([0xFF, 0xD8])
+    rom += _seg(0xE0, b'JFIF\x00' + bytes([1, 1, 0, 0, 1, 0, 1, 0, 0]))
+
+    # SOF3 (Tq 字段必须全 0 —— 无损模式不使用量化表)
+    rom += bytearray([0xFF, 0xC3, 0x00, 0x11, 0x08])
+    off['h'] = len(rom)
+    rom += bytearray(2)
+    off['w'] = len(rom)
+    rom += bytearray(2)
+    rom += bytearray([0x03, 0x01, 0x21, 0x00, 0x02, 0x11, 0x00,
+                      0x03, 0x11, 0x00])
+
+    # DHT: 只有 lossless DC
+    p = bytearray([0x00])                      # Tc=0, Th=0
+    p += bytes(LOSSLESS_BITS[1:17])
+    p += bytes(LOSSLESS_VALS)
+    dht = _seg(0xC4, p)
+    off['dht'] = len(rom)
+    rom += dht
+
+    # SOS: Ss=0, Se=0
+    sos = _seg(0xDA, bytes([0x03, 0x01, 0x00, 0x02, 0x11, 0x03, 0x11,
+                            0x00, 0x00, 0x00]))
+    off['sos'] = len(rom)
+    rom += sos
+
+    return rom, off
+
+
 def main():
     rom, off = build()
-    lines = []
-    lines.append("//==============================================================================")
-    lines.append("//  jpeg_hdr_rom.vh")
-    lines.append("//  JPEG 固定头部字节 ROM —— **由 tools/gen_jpeg_hdr_rom.py 自动生成, 请勿手改**")
-    lines.append("//")
-    lines.append("//  总长 %d 字节。可变位置 (ROM 里填 0 占位, RTL 输出时替换):" % len(rom))
-    lines.append("//     亮度 Q  zigzag 序 64 项 @ %d..%d" % (off['qy'], off['qy'] + 63))
-    lines.append("//     色度 Q  zigzag 序 64 项 @ %d..%d" % (off['qc'], off['qc'] + 63))
-    lines.append("//     高度 H (大端)          @ %d..%d" % (off['h'], off['h'] + 1))
-    lines.append("//     宽度 W (大端)          @ %d..%d" % (off['w'], off['w'] + 1))
-    lines.append("//     DHT 段起始 = %d,  SOS 段起始 = %d" % (off['dht'], off['sos']))
-    lines.append("//")
-    lines.append("//  jpeg_headers.v 里的 HDR_LEN / OFF_QY / OFF_QC / OFF_H / OFF_W 必须与上面一致。")
-    lines.append("//==============================================================================")
-    lines.append("")
-    lines.append("function [7:0] jpeg_hdr_rom;")
-    lines.append("    input [9:0] a;")
-    lines.append("    begin")
-    lines.append("        case (a)")
-    for i, v in enumerate(rom):
-        lines.append("        10'd%-4d: jpeg_hdr_rom = 8'h%02X;" % (i, v))
-    lines.append("        default: jpeg_hdr_rom = 8'h00;")
-    lines.append("        endcase")
-    lines.append("    end")
-    lines.append("endfunction")
-    lines.append("")
+    romll, offll = build_ll()
+
+    def emit(path, rom, off, tag):
+        lines = []
+        lines.append("//==============================================================================")
+        lines.append("//  %s" % os.path.basename(path))
+        lines.append("//  JPEG 固定头部字节 ROM —— **由 tools/gen_jpeg_hdr_rom.py 自动生成, 请勿手改**")
+        lines.append("//")
+        lines.append("//  总长 %d 字节。可变位置 (ROM 里填 0 占位, RTL 输出时替换):" % len(rom))
+        for k in ("qy", "qc", "h", "w"):
+            if k in off:
+                lines.append("//     %s @ %d" % (k, off[k]))
+        lines.append("//==============================================================================")
+        lines.append("")
+        lines.append("function [7:0] %s;" % tag)
+        lines.append("    input [9:0] a;")
+        lines.append("    begin")
+        lines.append("        case (a)")
+        for i, v in enumerate(rom):
+            lines.append("        10'd%-4d: %s = 8'h%02X;" % (i, tag, v))
+        lines.append("        default: %s = 8'h00;" % tag)
+        lines.append("        endcase")
+        lines.append("    end")
+        lines.append("endfunction")
+        lines.append("")
+        return "\n".join(lines)
 
     with open(OUT, "w", encoding="utf-8", newline="\n") as f:
-        f.write("\n".join(lines))
+        f.write(emit(OUT, rom, off, "jpeg_hdr_rom"))
 
-    print("wrote %s" % OUT)
-    print("  总长 %d 字节" % len(rom))
-    print("  OFF_QY=%d  OFF_QC=%d  OFF_H=%d  OFF_W=%d  OFF_DHT=%d  OFF_SOS=%d"
-          % (off['qy'], off['qc'], off['h'], off['w'], off['dht'], off['sos']))
+    out_ll = OUT.replace("jpeg_hdr_rom.vh", "jpeg_hdr_ll.vh")
+    with open(out_ll, "w", encoding="utf-8", newline="\n") as f:
+        f.write(emit(out_ll, romll, offll, "jpeg_hdr_ll"))
+
+    print("wrote %s : %d bytes  QY=%d QC=%d H=%d W=%d" %
+          (OUT, len(rom), off['qy'], off['qc'], off['h'], off['w']))
+    print("wrote %s : %d bytes  H=%d W=%d" %
+          (out_ll, len(romll), offll['h'], offll['w']))
+    print("  LL 头部: SOI+APP0=%d SOF3 头=%d DHT=%d SOS=%d" %
+          (20, 5, len(romll) - offll['dht'], 14))
 
 
 if __name__ == "__main__":

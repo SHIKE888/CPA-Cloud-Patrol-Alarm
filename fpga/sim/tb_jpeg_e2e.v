@@ -17,6 +17,10 @@ module tb_jpeg_e2e;
     // (iverilog 在 PowerShell 下 -D/-P 参数传递不可靠, 用头文件最稳)
 `include "jpeg_sim_cfg.vh"
 
+`ifndef SIM_LL
+    `define SIM_LL 1'b0
+`endif
+
     parameter integer W = `SIM_W;
     parameter integer H = `SIM_H;
 
@@ -38,11 +42,22 @@ module tb_jpeg_e2e;
     wire        st_busy, st_done;
     wire [31:0] st_cnt;
 
+    // ---- 死锁定位用 (只在无损模式下打印) ----
+    integer dbg_cyc = 0;
+    always @(posedge clk) begin
+        dbg_cyc <= dbg_cyc + 1;
+        if (`SIM_LL && (dbg_cyc % 20000) == 0)
+            $display("DBG t=%0d tstate=%0d llwcnt=%0d llready=%b svld=%b llstate=%0d inhv=%b ovld=%b",
+                     $time, dut.tstate, dut.ll_wcnt, dut.ll_ready,
+                     dut.s_valid, dut.u_ll.state, dut.u_ll.in_have, dut.bp_valid);
+    end
+
     jpeg_encoder_top #(.W(W), .H(H)) dut (
         .clk          (clk),
         .rst_n        (rst_n),
         .i_en         (1'b1),
         .i_soft_rst   (1'b0),
+        .i_lossless   (`SIM_LL),
         .i_width      (W[11:0]),
         .i_height     (H[11:0]),
         .o_qt_idx_a   (qt_idx_a),
@@ -62,8 +77,7 @@ module tb_jpeg_e2e;
     );
 
     // 量化表 (复位即装 Annex K.1 标准表)
-    jpeg_qtable_ram u_qt (
-        .I_clk      (clk),
+    jpeg_qtable_ram u_qt (        .I_clk      (clk),
         .I_rst_n    (rst_n),
         .I_wr_en    (1'b0),
         .I_wr_addr  (8'd0),
@@ -79,9 +93,11 @@ module tb_jpeg_e2e;
     always #3.3 clk = ~clk;         // ~150MHz
 
     //--------------------------------------------------------------- 输入向量
-    // ★ 数组大小必须按实际尺寸算 —— 写死 65536 时 1920x96 需要 92160 项,
-    //   $readmemh 越界读到 X, 整帧系数全废 (实测每组字节数暴涨 10 倍)
-    reg [31:0] mem [0:((W/2)*H)-1];
+    // ★ 流式读取, 不建大数组 —— 1920x1080 需要 1036800 个 word,
+    //   全部读进 reg 数组会让 iverilog 慢到无法接受
+    reg [31:0] vword;
+    integer fin;
+    integer frc;
     integer nwords;
     integer i;
     integer fd;
@@ -89,7 +105,6 @@ module tb_jpeg_e2e;
 
     initial begin
         nwords = (W / 2) * H;
-        $readmemh("jpeg_in.hex", mem, 0, nwords - 1);
     end
 
     //--------------------------------------------------------------- 输出收集
@@ -112,6 +127,12 @@ module tb_jpeg_e2e;
         s_valid = 1'b0;
         s_data  = 32'd0;
 
+        fin = $fopen("jpeg_in.hex", "r");
+        if (fin == 0) begin
+            $display("ERROR: cannot open jpeg_in.hex");
+            $finish;
+        end
+
         repeat (6) @(posedge clk);
         rst_n = 1'b1;
         repeat (4) @(posedge clk);
@@ -120,8 +141,9 @@ module tb_jpeg_e2e;
         // 原来无条件每拍喂, 长图 (H>16) 时第 3 组起的数据会被静默丢弃。
         for (i = 0; i < nwords; i = i + 1) begin
             @(negedge clk);
+            frc = $fscanf(fin, "%h\n", vword);
             s_valid = 1'b1;
-            s_data  = mem[i];
+            s_data  = vword;
             #1;
             while (!s_ready) begin
                 @(negedge clk);
@@ -130,6 +152,7 @@ module tb_jpeg_e2e;
         end
         @(negedge clk);
         s_valid = 1'b0;
+        $fclose(fin);
 
         wait (st_done == 1'b1);
         repeat (10) @(posedge clk);

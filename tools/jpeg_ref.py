@@ -578,6 +578,132 @@ def selftest(quality=75, do_dump=None):
     return 0 if ok else 1
 
 
+# ============================================================================
+#  10. 无损模式 (SOF3, ITU-T T.81 Annex H)
+# ============================================================================
+from gen_jpeg_tables import LOSSLESS_BITS, LOSSLESS_VALS   # noqa: E402
+
+
+def med_predict(a, b, c):
+    """MED (LOCO-I median edge detector)。
+
+    必须与 RTL (jpeg_lossless_enc.v 的 med 函数) 逐位一致:
+        mx = max(a,b); mn = min(a,b)
+        c >= mx -> mn ;  c <= mn -> mx ;  else clamp(a+b-c, 0, 255)
+    """
+    mx = a if a > b else b
+    mn = a if a < b else b
+    if c >= mx:
+        return mn
+    if c <= mn:
+        return mx
+    t = a + b - c
+    if t > 255:
+        return 255
+    if t < 0:
+        return 0
+    return t
+
+
+def seg_sof3(w, h, ncomp=3):
+    p = bytearray()
+    p.append(8)
+    p += bytes([(h >> 8) & 0xFF, h & 0xFF, (w >> 8) & 0xFF, w & 0xFF])
+    p.append(ncomp)
+    comps = [(1, 0x21, 0), (2, 0x11, 0), (3, 0x11, 0)]   # 无损无量化表
+    for cid, hv, tq in comps:
+        p += bytes([cid, hv, tq])
+    return _seg(0xC3, p)
+
+
+def seg_dht_lossless():
+    """只发一张 lossless DC 表 (Tc=0, Th=0), 符号 = 幅度分类 0..16"""
+    p = bytearray([0x00])
+    p += bytes(LOSSLESS_BITS[1:17])
+    p += bytes(LOSSLESS_VALS)
+    return _seg(0xC4, p)
+
+
+def seg_sos_lossless(ncomp=3):
+    p = bytearray()
+    p.append(ncomp)
+    for cid, tdta in [(1, 0x00), (2, 0x11), (3, 0x11)]:
+        p += bytes([cid, tdta])
+    p += bytes([0, 0, 0])          # Ss=0, Se=0, Ah/Al=0
+    return _seg(0xDA, p)
+
+
+def encode_lossless(yuv, verbose=True):
+    """4:2:2 无损 JPEG (SOF3)。
+
+    ★ 一个 MCU = 1 个 YUV422 word = (Y0, Y1, Cb, Cr)。所以预测器只需要
+      上一行整行 + 当前行前一个 word —— 与 RTL 的实现完全相同。
+
+    邻居约定 (与 RTL 一致):
+        Y0 : a = 上一 word 的 Y1, b = 上行同列 Y0, c = 上行前一列 Y1
+        Y1 : a = 本 word 的 Y0,  b = 上行同列 Y1, c = 上行同列 Y0
+        Cb : a = 上一 word 的 Cb, b = 上行同列 Cb, c = 上行前一列 Cb
+        Cr : 同 Cb
+    不存在的邻居一律取 0 (第一行退化为 a, 第一列退化为 b, 左上角为 0)。
+    """
+    Y, Cb, Cr = [np.asarray(x) for x in yuv]
+    H, W = Y.shape
+    assert W % 2 == 0, "宽度必须是偶数"
+
+    out = bytearray()
+    out += seg_soi()
+    out += seg_app0()
+    out += seg_sof3(W, H, 3)
+    out += seg_dht_lossless()
+    out += seg_sos_lossless(3)
+
+    bw = BitWriter()
+    huff = build_codes(LOSSLESS_BITS, LOSSLESS_VALS, "Lossless DC")
+    nwx = W // 2
+    zero = (0, 0, 0, 0)
+    prev = [zero] * nwx
+    nsym = 0
+
+    for r in range(H):
+        left = zero
+        cur = [zero] * nwx
+        for cx in range(nwx):
+            y0 = int(Y[r, 2 * cx])
+            y1 = int(Y[r, 2 * cx + 1])
+            cb = int(Cb[r, cx])
+            cr = int(Cr[r, cx])
+            up = prev[cx]
+            upl = prev[cx - 1] if cx > 0 else zero
+
+            p0 = med_predict(left[1], up[0], upl[1])
+            p1 = med_predict(y0,      up[1], up[0])
+            pc = med_predict(left[2], up[2], upl[2])
+            pr = med_predict(left[3], up[3], upl[3])
+
+            for px, pv in ((y0, p0), (y1, p1), (cb, pc), (cr, pr)):
+                d = px - pv
+                s = magnitude_category(d)
+                cd, ln = huff[s]
+                bw.put_bits(cd, ln)
+                if s:
+                    bw.put_bits(amp_bits(d, s), s)
+                nsym += 1
+
+            v = (y0, y1, cb, cr)
+            cur[cx] = v
+            left = v
+        prev = cur
+
+    bw.flush()
+    out += bw.buf
+    out += seg_eoi()
+
+    if verbose:
+        print("    无损: 采样 %d, 熵字节 %d, 填充 %d, 总 %d 字节"
+              % (nsym, len(bw.buf), bw.stuff_count, len(out)))
+    return bytes(out), dict(bytes=len(out), symbols=nsym, stuff=bw.stuff_count)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--quality', type=int, default=75)

@@ -25,6 +25,7 @@ module jpeg_headers (
     input  wire         rst_n,
 
     input  wire         i_start,        // 脉冲
+    input  wire         i_lossless,     // 1 = 无损 (SOF3), 0 = 有损 (SOF0)
     input  wire [11:0]  i_width,
     input  wire [11:0]  i_height,
 
@@ -40,14 +41,25 @@ module jpeg_headers (
     `undef JPEG_DEFS_VH
     `include "jpeg_defs.vh"
     `include "jpeg_hdr_rom.vh"
+    `include "jpeg_hdr_ll.vh"
 
     //---------------------------------------------------------------- 布局常量
-    // 必须与 tools/gen_jpeg_hdr_rom.py 打印的值一致
-    localparam integer HDR_LEN = 607;
-    localparam integer OFF_QY  = 25;    // 亮度 Q 起始
-    localparam integer OFF_QC  = 90;    // 色度 Q 起始
-    localparam integer OFF_H   = 159;   // 高度 高字节
-    localparam integer OFF_W   = 161;   // 宽度 高字节
+    // 有损 (SOF0): 607 字节, 含 DQT 两段 Q 表
+    localparam integer HDR_LEN_L = 607;
+    localparam integer OFF_QY_L  = 25;
+    localparam integer OFF_QC_L  = 90;
+    localparam integer OFF_H_L   = 159;
+    localparam integer OFF_W_L   = 161;
+
+    // 无损 (SOF3): 91 字节, 无 DQT
+    localparam integer HDR_LEN_LL = 91;
+    localparam integer OFF_H_LL   = 25;
+    localparam integer OFF_W_LL   = 27;
+
+    wire        ll = i_lossless;
+    wire [9:0]  hdr_len = ll ? HDR_LEN_LL[9:0] : HDR_LEN_L[9:0];
+    wire [9:0]  off_h   = ll ? OFF_H_LL[9:0]   : OFF_H_L[9:0];
+    wire [9:0]  off_w   = ll ? OFF_W_LL[9:0]   : OFF_W_L[9:0];
 
     //---------------------------------------------------------------- 计数
     reg [9:0] cnt;
@@ -76,19 +88,28 @@ module jpeg_headers (
     end
 
     //---------------------------------------------------------------- 数据选择
-    // H / W 是 16 位大端, 我们的尺寸 < 4096, 所以高字节恒 0
-    //   cnt159 = H[15:8]   cnt160 = H[7:0]
-    //   cnt161 = W[15:8]   cnt162 = W[7:0]
+    // H / W 是 16 位大端, 我们的尺寸 < 4096, 所以高字节是 [11:8]
     reg [7:0] d2;
     always @(*) begin
-        if (!run)                                        d2 = 8'd0;
-        else if (cnt >= 10'd25 && cnt <= 10'd88)         d2 = i_qt_data;      // 亮度 Q
-        else if (cnt >= 10'd90 && cnt <= 10'd153)        d2 = i_qt_data;      // 色度 Q
-        else if (cnt == 10'd159)                         d2 = {4'h0, i_height[11:8]};
-        else if (cnt == 10'd160)                         d2 = i_height[7:0];
-        else if (cnt == 10'd161)                         d2 = {4'h0, i_width[11:8]};
-        else if (cnt == 10'd162)                         d2 = i_width[7:0];
-        else                                             d2 = jpeg_hdr_rom(cnt);
+        if (!run) begin
+            d2 = 8'd0;
+        end else if (!ll) begin
+            // ---- 有损 SOF0: 607 字节, 含两段 Q 表 ----
+            if      (cnt >= 10'd25  && cnt <= 10'd88)  d2 = i_qt_data;   // 亮度 Q (zigzag 序)
+            else if (cnt >= 10'd90  && cnt <= 10'd153) d2 = i_qt_data;   // 色度 Q
+            else if (cnt == 10'd159)                   d2 = {4'h0, i_height[11:8]};
+            else if (cnt == 10'd160)                   d2 = i_height[7:0];
+            else if (cnt == 10'd161)                   d2 = {4'h0, i_width[11:8]};
+            else if (cnt == 10'd162)                   d2 = i_width[7:0];
+            else                                       d2 = jpeg_hdr_rom(cnt);
+        end else begin
+            // ---- 无损 SOF3: 91 字节, 无 DQT ----
+            if      (cnt == 10'd25)                    d2 = {4'h0, i_height[11:8]};
+            else if (cnt == 10'd26)                    d2 = i_height[7:0];
+            else if (cnt == 10'd27)                    d2 = {4'h0, i_width[11:8]};
+            else if (cnt == 10'd28)                    d2 = i_width[7:0];
+            else                                       d2 = jpeg_hdr_ll(cnt);
+        end
     end
 
     //---------------------------------------------------------------- 主流程
@@ -109,7 +130,7 @@ module jpeg_headers (
             end else if (run) begin
                 o_valid <= 1'b1;
                 o_data  <= d2;
-                if (cnt == HDR_LEN - 1) begin
+                if (cnt == hdr_len - 10'd1) begin
                     // ★ 这里必须把 run 清掉, 下一拍 o_valid 才会回 0。
                     //   否则 o_valid 一直挂 1, 下游 mux 永远选头部, 熵编码字节
                     //   全被挡住 (实测: 文件里正文全是 0x00)
