@@ -83,16 +83,27 @@ def _schedule_service_restart(delay=1.5):
     成“正常”）。systemctl restart 会重新走一遍完整初始化。
 
     用 start_new_session 隔开，否则 kill 到当前进程时连带把这条命令干掉。
+
+    ⚠ 光有 start_new_session 不够：unit 的 KillMode=control-group（systemd
+      默认值），stop 时会把整个 cgroup 里的进程全部 SIGKILL —— 包括我
+      Popen 出来的 systemctl 自己。实测结果就是"服务被停掉、restart 没执行、
+      再也没起来"，只能人工登板重启。
+      所以优先走 systemd-run --on-active：它创建一个独立的 transient
+      timer unit（在自己的 cgroup 里），本服务怎么死都牵连不到它。
     """
     def _do():
         time.sleep(delay)
-        try:
-            subprocess.Popen(["/bin/systemctl", "restart", "mipi-webstream"],
-                             stdout=subprocess.DEVNULL,
-                             stderr=subprocess.DEVNULL,
-                             start_new_session=True)
-        except Exception:                                          # noqa: BLE001
-            os._exit(1)
+        for cmd in (["/usr/bin/systemd-run", "--collect", "--on-active=1",
+                     "/bin/systemctl", "restart", "mipi-webstream"],
+                    ["/bin/systemctl", "restart", "mipi-webstream"]):
+            try:
+                subprocess.Popen(cmd, stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL,
+                                 start_new_session=True)
+                return
+            except Exception:                                      # noqa: BLE001
+                continue
+        os._exit(1)
 
     threading.Thread(target=_do, daemon=True).start()
 
