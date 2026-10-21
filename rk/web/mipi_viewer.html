@@ -360,8 +360,38 @@
 
       <!-- ======== 摄像头 / 输出 ======== -->
       <div class="tabbody" id="tab-cam">
-        <div class="row"><label>推流模式</label>
+        <!-- ======== FPGA 硬件 JPEG 编码 (jpeg_encoder_top / jpeg_regfile 0x00-0x05) ======== -->
+        <div class="row"><label>硬件编码</label>
           <div style="flex:1;display:flex;gap:6px">
+            <button class="ghost" id="btnJpegHw" style="flex:1">关 (走软件 JPEG)</button>
+          </div>
+        </div>
+        <div class="row"><label>JPEG 编码</label>
+          <div style="flex:1;display:flex;gap:6px">
+            <button class="ghost on" data-jll="0" style="flex:1">有损 SOF0</button>
+            <button class="ghost" data-jll="1" style="flex:1">无损 SOF3</button>
+          </div>
+        </div>
+        <div class="row"><label>质量 Q</label>
+          <input type="range" id="p_jpeg_q" min="1" max="100" step="1" value="75">
+          <span class="val" id="v_jpeg_q">75</span></div>
+        <div class="row"><label>目标码率</label>
+          <input type="range" id="p_jpeg_kb" min="10" max="600" step="10" value="120">
+          <span class="val" id="v_jpeg_kb">120 KB/帧</span></div>
+        <div class="row"><label>闭环码控</label>
+          <div style="flex:1;display:flex;gap:6px">
+            <button class="ghost on" data-jrc="0" style="flex:1">关(定 Q)</button>
+            <button class="ghost" data-jrc="1" style="flex:1">开(收敛到目标)</button>
+          </div>
+        </div>
+        <div class="row" style="font-size:11px;opacity:.65">
+          <span>硬件 JPEG 编码器已通过逐字节仿真(有损 12 尺寸 / 无损 6 尺寸)；
+                需烧写含 jpeg_encoder_top 的 bitstream 后本组参数才在板上生效。</span>
+        </div>
+
+        <div class="sep"></div>
+
+        <div class="row"><label>推流模式</label>          <div style="flex:1;display:flex;gap:6px">
             <button class="ghost" data-mode="mono" style="flex:1">单目</button>
             <button class="ghost" data-mode="dual" style="flex:1">双目</button>
           </div>
@@ -939,8 +969,7 @@ function syncLabel(k) {
   lab.textContent = (step < 1) ? parseFloat(el.value).toFixed(2) : el.value;
 }
 function syncToggles() {
-  $("btnMirror").classList.toggle("on", !!params.mirror);
-  $("btnFlipv").classList.toggle("on", !!params.flipv);
+  $("btnMirror").classList.toggle("on", !!params.mirror);  $("btnFlipv").classList.toggle("on", !!params.flipv);
   // 单目 / 双目 两档
   const _m = Number(params.dual ?? 0) ? "dual" : "mono";
   document.querySelectorAll("[data-mode]").forEach(b =>
@@ -949,6 +978,27 @@ function syncToggles() {
     b.classList.toggle("on", Number(b.dataset.rot) === Number(params.rotate || 0)));
   document.querySelectorAll("[data-aisrc]").forEach(b =>
     b.classList.toggle("on", Number(b.dataset.aisrc) === Number(params.ai_src || 0)));
+  // FPGA 硬件 JPEG: 有损/无损、闭环码控
+  if ($("btnJpegHw")) {
+    $("btnJpegHw").classList.toggle("on", !!jpegHw);
+    $("btnJpegHw").textContent = jpegHw ? "开 (FPGA 硬件编码)" : "关 (走软件 JPEG)";
+  }
+  document.querySelectorAll("[data-jll]").forEach(b =>
+    b.classList.toggle("on", Number(b.dataset.jll) === Number(params.jpeg_ll || 0)));
+  document.querySelectorAll("[data-jrc]").forEach(b =>
+    b.classList.toggle("on", Number(b.dataset.jrc) === Number(params.jpeg_rc || 0)));
+  // 无损模式下 Q / 目标码率无意义 -> 置灰
+  {
+    const ll = Number(params.jpeg_ll || 0) === 1;
+    ["p_jpeg_q", "p_jpeg_kb"].forEach(id => {
+      const el = $(id); if (!el) return;
+      el.disabled = ll; el.parentElement.style.opacity = ll ? ".4" : "1";
+    });
+    if ($("v_jpeg_q"))  $("v_jpeg_q").textContent  = String(params.jpeg_q ?? 75);
+    if ($("v_jpeg_kb")) $("v_jpeg_kb").textContent = (params.jpeg_kb ?? 120) + " KB/帧";
+    if ($("p_jpeg_q"))  $("p_jpeg_q").value  = params.jpeg_q ?? 75;
+    if ($("p_jpeg_kb")) $("p_jpeg_kb").value = params.jpeg_kb ?? 120;
+  }
   syncQuad();        // 双目/单目切换时重排：四宫格 <-> 单画面
 }
 
@@ -974,6 +1024,43 @@ function schedulePush() {
 /* 开关 / 旋转 */
 $("btnMirror").onclick = () => { params.mirror = params.mirror ? 0 : 1; syncToggles(); schedulePush(); };
 $("btnFlipv").onclick  = () => { params.flipv  = params.flipv  ? 0 : 1; syncToggles(); schedulePush(); };
+
+/* FPGA 硬件 JPEG 编码参数 (jpeg_regfile 0x00 / 0x01 / 0x02-0x04 / 0x05) */
+var jpegHw = 0;       // 后端 /api/jpeg 的 hw 开关 (硬件编码使能)
+                      // 用 var 而不是 let: syncToggles() 会在本行执行之前被调用,
+                      // let 的暂时性死区会直接抛 ReferenceError
+$("btnJpegHw").onclick = async () => {
+  const want = jpegHw ? 0 : 1;
+  try {
+    const r = await api("/api/jpeg", { method: "POST", body: JSON.stringify({ hw: want }) });
+    jpegHw = r.hw ? 1 : 0;
+    toast(jpegHw ? "硬件 JPEG 已开启" : "已切回软件 JPEG");
+  } catch (e) { toast("切换失败: " + e.message, true); }
+  syncToggles();
+};
+(async () => {
+  try {
+    const r = await api("/api/jpeg");
+    jpegHw = r.hw ? 1 : 0; syncToggles();
+  } catch (e) { /* 老版本后端没有 /api/jpeg, 忽略 */ }
+})();
+
+document.querySelectorAll("[data-jll]").forEach(b => {
+  b.onclick = () => { params.jpeg_ll = Number(b.dataset.jll); syncToggles(); schedulePush(); };
+});
+document.querySelectorAll("[data-jrc]").forEach(b => {
+  b.onclick = () => { params.jpeg_rc = Number(b.dataset.jrc); syncToggles(); schedulePush(); };
+});
+[["p_jpeg_q", "jpeg_q", v => String(v)],
+ ["p_jpeg_kb", "jpeg_kb", v => v + " KB/帧"]].forEach(([id, key, fmt]) => {
+  const el = $(id);
+  if (!el) return;
+  el.addEventListener("input", () => {
+    params[key] = parseInt(el.value, 10);
+    $("v_" + key).textContent = fmt(el.value);
+    schedulePush();
+  });
+});
 /* 推流模式: 单目 / 双目拼接(左cam0右cam1)
    ★ 完全显式, 不会自动切 —— 想单目就点单目, 不会因为看到两路标记被改掉。 */
 document.querySelectorAll("[data-mode]").forEach(b => {

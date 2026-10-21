@@ -481,6 +481,14 @@ DEFAULT_PARAMS = {
     # 双目模式下 AI 跑哪一路 (0=cam0/左半边, 1=cam1/右半边)。
     #   单目模式下不需要这个 —— 帧本身就是当前选中的那一路, AI 自动跟着走。
     "ai_src":     0,      #  0/1
+    # ---------------- FPGA 硬件 JPEG 编码器 (jpeg_encoder_top) ----------------
+    # ★ 这四个参数对应 jpeg_regfile.v 的 0x00 / 0x01 / 0x02-0x04 / 0x05。
+    #   注意: 目前 bitstream 里还没有例化 jpeg_encoder_top, 所以写下去 FPGA 侧
+    #   不会响应 —— 前端先就位, 等综合出带 JPEG 的 bitstream 后自动生效。
+    "jpeg_ll":     0,     #  0=有损(SOF0 基线) 1=无损(SOF3 DPCM)
+    "jpeg_q":      75,    #  1 .. 100   有损量化质量
+    "jpeg_kb":     120,   #  1 .. 2000  目标每帧 KB (无损时忽略)
+    "jpeg_rc":     0,     #  0/1        闭环码率控制
 }
 
 PARAM_RANGE = {
@@ -501,6 +509,10 @@ PARAM_RANGE = {
     "dual":       (0, 1),
     "dual_demo":  (0, 1),
     "ai_src":     (0, 1),
+    "jpeg_ll":    (0, 1),
+    "jpeg_q":     (1, 100),
+    "jpeg_kb":    (1, 2000),
+    "jpeg_rc":    (0, 1),
 }
 
 
@@ -514,7 +526,8 @@ def _clamp_params(p):
             v = float(p[k])
         except (TypeError, ValueError):
             continue
-        if k in ("mirror", "flipv", "rotate", "dual", "dual_demo", "ai_src"):
+        if k in ("mirror", "flipv", "rotate", "dual", "dual_demo", "ai_src",
+                 "jpeg_ll", "jpeg_q", "jpeg_kb", "jpeg_rc"):
             v = int(round(v))
         if k == "rotate":
             v = min((0, 90, 180, 270), key=lambda x: abs(x - v))
@@ -3165,10 +3178,9 @@ FPGA_PRESETS = {
 
 
 def _fpga_pp_off(fpga):
-    """关闭 FPGA 两级预处理，返回一句给页面看的描述。
+    """（已废弃）旧行为：切到 AI 就把预处理关掉。
 
-    初级 (灰度/高斯/HE/对比度/反色) 和高级 (Sobel 等) 都会改变画面，
-    AI 拿处理过的画面去检测只会瞎猜，所以切到 AI 标注时一起关掉。
+    2026-10-21 改成**两者可以同时打开**，这里保留只为了不破坏外部调用。
     """
     if fpga is None:
         return "跳过(FPGA I2C 未启用)"
@@ -3177,6 +3189,26 @@ def _fpga_pp_off(fpga):
         return "已关闭" if ok else ("失败: %s" % msg)
     except Exception as e:                                   # noqa: BLE001
         return "失败: %s" % e
+
+
+def _fpga_pp_on(fpga):
+    """读 FPGA 两级预处理是否开着，返回 (on, 给页面看的描述)。
+
+    初级 (灰度/高斯/HE/对比度/反色) 和高级 (Sobel 等) 都会改变画面 ——
+    以前“切到 AI 就自动关 PP”，现在允许两者同时开（预处理在 FPGA 流水线里，
+    AI 吃的是同一路画面），只把状态回给页面提示，不再替用户做决定。
+    """
+    if fpga is None:
+        return False, "FPGA I2C 未启用"
+    try:
+        _ok, snap = fpga.snapshot()
+        regs = (snap or {}).get("regs") or {}
+        on = ((int(regs.get("PP_EN", 0)) == 1
+               and int(regs.get("ADV_MODE", 0)) != 0)
+              or int(regs.get("BASIC_EN", 0)) != 0)
+        return on, ("预处理开启中（与 AI 同时生效）" if on else "预处理关闭")
+    except Exception as e:                                   # noqa: BLE001
+        return False, "读取失败: %s" % e
 
 
 class FpgaI2C(object):
@@ -3703,11 +3735,12 @@ class Handler(BaseHTTPRequestHandler):
                 if AI_OVERLAY is None:
                     return self._json({"ok": False, "error": "AI 未启用 (启动时加 --ai)"}, 503)
                 out = AI_OVERLAY.apply(self._read_json())
-                # 切到 AI 标注（或重新启用 AI）时，自动关掉 FPGA 预处理：
-                # Sobel/阈值/形态学是给人看的，AI 拿那种画面去检测只会瞎猜。
-                # 只在“真的要用 AI”的时候写，免得用户单纯调参数也被改掉预处理。
+                # 预处理与 AI 可以同时开（2026-10-21 用户要求）：
+                # 以前这里会调用 _fpga_pp_off() 把 PP 关掉，现在只回状态做提示。
                 if out.get("active"):
-                    out["pp_off"] = _fpga_pp_off(self.fpga)
+                    _pp_on, _pp_desc = _fpga_pp_on(self.fpga)
+                    out["pp_on"] = _pp_on
+                    out["pp_note"] = _pp_desc
                 _bump_rev("ai")             # 通知其它在线前端
                 return self._json({"ok": True, "ai": out})
             if path == "/api/fpga":
@@ -3734,17 +3767,14 @@ class Handler(BaseHTTPRequestHandler):
                 # 写完立刻回读 —— FPGA 侧可能把值夹过, 前端以回读为准
                 _ok, snap = self.fpga.snapshot()
                 # 打开预处理（高级 PP_EN=1 且 ADV_MODE≠0，或初级 BASIC_EN≠0）时，
-                # 自动把 AI 标注切回原图 —— 反过来"切到 AI 标注会自动关预处理"，两边对称。
+                # 以前会“自动把 AI 标注切回原图”；2026-10-21 改成允许两者同时开，
+                # 这里只在回包里提示一句，不去改 AI 的画面源。
                 _regs = snap.get("regs") or {}
                 _pp_on = ((int(_regs.get("PP_EN", 0)) == 1
                            and int(_regs.get("ADV_MODE", 0)) != 0)
                           or int(_regs.get("BASIC_EN", 0)) != 0)
                 if (_pp_on and AI_OVERLAY is not None and AI_OVERLAY.active):
-                    try:
-                        AI_OVERLAY.apply({"source": "raw"})
-                        snap["ai_off"] = "已切回原图"
-                    except Exception as _e:                          # noqa: BLE001
-                        snap["ai_off"] = "切换失败: %s" % _e
+                    snap["ai_note"] = "预处理与 AI 同时生效（送 AI 的是预处理后的画面）"
                 snap["write_ok"] = wok
                 snap["message"] = msg
                 snap["meta"] = fpga_meta()
@@ -4301,10 +4331,11 @@ def main():
             AI_OVERLAY.start()
             print("[ai] AI 叠加已启用: source=%s  %.1f fps  (网页上可切换画面源)"
                   % (AI_OVERLAY.source, AI_OVERLAY.ai_fps))
-            # 存档里若上次就是「AI 标注」，启动时同样把 FPGA 预处理关掉
+            # 2026-10-21：预处理与 AI 允许同时开，开机不再自动关 PP。
+            # 只在日志里提示一下当前 PP 状态，方便排查“画面怎么变了”。
             if AI_OVERLAY.active and args.fpga_bus is not None and args.fpga_bus >= 0:
-                print("[ai] 自动关闭 FPGA 预处理: %s"
-                      % _fpga_pp_off(FpgaI2C(args.fpga_bus, args.fpga_addr)))
+                _pp_on, _pp_desc = _fpga_pp_on(FpgaI2C(args.fpga_bus, args.fpga_addr))
+                print("[ai] FPGA 预处理: %s" % _pp_desc)
 
     cap.start()
 
