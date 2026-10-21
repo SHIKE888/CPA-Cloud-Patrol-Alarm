@@ -58,6 +58,21 @@ module tb_jpeg_e2e;
     end
     always @(negedge clk) if (s_ready === 1'bx) dbg_xready = dbg_xready + 1;
 
+    // ---- 吞吐测量: 一帧从 st_busy 上升到 st_done 用了多少拍 ----
+    //   1920x1080@60 的预算是 147.5e6 / ((1920/16)*(1080/8)*60) = 151.7 clk/MCU
+    integer cyc_frame = 0;
+    reg     busy_d = 0, done_d = 0;
+    always @(posedge clk) begin
+        busy_d <= st_busy;
+        done_d <= st_done;
+        if (st_busy && !busy_d) cyc_frame = 0;
+        if (st_busy)            cyc_frame = cyc_frame + 1;
+        if (st_done && !done_d)
+            $display("PERF: 一帧 %0d clk, MCU=%0d, clk/MCU=%0d  (60fps 预算 151.7)",
+                     cyc_frame, (W / 16) * (H / 8),
+                     cyc_frame / (((W / 16) * (H / 8)) == 0 ? 1 : ((W / 16) * (H / 8))));
+    end
+
     jpeg_encoder_top #(.W(W), .H(H)) dut (
         .clk          (clk),
         .rst_n        (rst_n),

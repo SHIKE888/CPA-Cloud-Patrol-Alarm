@@ -44,7 +44,14 @@ module jpeg_quant_zz (
 
     // ---------------- 顺序读出 (zigzag 序) ----------------
     input  wire [5:0]   i_rd_idx,
-    output wire [15:0]  o_rd_data
+    output wire [15:0]  o_rd_data,
+    // ★ 2026-10-21 为 60fps 加: 同一拍再给出 zigzag 下一个位置的系数。
+    //   熵编码器有了一对系数就能一次出 2 个符号。
+    output wire [15:0]  o_rd_data_n,
+    // ★ 非零位图: bit[z]=1 表示 zigzag 位置 z 的量化为非零。
+    //   熵编码器用它 + 优先编码器一拍跳过整段零系数 —— 原来扫零是 1 拍/个,
+    //   一个 8x8 block 无论多稀疏都要 64 拍, 这才是 421 clk/MCU 的主因。
+    output wire [63:0]  o_nz_mask
 );
 
     //=============================================================== recip 表
@@ -248,5 +255,14 @@ module jpeg_quant_zz (
     end
 
     assign o_rd_data = qzz[i_rd_idx];
+    // kk==63 时没有下一个, 返回 0 (会被当零系数跳过)
+    assign o_rd_data_n = (i_rd_idx == 6'd63) ? 16'd0 : qzz[i_rd_idx + 6'd1];
+
+    genvar gz;
+    generate
+        for (gz = 0; gz < 64; gz = gz + 1) begin : g_nz
+            assign o_nz_mask[gz] = (qzz[gz] != 16'sd0);
+        end
+    endgenerate
 
 endmodule

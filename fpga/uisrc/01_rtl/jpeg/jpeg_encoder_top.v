@@ -175,6 +175,8 @@ module jpeg_encoder_top #(
     reg         q_chroma;
     wire        q_blk_done;
     wire [15:0] q_rd_data;
+    wire [15:0] q_rd_data_n;
+    wire [63:0] q_nz_mask;
     wire [5:0]  huff_rd_idx;
 
     always @(posedge clk or negedge rst_n) begin
@@ -197,7 +199,9 @@ module jpeg_encoder_top #(
         .o_wr        (),
         .o_blk_done  (q_blk_done),
         .i_rd_idx    (huff_rd_idx),
-        .o_rd_data   (q_rd_data)
+        .o_rd_data   (q_rd_data),
+        .o_rd_data_n (q_rd_data_n),
+        .o_nz_mask   (q_nz_mask)
     );
 
     //=============================================================== 熵编码
@@ -218,6 +222,8 @@ module jpeg_encoder_top #(
         .i_chroma_tbl (huff_chroma),
         .o_rd_idx     (huff_rd_idx),
         .i_rd_data    (q_rd_data),
+        .i_rd_data_n  (q_rd_data_n),
+        .i_nz_mask    (q_nz_mask),
         .o_valid      (huff_valid),
         .o_code       (huff_code),
         .o_len        (huff_len),

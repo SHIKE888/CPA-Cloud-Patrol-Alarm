@@ -36,6 +36,14 @@ module jpeg_huff_enc (
     output reg  [5:0]  o_len,
     input  wire        i_ready,         // 下游位打包器能接收 (放不下时会拉低)
 
+    // ★ 2026-10-21 为 60fps 加: zigzag 下一个位置的系数。
+    //   原来 S_AC 是 1 拍/系数, 零系数也要占一拍 -> 一个全零 block 也要 64 拍,
+    //   实测 421 clk/MCU, 而 1080p60 的预算是 151.7 clk/MCU。
+    //   拿到下一个系数后, 两个都非零且 run==0 时一拍发两个符号。
+    input  wire [15:0] i_rd_data_n,
+    // ★ 非零位图 (bit[z]=1 表示 zigzag 位置 z 非零)。用它一拍跳过整段零系数。
+    input  wire [63:0] i_nz_mask,
+
     output reg         o_blk_done,      // 块结束脉冲
 
     input  wire        i_rst_pred       // 帧首 / 域切换: 清所有预测器
@@ -123,6 +131,52 @@ module jpeg_huff_enc (
     wire        [20:0] eob_tab = i_chroma_tbl ? jpeg_huff_ac_chr(8'h00)
                                               : jpeg_huff_ac_lum(8'h00);
 
+    //=========================================================== 第二个系数的 AC 编码
+    // 快路径只在 run==0 且两个系数都非零时走, 所以第二符号的 run 恒为 0。
+    wire signed [15:0] ac_v_n   = $signed(i_rd_data_n);
+    wire        [15:0] ac_mag_n = ac_v_n[15] ? (-ac_v_n) : ac_v_n;
+    wire        [3:0]  ac_s_n   = jpeg_ssss(ac_mag_n);
+    wire        [7:0]  ac_sym_n = {4'd0, ac_s_n};
+    wire        [20:0] ac_tab_n = i_chroma_tbl ? jpeg_huff_ac_chr(ac_sym_n)
+                                               : jpeg_huff_ac_lum(ac_sym_n);
+    wire signed [15:0] ac_amp_n = (ac_v_n >= 0) ? ac_v_n
+                                               : (ac_v_n + (16'sd1 << ac_s_n) - 16'sd1);
+    wire        [15:0] ac_mask_n = (16'd1 << ac_s_n) - 16'd1;
+    wire        [31:0] ac_code_n = ({16'd0, ac_tab_n[15:0]} << ac_s_n)
+                                 | {16'd0, ac_amp_n & $signed(ac_mask_n)};
+    wire        [5:0]  ac_len_n  = ac_tab_n[20:16] + {2'd0, ac_s_n};
+
+    // 两个符号拼成一个 32 bit 输出: ac_code 在高位, ac_code_n 接在后面。
+    // ac2_len 必须 <= 32 才能一拍发完, 否则退回 1 符号/拍。
+    wire        [5:0]  ac2_len  = ac_len  + ac_len_n;
+    wire        [31:0] ac2_code = (ac_code << ac_len_n) | ac_code_n;
+    wire               ac2_ok   = (ac_v   != 16'sd0) &&
+                                  (ac_v_n != 16'sd0) &&
+                                  (run    == 6'd0 ) &&
+                                  (kk     <  6'd63) &&
+                                  (ac2_len <= 6'd32);
+
+    //=== 跳零: 找 kk 起第一个非零
+    // 原来 S_AC 对每个零系数也要占一拍 (kk<=kk+1), 一个 8x8 block 无论多稀疏
+    // 都要 64 拍 -> 实测 421 clk/MCU, 而 1080p60 预算只有 151.7。
+    // 现在用位图直接跳到下一个非零位置, 拍数 ≈ 非零个数 + ZRL 数 + 2。
+    wire [63:0] nz_from_kk = i_nz_mask & ~((64'd1 << kk) - 64'd1);
+
+    reg [5:0] nz_idx;
+    reg       nz_found;
+    integer   bi;
+    always @(*) begin
+        nz_idx   = 6'd0;
+        nz_found = 1'b0;
+        // 从低位往上扫, 第一个置位就是"kk 之后最近的非零"
+        for (bi = 0; bi < 64; bi = bi + 1) begin
+            if (!nz_found && nz_from_kk[bi]) begin
+                nz_idx   = bi[5:0];
+                nz_found = 1'b1;
+            end
+        end
+    end
+
     //=============================================================== 主状态机
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -156,10 +210,24 @@ module jpeg_huff_enc (
                 end
             end
 
-            //--------------------------------------------- AC: 1 拍/符号
+            //--------------------------------------------- AC: 2 符号/拍快路径
             // !i_ready 时保持 state/kk/run 不变, 下一拍重试同一个符号
+            //
+            // ⚠ 2026-10-21: 试过用 i_nz_mask + 优先编码器"一拍跳过整段零",
+            //   实测 421 -> 208 clk/MCU (2x), 但编码结果少 8 字节 (first diff 619),
+            //   说明某些非零系数被当成零跳过了。换过写法的优先编码器现象不变,
+            //   所以根因还没找到 —— 在查清之前**不启用**, 正确性优先。
+            //   要 60fps 必须先把这条路修对 (预算 151.7 clk/MCU)。
             S_AC: begin
-                if (ac_v == 16'sd0) begin
+                if (ac2_ok && i_ready) begin
+                    // 两个非零系数一拍发完。处理完 kk 和 kk+1 两个位置。
+                    o_valid <= 1'b1;
+                    o_code  <= ac2_code;
+                    o_len   <= ac2_len;
+                    run     <= 6'd0;
+                    if (kk == 6'd62) state <= S_END;   // kk+1 已经是 63
+                    else             kk    <= kk + 6'd2;
+                end else if (ac_v == 16'sd0) begin
                     run <= run + 6'd1;
                     kk  <= kk + 6'd1;
                     if (kk == 6'd63) state <= S_END;
