@@ -438,7 +438,8 @@ module jpeg_encoder_top #(
             ll_run        <= 1'b0;
             eoi_ph        <= 1'b0;
             fin_cnt       <= 3'd0;
-            ll_wcnt       <= 32'd0;
+            // ll_wcnt 不在这里清 —— 它有自己的 always 块 (计数 + ll_start 清零),
+            // 两个块都赋值会被 TD 判成多驱动 (HDL-8007)。
             rd_row        <= 3'd0;
             st_busy       <= 1'b0;
             st_done       <= 1'b0;
