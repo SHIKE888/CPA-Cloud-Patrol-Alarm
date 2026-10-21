@@ -1648,7 +1648,7 @@ class OpenCVCapture(threading.Thread):
                 self._dual_last_pair = None
                 print("[dual] %s" % ("开启拼接: 左 cam0 / 右 cam1"
                                      if want else "关闭拼接(直通)"))
-                # 输出尺寸变了(单目 1920x1080 -> 双目 1920x540), 告诉前端
+                # 输出尺寸变了(单目 1920x1080 -> 双目 3840x1080), 告诉前端
                 try:
                     tw, th = self._target_size(self.params.get()["scale"])
                     self.hub.update_info(
@@ -1768,7 +1768,8 @@ class OpenCVCapture(threading.Thread):
 
             _ai = AI_OVERLAY
             # 双目不做 NV12 硬件快路: 拼接得在 BGR 域做(cv2.hconcat), 而且
-            # mppjpegenc 的管道尺寸会变。软编 1920x540 只要 ~5ms, 足够。
+            # mppjpegenc 的管道尺寸会变。软编 3840x1080x30 约 12MB/s,
+            # 与单目 1920x1080x60 同量级(总像素率一样), 够用。
             if (HW_JPEG.get() and _params_plain(p) and not self._dual_now
                     and not (_ai is not None and _ai.active)):
                 nv12 = self._nv12_scaled(raw, p)
@@ -2034,13 +2035,17 @@ class OpenCVCapture(threading.Thread):
     def _target_size(self, scale):
         """推流目标尺寸 (以 --stream-width 为基准)。
 
-        双目拼接时每路只占一半宽度, 拼起来总宽仍是 --stream-width:
-        默认 1920 -> 每路 960x540, 输出 1920x540。
-        总像素只有 1080p 的一半, 再加上帧率是 30, CPU 比单目还轻。
+        ⚠ 这里返回的是【单路】尺寸，双目拼接在 _enc_loop 里由 hconcat 完成:
+            单目 -> 1920x1080          (--stream-width=1920)
+            双目 -> 每路 1920x1080, 拼起来 3840x1080
+
+        ⚠ 不要在这里给 _dual_now 再缩一刀！早先写过
+            if self._dual_now: tw = (tw // 4) * 2
+          本意是"每路只占一半", 结果把每路从 1920 砍到 960,
+          拼完只有 1920x540 —— 用户要的是每路 1920x1080 / 总共 3840x1080。
+          而且 _process() 里没有对应的判断, 两处本来就不一致。
         """
         tw = max(64, int(round(self.args.stream_width * float(scale) / 2.0) * 2))
-        if self._dual_now:
-            tw = max(64, (tw // 4) * 2)     # 取偶数且不超一半
         th = max(64, int(round(tw * self._h / float(self._w) / 2.0) * 2))
         return tw, th
 
