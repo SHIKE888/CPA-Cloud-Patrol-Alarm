@@ -73,6 +73,16 @@ module jpeg_encoder_top #(
     reg [1:0] blk;
     reg [7:0] mx_reg;
 
+    // ---------------- block 级流水寄存器 (必须在使用点之前声明) ----------------
+    reg        wr_buf;       // DCT 正在写的组
+    reg        rd_buf;       // 熵编码正在读的组
+    reg [1:0]  pend;         // 已 DCT 完成、尚未编码完的块数 (最大 2)
+    reg [1:0]  huff_blk;     // 熵编码正在处理的块号 (决定 comp/chroma)
+    reg        huff_run;     // 熵编码器忙
+    reg        frame_first;  // 帧内第一个块还没开始编码
+    reg [2:0]  pend_nx;
+    reg [3:0]  tstate;       // 控制状态机 (也要在使用点之前)
+
     //=============================================================== linebuf
     wire        lb_ready;
     wire        lb_avail;
@@ -199,6 +209,8 @@ module jpeg_encoder_top #(
         .o_wr        (),
         .o_blk_done  (q_blk_done),
         .i_rd_idx    (huff_rd_idx),
+        .i_wr_buf    (wr_buf),
+        .i_rd_buf    (rd_buf),
         .o_rd_data   (q_rd_data),
         .o_rd_data_n (q_rd_data_n),
         .o_nz_mask   (q_nz_mask)
@@ -212,7 +224,7 @@ module jpeg_encoder_top #(
     wire [31:0] huff_code;
     wire [5:0]  huff_len;
     wire        huff_done;
-    reg         huff_rst_pred;
+    wire        huff_rst_pred = huff_start && frame_first;
 
     jpeg_huff_enc u_huff (
         .clk          (clk),
@@ -272,12 +284,19 @@ module jpeg_encoder_top #(
     );
 
     //=============================================================== 块属性
+    // ★ 流水后 "DCT 正在做的块" 和 "熵编码正在做的块" 不再同一个,
+    //   所以量化侧的 chroma 用 blk, 熵编码侧的 comp/chroma 用 huff_blk。
     always @(*) begin
         case (blk)
-        2'd0: begin q_chroma = 1'b0; huff_comp = 2'd0; huff_chroma = 1'b0; end
-        2'd1: begin q_chroma = 1'b0; huff_comp = 2'd0; huff_chroma = 1'b0; end
-        2'd2: begin q_chroma = 1'b1; huff_comp = 2'd1; huff_chroma = 1'b1; end
-        default: begin q_chroma = 1'b1; huff_comp = 2'd2; huff_chroma = 1'b1; end
+        2'd0:    q_chroma = 1'b0;
+        2'd1:    q_chroma = 1'b0;
+        default: q_chroma = 1'b1;
+        endcase
+        case (huff_blk)
+        2'd0:    begin huff_comp = 2'd0; huff_chroma = 1'b0; end
+        2'd1:    begin huff_comp = 2'd0; huff_chroma = 1'b0; end
+        2'd2:    begin huff_comp = 2'd1; huff_chroma = 1'b1; end
+        default: begin huff_comp = 2'd2; huff_chroma = 1'b1; end
         endcase
         case (blk)
         2'd0:    rd_grp = {mx_reg[6:0], 1'b0};
@@ -285,6 +304,63 @@ module jpeg_encoder_top #(
         default: rd_grp = {1'b0, mx_reg[6:0]};
         endcase
         rd_sel = blk;
+    end
+
+    //=============================================================== 熵编码后台调度 (block 级流水)
+    //  DCT 每完成一块就 pend+1 并翻转 wr_buf; 这里一有空闲就启动编码,
+    //  编码读的是 rd_buf 那一组 —— 两边永远不碰同一组缓冲, 所以 DCT(30 拍)
+    //  和熵编码(跳零后 ~22 拍) 完全并行, 而不是相加。
+    //  pend = 已 DCT 完成但还没编码完的块数, 最大 2 (= 两组缓冲)。
+    //  pend 同拍可能既 +1 又 -1, 所以先算一个组合中间值再写回。
+    always @(*) begin
+        pend_nx = {1'b0, pend};
+        if (q_blk_done) pend_nx = pend_nx + 3'd1;
+        if (huff_done)  pend_nx = pend_nx - 3'd1;
+    end
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            huff_start    <= 1'b0;
+            huff_run      <= 1'b0;
+            frame_first   <= 1'b0;
+            pend          <= 2'd0;
+            wr_buf        <= 1'b0;
+            rd_buf        <= 1'b0;
+            huff_blk      <= 2'd0;
+        end else if (tstate == 4'd0 && i_en) begin   // 4'd0 = T_IDLE (局部参数在后面声明)
+            huff_start    <= 1'b0;
+            huff_run      <= 1'b0;
+            frame_first   <= 1'b1;      // 本帧第一个块要清一次 DC 预测器
+            pend          <= 2'd0;
+            wr_buf        <= 1'b0;
+            rd_buf        <= 1'b0;
+            huff_blk      <= 2'd0;
+        end else begin
+            huff_start <= 1'b0;
+            pend       <= pend_nx[1:0];
+
+            if (q_blk_done) wr_buf <= ~wr_buf;
+
+            // ★ 预测器复位只能给“帧内第一块的 S_DC”那一拍。
+            //   i_rst_pred 的优先级高于 S_DC 更新预测器, 如果整个第一块期间都为 1,
+            //   预测器就一直停在 0 —— 于是**第二块**的 DC 差分变成 zz[0]-0,
+            //   而正确值是 zz1[0]-zz0[0]。实测症状: 第一个块末尾起全错位。
+            //   huff_start 的下一拍正好是 S_DC, 所以这里延迟一拍给。
+            if (huff_start) begin
+                huff_run    <= 1'b1;
+                frame_first <= 1'b0;
+            end
+
+            if (huff_done) begin
+                huff_run      <= 1'b0;
+                rd_buf        <= ~rd_buf;
+                huff_blk      <= (huff_blk == 2'd3) ? 2'd0 : (huff_blk + 2'd1);
+            end
+
+            // 有活就启动 (无损模式不走熵编码)
+            if ((pend != 2'd0) && !huff_run && !huff_start && !huff_done && !use_ll)
+                huff_start <= 1'b1;
+        end
     end
 
     //=============================================================== 控制
@@ -300,6 +376,7 @@ module jpeg_encoder_top #(
     localparam [3:0] T_EOI   = 4'd9;
     localparam [3:0] T_HDR2  = 4'd10;   // 无损: T_IDLE 后一拍再发 hdr_start
     localparam [3:0] T_LLRUN = 4'd11;   // 无损: 等收满 NWORD 个 word
+    localparam [3:0] T_DRAIN = 4'd12;   // 有损: 等熵编码把残留块编完再 flush
 
     //=============================================================== 输入就绪
     // ★ 无损路径必须等 header 发完、ll_start 已经把 line_buf/col/wr_buf 清干净
@@ -308,12 +385,16 @@ module jpeg_encoder_top #(
     //   实测表现为整个最前面一段样本凭空消失、之后全部错位。
     //   (必须放在 tstate/T_LLRUN 声明之后, 否则 iverilog 报 bind 错误)
 
-    reg [3:0]  tstate;
     reg [3:0]  rc;
     reg [8:0]  my;
     reg        eoi_ph;
     reg [2:0]  fin_cnt;
     reg [31:0] ll_wcnt;
+
+    // ---------------- block 级流水 ----------------
+    //   DCT 写完一组就交给熵编码, 自己马上去做下一块 (qzz 双缓冲)。
+    //   pend = "已 DCT 完成、尚未编码完" 的块数, 最大 2 (两组缓冲).
+    //   (寄存器声明已提前到文件前部)
 
     assign s_ready = use_ll ? (ll_ready && ll_run) : lb_ready;
 
@@ -346,8 +427,6 @@ module jpeg_encoder_top #(
             dct_start     <= 1'b0;
             dct_valid     <= 1'b0;
             q_load        <= 1'b0;
-            huff_start    <= 1'b0;
-            huff_rst_pred <= 1'b1;
             hdr_start     <= 1'b0;
             bp_flush      <= 1'b0;
             grp_done      <= 1'b0;
@@ -367,7 +446,6 @@ module jpeg_encoder_top #(
             dct_start <= 1'b0;
             dct_valid <= 1'b0;
             q_load    <= 1'b0;
-            huff_start<= 1'b0;
             hdr_start <= 1'b0;
             bp_flush  <= 1'b0;
             grp_done  <= 1'b0;
@@ -382,7 +460,6 @@ module jpeg_encoder_top #(
             //----------------------------------------------------
             T_IDLE: begin
                 if (i_en) begin
-                    huff_rst_pred <= 1'b1;
                     st_busy       <= 1'b1;
                     if (use_ll) begin
                         ll_start <= 1'b1;       // 清预测器/行缓冲
@@ -416,7 +493,6 @@ module jpeg_encoder_top #(
 
             //----------------------------------------------------
             T_LOADQ: begin
-                huff_rst_pred <= 1'b0;
                 if (q_load_done) begin
                     hdr_start <= 1'b1;
                     tstate    <= T_HDR;
@@ -441,7 +517,7 @@ module jpeg_encoder_top #(
             //----------------------------------------------------
             // 等当前读 buffer 有完整 8 行 (电平, 不是脉冲)
             T_WGRP: begin
-                if (lb_avail) begin
+                if (lb_avail && (pend != 2'd2)) begin
                     rc     <= 4'd0;
                     tstate <= T_RD;
                 end
@@ -469,24 +545,37 @@ module jpeg_encoder_top #(
 
             //----------------------------------------------------
             // DCT 跑完 + 量化跑完 (q_blk_done 比 dct_odone 晚一拍)
+            // ★ 流水: 这里不再等熵编码, 交给缓冲就继续做下一块。
             T_WDCT: begin
                 if (q_blk_done) begin
-                    huff_start <= 1'b1;
-                    tstate     <= T_HUFF;
+                    tstate <= T_NEXT;
                 end
             end
 
             //----------------------------------------------------
+            // T_HUFF 已废弃: 熵编码改成后台并行调度 (见下面独立 always)。
+            // 保留常量只为兼容旧代码路径。
             T_HUFF: begin
-                if (huff_done) tstate <= T_NEXT;
+                tstate <= T_NEXT;
+            end
+
+            //----------------------------------------------------
+            // 等熵编码把残留块编完
+            T_DRAIN: begin
+                if (pend == 2'd0 && !huff_run) begin
+                    bp_flush <= 1'b1;
+                    tstate   <= T_FIN;
+                end
             end
 
             //----------------------------------------------------
             T_NEXT: begin
                 if (blk != 2'd3) begin
-                    blk    <= blk + 2'd1;
-                    rc     <= 4'd0;
-                    tstate <= T_RD;
+                    if (pend != 2'd2) begin       // 有缓冲就继续, 否则等熵编码让出
+                        blk    <= blk + 2'd1;
+                        rc     <= 4'd0;
+                        tstate <= T_RD;
+                    end
                 end else begin
                     blk <= 2'd0;
                     if (mx_reg == MCU_X - 1) begin
@@ -494,8 +583,7 @@ module jpeg_encoder_top #(
                         my       <= my + 9'd1;
                         grp_done <= 1'b1;       // 释放一个 8 行组
                         if (my == MCU_Y - 1) begin
-                            bp_flush <= 1'b1;
-                            tstate   <= T_FIN;
+                            tstate   <= T_DRAIN;   // 等残留块编完再 flush
                         end else begin
                             tstate   <= T_WGRP;
                         end

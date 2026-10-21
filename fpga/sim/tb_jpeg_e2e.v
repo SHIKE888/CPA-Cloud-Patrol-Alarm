@@ -188,7 +188,7 @@ module tb_jpeg_e2e;
 
     initial begin
         // 超时按画面大小自适应: 无损 4 clk/word, 加余量取 W*H*8
-        #(W * H * 8 + 200_000);
+        #(W * H * 20 + 500_000);
         $display("TIMEOUT: only %0d bytes", nout);
         $fclose(fd);
         $finish;

@@ -44,6 +44,12 @@ module jpeg_quant_zz (
 
     // ---------------- 顺序读出 (zigzag 序) ----------------
     input  wire [5:0]   i_rd_idx,
+    // ★ 2026-10-21 双缓冲 (block 级流水): DCT 写其中一组时, 熵编码器读另一组,
+    //   这样 DCT(30 拍) 与熵编码(跳零后 ~22 拍) 可以完全重叠。
+    //   不自缓冲时 208 clk/MCU = 4 x (10 读行 + 20 DCT 尾 + 22 熵), 仍够不着
+    //   1080p60 的 151.7 预算。
+    input  wire         i_wr_buf,
+    input  wire         i_rd_buf,
     output wire [15:0]  o_rd_data,
     // ★ 2026-10-21 为 60fps 加: 同一拍再给出 zigzag 下一个位置的系数。
     //   熵编码器有了一对系数就能一次出 2 个符号。
@@ -167,12 +173,14 @@ module jpeg_quant_zz (
     assign o_wr = i_valid;
 
     //=============================================================== zigzag 结果寄存器
-    reg [15:0] qzz [0:63];
+    reg [15:0] qzz [0:127];
+    // 双缓冲写入地址: 0 或 64
+    wire [6:0] wo = {i_wr_buf, 6'd0};
 
     integer m;
     integer qi;
     initial begin
-        for (qi = 0; qi < 64; qi = qi + 1) qzz[qi] = 16'd0;
+        for (qi = 0; qi < 128; qi = qi + 1) qzz[qi] = 16'd0;
     end
 
     always @(posedge clk or negedge rst_n) begin
@@ -185,103 +193,126 @@ module jpeg_quant_zz (
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            for (m = 0; m < 64; m = m + 1) qzz[m] <= 16'd0;
+            for (m = 0; m < 128; m = m + 1) qzz[m] <= 16'd0;
         end else if (i_valid) begin
-            qzz[ 0] <= (i_t == 3'd0) ? qres[0] : qzz[ 0];   // nat= 0
-            qzz[ 1] <= (i_t == 3'd1) ? qres[0] : qzz[ 1];   // nat= 1
-            qzz[ 2] <= (i_t == 3'd0) ? qres[1] : qzz[ 2];   // nat= 8
-            qzz[ 3] <= (i_t == 3'd0) ? qres[2] : qzz[ 3];   // nat=16
-            qzz[ 4] <= (i_t == 3'd1) ? qres[1] : qzz[ 4];   // nat= 9
-            qzz[ 5] <= (i_t == 3'd2) ? qres[0] : qzz[ 5];   // nat= 2
-            qzz[ 6] <= (i_t == 3'd3) ? qres[0] : qzz[ 6];   // nat= 3
-            qzz[ 7] <= (i_t == 3'd2) ? qres[1] : qzz[ 7];   // nat=10
-            qzz[ 8] <= (i_t == 3'd1) ? qres[2] : qzz[ 8];   // nat=17
-            qzz[ 9] <= (i_t == 3'd0) ? qres[3] : qzz[ 9];   // nat=24
-            qzz[10] <= (i_t == 3'd0) ? qres[4] : qzz[10];   // nat=32
-            qzz[11] <= (i_t == 3'd1) ? qres[3] : qzz[11];   // nat=25
-            qzz[12] <= (i_t == 3'd2) ? qres[2] : qzz[12];   // nat=18
-            qzz[13] <= (i_t == 3'd3) ? qres[1] : qzz[13];   // nat=11
-            qzz[14] <= (i_t == 3'd4) ? qres[0] : qzz[14];   // nat= 4
-            qzz[15] <= (i_t == 3'd5) ? qres[0] : qzz[15];   // nat= 5
-            qzz[16] <= (i_t == 3'd4) ? qres[1] : qzz[16];   // nat=12
-            qzz[17] <= (i_t == 3'd3) ? qres[2] : qzz[17];   // nat=19
-            qzz[18] <= (i_t == 3'd2) ? qres[3] : qzz[18];   // nat=26
-            qzz[19] <= (i_t == 3'd1) ? qres[4] : qzz[19];   // nat=33
-            qzz[20] <= (i_t == 3'd0) ? qres[5] : qzz[20];   // nat=40
-            qzz[21] <= (i_t == 3'd0) ? qres[6] : qzz[21];   // nat=48
-            qzz[22] <= (i_t == 3'd1) ? qres[5] : qzz[22];   // nat=41
-            qzz[23] <= (i_t == 3'd2) ? qres[4] : qzz[23];   // nat=34
-            qzz[24] <= (i_t == 3'd3) ? qres[3] : qzz[24];   // nat=27
-            qzz[25] <= (i_t == 3'd4) ? qres[2] : qzz[25];   // nat=20
-            qzz[26] <= (i_t == 3'd5) ? qres[1] : qzz[26];   // nat=13
-            qzz[27] <= (i_t == 3'd6) ? qres[0] : qzz[27];   // nat= 6
-            qzz[28] <= (i_t == 3'd7) ? qres[0] : qzz[28];   // nat= 7
-            qzz[29] <= (i_t == 3'd6) ? qres[1] : qzz[29];   // nat=14
-            qzz[30] <= (i_t == 3'd5) ? qres[2] : qzz[30];   // nat=21
-            qzz[31] <= (i_t == 3'd4) ? qres[3] : qzz[31];   // nat=28
-            qzz[32] <= (i_t == 3'd3) ? qres[4] : qzz[32];   // nat=35
-            qzz[33] <= (i_t == 3'd2) ? qres[5] : qzz[33];   // nat=42
-            qzz[34] <= (i_t == 3'd1) ? qres[6] : qzz[34];   // nat=49
-            qzz[35] <= (i_t == 3'd0) ? qres[7] : qzz[35];   // nat=56
-            qzz[36] <= (i_t == 3'd1) ? qres[7] : qzz[36];   // nat=57
-            qzz[37] <= (i_t == 3'd2) ? qres[6] : qzz[37];   // nat=50
-            qzz[38] <= (i_t == 3'd3) ? qres[5] : qzz[38];   // nat=43
-            qzz[39] <= (i_t == 3'd4) ? qres[4] : qzz[39];   // nat=36
-            qzz[40] <= (i_t == 3'd5) ? qres[3] : qzz[40];   // nat=29
-            qzz[41] <= (i_t == 3'd6) ? qres[2] : qzz[41];   // nat=22
-            qzz[42] <= (i_t == 3'd7) ? qres[1] : qzz[42];   // nat=15
-            qzz[43] <= (i_t == 3'd7) ? qres[2] : qzz[43];   // nat=23
-            qzz[44] <= (i_t == 3'd6) ? qres[3] : qzz[44];   // nat=30
-            qzz[45] <= (i_t == 3'd5) ? qres[4] : qzz[45];   // nat=37
-            qzz[46] <= (i_t == 3'd4) ? qres[5] : qzz[46];   // nat=44
-            qzz[47] <= (i_t == 3'd3) ? qres[6] : qzz[47];   // nat=51
-            qzz[48] <= (i_t == 3'd2) ? qres[7] : qzz[48];   // nat=58
-            qzz[49] <= (i_t == 3'd3) ? qres[7] : qzz[49];   // nat=59
-            qzz[50] <= (i_t == 3'd4) ? qres[6] : qzz[50];   // nat=52
-            qzz[51] <= (i_t == 3'd5) ? qres[5] : qzz[51];   // nat=45
-            qzz[52] <= (i_t == 3'd6) ? qres[4] : qzz[52];   // nat=38
-            qzz[53] <= (i_t == 3'd7) ? qres[3] : qzz[53];   // nat=31
-            qzz[54] <= (i_t == 3'd7) ? qres[4] : qzz[54];   // nat=39
-            qzz[55] <= (i_t == 3'd6) ? qres[5] : qzz[55];   // nat=46
-            qzz[56] <= (i_t == 3'd5) ? qres[6] : qzz[56];   // nat=53
-            qzz[57] <= (i_t == 3'd4) ? qres[7] : qzz[57];   // nat=60
-            qzz[58] <= (i_t == 3'd5) ? qres[7] : qzz[58];   // nat=61
-            qzz[59] <= (i_t == 3'd6) ? qres[6] : qzz[59];   // nat=54
-            qzz[60] <= (i_t == 3'd7) ? qres[5] : qzz[60];   // nat=47
-            qzz[61] <= (i_t == 3'd7) ? qres[6] : qzz[61];   // nat=55
-            qzz[62] <= (i_t == 3'd6) ? qres[7] : qzz[62];   // nat=62
-            qzz[63] <= (i_t == 3'd7) ? qres[7] : qzz[63];   // nat=63
+            qzz[wo + 6'd0] <= (i_t == 3'd0) ? qres[0] : qzz[wo + 6'd0];   // nat= 0
+            qzz[wo + 6'd1] <= (i_t == 3'd1) ? qres[0] : qzz[wo + 6'd1];   // nat= 1
+            qzz[wo + 6'd2] <= (i_t == 3'd0) ? qres[1] : qzz[wo + 6'd2];   // nat= 8
+            qzz[wo + 6'd3] <= (i_t == 3'd0) ? qres[2] : qzz[wo + 6'd3];   // nat=16
+            qzz[wo + 6'd4] <= (i_t == 3'd1) ? qres[1] : qzz[wo + 6'd4];   // nat= 9
+            qzz[wo + 6'd5] <= (i_t == 3'd2) ? qres[0] : qzz[wo + 6'd5];   // nat= 2
+            qzz[wo + 6'd6] <= (i_t == 3'd3) ? qres[0] : qzz[wo + 6'd6];   // nat= 3
+            qzz[wo + 6'd7] <= (i_t == 3'd2) ? qres[1] : qzz[wo + 6'd7];   // nat=10
+            qzz[wo + 6'd8] <= (i_t == 3'd1) ? qres[2] : qzz[wo + 6'd8];   // nat=17
+            qzz[wo + 6'd9] <= (i_t == 3'd0) ? qres[3] : qzz[wo + 6'd9];   // nat=24
+            qzz[wo + 6'd10] <= (i_t == 3'd0) ? qres[4] : qzz[wo + 6'd10];   // nat=32
+            qzz[wo + 6'd11] <= (i_t == 3'd1) ? qres[3] : qzz[wo + 6'd11];   // nat=25
+            qzz[wo + 6'd12] <= (i_t == 3'd2) ? qres[2] : qzz[wo + 6'd12];   // nat=18
+            qzz[wo + 6'd13] <= (i_t == 3'd3) ? qres[1] : qzz[wo + 6'd13];   // nat=11
+            qzz[wo + 6'd14] <= (i_t == 3'd4) ? qres[0] : qzz[wo + 6'd14];   // nat= 4
+            qzz[wo + 6'd15] <= (i_t == 3'd5) ? qres[0] : qzz[wo + 6'd15];   // nat= 5
+            qzz[wo + 6'd16] <= (i_t == 3'd4) ? qres[1] : qzz[wo + 6'd16];   // nat=12
+            qzz[wo + 6'd17] <= (i_t == 3'd3) ? qres[2] : qzz[wo + 6'd17];   // nat=19
+            qzz[wo + 6'd18] <= (i_t == 3'd2) ? qres[3] : qzz[wo + 6'd18];   // nat=26
+            qzz[wo + 6'd19] <= (i_t == 3'd1) ? qres[4] : qzz[wo + 6'd19];   // nat=33
+            qzz[wo + 6'd20] <= (i_t == 3'd0) ? qres[5] : qzz[wo + 6'd20];   // nat=40
+            qzz[wo + 6'd21] <= (i_t == 3'd0) ? qres[6] : qzz[wo + 6'd21];   // nat=48
+            qzz[wo + 6'd22] <= (i_t == 3'd1) ? qres[5] : qzz[wo + 6'd22];   // nat=41
+            qzz[wo + 6'd23] <= (i_t == 3'd2) ? qres[4] : qzz[wo + 6'd23];   // nat=34
+            qzz[wo + 6'd24] <= (i_t == 3'd3) ? qres[3] : qzz[wo + 6'd24];   // nat=27
+            qzz[wo + 6'd25] <= (i_t == 3'd4) ? qres[2] : qzz[wo + 6'd25];   // nat=20
+            qzz[wo + 6'd26] <= (i_t == 3'd5) ? qres[1] : qzz[wo + 6'd26];   // nat=13
+            qzz[wo + 6'd27] <= (i_t == 3'd6) ? qres[0] : qzz[wo + 6'd27];   // nat= 6
+            qzz[wo + 6'd28] <= (i_t == 3'd7) ? qres[0] : qzz[wo + 6'd28];   // nat= 7
+            qzz[wo + 6'd29] <= (i_t == 3'd6) ? qres[1] : qzz[wo + 6'd29];   // nat=14
+            qzz[wo + 6'd30] <= (i_t == 3'd5) ? qres[2] : qzz[wo + 6'd30];   // nat=21
+            qzz[wo + 6'd31] <= (i_t == 3'd4) ? qres[3] : qzz[wo + 6'd31];   // nat=28
+            qzz[wo + 6'd32] <= (i_t == 3'd3) ? qres[4] : qzz[wo + 6'd32];   // nat=35
+            qzz[wo + 6'd33] <= (i_t == 3'd2) ? qres[5] : qzz[wo + 6'd33];   // nat=42
+            qzz[wo + 6'd34] <= (i_t == 3'd1) ? qres[6] : qzz[wo + 6'd34];   // nat=49
+            qzz[wo + 6'd35] <= (i_t == 3'd0) ? qres[7] : qzz[wo + 6'd35];   // nat=56
+            qzz[wo + 6'd36] <= (i_t == 3'd1) ? qres[7] : qzz[wo + 6'd36];   // nat=57
+            qzz[wo + 6'd37] <= (i_t == 3'd2) ? qres[6] : qzz[wo + 6'd37];   // nat=50
+            qzz[wo + 6'd38] <= (i_t == 3'd3) ? qres[5] : qzz[wo + 6'd38];   // nat=43
+            qzz[wo + 6'd39] <= (i_t == 3'd4) ? qres[4] : qzz[wo + 6'd39];   // nat=36
+            qzz[wo + 6'd40] <= (i_t == 3'd5) ? qres[3] : qzz[wo + 6'd40];   // nat=29
+            qzz[wo + 6'd41] <= (i_t == 3'd6) ? qres[2] : qzz[wo + 6'd41];   // nat=22
+            qzz[wo + 6'd42] <= (i_t == 3'd7) ? qres[1] : qzz[wo + 6'd42];   // nat=15
+            qzz[wo + 6'd43] <= (i_t == 3'd7) ? qres[2] : qzz[wo + 6'd43];   // nat=23
+            qzz[wo + 6'd44] <= (i_t == 3'd6) ? qres[3] : qzz[wo + 6'd44];   // nat=30
+            qzz[wo + 6'd45] <= (i_t == 3'd5) ? qres[4] : qzz[wo + 6'd45];   // nat=37
+            qzz[wo + 6'd46] <= (i_t == 3'd4) ? qres[5] : qzz[wo + 6'd46];   // nat=44
+            qzz[wo + 6'd47] <= (i_t == 3'd3) ? qres[6] : qzz[wo + 6'd47];   // nat=51
+            qzz[wo + 6'd48] <= (i_t == 3'd2) ? qres[7] : qzz[wo + 6'd48];   // nat=58
+            qzz[wo + 6'd49] <= (i_t == 3'd3) ? qres[7] : qzz[wo + 6'd49];   // nat=59
+            qzz[wo + 6'd50] <= (i_t == 3'd4) ? qres[6] : qzz[wo + 6'd50];   // nat=52
+            qzz[wo + 6'd51] <= (i_t == 3'd5) ? qres[5] : qzz[wo + 6'd51];   // nat=45
+            qzz[wo + 6'd52] <= (i_t == 3'd6) ? qres[4] : qzz[wo + 6'd52];   // nat=38
+            qzz[wo + 6'd53] <= (i_t == 3'd7) ? qres[3] : qzz[wo + 6'd53];   // nat=31
+            qzz[wo + 6'd54] <= (i_t == 3'd7) ? qres[4] : qzz[wo + 6'd54];   // nat=39
+            qzz[wo + 6'd55] <= (i_t == 3'd6) ? qres[5] : qzz[wo + 6'd55];   // nat=46
+            qzz[wo + 6'd56] <= (i_t == 3'd5) ? qres[6] : qzz[wo + 6'd56];   // nat=53
+            qzz[wo + 6'd57] <= (i_t == 3'd4) ? qres[7] : qzz[wo + 6'd57];   // nat=60
+            qzz[wo + 6'd58] <= (i_t == 3'd5) ? qres[7] : qzz[wo + 6'd58];   // nat=61
+            qzz[wo + 6'd59] <= (i_t == 3'd6) ? qres[6] : qzz[wo + 6'd59];   // nat=54
+            qzz[wo + 6'd60] <= (i_t == 3'd7) ? qres[5] : qzz[wo + 6'd60];   // nat=47
+            qzz[wo + 6'd61] <= (i_t == 3'd7) ? qres[6] : qzz[wo + 6'd61];   // nat=55
+            qzz[wo + 6'd62] <= (i_t == 3'd6) ? qres[7] : qzz[wo + 6'd62];   // nat=62
+            qzz[wo + 6'd63] <= (i_t == 3'd7) ? qres[7] : qzz[wo + 6'd63];   // nat=63
         end
     end
 
-    assign o_rd_data = qzz[i_rd_idx];
+    assign o_rd_data = qzz[{i_rd_buf, i_rd_idx}];
     // kk==63 时没有下一个, 返回 0 (会被当零系数跳过)
-    assign o_rd_data_n = (i_rd_idx == 6'd63) ? 16'd0 : qzz[i_rd_idx + 6'd1];
+    assign o_rd_data_n = (i_rd_idx == 6'd63) ? 16'd0
+                                            : qzz[{i_rd_buf, i_rd_idx + 6'd1}];
 
     genvar gz;
     wire [63:0] nz_mask_c;
     generate
         for (gz = 0; gz < 64; gz = gz + 1) begin : g_nz
-            assign nz_mask_c[gz] = (qzz[gz] != 16'sd0);
+            assign nz_mask_c[gz] = (qzz[wo + gz] != 16'sd0);
         end
     endgenerate
 
     // ★ 位图必须在**块结束时锁存**, 不能直接组合输出。
     //   qzz 是分 i_t=0..7 八个阶段写入的, i_t=7 那一拍的 posedge 之前,
-    //   最后 8 项还是**上一个块**的值 —— 组合输出的位图会是新旧混合的中间态,
-    //   熵编码器照着它跳零就会把真正非零的系数当成零跳过 (实测少 8 字节)。
-    //   q_blk_done 打一拍后 qzz 才全部更新完, 那时锁存才是本块的真值。
-    reg [63:0] nz_mask_r;
+    //   最后 8 项还是**上一个块**的值 —— 组合输出的位图会是新旧混合的中间态。
+    //   双缓冲后两组位图各自独立锁存, 读侧按 i_rd_buf 选。
+    //
+    // ★★ 双缓冲特有陷阱: q_blk_done (i_t==7) 那一拍 wr_buf 同时也翻转了,
+    //   所以下一拍 (q_done_d=1) 时 wo 已经指向**另一组**, 那一组的 qzz 还是
+    //   上一轮的旧数据。原来直接用 nz_mask_c + i_wr_buf 锁存, 存进去的是
+    //   "新组的旧数据" —— 实测第一个块末尾就错位 (first diff 619)。
+    //   修法: 记住上一拍的写地址 wo_d (它就是刚写完的那一组), 用它算位图并存。
+    reg [6:0] wo_d;
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) wo_d <= 7'd0;
+        else        wo_d <= wo;
+    end
+
+    wire [63:0] nz_mask_d;
+    generate
+        for (gz = 0; gz < 64; gz = gz + 1) begin : g_nzd
+            assign nz_mask_d[gz] = (qzz[wo_d + gz] != 16'sd0);
+        end
+    endgenerate
+
+    reg [63:0] nz_r0, nz_r1;
     reg        q_done_d;
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            nz_mask_r <= 64'd0;
-            q_done_d  <= 1'b0;
+            nz_r0    <= 64'd0;
+            nz_r1    <= 64'd0;
+            q_done_d <= 1'b0;
         end else begin
-            q_done_d  <= i_valid && (i_t == 3'd7);
-            if (q_done_d) nz_mask_r <= nz_mask_c;
+            q_done_d <= i_valid && (i_t == 3'd7);
+            if (q_done_d) begin
+                if (wo_d[6]) nz_r1 <= nz_mask_d;   // wo_d[6] = 刚写完的那一组
+                else         nz_r0 <= nz_mask_d;
+            end
         end
     end
-    assign o_nz_mask = nz_mask_r;
+    assign o_nz_mask = i_rd_buf ? nz_r1 : nz_r0;
 
 endmodule
