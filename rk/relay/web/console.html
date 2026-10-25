@@ -2483,12 +2483,26 @@ function fpgaShowSt(d) {
   $("fsBeat").textContent   = (st.HEARTBEAT !== undefined) ? st.HEARTBEAT : "—";
   $("fsVer").textContent    = (st.VER !== undefined)
       ? "0x" + st.VER.toString(16).toUpperCase().padStart(4, "0") : "—";
-  // 版本号只在这里显示，不再弹 toast —— V45.6/0x4506 是当前可用的稳定版本，
-  // 0x4507 需要重新综合烧写，未烧时反复提示只会干扰。
+  // 版本表：CFG_VER 每烧一版 +1，这里登记含义，不再硬编码某个版本的提示文案。
+  const VER_NOTES = {
+    0x4501: "V45.1 预处理初版",
+    0x4506: "V45.6 稳定版",
+    0x4507: "V45.7 修复行首 16 像素错位",
+    0x4509: "V45.9 参数扫描加重试",
+    0x450D: "V45.13 参数扫描兜底",
+    0x4700: "V47.0 双目交替推流",
+    0x4704: "V47.4",
+    0x4705: "V47.5",
+    0x4706: "V47.6 移除锐化 / HE 内置斜率限制与跳帧平滑（去「防频闪」）/ 单色算子跳过白平衡"
+  };
+  const VER_NEWEST = 0x4706;
   const _ver = (st.VER !== undefined) ? Number(st.VER) : null;
-  if (_ver !== null && _ver < 0x4507 && $("fsVer")) {
-    $("fsVer").title = "当前 0x" + _ver.toString(16).toUpperCase() +
-      "；V45.7(0x4507) 修复了行首 16 像素错位，需重新综合烧写 bit";
+  if (_ver !== null && $("fsVer")) {
+    let t = "板上 bit 版本 0x" + _ver.toString(16).toUpperCase().padStart(4, "0") +
+            (VER_NOTES[_ver] ? "（" + VER_NOTES[_ver] + "）" : "（未登记版本）") +
+            "；页面期望的最新版本 0x" + VER_NEWEST.toString(16).toUpperCase().padStart(4, "0");
+    if (_ver < VER_NEWEST) t += "。当前 bit 偏旧，需重新综合烧写才具备最新修复";
+    $("fsVer").title = t;
   }
   if ($("fsCamWr")) {
     $("fsCamWr").textContent = (st.CAM_WR_CNT !== undefined)
