@@ -395,6 +395,23 @@ body{
 /* 绝对单页：文档级永不出滚动条 */
 html, body{overflow:hidden}
 
+/* ---------------------------------------------------------------------------
+   窄屏兜底（≤1100px）：main 会切成单栏，左右两栏竖向堆叠。
+   此时 #colRight 的 overflow-y:auto 只在 min-width:1101px 下定义，
+   而 #viewVideo 与 html/body 都是 overflow:hidden —— 结果是下半屏
+   （摄像头 / 预处理 / AI 标注 页签）被裁掉，且页面上找不到任何可滚容器。
+   实测 826x546：#viewVideo 内容 1556px、可见 502px，被裁 1054px。
+   这里让「视图自身」在窄屏下可滚；宽屏仍是左栏固定 + 右栏独立滚动。
+   注意必须写在上面的 #viewVideo{overflow:hidden} 之后才能覆盖。
+--------------------------------------------------------------------------- */
+@media (max-width:1100px){
+  #viewVideo{ overflow-y:auto; overflow-x:hidden; overscroll-behavior:contain }
+  #viewVideo main{ align-items:start }
+  #viewVideo #colLeft{ height:auto; max-height:none; overflow:visible }
+  #viewVideo #colRight{ max-height:none; overflow:visible }
+  #viewVideo #colRight > .card > .tabbody{ overflow:visible }
+}
+
 </style>
 </head>
 <body>
