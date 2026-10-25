@@ -43,6 +43,7 @@ module preproc_post #(
 
 	input  wire [7:0]   i_wb_r,      // R 增益, 128 = 1.0x
 	input  wire [7:0]   i_wb_b,      // B 增益, 128 = 1.0x
+	input  wire         i_mono,      // 1 = 上游是单色算子(边缘/阈值/形态/中值/拉普拉斯/浮雕/Prewitt) -> 跳 WB
 	input  wire [6:0]   i_roi_pct,   // 25..100 (100 = 全画幅)
 
 	output reg          o_tvalid,
@@ -128,7 +129,7 @@ module preproc_post #(
 	wire [31:0] g2 = {8'h00, gain8(p2[23:16], wb_gain_r), p2[15:8], gain8(p2[7:0], wb_gain_b)};
 	wire [31:0] g3 = {8'h00, gain8(p3[23:16], wb_gain_r), p3[15:8], gain8(p3[7:0], wb_gain_b)};
 
-	wire [127:0] wb_rgb = {g3, g2, g1, g0};
+	wire [127:0] wb_rgb = i_mono ? i_rgb : {g3, g2, g1, g0};
 
 	// 窗口外填视频黑 (RGB=0)
 	wire [127:0] out_rgb = in_roi ? wb_rgb : 128'd0;

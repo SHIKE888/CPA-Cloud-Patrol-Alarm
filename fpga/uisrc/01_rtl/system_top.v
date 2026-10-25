@@ -1558,6 +1558,7 @@ preproc_post #(
 	.i_rgb      (S_pp_tdata),
 	.i_wb_r     (S_wb_r),
 	.i_wb_b     (S_wb_b),
+	.i_mono     (S_pp_mode != 4'd0),
 	.i_roi_pct  (S_roi_pct),
 	.o_tvalid   (S_post_tvalid),
 	.o_tuser    (S_post_tuser),
