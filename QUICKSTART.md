@@ -32,7 +32,7 @@
 | 3 | 网页 MJPEG 推流 **1920x1080@59.6fps** | ✅ | `rk/web/start_webstream.sh`（:9012） |
 | 4 | 软件画面调参（亮度/对比度/饱和度/色相/伽马/镜像/翻转/旋转/缩放/JPEG 质量/帧率上限） | ✅ | 网页「画面」页签 ↔ `/api/params` |
 | 5 | **IMX415 摄像头参数**（曝光 0.05~16ms / 增益 0~30dB(0.3dB/step) / EV -3~+3 / 白平衡 R、B / ROI） | ✅ | 网页「摄像头」页签 ↔ `/api/fpga` |
-| 6 | **FPGA 预处理**（初级多选：灰度/高斯/直方图均衡/对比度/反色；高级单选：Sobel/阈值/形态/中值/拉普拉斯/浮雕/Prewitt/锐化） | ✅ | 网页「预处理」页签 ↔ `/api/fpga` |
+| 6 | **FPGA 预处理**（初级多选：灰度/高斯/直方图均衡/对比度/反色；高级单选：Sobel/阈值/形态/中值/拉普拉斯/浮雕/Prewitt） | ✅ | 网页「预处理」页签 ↔ `/api/fpga` |
 | 7 | 输出格式切换 **1080P@60 / 4K@25 / 4K@30**（同时写 FPGA + 重设 media pipeline） | ✅（4K@30 带宽 99.5% 实测跑不动） | 网页「摄像头」页签下拉框 ↔ `/api/mode` |
 | 8 | 720P@90 | ❌ FPGA RTL 未实现 | 页面标注并拦截 |
 | 9 | **AI 人体检测 → 17 关节姿态 → 8 类危险动作**（RK3576 NPU） | ✅ | `AI=1 ./start_webstream.sh`（集成进 9012） |
@@ -231,7 +231,8 @@ ssh afc03 "python3 /root/rk/deploy/fpga_cfg.py set 0xF0 1"  # 只开灰度
 ssh afc03 "python3 /root/rk/deploy/fpga_cfg.py set 0xF0 6"  # 高斯 + 直方图均衡
 ssh afc03 "python3 /root/rk/deploy/fpga_cfg.py set 0xF0 31" # 五项全开
 
-# 高级（单选 0xB1）：0=关 1=Sobel 2=阈值 3=形态 4=中值 5=拉普拉斯 6=浮雕 7=Prewitt 8=锐化
+# 高级（单选 0xB1）：0=关 1=Sobel 2=阈值 3=形态 4=中值 5=拉普拉斯 6=浮雕 7=Prewitt
+#   （锐化已移除；0xF7 保留读回 0）
 ssh afc03 "python3 /root/rk/deploy/fpga_cfg.py set 0xB0 1"
 ssh afc03 "python3 /root/rk/deploy/fpga_cfg.py set 0xB1 4"  # 中值
 ssh afc03 "python3 /root/rk/deploy/fpga_cfg.py set 0xB3 100" # 阈值分割阈值
@@ -246,13 +247,16 @@ ssh afc03 "curl -s -X POST http://127.0.0.1:9012/api/fpga -H 'Content-Type: appl
 > **寄存器**
 > - 初级：`0xF0`=BASIC_EN（5 位位图）、`0xF1`=灰度系数档（0=601/1=709）、`0xF2`=高斯强度、
 >   `0xF3`=直方图均衡强度、`0xF4`=对比度强度
-> - 高级：`0xB0`=PP_EN、`0xB1`=ADV_MODE（0..8）、`0xB2`=Sobel 位移、`0xB3`=阈值、
+> - 高级：`0xB0`=PP_EN、`0xB1`=ADV_MODE（0..7）、`0xB2`=Sobel 位移、`0xB3`=阈值、
 >   `0xB4`=0 腐蚀/1 膨胀、`0xB5`=形态学阈值、`0xB6`=拉普拉斯位移、`0xB7`=Prewitt 位移、
->   `0xF5`=浮雕增益、`0xF6`=浮雕偏置、`0xF7`=锐化强度
+>   `0xF5`=浮雕增益、`0xF6`=浮雕偏置（`0xF7` 锐化已废弃，读回 0；`0xFA` 防频闪已废弃，读回 0）
 > - 状态：`0xB8~0xBB`=帧计数、`0xBC`=心跳（只读）、`0xA9/0xAA`=版本号（**当前 `0x450D`**）
 >
 > 初级固定串联顺序：**高斯 → 直方图均衡 → 灰度 → 对比度 → 反色**；两级可同时生效。
-> 注意：**打开任意一级预处理会自动把 AI 画面源切回原图**（双向联动）。
+> **预处理与 AI 可以同时开**（2026-10-21 起）：预处理在 FPGA 流水线里，AI 吃的是同一路画面，
+> 开不开由用户自己决定；接口只会在回包里提示
+> （`/api/ai` → `pp_note`，`/api/fpga` → `ai_note`），不再替用户关掉另一边。
+> 注意：Sobel/阈值/形态学这类“给眼睛看的”画面送进 AI，检测准度会掉，自己权衡。
 
 ### 3.7 AI 人体检测 / 姿态 / 危险动作（NPU）
 
