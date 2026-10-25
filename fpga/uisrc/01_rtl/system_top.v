@@ -1585,19 +1585,13 @@ assign IO_cfg_sda = S_cfg_sda_drv ? 1'b0 : 1'bz; // 开漏: 1 = 拉低
 assign S_cfg_sda_i = IO_cfg_sda;
 
 cfg_ctrl_top #(
-	.DEV_ADDR (7'h40),
-	// ★ 构建版本号 (I2C 0xA9 低 / 0xAA 高 可读)。注意这里会覆盖 cfg_ctrl_top
-	//   的 parameter 默认值 —— 2026-10-17 就因为改错地方导致版本号一直读 0x0101,
-	//   白白多烧了一轮。以后改这个号只能改这里。
-	//   0x3807 = V38g (撤销 V38f: GAP_LINE 100->200, 回到实测可用的 4K25)
-	//   0x3805 = V38e (4K25: h_frame 2652 / v_frame 2225 / VMAX 3420)
-	//   0x3804 = V38d (补上 0x3024/0x3025: VMAX 3449->4282)
-	//   0x4301 = V43a (修 4K 撕裂: packer 写侧幻影 word + 读侧重复送)
-	//           ⚠ 注意: 4:36 那次构建虽然已经是 V43 的 RTL, 但当时这里还是
-	//           0x3807, 所以板上读到的仍是 0x3807 —— 不能只凭版本号判断是否
-	//           烧了新 bit, 要看画面/相位相关。
-	//   0x4509 = 2026-10-20 修 IDELAY 使能语义(电平) + eye-scan 只扫 32 tap
-	.CFG_VER  (16'h4704)
+	.DEV_ADDR (7'h40)
+	// ★ 构建版本号**不再在这里覆盖**。
+	//   旧版这里硬写了 `.CFG_VER(16'h4704)`, 会盖掉 cfg_ctrl_top 的 parameter 默认值
+	//   —— 2026-10-17 和 2026-10-25 两次都因为“改了一处没改另一处”导致
+	//   版本号一直是旧的（2026-10-25 已把三处修复都编进 bit, 板上仍读 0x4704）。
+	//   现在唯一真源是 cfg_ctrl_top.v 的 `parameter [15:0] CFG_VER`。
+	//   历史版本对照表也放在那里。
 ) u_cfg_ctrl (
 	.i_sys_clk    (I_sysclk_25m),
 	.i_sys_rst_n  (1'b1),
