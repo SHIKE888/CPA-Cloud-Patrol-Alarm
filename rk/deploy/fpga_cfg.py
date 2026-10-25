@@ -15,7 +15,7 @@
 
 寄存器映射 (详见 fpga/uisrc/01_rtl/jpeg/jpeg_regfile.v 头部注释)
     0xB0 PP_EN        高级预处理总使能
-    0xB1 ADV_MODE     0=关 1=Sobel 2=阈值 3=形态 4=中值 5=拉普拉斯 6=浮雕 7=Prewitt 8=锐化
+    0xB1 ADV_MODE     0=关 1=Sobel 2=阈值 3=形态 4=中值 5=拉普拉斯 6=浮雕 7=Prewitt（锐化已移除）
     0xB2 ADV_SOBEL_SH Sobel 幅度右移
     0xB3 ADV_THRESH   阈值分割阈值
     0xB4 ADV_MORPH_SEL 0=腐蚀 1=膨胀
@@ -33,7 +33,6 @@
     0xFB BASIC_LINEFIX 行首左旋 16 像素 (0=关)
     0xF5 ADV_EMBOSS_GAIN 浮雕增益
     0xF6 ADV_EMBOSS_BIAS 浮雕偏置
-    0xF7 ADV_SHARP_GAIN  锐化强度
     0xB8..0xBB 帧计数 (只读)
     0xBC 心跳 (只读, 每 256 个读时钟 +1)
 
@@ -70,14 +69,14 @@ NAMES = {
     0xF3: "BASIC_HE", 0xF4: "BASIC_CONTRAST",
     0xF8: "BASIC_KER", 0xF9: "BASIC_HE_CLIP", 0xFA: "BASIC_HE_TEMP",
     0xFB: "BASIC_LINEFIX",
-    0xF5: "ADV_EMBOSS_GAIN", 0xF6: "ADV_EMBOSS_BIAS", 0xF7: "ADV_SHARP_GAIN",
+    0xF5: "ADV_EMBOSS_GAIN", 0xF6: "ADV_EMBOSS_BIAS",
     0xB8: "FRAME_CNT[7:0]", 0xB9: "FRAME_CNT[15:8]",
     0xBA: "FRAME_CNT[23:16]", 0xBB: "FRAME_CNT[31:24]",
     0xBC: "HEARTBEAT", 0xA9: "VER_L", 0xAA: "VER_H",
 }
 
 MODE_NAME = {0: "关闭", 1: "Sobel 边缘", 2: "阈值二值", 3: "形态学",
-             4: "中值", 5: "拉普拉斯", 6: "浮雕", 7: "Prewitt", 8: "锐化"}
+             4: "中值", 5: "拉普拉斯", 6: "浮雕", 7: "Prewitt"}
 
 BASIC_BITS = [(0, "灰度"), (1, "高斯"), (2, "直方图均衡"),
               (3, "对比度"), (4, "反色")]
@@ -231,7 +230,7 @@ def main():
     p = sub.add_parser('heartbeat')
     p.add_argument('-n', type=int, default=6)
     p = sub.add_parser('mode')
-    p.add_argument('mode', type=int, help='0=关 1=Sobel 2=阈值 3=形态 4=中值 5=拉普拉斯 6=浮雕 7=Prewitt 8=锐化')
+    p.add_argument('mode', type=int, help='0=关 1=Sobel 2=阈值 3=形态 4=中值 5=拉普拉斯 6=浮雕 7=Prewitt')
     p = sub.add_parser('basic')
     p.add_argument('mask', type=int, help='初级多选位图: 1灰度 2高斯 4HE 8对比度 16反色 (可相加)')
     p = sub.add_parser('set')

@@ -57,7 +57,7 @@
 //    0xB7 ADV_PREW_SH   Prewitt 幅度右移 0..8
 //    0xF5 ADV_EMBOSS_GAIN 浮雕增益 0..8
 //    0xF6 ADV_EMBOSS_BIAS 浮雕偏置 0..255 (默认 128)
-//    0xF7 ADV_SHARP_GAIN  锐化强度 0..8
+//    0xF7 （已废弃：锐化功能已移除，读始终返回 0）
 //    0xB8~0xBB ST_FRAME_CNT  已接收帧计数 (只读, RISC 可读回验证链路)
 //    0xBC ST_HEARTBEAT       心跳计数 (只读, 每 256 读时钟 +1, 证明 FPGA 活着)
 //
@@ -128,7 +128,6 @@ module jpeg_regfile #(
     output wire [4:0]   O_cfg_pp_prew_shift,
     output wire [3:0]   O_cfg_pp_emboss_gain,
     output wire [7:0]   O_cfg_pp_emboss_bias,
-    output wire [4:0]   O_cfg_pp_sharp_gain,
     // 初级预处理 (多选位图)
     output wire [4:0]   O_cfg_basic_en,
     output wire         O_cfg_basic_gray,
@@ -246,7 +245,6 @@ module jpeg_regfile #(
     reg [4:0]  r_pp_prew_sh;
     reg [3:0]  r_pp_emboss_gain;
     reg [7:0]  r_pp_emboss_bias;
-    reg [4:0]  r_pp_sharp_gain;
     // 初级预处理 (V45)
     reg [4:0]  r_basic_en;
     reg        r_basic_gray;
@@ -337,7 +335,6 @@ module jpeg_regfile #(
             r_pp_prew_sh   <= 5'd8;
             r_pp_emboss_gain <= 4'd4;
             r_pp_emboss_bias <= 8'd128;
-            r_pp_sharp_gain  <= 5'd8;
             // 初级: 默认全关 (位图 = 0), 参数给常用默认值
             r_basic_en     <= 5'd0;
             r_basic_gray   <= 1'b0;    // BT.601
@@ -420,7 +417,7 @@ module jpeg_regfile #(
                     8'hFB: r_basic_linefix<= I_wr_data[0];
                     8'hF5: r_pp_emboss_gain <= (I_wr_data[3:0] > 4'd8) ? 4'd8 : I_wr_data[3:0];
                     8'hF6: r_pp_emboss_bias <= I_wr_data;
-                    8'hF7: r_pp_sharp_gain  <= (I_wr_data[4:0] > 5'd16) ? 5'd16 : I_wr_data[4:0];
+                    // 0xF7 锐化已移除: 写入忽略
                     // ---- 摄像头 / 画质参数 (0xC0 起) ----
                     8'hC0: r_cam_exp[ 7:0] <= I_wr_data;
                     8'hC1: r_cam_exp[15:8] <= I_wr_data;
@@ -529,7 +526,7 @@ module jpeg_regfile #(
                 8'hFB: O_rd_data <= {7'b0, r_basic_linefix};
                 8'hF5: O_rd_data <= {4'b0, r_pp_emboss_gain};
                 8'hF6: O_rd_data <= r_pp_emboss_bias;
-                8'hF7: O_rd_data <= {3'b0, r_pp_sharp_gain};
+                8'hF7: O_rd_data <= 8'h00;      // 锐化已移除
                 8'hB8: O_rd_data <= s_frame_cnt[ 7:0];
                 8'hB9: O_rd_data <= s_frame_cnt[15:8];
                 8'hBA: O_rd_data <= s_frame_cnt[23:16];
@@ -613,7 +610,6 @@ module jpeg_regfile #(
     assign O_cfg_pp_prew_shift = r_pp_prew_sh;
     assign O_cfg_pp_emboss_gain= r_pp_emboss_gain;
     assign O_cfg_pp_emboss_bias= r_pp_emboss_bias;
-    assign O_cfg_pp_sharp_gain = r_pp_sharp_gain;
     // 初级预处理 (独立于高级 PP_EN, 两级可同时生效)
     assign O_cfg_basic_en      = r_basic_en;
     assign O_cfg_basic_gray    = r_basic_gray;

@@ -38,7 +38,7 @@ module preproc_edge (
 	input  wire [127:0] i_rgb,
 
 	// ---- 配置寄存器 (来自反向传参链路) ----
-	input  wire [3:0]   i_mode,          // 0=原图 1=Sobel 2=阈值 3=形态 4=中值 5=拉普拉斯 6=浮雕 7=Prewitt 8=锐化
+	input  wire [3:0]   i_mode,          // 0=原图 1=Sobel 2=阈值 3=形态 4=中值 5=拉普拉斯 6=浮雕 7=Prewitt
 	input  wire [4:0]   i_sobel_gain,    // Sobel 增益 0..16 (4 = 原幅度)
 	input  wire [7:0]   i_thresh,        // 阈值分割阈值
 	input  wire         i_morph_sel,     // 0=腐蚀 1=膨胀
@@ -47,7 +47,7 @@ module preproc_edge (
 	input  wire [4:0]   i_prew_gain,     // Prewitt 增益 0..16
 	input  wire [3:0]   i_emboss_gain,   // 浮雕增益 0..8
 	input  wire [7:0]   i_emboss_bias,   // 浮雕偏置 0..255 (默认 128)
-	input  wire [4:0]   i_sharp_gain,    // 锐化增益 0..16
+	// （锐化已移除：实测对画面无可见效果，且与 Sobel/Prewitt 功能重叠）
 
 	// ---- 输出 ----
 	output reg          o_tvalid,
@@ -175,16 +175,6 @@ module preproc_edge (
 		wire [13:0] pmag_s = pmag_g >> 2;
 		wire [7:0]  prewv = (pmag_s > 14'd255) ? 8'hFF : pmag_s[7:0];
 
-		// ---------------- 8 锐化 (保色) ----------------
-		wire signed [12:0] dsh = ($signed({5'b0, b1}) <<< 2)
-		                       - $signed({5'b0, a1}) - $signed({5'b0, b0})
-		                       - $signed({5'b0, b2}) - $signed({5'b0, c1});
-		wire signed [15:0] shadd = (dsh * $signed({11'b0, i_sharp_gain})) >>> 4;
-
-		wire [7:0] rp = i_rgb[(32*j) + 16 +: 8];
-		wire [7:0] gp = i_rgb[(32*j) +  8 +: 8];
-		wire [7:0] bp = i_rgb[(32*j)      +: 8];
-
 		// ---------------- 单路 mux ----------------
 		wire [7:0] gv = (i_mode == 4'd1) ? edgev :
 		                (i_mode == 4'd2) ? (binv ? 8'hFF : 8'h00) :
@@ -196,10 +186,6 @@ module preproc_edge (
 
 		assign algo_pix[(32*j) +: 32] =
 		    (i_mode == 4'd0) ? i_rgb[(32*j) +: 32] :
-		    (i_mode == 4'd8) ? {8'h00,
-		                        clamp8($signed({8'd0, rp}) + shadd),
-		                        clamp8($signed({8'd0, gp}) + shadd),
-		                        clamp8($signed({8'd0, bp}) + shadd)} :
 		                       {8'h00, gv, gv, gv};
 	end
 	endgenerate

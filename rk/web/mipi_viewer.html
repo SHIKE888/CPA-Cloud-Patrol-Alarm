@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>FPGA MIPI 画面远程查看 / 调参</title>
+<title>云端智联定点巡航安防预警系统 局域网控制平台</title>
 <style>
   :root{
     --bg:#0e1116; --panel:#161b22; --panel2:#1c232c; --line:#2a323d;
@@ -20,6 +20,31 @@
     margin:0; background:var(--bg); color:var(--fg);
     font:14px/1.5 "Segoe UI","Microsoft YaHei",system-ui,sans-serif;
   }
+
+  /* ── 全局顶部导航：与 map.html 保持完全一致的样式 ───────────── */
+  /* 两个页面风格要统一，这段和 map.html 里的 .topnav 必须同源。 */
+  .topnav{
+    display:flex; align-items:center; gap:6px; flex-wrap:wrap;
+    padding:0 12px; min-height:44px;
+    background:var(--panel); border-bottom:1px solid var(--line);
+  }
+  .topnav .brand{font-weight:600; margin-right:12px; white-space:nowrap}
+  .topnav .brand i{font-style:normal; font-weight:400; color:var(--dim);
+                   margin-left:8px; font-size:12px}
+  .topnav a.tab{
+    padding:5px 12px; border-radius:8px; text-decoration:none;
+    font-size:13px; color:var(--dim); border:1px solid transparent;
+  }
+  .topnav a.tab:hover{color:var(--fg); background:var(--panel2); border-color:var(--line)}
+  .topnav a.tab.active{background:var(--acc2); border-color:var(--acc2); color:#fff; font-weight:600}
+  .topnav .sp{margin-left:auto}
+  .topnav .host{color:var(--dim); font-size:12px; font-family:ui-monospace,monospace}
+  /* map.html 用 iframe 嵌本页时带 ?embed=1：外层已经有导航，本页的必须藏起来，
+     否则屏幕上会出现两条一模一样的顶部导航。 */
+  html.embed .topnav{display:none}
+  html.embed body{padding-top:0 !important}
+  html.embed .wrap, html.embed .app{padding-top:0 !important}
+
   header{
     display:flex; gap:10px; align-items:center; flex-wrap:wrap;
     padding:12px 16px; background:var(--panel); border-bottom:1px solid var(--line);
@@ -265,6 +290,20 @@
 </style>
 </head>
 <body>
+<script>
+  // 被 map.html 嵌入时隐藏自己的顶部导航（外层已有）
+  if (/(?:^|[?&])embed=1(?:&|$)/.test(location.search) || window.self !== window.top) {
+    document.documentElement.className += ' embed';
+  }
+</script>
+
+<nav class="topnav">
+  <span class="brand">云端智联定点巡航安防预警系统 <i>局域网控制平台</i></span>
+  <a class="tab active" href="#">视频采集</a>
+  <a class="tab" id="lnkMap" href="http://localhost/console.html">调度控制</a>
+  <span class="sp"></span>
+  <span class="host" id="topHost"></span>
+</nav>
 
 <header>
   <h1>FPGA MIPI 画面控制台</h1>
@@ -567,13 +606,6 @@
               <input type="range" id="f_ADV_PREW_SH" min="1" max="16" step="1" value="8">
               <span class="val" id="fv_ADV_PREW_SH">8</span></div>
           </div>
-
-          <button class="ghost ppbtn" data-adv="8">锐化</button>
-          <div class="ppparam" id="ap_8">
-            <div class="row"><label>增益</label>
-              <input type="range" id="f_ADV_SHARP_GAIN" min="1" max="16" step="1" value="8">
-              <span class="val" id="fv_ADV_SHARP_GAIN">8</span></div>
-          </div>
         </div>
 
         <p class="hint">每个算法一个按钮，参数滑条只在选中时显示。两级可同时生效；
@@ -741,6 +773,20 @@
 "use strict";
 
 const $ = id => document.getElementById(id);
+// 统一导航：本页跑在中继的 9012 端口，建图页在 80 端口。
+// 跨端口必须用当前主机名动态拼，写相对路径会指到 :9012/map.html（不存在）。
+(function initTopNav(){
+  var h = location.hostname || 'localhost';
+  var m = document.getElementById('lnkMap');
+  if (m) m.href = 'http://' + h + '/console.html';
+  var e = document.getElementById('topHost');
+  if (e) e.textContent = h;
+  // 连接地址也自动填成「当前主机:9012」，省得每次手改。
+  // 原来是写死的 192.168.137.100，换了 WiFi / 用手机打开时都不对。
+  var a = document.getElementById('addr');
+  if (a) a.value = h + ':9012';
+})();
+
 let base = "";            // http://host:port
 let connected = false;
 let params = {};          // 本地镜像的参数
@@ -969,7 +1015,8 @@ function syncLabel(k) {
   lab.textContent = (step < 1) ? parseFloat(el.value).toFixed(2) : el.value;
 }
 function syncToggles() {
-  $("btnMirror").classList.toggle("on", !!params.mirror);  $("btnFlipv").classList.toggle("on", !!params.flipv);
+  $("btnMirror").classList.toggle("on", !!params.mirror);
+  $("btnFlipv").classList.toggle("on", !!params.flipv);
   // 单目 / 双目 两档
   const _m = Number(params.dual ?? 0) ? "dual" : "mono";
   document.querySelectorAll("[data-mode]").forEach(b =>
@@ -1026,9 +1073,7 @@ $("btnMirror").onclick = () => { params.mirror = params.mirror ? 0 : 1; syncTogg
 $("btnFlipv").onclick  = () => { params.flipv  = params.flipv  ? 0 : 1; syncToggles(); schedulePush(); };
 
 /* FPGA 硬件 JPEG 编码参数 (jpeg_regfile 0x00 / 0x01 / 0x02-0x04 / 0x05) */
-var jpegHw = 0;       // 后端 /api/jpeg 的 hw 开关 (硬件编码使能)
-                      // 用 var 而不是 let: syncToggles() 会在本行执行之前被调用,
-                      // let 的暂时性死区会直接抛 ReferenceError
+let jpegHw = 0;       // 后端 /api/jpeg 的 hw 开关 (硬件编码使能)
 $("btnJpegHw").onclick = async () => {
   const want = jpegHw ? 0 : 1;
   try {
@@ -1335,7 +1380,7 @@ function fpgaSyncUI() {
     if (p) p.classList.toggle("show", advOn && advMode === v);
   }
   ["ADV_THRESH", "ADV_MORPH_TH", "ADV_SOBEL_SH", "ADV_LAP_SH", "ADV_PREW_SH",
-   "ADV_EMBOSS_GAIN", "ADV_EMBOSS_BIAS", "ADV_SHARP_GAIN"].forEach(k => {
+   "ADV_EMBOSS_GAIN", "ADV_EMBOSS_BIAS"].forEach(k => {
     const el = $("f_" + k);
     if (el && r[k] !== undefined && document.activeElement !== el) el.value = r[k];
     if (el && $("fv_" + k)) $("fv_" + k).textContent = el.value;
@@ -1455,7 +1500,7 @@ $("btnMorph1").onclick    = () => { if (ppClickOK($("btnMorph1")))    scheduleFp
 $("btnPpRefresh").onclick = async () => { await loadFpga(); toast("已刷新 FPGA 参数"); };
 
 ["ADV_THRESH", "ADV_MORPH_TH", "ADV_SOBEL_SH", "ADV_LAP_SH", "ADV_PREW_SH",
- "ADV_EMBOSS_GAIN", "ADV_EMBOSS_BIAS", "ADV_SHARP_GAIN"].forEach(k => {
+ "ADV_EMBOSS_GAIN", "ADV_EMBOSS_BIAS"].forEach(k => {
   const el = $("f_" + k);
   if (!el) return;
   el.addEventListener("input", () => {

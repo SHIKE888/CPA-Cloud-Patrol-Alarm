@@ -56,7 +56,6 @@ module tb_align;
 		.i_prew_gain  (5'd4),
 		.i_emboss_gain(4'd4),
 		.i_emboss_bias(8'd128),
-		.i_sharp_gain (5'd8),
 		.o_tvalid     (o_tvalid),
 		.o_tuser      (o_tuser),
 		.o_tlast      (o_tlast),

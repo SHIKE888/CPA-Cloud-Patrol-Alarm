@@ -37,7 +37,6 @@ module tb_align2;
 		.i_mode(4'd0), .i_sobel_gain(5'd4), .i_thresh(8'd128),
 		.i_morph_sel(1'b0), .i_morph_th(8'd128), .i_lap_gain(5'd4),
 		.i_prew_gain(5'd4), .i_emboss_gain(4'd4), .i_emboss_bias(8'd128),
-		.i_sharp_gain(5'd8),
 		.o_tvalid(o_tvalid), .o_tuser(o_tuser), .o_tlast(o_tlast), .o_rgb(o_rgb)
 	);
 

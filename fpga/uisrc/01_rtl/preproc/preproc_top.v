@@ -47,7 +47,6 @@ module preproc_top #(
 	input  wire [4:0]   i_prew_gain,
 	input  wire [3:0]   i_emboss_gain,
 	input  wire [7:0]   i_emboss_bias,
-	input  wire [4:0]   i_sharp_gain,
 
 	// ---- 视频输出 ----
 	output wire         o_tvalid,
@@ -134,7 +133,6 @@ module preproc_top #(
 		.i_prew_gain    (i_prew_gain),
 		.i_emboss_gain  (i_emboss_gain),
 		.i_emboss_bias  (i_emboss_bias),
-		.i_sharp_gain   (i_sharp_gain),
 		.o_tvalid       (e_tvalid),
 		.o_tuser        (e_tuser),
 		.o_tlast        (e_tlast),

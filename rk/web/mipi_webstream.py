@@ -1392,15 +1392,18 @@ class HwJpegEncoder:
         self._n += 1
         if deep:
             try:
+                # 1/8 降采样解码: 灰帧在 1/8 下 std 仍 ~0.3, 判据不变, 但快 ~64 倍
                 img = cv2.imdecode(np.frombuffer(jpg, np.uint8),
-                                   cv2.IMREAD_GRAYSCALE)
+                                   cv2.IMREAD_REDUCED_GRAYSCALE_8)
                 if img is None or float(img.std()) < 3.0:
                     return False
             except Exception:                                      # noqa: BLE001
                 return False
         return True
 
-    def encode(self, raw_bytes, timeout=0.6, deep_every=1):
+    # 2026-10-25: deep_every 1 -> 20。每帧都 imdecode(1080p)+std() 要 ~30ms,
+    # 叠加串行管道 15ms = 45ms/帧 -> fps 从 55 掉到 22。
+    def encode(self, raw_bytes, timeout=0.6, deep_every=20):
         """严格一进一出。返回 JPEG bytes; 失败返回 None 并标记失步。
 
         deep_every=1 意味着每帧都做一次解码自检。本板的 mppjpegenc 会
@@ -1799,6 +1802,19 @@ class OpenCVCapture(threading.Thread):
                     enc = self._hw_encoder(tw, th, True)
                     if enc is not None:
                         jpg = enc.encode(nv12, timeout=0.6)
+                        # ★ 熔断: 失败时会从头再走一遍软件路径
+                        #   (_nv12_scaled 白做 + _to_bgr + _process), 实测
+                        #   hw+预处理 会掉到 5.9fps。连续失败就自动关掉。
+                        if jpg is None:
+                            _fr = JPEG_STAT.get("hw_fail_run", 0) + 1
+                            JPEG_STAT["hw_fail_run"] = _fr
+                            if _fr >= 5 and HW_JPEG.get():
+                                HW_JPEG.set(False)
+                                print("[jpeg] 硬件编码连续失败 %d 次, "
+                                      "已自动关闭(改回软件编码)" % _fr,
+                                      file=sys.stderr)
+                        else:
+                            JPEG_STAT["hw_fail_run"] = 0
                         if jpg is not None:
                             self._put(self._bgr_q,
                                       (seq, jpg, t_cap, "jpg", src))
@@ -2807,7 +2823,7 @@ FPGA_I2C_SLAVE = 0x0703          # linux/i2c-dev.h 里的 I2C_SLAVE
 FPGA_REGS = [
     # ---- 高级预处理 (单选) ----
     ("PP_EN",       0xB0,   0,    1, False, "高级预处理总使能 (0=直通原图)"),
-    ("ADV_MODE",    0xB1,   0,    8, False, "0=关 1=Sobel 2=阈值 3=形态 4=中值 5=拉普拉斯 6=浮雕 7=Prewitt 8=锐化"),
+    ("ADV_MODE",    0xB1,   0,    7, False, "0=关 1=Sobel 2=阈值 3=形态 4=中值 5=拉普拉斯 6=浮雕 7=Prewitt"),
     ("ADV_SOBEL_SH",0xB2,   1,   16, False, "Sobel 增益 (4=原幅度, 16=4倍)"),
     ("ADV_THRESH",  0xB3,   0,  255, False, "阈值分割阈值"),
     ("ADV_MORPH_SEL",0xB4,  0,    1, False, "0=腐蚀 1=膨胀"),
@@ -2826,7 +2842,7 @@ FPGA_REGS = [
     ("BASIC_LINEFIX",0xFB,  0,    1, False, "行首左旋 16 像素 (0=关)"),
     ("ADV_EMBOSS_GAIN",0xF5,0,    8, False, "浮雕增益 0..8"),
     ("ADV_EMBOSS_BIAS",0xF6,0,  255, False, "浮雕偏置 0..255"),
-    ("ADV_SHARP_GAIN",0xF7, 1,   16, False, "锐化增益 1..16"),
+    # 0xF7 锐化已移除（实测无可见效果，与 Sobel/Prewitt 重叠）
     # ---- 摄像头 / 画质 (0xC0 起) ----
     # 曝光是 20 位, 拆 3 字节; UI 不直接用它们, 而是用 CAM_EXP_MS 物理量
     ("CAM_EXP_L",   0xC0,   0,  255, False, "曝光 SHR0[7:0]"),
@@ -3166,7 +3182,7 @@ FPGA_PRESETS = {
     "lap":     {"PP_EN": 1, "ADV_MODE": 5},
     "emboss":  {"PP_EN": 1, "ADV_MODE": 6},
     "prewitt": {"PP_EN": 1, "ADV_MODE": 7},
-    "sharpen": {"PP_EN": 1, "ADV_MODE": 8},
+    # sharpen 已移除（无对应硬件模式）
     # 初级 (多选位图; 这里给常用组合)
     "gray":      {"BASIC_EN": 1},
     "gauss":     {"BASIC_EN": 2, "BASIC_GAUSS": 6, "BASIC_KER": 1},
@@ -3405,6 +3421,91 @@ class FpgaI2C(object):
         return True, "已写入 %d 个寄存器" % (len(writes) + len(bitwr))
 
 
+# ---------------------------------------------------------------------------
+#  2026-10-25: 两路模组在线探测 (FPGA CFG_VER >= 0x4705)
+#
+#  【为什么要做这个】
+#    切到没插模组的那一路 = 时钟 mux 选了一路没有像素时钟的源 ->
+#    rkcsi2-dphy 卡死。板上实测后果: 之后即使把 0xDB 写回去 + 重启服务 +
+#    强制 FPGA 复位都救不回来, **只能重载 bitstream**。
+#    所以必须在切换【之前】就知道目标路有没有模组。
+#
+#  【为什么能提前知道】
+#    cam0/cam1 是两套独立的 ui_cfg_imx415, 各跑各的 SCCB, 都挂在 S_clk_24m,
+#    与 rx_sel(时钟 mux) 完全无关 —— 未选中的那一路 SCCB 照样在跑。
+#
+#  【判据】
+#    0xEA = {6'b0, cam1_cfg_done, cam0_cfg_done}   初始化表写完
+#    0xEB / 0xEC = cam0 / cam1 的 AE 完成计数
+#    ⚠ 只看 cfg_done 不够: ui_i2c 收不到 ACK 也会把整张表"硬走完",
+#      cfg_done 仍然是 1。所以这里主动写一次 CAM_TRIG(0xC9) 让两路各跑一轮
+#      参数下发, 然后看 0xEB/0xEC 有没有涨 —— 没模组的那一路永远不涨。
+# ---------------------------------------------------------------------------
+MODULE_PROBE_MIN_VER = 0x4705      # 这版起才有 0xEA/0xEB/0xEC
+
+_MODULE_CACHE = {"t": 0.0, "val": None}
+_MODULE_CACHE_TTL = 5.0            # 秒: 探测要写 CAM_TRIG, 别每帧都做
+
+
+def probe_modules(fpga, force=False):
+    """探测 cam0/cam1 是否都有模组。
+
+    返回 {"supported":bool, "cam0":{...}, "cam1":{...}}
+    supported=False 时其它字段无意义, 调用方应回退到"不拦截"的老行为。
+
+    ⚠⚠ 只有在 force=True（切源前的硬拦截）时才写 CAM_TRIG(0xC9)。
+       早期版本在 /api/fpga 的 GET 里也走完整探测，结果每 5 秒就把 sensor
+       参数重写一遍 -> 画面持续抖动/卡顿（板上实测，用户直接感知成"视频太卡"）。
+       GET 路径必须零副作用，只读寄存器。
+    """
+    if fpga is None:
+        return {"supported": False, "reason": "no-fpga"}
+    now = time.time()
+    if (not force) and _MODULE_CACHE["val"] is not None \
+            and (now - _MODULE_CACHE["t"]) < _MODULE_CACHE_TTL:
+        return _MODULE_CACHE["val"]
+    try:
+        ver = fpga.read(0xA9) | (fpga.read(0xAA) << 8)
+        if ver < MODULE_PROBE_MIN_VER:
+            out = {"supported": False, "ver": ver,
+                   "reason": "bitstream too old (need >= 0x4705)"}
+            _MODULE_CACHE.update({"t": now, "val": out})
+            return out
+        ea = fpga.read(0xEA)
+        c0 = fpga.read(0xEB)
+        c1 = fpga.read(0xEC)
+        if force:
+            # 切源前的硬拦截: 主动触发一轮参数下发, 看 AE 计数会不会涨。
+            # 没模组的那一路 ui_i2c 收不到 ACK, ae_done 永远不翻 -> 计数不动。
+            try:
+                fpga.write(0xC9, 1)
+            except Exception:                                 # noqa: BLE001
+                pass
+            time.sleep(0.25)
+            a0 = fpga.read(0xEB)
+            a1 = fpga.read(0xEC)
+            alive0 = bool((a0 != c0) or ((ea & 0x01) and a0))
+            alive1 = bool((a1 != c1) or (((ea >> 1) & 0x01) and a1))
+        else:
+            # GET 路径: 纯读，绝不写寄存器（否则画面会抖）
+            a0, a1 = c0, c1
+            alive0 = bool((ea & 0x01) and a0)      # 弱判据，仅供前端显示
+            alive1 = bool(((ea >> 1) & 0x01) and a1)
+        out = {
+            "supported": True,
+            "ver": ver,
+            "triggered": bool(force),
+            "cam0": {"cfg_done": ea & 0x01, "ae_cnt": a0, "alive": alive0},
+            "cam1": {"cfg_done": (ea >> 1) & 0x01, "ae_cnt": a1, "alive": alive1},
+        }
+        _MODULE_CACHE.update({"t": now, "val": out})
+        return out
+    except Exception as e:                                    # noqa: BLE001
+        out = {"supported": False, "reason": "%s: %s" % (type(e).__name__, e)}
+        _MODULE_CACHE.update({"t": now, "val": out})
+        return out
+
+
 def fpga_meta():
     """给前端用的寄存器元信息 (范围/描述/预设)。"""
     return {
@@ -3571,6 +3672,11 @@ class Handler(BaseHTTPRequestHandler):
                         {"ok": False, "error": "FPGA I2C 未启用 (--fpga-bus -1)"},
                         503)
                 _ok, snap = self.fpga.snapshot()
+                # 2026-10-25: 两路模组在线状态(前端用它禁用/提示无模组的通道)
+                try:
+                    snap["modules"] = probe_modules(self.fpga)
+                except Exception:                              # noqa: BLE001
+                    pass
                 # compact=1: 板端代理（cloud_agent）每 15s 拉一次，
                 # meta 有 ~4KB 的寄存器描述，对它没用 —— 去掉能省 90% 流量。
                 _qs = self.path.split("?", 1)[1] if "?" in self.path else ""
@@ -3763,6 +3869,33 @@ class Handler(BaseHTTPRequestHandler):
                         _old_sel = self.fpga.read(0xDB) & 0x01
                     except Exception:                              # noqa: BLE001
                         _old_sel = None
+                    # ★ 2026-10-25: 切到没模组的通道会把 rkcsi2-dphy 永久卡死,
+                    #   之后连强制 FPGA 复位都救不回来(实测), 只能重载 bitstream。
+                    #   新版 bit(>=0x4705) 有在线探测 -> 直接拒绝, 不抱侥幸。
+                    if _old_sel is not None:
+                        _want = _old_sel
+                        for _k in body:
+                            if str(_k).strip().upper() == "RX_SEL":
+                                try:
+                                    _want = int(body[_k]) & 0x01
+                                except (TypeError, ValueError):
+                                    pass
+                                break
+                        if _want != _old_sel:
+                            _mods = probe_modules(self.fpga, force=True)
+                            if _mods.get("supported"):
+                                _tgt = _mods.get("cam%d" % _want) or {}
+                                if not _tgt.get("alive"):
+                                    return self._json({
+                                        "ok": False,
+                                        "rejected": "no_module",
+                                        "message": ("已拒绝切换: cam%d 通道未检测到模组"
+                                                    "(AE 计数不增长), 切过去会把"
+                                                    "CSI2 链路卡死且只能重载 bitstream。"
+                                                    "请先插上模组。" % _want),
+                                        "modules": _mods,
+                                        "meta": fpga_meta(),
+                                    }, 409)
                 wok, msg = self.fpga.apply(body)
                 # 写完立刻回读 —— FPGA 侧可能把值夹过, 前端以回读为准
                 _ok, snap = self.fpga.snapshot()

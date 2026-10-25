@@ -82,7 +82,6 @@ module cfg_ctrl_top #(
 	output wire [4:0]  o_pp_prew_gain,
 	output wire [3:0]  o_pp_emboss_gain,
 	output wire [7:0]  o_pp_emboss_bias,
-	output wire [4:0]  o_pp_sharp_gain,
 	// 初级预处理 (V45, 多选位图)
 	output wire [4:0]  o_basic_en,
 	output wire        o_basic_gray,
@@ -164,7 +163,7 @@ module cfg_ctrl_top #(
 	wire [4:0]  cfg_pp_prew_sh;
 	wire [3:0]  cfg_pp_emboss_gain;
 	wire [7:0]  cfg_pp_emboss_bias;
-	wire [4:0]  cfg_pp_sharp_gain;
+
 	wire [4:0]  cfg_basic_en;
 	wire        cfg_basic_gray;
 	wire [3:0]  cfg_basic_gauss;
@@ -302,7 +301,7 @@ module cfg_ctrl_top #(
 		.O_cfg_pp_prew_shift(cfg_pp_prew_sh),
 		.O_cfg_pp_emboss_gain(cfg_pp_emboss_gain),
 		.O_cfg_pp_emboss_bias(cfg_pp_emboss_bias),
-		.O_cfg_pp_sharp_gain (cfg_pp_sharp_gain),
+
 		.O_cfg_basic_en      (cfg_basic_en),
 		.O_cfg_basic_gray    (cfg_basic_gray),
 		.O_cfg_basic_gauss   (cfg_basic_gauss),
@@ -434,7 +433,7 @@ module cfg_ctrl_top #(
 	reg [4:0] pre_s1,  pre_s2;
 	reg [3:0] embg_s1, embg_s2;
 	reg [7:0] embb_s1, embb_s2;
-	reg [4:0] shp_s1,  shp_s2;
+
 	// V45 初级
 	reg [4:0] ben_s1,  ben_s2;
 	reg       bgm_s1,  bgm_s2;
@@ -462,7 +461,6 @@ module cfg_ctrl_top #(
 			pre_s1<= 5'd8;   pre_s2<= 5'd8;
 			embg_s1 <= 4'd4; embg_s2 <= 4'd4;
 			embb_s1 <= 8'd128; embb_s2 <= 8'd128;
-			shp_s1<= 5'd8;   shp_s2<= 5'd8;
 			ben_s1<= 5'd0;   ben_s2<= 5'd0;
 			bgm_s1<= 1'b0;   bgm_s2<= 1'b0;
 			bga_s1<= 4'd8;   bga_s2<= 4'd8;
@@ -487,7 +485,6 @@ module cfg_ctrl_top #(
 			pre_s1  <= cfg_pp_prew_sh;   pre_s2  <= pre_s1;
 			embg_s1 <= cfg_pp_emboss_gain; embg_s2 <= embg_s1;
 			embb_s1 <= cfg_pp_emboss_bias; embb_s2 <= embb_s1;
-			shp_s1  <= cfg_pp_sharp_gain;  shp_s2  <= shp_s1;
 			ben_s1  <= cfg_basic_en;      ben_s2  <= ben_s1;
 			bgm_s1  <= cfg_basic_gray;    bgm_s2  <= bgm_s1;
 			bga_s1  <= cfg_basic_gauss;   bga_s2  <= bga_s1;
@@ -532,7 +529,7 @@ module cfg_ctrl_top #(
 	assign o_pp_prew_gain  = pre_s2;
 	assign o_pp_emboss_gain = embg_s2;
 	assign o_pp_emboss_bias = embb_s2;
-	assign o_pp_sharp_gain  = shp_s2;
+
 	assign o_basic_en       = ben_s2;
 	assign o_basic_gray     = bgm_s2;
 	assign o_basic_gauss    = bga_s2;
