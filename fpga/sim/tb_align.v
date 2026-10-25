@@ -44,7 +44,6 @@ module tb_align;
 		.i_gauss_ker  (2'd0),
 		.i_he_str     (8'd0),
 		.i_he_clip    (8'd0),
-		.i_he_temp    (4'd0),
 		.i_linefix    (1'b0),
 		.i_contrast   (4'd4),
 		.i_mode       (4'd0),

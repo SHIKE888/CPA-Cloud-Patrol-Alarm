@@ -29,7 +29,7 @@
     0xF4 BASIC_CONTRAST 对比度强度 0..8
     0xF8 BASIC_KER    高斯核尺寸 0=3x3 1=5x5 2=7x7
     0xF9 BASIC_HE_CLIP 直方图桶上限 x64 (0=不限)
-    0xFA BASIC_HE_TEMP LUT 时间平滑 0..8
+    0xFA （已废弃：HE 平滑内置固定，读回 0）
     0xFB BASIC_LINEFIX 行首左旋 16 像素 (0=关)
     0xF5 ADV_EMBOSS_GAIN 浮雕增益
     0xF6 ADV_EMBOSS_BIAS 浮雕偏置
@@ -67,7 +67,7 @@ NAMES = {
     0xB6: "ADV_LAP_SH", 0xB7: "ADV_PREW_SH",
     0xF0: "BASIC_EN", 0xF1: "BASIC_GRAY", 0xF2: "BASIC_GAUSS",
     0xF3: "BASIC_HE", 0xF4: "BASIC_CONTRAST",
-    0xF8: "BASIC_KER", 0xF9: "BASIC_HE_CLIP", 0xFA: "BASIC_HE_TEMP",
+    0xF8: "BASIC_KER", 0xF9: "BASIC_HE_CLIP",
     0xFB: "BASIC_LINEFIX",
     0xF5: "ADV_EMBOSS_GAIN", 0xF6: "ADV_EMBOSS_BIAS",
     0xB8: "FRAME_CNT[7:0]", 0xB9: "FRAME_CNT[15:8]",

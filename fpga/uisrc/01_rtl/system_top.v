@@ -553,7 +553,6 @@ wire [3:0]   S_basic_gauss;
 wire [1:0]   S_basic_ker;
 wire [7:0]   S_basic_he;
 wire [7:0]   S_basic_he_clip;
-wire [3:0]   S_basic_he_temp;
 wire         S_basic_linefix;
 wire [3:0]   S_basic_contrast;
 
@@ -1519,7 +1518,6 @@ preproc_top #(
 	.i_gauss_ker    (S_basic_ker),
 	.i_he_str       (S_basic_he),
 	.i_he_clip      (S_basic_he_clip),
-	.i_he_temp      (S_basic_he_temp),
 	.i_linefix      (S_basic_linefix),
 	.i_contrast     (S_basic_contrast),
 	.i_mode         (S_pp_mode),
@@ -1655,7 +1653,6 @@ cfg_ctrl_top #(
 	.o_basic_ker     (S_basic_ker),
 	.o_basic_he      (S_basic_he),
 	.o_basic_he_clip (S_basic_he_clip),
-	.o_basic_he_temp (S_basic_he_temp),
 	.o_basic_linefix (S_basic_linefix),
 	.o_basic_contrast(S_basic_contrast),
 	.o_cam_exp    (S_cam_exp),

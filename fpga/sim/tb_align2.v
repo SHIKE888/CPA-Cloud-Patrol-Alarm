@@ -32,7 +32,7 @@ module tb_align2;
 		.i_h_active(H_ACTIVE[12:0]), .i_v_active(V_ACTIVE[11:0]),
 		.i_tvalid(i_tvalid), .i_tuser(i_tuser), .i_tlast(i_tlast), .i_rgb(i_rgb),
 		.i_basic_en(5'b0), .i_gray_mode(1'b0), .i_gauss_str(4'd0), .i_gauss_ker(2'd0),
-		.i_he_str(8'd0), .i_he_clip(8'd0), .i_he_temp(4'd0),
+		.i_he_str(8'd0), .i_he_clip(8'd0), 
 		.i_linefix(1'b0), .i_contrast(4'd4),
 		.i_mode(4'd0), .i_sobel_gain(5'd4), .i_thresh(8'd128),
 		.i_morph_sel(1'b0), .i_morph_th(8'd128), .i_lap_gain(5'd4),

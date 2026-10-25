@@ -55,7 +55,8 @@ module preproc_basic #(
 	input  wire [1:0]   i_gauss_ker,    // 0=3x3  1=5x5  2=7x7 (级联 1/2/3 遍 3x3)
 	input  wire [7:0]   i_he_str,       // 0..255
 	input  wire [7:0]   i_he_clip,      // 直方图裁上限 = i_he_clip*64, 0=不限制
-	input  wire [3:0]   i_he_temp,      // LUT 时间平滑 0..8 (0=不平滑)
+	// （i_he_temp 已取消: 直方图均衡本身不应靠“防频闪”滑块掩盖频闪,
+	//   现在帧间平滑固定为 1/4 IIR, 用户不可调）
 	input  wire [3:0]   i_contrast,     // 0..8
 
 	// ---- 视频输出 ----
@@ -237,10 +238,38 @@ module preproc_basic #(
 	wire [25:0] lut_div  = lut_prod >> 12;
 	wire [7:0]  lutv_n   = (lut_div > 26'd255) ? 8'hFF : lut_div[7:0];
 
-	// LUT 时间平滑: new = (cur*(8-w) + prev*w + 4) >> 3
-	// 深色区直方图每帧都在抖, 不平滑时 LUT 逐帧跳变 -> 画面频闪。
-	wire [11:0] lutv_mix = lutv_n * (12'd8 - {8'd0, i_he_temp}) + lqp * {8'd0, i_he_temp};
-	wire [7:0]  lutv_t   = (i_he_temp == 4'd0) ? lutv_n : ((lutv_mix + 12'd4) >> 3);
+	//---------------------------------------------------------------------
+	// LUT 斜率限制 + 帧间 IIR (固定参数, 不再给用户开关)
+	//
+	//   频闪/噪点的真正根因(仿真实测): CDF 的局部斜率 = 该 bin 的计数。
+	//   计数小的 bin 会让 LUT 一级跳几十级 -> 传感器 ±1 的噪声被放大几十倍;
+	//   而计数本身逐帧统计抖动 -> LUT 逐帧跳变 -> 画面频闪。
+	//   实测: 静止场景 + 每帧不同噪声, 1024x? 全帧 2048/2048 像素逐帧变化,
+	//   最大帧间差 222 (几乎黑白翻转), 而 LUT 校验和完全不变 —— 证明是
+	//   “陡峤 LUT 放大噪声”, 不是 LUT 在跳。
+	//
+	//   两道闸:
+	//     1) 斜率上限 LUT_SLOPE: 每级输入最多升 LUT_SLOPE 级输出,
+	//        把噪声放大倍数硬限在 LUT_SLOPE 倍以内; 同时保证 LUT 单调。
+	//     2) 帧间 IIR 1/4: new = (cur + 3*prev)/4, 抑制残余逐帧抖动。
+	//   两个凸组合都保单调、保斜率上限, 所以写进 LUT 的值始终满足约束。
+	//---------------------------------------------------------------------
+	localparam [8:0] LUT_SLOPE = 9'd3;
+
+	reg  [8:0] lut_last;                // 上一个 bin 实际写入的 LUT 值
+
+	// ⚠ 顺序必须是 IIR 在前、限斜率在后。
+	//   如果先限斜率再 IIR, 上一帧的陡坡会以 3/4 的权重透过 lqp 传回来,
+	//   斜率限制形同虚设 —— 仿真实测 maxslope 仍然是 8。
+	//   现顺序: t_raw = (n + 3*prev)/4, 然后 t = clamp(t_raw, last, last+3)。
+	//   这样"写进 LUT 的值"本身一定单调且斜率 ≤ LUT_SLOPE, 与上一帧无关。
+	wire [11:0] lutv_mix = {4'd0, lutv_n} + {2'd0, lqp, 1'b0} + {3'd0, lqp};
+	wire [8:0]  lutv_m9  = (lutv_mix + 12'd2) >> 2;
+	wire [8:0]  lut_lo9  = lut_last;
+	wire [8:0]  lut_hi9  = lut_last + LUT_SLOPE;
+	wire [8:0]  lutv_t9  = (lutv_m9 < lut_lo9) ? lut_lo9 :
+	                       (lutv_m9 > lut_hi9) ? lut_hi9 : lutv_m9;
+	wire [7:0]  lutv_t   = (lutv_t9 > 9'd255) ? 8'hFF : lutv_t9[7:0];
 
 	//-------------------------------------------------------------------------
 	// 5. 分帧: 按像素组计数 (不能用 tlast —— ISP 的 tlast 是帧尾脉冲)
@@ -355,6 +384,7 @@ module preproc_basic #(
 			cdf2     <= 26'd0;
 			scale    <= 25'd0;
 			lutv     <= 8'd0;
+			lut_last <= 9'd0;
 			dv_i     <= 6'd0;
 			dv_n     <= 32'd0;
 			dv_r     <= 32'd0;
@@ -436,11 +466,12 @@ module preproc_basic #(
 						dv_q <= nx_q;
 						dv_i <= dv_i - 6'd1;
 						if (dv_i == 6'd1) begin
-							scale <= nx_q[24:0];
-							st    <= S_LUT;
-							bin   <= 8'd0;
-							phase <= 1'b0;
-							cdf2  <= 26'd0;
+							scale    <= nx_q[24:0];
+							st       <= S_LUT;
+							bin      <= 8'd0;
+							phase    <= 1'b0;
+							cdf2     <= 26'd0;
+							lut_last <= 9'd0;      // bin0 从 0 开始限制斜率
 						end
 					end
 				end
@@ -449,8 +480,9 @@ module preproc_basic #(
 					if (!phase) begin
 						phase <= 1'b1;
 					end else begin
-						cdf2 <= cdf2_n;
-						lutv <= lutv_n;
+						cdf2     <= cdf2_n;
+						lutv     <= lutv_n;
+						lut_last <= {1'b0, lutv_t};   // 本 bin 实际写入值 = 下一个 bin 的斜率基准
 						if (bin == 8'd255) begin
 							st  <= S_CLR;
 							bin <= 8'd0;

@@ -42,7 +42,6 @@ module tb_basic;
 		.i_gauss_ker (2'd1),
 		.i_he_str    (8'd255),
 		.i_he_clip   (8'd255),
-		.i_he_temp   (4'd4),
 		.i_contrast  (4'd4),
 		.o_tvalid    (o_tvalid),
 		.o_tuser     (o_tuser),

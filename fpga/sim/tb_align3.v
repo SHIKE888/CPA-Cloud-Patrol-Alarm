@@ -46,7 +46,7 @@ module tb_align3;
 		.i_tvalid(i_tvalid), .i_tuser(i_tuser), .i_tlast(i_tlast), .i_rgb(i_rgb),
 		.i_basic_en(BASIC_EN[4:0]), .i_gray_mode(1'b0),
 		.i_gauss_str(GAUSS_STR[3:0]), .i_gauss_ker(GAUSS_KER[1:0]),
-		.i_he_str(HE_STR[7:0]), .i_he_clip(8'd255), .i_he_temp(4'd0),
+		.i_he_str(HE_STR[7:0]), .i_he_clip(8'd255), 
 		.i_linefix(LINEFIX[0]), .i_contrast(4'd4),
 		.i_mode(4'd0), .i_sobel_gain(5'd4), .i_thresh(8'd128),
 		.i_morph_sel(1'b0), .i_morph_th(8'd128), .i_lap_gain(5'd4),

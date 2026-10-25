@@ -42,7 +42,6 @@ module tb_linegap;
 		.i_gauss_ker (2'd1),            // 5x5
 		.i_he_str    (8'd255),
 		.i_he_clip   (8'd255),
-		.i_he_temp   (4'd2),
 		.i_contrast  (4'd4),
 		.o_tvalid    (o_tvalid),
 		.o_tuser     (o_tuser),

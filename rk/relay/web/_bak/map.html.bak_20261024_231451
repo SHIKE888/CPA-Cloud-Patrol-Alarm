@@ -1,0 +1,1061 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>云端智联定点巡航安防预警系统 局域网控制平台</title>
+<script src="vendor/roslib.min.js"></script>
+<style>
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    font: 13px/1.5 -apple-system, "Segoe UI", "Noto Sans CJK SC", sans-serif;
+    background: #0d1117; color: #e6edf3; display: flex; flex-direction: column;
+  }
+
+  /* ── 全局顶部导航：与 mipi_viewer.html 保持完全一致的样式 ────────── */
+  /* 两个页面风格要统一，这段和 mipi_viewer.html 里的 .topnav 必须同源。 */
+  .topnav {
+    display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+    padding: 0 12px; min-height: 44px; flex: none;
+    background: #161b22; border-bottom: 1px solid #2a323d;
+  }
+  .topnav .brand { font-weight: 600; margin-right: 12px; white-space: nowrap; }
+  .topnav .brand i { font-style: normal; font-weight: 400; color: #8b949e;
+                     margin-left: 8px; font-size: 12px; }
+  .topnav a.tab {
+    padding: 5px 12px; border-radius: 8px; text-decoration: none;
+    font-size: 13px; color: #8b949e; border: 1px solid transparent;
+  }
+  .topnav a.tab:hover { color: #e6edf3; background: #21262d; border-color: #30363d; }
+  .topnav a.tab.active { background: #1f6feb; border-color: #1f6feb; color: #fff; font-weight: 600; }
+  .topnav .sp { margin-left: auto; }
+  .topnav .host { color: #8b949e; font-size: 12px; font-family: ui-monospace, monospace; }
+
+  /* ── 顶层视图容器：视频采集 / 建图导航 ──────────────────────── */
+  /* [hidden] 会被 .view{display:flex} 这种作者样式盖掉，必须 !important */
+  .view { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+  .view[hidden] { display: none !important; }
+  #videoFrame { flex: 1; width: 100%; border: 0; display: block; background: #0d1117; }
+
+  header {
+    display: flex; gap: 8px; align-items: center; padding: 8px 12px;
+    background: #161b22; border-bottom: 1px solid #30363d; flex-wrap: wrap;
+  }
+  header b { color: #58a6ff; font-weight: 600; }
+  .row2 { border-top: 1px solid #21262d; }
+  input[type=text], input[type=number] {
+    background: #0d1117; border: 1px solid #30363d; color: #e6edf3;
+    padding: 5px 8px; border-radius: 6px; font-family: ui-monospace, monospace;
+  }
+  #addr { min-width: 250px; }
+  input[type=number] { width: 68px; }
+  button {
+    background: #21262d; border: 1px solid #30363d; color: #e6edf3;
+    padding: 5px 10px; border-radius: 6px; cursor: pointer; user-select: none;
+  }
+  button:hover { background: #30363d; }
+  button:active { transform: translateY(1px); }
+  button.primary { background: #238636; border-color: #2ea043; }
+  button.danger  { background: #8b2c2c; border-color: #b34242; }
+  button.warn    { background: #8a6300; border-color: #b8860b; }
+  #dot { width: 9px; height: 9px; border-radius: 50%; background: #8b949e; display: inline-block; }
+  #dot.on { background: #3fb950; box-shadow: 0 0 8px #3fb950; }
+  /* 工具栏分组与分隔 */
+  header .grp { color: #8b949e; font-size: 12px; margin: 0 4px 0 8px; }
+  header .sep { width: 1px; align-self: stretch; background: #30363d; margin: 0 6px; }
+  button.tool.on { background: #1f6feb; border-color: #1f6feb; color: #fff; font-weight: 600; }
+  [hidden] { display: none !important; }
+  main { flex: 1; display: flex; min-height: 0; position: relative; }
+  #wrap { flex: 1; position: relative; background: #010409; overflow: hidden; }
+  canvas { display: block; cursor: crosshair; }
+  aside {
+    width: 250px; background: #161b22; border-left: 1px solid #30363d;
+    padding: 12px; overflow: auto; font-size: 12px;
+  }
+  aside h3 { margin: 12px 0 6px; font-size: 11px; color: #8b949e; font-weight: 600;
+             text-transform: uppercase; letter-spacing: .06em; }
+  aside h3:first-child { margin-top: 0; }
+  .kv { display: grid; grid-template-columns: 84px 1fr; gap: 4px 8px; margin-bottom: 8px; }
+  .k { color: #8b949e; }
+  .v { font-family: ui-monospace, monospace; color: #e6edf3; word-break: break-all; }
+  .hint { color: #8b949e; line-height: 1.7; }
+  .hint code { background: #21262d; padding: 1px 5px; border-radius: 4px; color: #79c0ff; }
+
+  #dpad {
+    position: absolute; left: 16px; bottom: 16px; z-index: 5;
+    background: #161b22cc; border: 1px solid #30363d; border-radius: 12px;
+    padding: 10px; backdrop-filter: blur(4px);
+  }
+  #dpad .grid { display: grid; grid-template-columns: repeat(3, 52px); grid-template-rows: repeat(3, 52px); gap: 6px; }
+  #dpad button { font-size: 18px; padding: 0; height: 100%; }
+  #dpad .stop { grid-column: 2; grid-row: 2; background: #8b2c2c; border-color: #b34242; font-size: 13px; }
+  #dpad .cfg { display: flex; gap: 6px; align-items: center; margin-top: 8px; color: #8b949e; font-size: 11px; }
+  #toast {
+    position: absolute; left: 50%; transform: translateX(-50%); bottom: 18px;
+    padding: 7px 14px; border-radius: 8px; background: #1f6feb33; border: 1px solid #1f6feb;
+    color: #cae8ff; opacity: 0; transition: opacity .25s; pointer-events: none; max-width: 60%;
+    z-index: 6;
+  }
+  #toast.show { opacity: 1; }
+  #toast.err { background: #8b2c2c55; border-color: #b34242; color: #ffd7d7; }
+</style>
+</head>
+<body>
+<nav class="topnav">
+  <span class="brand">云端智联定点巡航安防预警系统 <i>局域网控制平台</i></span>
+  <a href="#" class="tab active" data-view="video">视频采集</a>
+  <a href="#" class="tab" data-view="map">建图导航</a>
+  <span class="sp"></span>
+  <span class="host" id="topHost"></span>
+</nav>
+
+<!-- 视频采集视图：iframe 懒加载板子 9012 的页面（不合并代码，避免 id/变量互相污染） -->
+<div id="viewVideo" class="view" hidden>
+  <iframe id="videoFrame" title="视频采集"></iframe>
+</div>
+
+<div id="viewMap" class="view">
+<header>
+  <b>ROS 控制台</b>
+  <span id="dot"></span>
+  <input id="addr" type="text" spellcheck="false" placeholder="ws://192.168.0.100:9090">
+  <button class="primary" id="connect">连接</button>
+  <button id="fit">适应画面</button>
+  <label style="display:flex;gap:5px;align-items:center;color:#8b949e;cursor:pointer">
+    <input type="checkbox" id="follow"> 跟随
+  </label>
+  <button id="reloadMap">重订阅 /map</button>
+</header>
+
+<header class="row2">
+  <span class="grp">建图</span>
+  <button id="btnMapping" class="primary">开始建图</button>
+  <button id="btnSaveMap" class="warn">保存建图</button>
+  <button id="btnNav" class="primary">进入导航</button>
+
+  <span class="sep"></span>
+  <span class="grp navOnly" hidden>导航工具</span>
+  <button class="tool navOnly" data-tool="goal" hidden>有向目标</button>
+  <button class="tool navOnly" data-tool="waypoint" hidden>无向目标</button>
+  <button class="tool navOnly" data-tool="pose" hidden>小车位姿</button>
+  <button class="tool navOnly" data-tool="rect" hidden>矩形警戒</button>
+  <button class="tool navOnly" data-tool="circle" hidden>圆形警戒</button>
+  <button class="tool navOnly" data-tool="pan" hidden>平移</button>
+
+  <span class="sep"></span>
+  <button id="btnCancelGoal" class="danger">清除目标</button>
+  <button id="btnStopAll">停止全部</button>
+</header>
+
+<main>
+  <div id="wrap">
+    <canvas id="cv"></canvas>
+    <div id="toast"></div>
+
+    <div id="dpad">
+      <div class="grid">
+        <button data-vx="1"  data-wz="0"  style="grid-column:2;grid-row:1">▲</button>
+        <button data-vx="0"  data-wz="1"  style="grid-column:1;grid-row:2">◀</button>
+        <button class="stop" id="dpadStop">停</button>
+        <button data-vx="0"  data-wz="-1" style="grid-column:3;grid-row:2">▶</button>
+        <button data-vx="-1" data-wz="0"  style="grid-column:2;grid-row:3">▼</button>
+      </div>
+      <div class="cfg">
+        线速 <input id="vlin" type="number" value="0.15" step="0.05" min="0.02" max="0.6"> m/s
+        角速 <input id="wang" type="number" value="0.6" step="0.1" min="0.2" max="2">
+      </div>
+    </div>
+  </div>
+
+  <aside>
+    <h3>链路</h3>
+    <div class="kv">
+      <div class="k">状态</div><div class="v" id="st">未连接</div>
+      <div class="k">地址</div><div class="v" id="stUrl">—</div>
+      <div class="k">模式</div><div class="v" id="stMode">—</div>
+      <div class="k">/map</div><div class="v" id="stMap">—</div>
+      <div class="k">/scan</div><div class="v" id="stScan">—</div>
+    </div>
+
+    <h3>位姿</h3>
+    <div class="kv">
+      <div class="k">机器人</div><div class="v" id="stPose">—</div>
+      <div class="k">目标</div><div class="v" id="stGoal">—</div>
+      <div class="k">路径</div><div class="v" id="stPath">—</div>
+      <div class="k">缩放</div><div class="v" id="stZoom">—</div>
+    </div>
+
+    <h3>操作</h3>
+    <div class="hint">
+      <b>左键</b> 点地图 = 下发导航目标<br>
+      <code>/goal_pose</code> + <code>/move_base_simple/goal</code><br><br>
+      <b>右键</b> 点地图 = 手动设初始位姿<br>
+      <code>/initialpose</code><br><br>
+      <b>W/A/S/D</b> 或 <b>方向键</b> 遥控（可组合，如 W+A）<br>
+      按住持续发 <code>/cmd_vel</code>，松开即停<br>
+      <b>空格</b> 急停 · 窗口失焦自动停<br><br>
+      <b>滚轮</b> 缩放 · <b>拖动</b> 平移
+    </div>
+  </aside>
+</main>
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  // ── 顶层视图切换：视频采集 / 建图导航 ───────────────────────────────
+  // 视频界面用 iframe 嵌板子 9012 的页面，而不是把 mipi_viewer.html 那 2000+
+  // 行一起并进来 —— 两边 DOM id 和全局变量重名太多（base / cv / addr / toast
+  // 全撞），合并到一个文件必然互相污染。iframe 天然隔离，视觉上仍是同一页面。
+  // 首次切到视频才设 src，避免一打开就连两路数据。
+  var HOSTNAME = location.hostname || 'localhost';
+  var videoLoaded = false;
+
+  function showView(name) {
+    var vv = document.getElementById('viewVideo');
+    var vm = document.getElementById('viewMap');
+    if (vv) vv.hidden = (name !== 'video');
+    if (vm) vm.hidden = (name !== 'map');
+    var tabs = document.querySelectorAll('.topnav [data-view]');
+    for (var i = 0; i < tabs.length; i++) {
+      tabs[i].classList.toggle('active', tabs[i].getAttribute('data-view') === name);
+    }
+    if (name === 'video') {
+      var f = document.getElementById('videoFrame');
+      if (f && !videoLoaded) {
+        // embed=1 让 mipi_viewer.html 藏起自己的顶部导航（外层已有一条）
+        f.src = 'http://' + HOSTNAME + ':9012/?embed=1';
+        videoLoaded = true;
+      }
+    } else {
+      resize();          // canvas 在 hidden 时尺寸会变成 0，切回来必须重算
+    }
+  }
+
+  // 注意：这里只定义，不立即执行。resize() 里用到的 wrap/cv/ctx 是 const，
+  // 在脚本顶部还处于暂时性死区（TDZ），此时调用会报
+  //   Cannot access 'wrap' before initialization
+  // 所以真正调用放到脚本最末尾。
+  function initTopNav() {
+    var e = document.getElementById('topHost');
+    if (e) e.textContent = HOSTNAME;
+    var tabs = document.querySelectorAll('.topnav [data-view]');
+    for (var i = 0; i < tabs.length; i++) {
+      tabs[i].addEventListener('click', function (ev) {
+        ev.preventDefault();
+        var n = this.getAttribute('data-view');
+        localStorage.setItem('relay_view', n);
+        showView(n);
+      });
+    }
+    // 记住上次停在哪个界面；首次进来默认建图导航
+    showView(localStorage.getItem('relay_view') || 'map');
+  }
+
+  const cv = document.getElementById('cv');
+  // alpha:false   -> 画布不透明，合成器跳过 alpha 混合
+  // desynchronized -> 走低延迟合成路径（绕过 vsync 排队），拖动/点云更跟手
+  const ctx = cv.getContext('2d', { alpha: false, desynchronized: true });
+  const wrap = document.getElementById('wrap');
+  const elToast = document.getElementById('toast');
+  const elAddr = document.getElementById('addr');
+  const elDot = document.getElementById('dot');
+  const $ = (id) => document.getElementById(id);
+
+  let ros = null, connected = false, tfClient = null;
+  const topics = {};
+
+  const S = {
+    map: null, scan: null, pose: null, goal: null,
+    gplan: [], lplan: [],
+    scale: 50, ox: 0, oy: 0,
+    scanCount: 0, scanT: 0,
+    tfStatic: {},                                   // child -> {x,y,yaw,parent}
+    baseLaser: { x: 0.12, y: 0.0, yaw: -Math.PI / 2 }, // 兜底：本车实测值
+    bounds: null,                                   // 已建图区域（格坐标）
+    follow: false,
+    sceneRev: 0                                     // 静态层失效计数（地图/路径/视图变更时 ++）
+  };
+
+  // 已建图区域边界（只统计非未知格子），避免被 40m 大窗口稀释
+  function computeBounds(m) {
+    const w = m.info.width, h = m.info.height, d = m.data;
+    let x0 = w, x1 = -1, y0 = h, y1 = -1;
+    for (let y = 0; y < h; y++) {
+      const row = y * w;
+      for (let x = 0; x < w; x++) {
+        if (d[row + x] >= 0) {
+          if (x < x0) x0 = x;
+          if (x > x1) x1 = x;
+          if (y < y0) y0 = y;
+          if (y > y1) y1 = y;
+        }
+      }
+    }
+    return x1 < 0 ? null : { x0: x0, y0: y0, x1: x1, y1: y1 };
+  }
+
+  function toast(msg, isErr) {
+    elToast.textContent = msg;
+    elToast.className = 'show' + (isErr ? ' err' : '');
+    clearTimeout(toast._t);
+    toast._t = setTimeout(() => { elToast.className = ''; }, 2600);
+  }
+
+  // 默认走「中继反代」：页面既然是从 http://<中继>/map.html 打开的，
+  // WebSocket 就用同源的 /rosbridge。这样车端 WiFi 可以完全关掉，数据只经
+  // RTL8153 千兆链路 -> 中继 -> 浏览器。
+  // 只有显式 ?ws= 参数、或 localStorage 里存过「非车端直连」的地址才用它。
+  function defaultUrl() {
+    const p = new URLSearchParams(location.search);
+    if (p.get('ws')) return p.get('ws');
+    const saved = localStorage.getItem('ros_ws');
+    // 旧默认值是 ws://192.168.0.100:9090（车端 WiFi 直连），这条链路已废弃，
+    // 即使存着也不再用，否则关掉车端 WiFi 就连不上了。
+    if (saved && !/\/\/192\.168\.0\.100:9090/.test(saved)) return saved;
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    return proto + '//' + location.host + '/rosbridge';
+  }
+
+  // dpr 封顶 2：4K 屏 dpr=3 时每帧要填充的物理像素是 2.25 倍，点云会明显发涩
+  function dprNow() {
+    return Math.min(window.devicePixelRatio || 1, 2);
+  }
+
+  function resize() {
+    const r = wrap.getBoundingClientRect();
+    const dpr = dprNow();
+    cv.width = Math.max(1, Math.floor(r.width * dpr));
+    cv.height = Math.max(1, Math.floor(r.height * dpr));
+    cv.style.width = r.width + 'px';
+    cv.style.height = r.height + 'px';
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    S.sceneRev++;
+    draw();
+  }
+  new ResizeObserver(resize).observe(wrap);
+
+  const w2s = (x, y) => [S.ox + x * S.scale, cv.clientHeight - (S.oy + y * S.scale)];
+  const s2w = (px, py) => [(px - S.ox) / S.scale, (cv.clientHeight - py - S.oy) / S.scale];
+
+  function buildMapImage(m) {
+    const w = m.info.width, h = m.info.height;
+    const img = ctx.createImageData(w, h);
+    const d = img.data, src = m.data;
+    // 【关键】y 方向要翻转：
+    //   nav_msgs/OccupancyGrid 的 data 是行优先、从地图「左下角」开始、y 轴向上；
+    //   ImageData 的第 0 行却是图像「顶部」。两者 y 相反，不翻转整张图就会上下
+    //   镜像 —— 表现就是"地图墙线跟激光点云对不上"，而位姿/点云看着都对。
+    for (let y = 0; y < h; y++) {
+      const srow = y * w;
+      const drow = (h - 1 - y) * w;
+      for (let x = 0; x < w; x++) {
+        const v = src[srow + x];
+        const g = v < 0 ? 58 : 255 - Math.round(v * 2.55);
+        const j = (drow + x) * 4;
+        d[j] = g; d[j + 1] = g; d[j + 2] = g; d[j + 3] = 255;
+      }
+    }
+    const off = document.createElement('canvas');
+    off.width = w; off.height = h;
+    off.getContext('2d').putImageData(img, 0, 0);
+    m.canvas = off;
+  }
+
+  function fitView() {
+    if (!S.map) { S.scale = 50; S.ox = 20; S.oy = 20; draw(); return; }
+    const { width, height, resolution, origin } = S.map.info;
+    const b = S.bounds || { x0: 0, y0: 0, x1: width - 1, y1: height - 1 };
+    const wx0 = origin.position.x + b.x0 * resolution;
+    const wy0 = origin.position.y + b.y0 * resolution;
+    const wx1 = origin.position.x + (b.x1 + 1) * resolution;
+    const wy1 = origin.position.y + (b.y1 + 1) * resolution;
+    const mw = Math.max(1, wx1 - wx0), mh = Math.max(1, wy1 - wy0);
+    const padT = 20, padR = 20, padB = 20, padL = 20;
+    const availW = Math.max(80, cv.clientWidth - padL - padR);
+    const availH = Math.max(80, cv.clientHeight - padT - padB);
+    S.scale = Math.max(2, Math.min(120, Math.min(availW / mw, availH / mh)));
+    S.ox = padL + (availW - mw * S.scale) / 2 - wx0 * S.scale;
+    S.oy = padB + (availH - mh * S.scale) / 2 - wy0 * S.scale;
+    $('stZoom').textContent = S.scale.toFixed(2) + ' px/m';
+    draw();
+  }
+
+  function drawPolylineOn(g, pts, color, lw) {
+    if (!pts || pts.length < 2) return;
+    g.strokeStyle = color; g.lineWidth = lw; g.lineJoin = 'round';
+    g.beginPath();
+    pts.forEach((p, i) => {
+      const q = w2s(p.x, p.y);
+      i ? g.lineTo(q[0], q[1]) : g.moveTo(q[0], q[1]);
+    });
+    g.stroke();
+  }
+
+  let lastDraw = 0;
+  // 地图更新立即重绘（不等节流），点云等高频源仍走 draw() 限速
+  function drawNow() {
+    lastDraw = 0;
+    draw();
+  }
+
+  // ── 静态层缓存（网格 + 地图 + 路径）────────────────────────────────
+  // 点云以 10 Hz 重绘，而地图/网格在两次 update 之间完全没变。以前每帧都要
+  // 逐格重画一遍网格线 + 整张地图缩放 blit，白白占掉一半绘制预算。
+  // 现在只在「视图变了 / 地图变了 / 路径变了」时重建，其余帧只做一次纹理拷贝。
+  let sceneCv = null, sceneCtx = null, sceneKey = '';
+
+  function rebuildScene(W, H) {
+    if (!sceneCv) {
+      sceneCv = document.createElement('canvas');
+      sceneCtx = sceneCv.getContext('2d', { alpha: false });
+    }
+    if (sceneCv.width !== cv.width || sceneCv.height !== cv.height) {
+      sceneCv.width = cv.width;
+      sceneCv.height = cv.height;
+    }
+    const dpr = dprNow();
+    sceneCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    sceneCtx.fillStyle = '#0d1117';
+    sceneCtx.fillRect(0, 0, W, H);
+
+    // 网格：整批合成一条 path，只提交一次 stroke
+    sceneCtx.strokeStyle = '#161b22'; sceneCtx.lineWidth = 1;
+    sceneCtx.beginPath();
+    const step = S.scale >= 40 ? 1 : S.scale >= 12 ? 5 : 25;
+    for (let x = Math.floor((0 - S.ox) / S.scale / step) * step; S.ox + x * S.scale < W; x += step) {
+      const px = S.ox + x * S.scale;
+      if (px >= 0) { sceneCtx.moveTo(px, 0); sceneCtx.lineTo(px, H); }
+    }
+    for (let y = Math.floor((0 - S.oy) / S.scale / step) * step; H - (S.oy + y * S.scale) > 0; y += step) {
+      const py = H - (S.oy + y * S.scale);
+      if (py <= H) { sceneCtx.moveTo(0, py); sceneCtx.lineTo(W, py); }
+    }
+    sceneCtx.stroke();
+
+    // 地图：nearest 采样让 GPU 放大，锯齿边界保持锐利
+    if (S.map && S.map.canvas) {
+      const { width, height, resolution, origin } = S.map.info;
+      const p0 = w2s(origin.position.x, origin.position.y + height * resolution);
+      sceneCtx.imageSmoothingEnabled = false;
+      sceneCtx.drawImage(S.map.canvas, p0[0], p0[1],
+                         width * resolution * S.scale, height * resolution * S.scale);
+    }
+
+    drawPolylineOn(sceneCtx, S.gplan, '#1f6feb', 3);
+    drawPolylineOn(sceneCtx, S.lplan, '#f0883e', 2);
+  }
+
+  function draw() {
+    const now = performance.now();
+    if (now - lastDraw < 16) return;      // ~60fps 上限
+    lastDraw = now;
+
+    const W = cv.clientWidth, H = cv.clientHeight;
+
+    // 跟随机器人
+    if (S.follow && S.pose) {
+      S.ox = W / 2 - S.pose.x * S.scale;
+      S.oy = H / 2 - S.pose.y * S.scale;
+      S.sceneRev++;
+    }
+
+    const key = W + '|' + H + '|' + S.scale.toFixed(3) + '|' +
+                S.ox.toFixed(2) + '|' + S.oy.toFixed(2) + '|' + S.sceneRev;
+    if (key !== sceneKey) { rebuildScene(W, H); sceneKey = key; }
+
+    // 静态层整块拷贝（GPU 纹理 blit），不再逐格重绘
+    ctx.drawImage(sceneCv, 0, 0, W, H);
+
+    if (S.scan) {
+      const sc = S.scan;
+      const bl = S.tfStatic[sc.frame] || S.baseLaser;
+      const cb = Math.cos(bl.yaw), sb = Math.sin(bl.yaw);
+      const pw = S.pose;
+      const cp = pw ? Math.cos(pw.yaw) : 1, sp = pw ? Math.sin(pw.yaw) : 0;
+      const px0 = pw ? pw.x : 0, py0 = pw ? pw.y : 0;
+      ctx.fillStyle = '#58a6ff';
+      // 一条 path + 一次 fill：1300 次 fillRect 会变成 1300 次绘制提交，
+      // 合成到一条路径后 GPU 只跑一遍光栅化。矩阵变换也内联展开，省掉
+      // 每点一次的数组分配（w2s 会 new 一个 [x,y]）。
+      ctx.beginPath();
+      for (let i = 0; i < sc.ranges.length; i++) {
+        const r = sc.ranges[i];
+        if (!isFinite(r) || r < sc.rmin || r > sc.rmax) continue;
+        const a = sc.amin + i * sc.ainc;
+        const lx = r * Math.cos(a), ly = r * Math.sin(a);
+        // laser -> base
+        const bx = bl.x + lx * cb - ly * sb;
+        const by = bl.y + lx * sb + ly * cb;
+        // base -> map（内联 w2s）
+        const sx = S.ox + (px0 + bx * cp - by * sp) * S.scale;
+        const sy = H - (S.oy + (py0 + bx * sp + by * cp) * S.scale);
+        if (sx < -5 || sy < -5 || sx > W + 5 || sy > H + 5) continue;
+        ctx.rect(sx - 1, sy - 1, 2, 2);
+      }
+      ctx.fill();
+    }
+
+    if (S.goal) {
+      const g = w2s(S.goal.x, S.goal.y);
+      ctx.strokeStyle = '#f0883e'; ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(g[0] - 9, g[1]); ctx.lineTo(g[0] + 9, g[1]);
+      ctx.moveTo(g[0], g[1] - 9); ctx.lineTo(g[0], g[1] + 9);
+      ctx.stroke();
+      ctx.beginPath(); ctx.arc(g[0], g[1], 11, 0, Math.PI * 2); ctx.stroke();
+    }
+
+    if (S.pose) {
+      const r = w2s(S.pose.x, S.pose.y);
+      ctx.save();
+      ctx.translate(r[0], r[1]);
+      ctx.rotate(-S.pose.yaw);
+      ctx.fillStyle = 'rgba(63,185,80,0.22)';
+      ctx.beginPath(); ctx.moveTo(0, 0); ctx.arc(0, 0, 34, -0.45, 0.45); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = '#3fb950';
+      ctx.beginPath();
+      ctx.moveTo(14, 0); ctx.lineTo(-8, 8); ctx.lineTo(-4, 0); ctx.lineTo(-8, -8);
+      ctx.closePath(); ctx.fill();
+      ctx.strokeStyle = '#0d1117'; ctx.lineWidth = 1; ctx.stroke();
+      ctx.restore();
+    }
+
+    const barM = S.scale > 40 ? 1 : S.scale > 12 ? 5 : 10;
+    const barPx = barM * S.scale;
+    ctx.strokeStyle = '#8b949e'; ctx.fillStyle = '#8b949e'; ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(W - 16 - barPx, H - 18); ctx.lineTo(W - 16, H - 18);
+    ctx.stroke();
+    ctx.font = '11px ui-monospace, monospace';
+    ctx.fillText(barM + ' m', W - 16 - barPx, H - 24);
+  }
+
+  function disconnect() {
+    if (tfClient) { try { tfClient.unsubscribe('base_footprint'); } catch (e) {} tfClient = null; }
+    if (ros) { try { ros.close(); } catch (e) {} }
+    ros = null; connected = false;
+    elDot.classList.remove('on');
+    $('st').textContent = '未连接';
+  }
+
+  function connect() {
+    const url = elAddr.value.trim() || defaultUrl();
+    localStorage.setItem('ros_ws', url);
+    disconnect();
+    $('st').textContent = '连接中…';
+    $('stUrl').textContent = url;
+    ros = new ROSLIB.Ros({ url: url });
+
+    ros.on('connection', function () {
+      connected = true;
+      elDot.classList.add('on');
+      $('st').textContent = '已连接';
+      toast('已连接 ' + url);
+      subscribe();
+    });
+    ros.on('error', function (e) {
+      $('st').textContent = '错误';
+      toast('连接错误：' + (e && e.message ? e.message : '见控制台'), true);
+    });
+    ros.on('close', function () {
+      connected = false; elDot.classList.remove('on');
+      $('st').textContent = '已断开';
+      stopVel(false);
+    });
+  }
+
+  function subMap() {
+    topics.map = new ROSLIB.Topic({
+      ros: ros, name: '/relay/map', messageType: 'nav_msgs/OccupancyGrid',
+      throttle_rate: 50, queue_length: 1
+    });
+    topics.map.subscribe(function (msg) {
+      // 车端重启建图时会先发一帧 1x1 占位图，用来冲掉 latch 住的旧地图。
+      // 收到它就把画面清空，等真正的新图；否则屏幕上一直挂着上一轮的残图。
+      if (msg.info.width <= 1 && msg.info.height <= 1) {
+        S.map = null; S.bounds = null;
+        S.mapHz = 0; S.mapT = 0; S.mapCount = 0;
+        S.sceneRev++;
+        $('stMap').textContent = '等待新地图…';
+        drawNow();
+        return;
+      }
+      const first = !S.map;
+      S.map = { info: msg.info, data: msg.data };
+      buildMapImage(S.map);
+      S.bounds = computeBounds(S.map);
+      S.sceneRev++;                       // 地图变了 -> 静态层失效
+      // 统计地图实际刷新率
+      S.mapCount = (S.mapCount || 0) + 1;
+      const now = performance.now();
+      if (!S.mapT) { S.mapT = now; S.mapCount = 1; }
+      if (now - S.mapT > 1000) {
+        S.mapHz = S.mapCount * 1000 / (now - S.mapT);
+        S.mapT = now; S.mapCount = 0;
+      }
+      const hzTxt = S.mapHz ? ' · ' + S.mapHz.toFixed(1) + ' Hz' : '';
+      $('stMap').textContent = msg.info.width + '×' + msg.info.height +
+        ' @ ' + msg.info.resolution.toFixed(3) + hzTxt + (S.bounds ? '（已建 ' +
+        ((S.bounds.x1 - S.bounds.x0 + 1) * msg.info.resolution).toFixed(1) + '×' +
+        ((S.bounds.y1 - S.bounds.y0 + 1) * msg.info.resolution).toFixed(1) + ' m）' : '');
+      if (first) fitView(); else drawNow();
+    });
+  }
+
+  function subscribe() {
+    subMap();
+
+    topics.scan = new ROSLIB.Topic({
+      ros: ros, name: '/scan', messageType: 'sensor_msgs/LaserScan',
+      throttle_rate: 100, queue_length: 1
+    });
+    topics.scan.subscribe(function (msg) {
+      let n = 0;
+      for (let i = 0; i < msg.ranges.length; i++) {
+        const r = msg.ranges[i];
+        if (isFinite(r) && r >= msg.range_min && r <= msg.range_max) n++;
+      }
+      S.scan = {
+        frame: msg.header.frame_id,
+        ranges: msg.ranges,
+        amin: msg.angle_min, ainc: msg.angle_increment,
+        rmin: msg.range_min, rmax: msg.range_max
+      };
+      S.scanCount++;
+      const now = performance.now();
+      if (!S.scanT || now - S.scanT > 700) {
+        const hz = S.scanT ? (S.scanCount * 1000 / (now - S.scanT)) : 0;
+        $('stScan').textContent = n + ' 点' + (hz ? ' · ' + hz.toFixed(1) + ' Hz' : '');
+        S.scanT = now; S.scanCount = 0;
+      }
+      draw();
+    });
+
+    // 静态坐标变换（base->laser 的安装偏移）
+    topics.tfs = new ROSLIB.Topic({
+      ros: ros, name: '/tf_static', messageType: 'tf2_msgs/TFMessage'
+    });
+    topics.tfs.subscribe(function (m) {
+      (m.transforms || []).forEach(function (tr) {
+        const q = tr.transform.rotation;
+        S.tfStatic[tr.child_frame_id] = {
+          x: tr.transform.translation.x,
+          y: tr.transform.translation.y,
+          yaw: Math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z)),
+          parent: tr.header.frame_id
+        };
+      });
+      draw();
+    });
+
+    // 位姿：车端 relay_ctl 以 map 系直接发布（不依赖前端 TF 计算）
+    topics.pose = new ROSLIB.Topic({
+      ros: ros, name: '/relay/robot_pose', messageType: 'geometry_msgs/PoseStamped',
+      throttle_rate: 100, queue_length: 1
+    });
+    topics.pose.subscribe(function (m) {
+      const p = m.pose.position, q = m.pose.orientation;
+      const yaw = Math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z));
+      S.pose = { x: p.x, y: p.y, yaw: yaw };
+      $('stPose').textContent = p.x.toFixed(2) + ', ' + p.y.toFixed(2) +
+        ' @ ' + (yaw * 57.2958).toFixed(0) + '°';
+      draw();
+    });
+
+    topics.gplan = new ROSLIB.Topic({
+      ros: ros, name: '/move_base/NavfnROS/plan', messageType: 'nav_msgs/Path',
+      throttle_rate: 300, queue_length: 1
+    });
+    topics.gplan.subscribe(function (m) {
+      S.gplan = m.poses.map(function (p) { return { x: p.pose.position.x, y: p.pose.position.y }; });
+      $('stPath').textContent = '全局 ' + S.gplan.length + ' 点';
+      S.sceneRev++;
+      draw();
+    });
+
+    // 局部路径必须订阅 /move_base/local_plan（move_base 自己在 private_nh 下转发，
+    // 与实际用 DWA 还是 TEB 无关）。
+    // 以前写的是 /move_base/DWAPlannerROS/local_plan —— 但 WHEELTEC 的
+    // turn_on_wheeltec_robot.launch 在 navigation=true 时启的是
+    // teb_local_planner（DWA 那行是注释掉的），于是这个话题永远没人发布，
+    // 页面上局部路径一直画不出来。全局路径保持 NavfnROS（默认全局规划器）。
+    topics.lplan = new ROSLIB.Topic({
+      ros: ros, name: '/move_base/local_plan', messageType: 'nav_msgs/Path',
+      throttle_rate: 200, queue_length: 1
+    });
+    topics.lplan.subscribe(function (m) {
+      S.lplan = m.poses.map(function (p) { return { x: p.pose.position.x, y: p.pose.position.y }; });
+      S.sceneRev++;
+      draw();
+    });
+
+    topics.goalPub = new ROSLIB.Topic({ ros: ros, name: '/goal_pose', messageType: 'geometry_msgs/PoseStamped' });
+    topics.simpleGoalPub = new ROSLIB.Topic({ ros: ros, name: '/move_base_simple/goal', messageType: 'geometry_msgs/PoseStamped' });
+    topics.initPub = new ROSLIB.Topic({ ros: ros, name: '/initialpose', messageType: 'geometry_msgs/PoseWithCovarianceStamped' });
+    topics.cancel = new ROSLIB.Topic({ ros: ros, name: '/move_base/cancel', messageType: 'actionlib_msgs/GoalID' });
+    topics.cmdVel = new ROSLIB.Topic({ ros: ros, name: '/cmd_vel', messageType: 'geometry_msgs/Twist' });
+
+    toast('已订阅 /map /scan /tf');
+  }
+
+  let velTimer = null;
+  let velTarget = { vx: 0, wz: 0 };
+  function publishVel(vx, wz) {
+    if (!topics.cmdVel) return;
+    topics.cmdVel.publish(new ROSLIB.Message({
+      linear: { x: vx, y: 0, z: 0 }, angular: { x: 0, y: 0, z: wz }
+    }));
+  }
+  // 速度 = 「目标值 + 单一心跳定时器」。改速度只更新 velTarget，不重建定时器：
+  // 旧写法 startVel 里先 stopVel 再 setInterval，按住 W 再叠一个 A 时会插进
+  // 一帧 0 速度，车会一顿一顿的。
+  function startVel(vx, wz) {
+    if (!connected) { toast('未连接', true); return; }
+    velTarget.vx = vx; velTarget.wz = wz;
+    publishVel(vx, wz);                       // 立刻发一条，跟手
+    if (!velTimer) {
+      velTimer = setInterval(function () {
+        publishVel(velTarget.vx, velTarget.wz);
+      }, 100);
+    }
+  }
+  function stopVel(notify) {
+    if (velTimer) { clearInterval(velTimer); velTimer = null; }
+    velTarget.vx = 0; velTarget.wz = 0;
+    publishVel(0, 0);
+    if (notify) toast('已发送停车指令');
+  }
+
+  const padBtns = document.querySelectorAll('#dpad [data-vx]');
+  for (let i = 0; i < padBtns.length; i++) {
+    (function (btn) {
+      const vx = parseFloat(btn.getAttribute('data-vx'));
+      const wz = parseFloat(btn.getAttribute('data-wz'));
+      btn.addEventListener('pointerdown', function (e) {
+        e.preventDefault();
+        const lin = Math.abs(parseFloat($('vlin').value) || 0.15);
+        const ang = Math.abs(parseFloat($('wang').value) || 0.6);
+        startVel(vx > 0 ? lin : (vx < 0 ? -lin : 0), wz > 0 ? ang : (wz < 0 ? -ang : 0));
+      });
+      const stop = function () { stopVel(false); };
+      btn.addEventListener('pointerup', stop);
+      btn.addEventListener('pointerleave', stop);
+      btn.addEventListener('pointercancel', stop);
+      btn.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+    })(padBtns[i]);
+  }
+  $('dpadStop').addEventListener('click', function () { stopVel(true); });
+  $('btnStopAll').addEventListener('click', function () { stopVel(true); callSrv('stop'); });
+
+  // ── 键盘遥控：WASD + 方向键，空格急停 ────────────────────────────
+  // 安全约束（上次撞车就是因为速度指令没断干净）：
+  //   1. 只做「按下/抬起」的即时映射，没有 toggle，松手就停；
+  //   2. 窗口失焦 / 切标签页 / 页面隐藏 —— 一律立即发零速。
+  //      否则 Alt+Tab 之后 keyup 收不到，车会一直按最后一条指令跑；
+  //   3. 焦点在输入框里时不接管按键，否则输 IP、改速度时车会乱动；
+  //   4. 空格和方向键都要 preventDefault，免得页面滚动。
+  const KEYMAP = {
+    KeyW: 'fwd',  ArrowUp:    'fwd',
+    KeyS: 'back', ArrowDown:  'back',
+    KeyA: 'left', ArrowLeft:  'left',
+    KeyD: 'right', ArrowRight: 'right'
+  };
+  const held = { fwd: false, back: false, left: false, right: false };
+  let lastKeyEvent = 0;              // 最后一次收到键盘事件的时间（含操作系统的长按重复）
+
+  function typingInField(el) {
+    if (!el) return false;
+    const t = (el.tagName || '').toUpperCase();
+    return t === 'INPUT' || t === 'TEXTAREA' || t === 'SELECT' || el.isContentEditable;
+  }
+
+  function heldAny() {
+    return held.fwd || held.back || held.left || held.right;
+  }
+
+  // 支持组合键：W+A = 前进同时左转
+  function applyHeld() {
+    const vx = (held.fwd ? 1 : 0) - (held.back ? 1 : 0);
+    const wz = (held.left ? 1 : 0) - (held.right ? 1 : 0);
+    if (!vx && !wz) { stopVel(false); return; }
+    // 注意不能用 `parseFloat(x) || 0.15`：用户把速度填 0 时 0 是 falsy，
+    // 会被偷换成 0.15，而「填 0」恰恰是想要它不动。
+    const a = parseFloat($('vlin').value), b = parseFloat($('wang').value);
+    const lin = isFinite(a) ? Math.abs(a) : 0.15;
+    const ang = isFinite(b) ? Math.abs(b) : 0.6;
+    startVel(vx * lin, wz * ang);
+  }
+
+  function releaseAll(reason) {
+    if (heldAny() && reason) {        // 只有确实有键按着才提示，平时 keyup 不刷屏
+      toast(reason, true);
+    }
+    held.fwd = held.back = held.left = held.right = false;
+    stopVel(false);
+  }
+
+  window.addEventListener('keydown', function (e) {
+    if (e.ctrlKey || e.altKey || e.metaKey) return;   // 不抢浏览器快捷键
+    if (typingInField(e.target)) return;
+    if (e.code === 'Space') {                         // 空格 = 急停
+      e.preventDefault();
+      held.fwd = held.back = held.left = held.right = false;
+      stopVel(true);
+      return;
+    }
+    const a = KEYMAP[e.code];
+    if (!a) return;
+    e.preventDefault();
+    lastKeyEvent = Date.now();                        // 重复事件也算心跳
+    if (e.repeat) return;                             // 长按重复只刷新心跳，不重复下发
+    held[a] = true;
+    applyHeld();
+  });
+
+  window.addEventListener('keyup', function (e) {
+    const a = KEYMAP[e.code];
+    if (!a) return;
+    e.preventDefault();
+    lastKeyEvent = Date.now();
+    held[a] = false;
+    applyHeld();
+  });
+
+  // ── 按键看门狗：keyup 丢了也能停住 ────────────────────────────────
+  // 场景：Alt+Tab 切走但 blur 没触发、远程桌面卡顿把 keyup 吞了、浏览器
+  // 把按键给了别的元素…… 这时 held 会永远停在 true，车就一路跑下去。
+  // 靠两个独立判据兜底：
+  //   1) 操作系统按住某键会周期性发 repeat keydown，拿它当心跳。
+  //      超过 1.2 s 一条键盘事件都没有 = 我们已经不知道键还按着没 -> 停车。
+  //   2) document.hasFocus() 为 false（页面根本没焦点）-> 停车。
+  // 注意判据 1 是 fail-safe：如果系统把「按键重复」关掉了，长按会被当成
+  // 松手（每 1.2 s 停一次），这是故意的，宁可难用也不能乱跑。
+  setInterval(function () {
+    if (!heldAny()) return;
+    if (!document.hasFocus()) { releaseAll('页面失焦，已停车'); return; }
+    if (Date.now() - lastKeyEvent > 1200) { releaseAll('按键超时，已停车'); return; }
+  }, 200);
+
+  window.addEventListener('blur', function () { releaseAll('窗口失焦，已停车'); });
+  document.addEventListener('visibilitychange', function () {
+    if (document.hidden) releaseAll('页面隐藏，已停车');
+  });
+  // 用鼠标点了页面任何地方（点地图发目标、点按钮）说明注意力已经转到鼠标上，
+  // 之前按住的键多半也丢了，一并清掉。
+  // 必须用捕获阶段（第三个参数 true）：D-pad 按钮自己的 pointerdown 先于 window
+  // 的冒泡处理执行，如果在冒泡里清，会把按钮刚发出去的速度又停掉。
+  window.addEventListener('pointerdown', function () {
+    if (heldAny()) releaseAll('已切换到鼠标操作，停车');
+  }, true);
+
+  function callSrv(name, cb) {
+    if (!connected) { toast('未连接', true); return; }
+    const srv = new ROSLIB.Service({
+      ros: ros, name: '/relay/' + name, serviceType: 'std_srvs/Trigger'
+    });
+    toast('调用 /relay/' + name + ' …');
+    srv.callService(new ROSLIB.ServiceRequest({}), function (res) {
+      toast((res.success ? '✔ ' : '✖ ') + res.message, !res.success);
+      if (cb) cb(res);
+    }, function () { toast('/relay/' + name + ' 调用失败（relay_ctl 在跑吗？）', true); });
+  }
+
+  $('btnMapping').addEventListener('click', function () {
+    // 「开始建图」= 不管现在有没有图，一律重新开始。
+    // 先就地清屏，不等车端回包：旧图留在屏幕上会让人以为按钮没生效。
+    S.map = null; S.bounds = null;
+    S.mapHz = 0; S.mapT = 0; S.mapCount = 0;
+    S.sceneRev++;
+    $('stMap').textContent = '重新建图中…';
+    drawNow();
+    callSrv('start_mapping', function (res) {
+      if (res.success) $('stMode').textContent = '建图';
+    });
+    setNavUI(false);          // 回建图模式，收起导航工具栏
+  });
+  $('btnSaveMap').addEventListener('click', function () {
+    callSrv('save_map', function (res) {
+      if (res.success) $('stMode').textContent = '建图（已保存）';
+    });
+  });
+  $('btnNav').addEventListener('click', function () {
+    callSrv('start_navigation', function (res) {
+      if (!res.success) return;
+      $('stMode').textContent = '导航';
+      // 进入导航就把「建图结束位置」隐式设为初始位姿，不再单独放按钮
+      applyLastPose();
+      setNavUI(true);
+    });
+  });
+
+  // 用建图结束时记录的位姿发 /initialpose。
+  // 原来是个独立按钮「设为建图结束位置」，现在合并进「进入导航」自动执行。
+  // 注意不要写成 $('xxx').addEventListener —— 那个按钮已经删了，会 null 报错
+  // 把整个脚本的后续初始化全部打断。
+  function applyLastPose() {
+    callSrv('last_pose', function (res) {
+      if (!res.success) {
+        toast('还没有保存过地图位姿，请用「小车位姿」工具手动指定', true);
+        return;
+      }
+      try {
+        const st = JSON.parse(res.message);
+        if (!st.pose) { toast('保存时没取到位姿', true); return; }
+        sendInitialPose(st.pose.x, st.pose.y, st.pose.yaw);
+        toast('已用建图结束位置设初始位姿 (' +
+          st.pose.x.toFixed(2) + ', ' + st.pose.y.toFixed(2) + ')');
+      } catch (e) { toast('解析位姿失败', true); }
+    });
+  }
+  // ── 导航工具栏 ───────────────────────────────────────────────
+  // 只在导航模式下显示。当前工具决定「左键点画布」干什么 ——
+  // 建图时左键乱点就发导航目标是非常危险的，所以要用工具显式切换。
+  function setNavUI(on) {
+    S.navMode = !!on;
+    const els = document.querySelectorAll('.navOnly');
+    for (let i = 0; i < els.length; i++) els[i].hidden = !on;
+    if (on) {
+      selectTool('goal');
+    } else {
+      selectTool(null);
+      S.waypoints = [];
+      S.zones = [];
+    }
+    S.sceneRev++;
+    draw();
+  }
+
+  function selectTool(name) {
+    S.tool = name;
+    const btns = document.querySelectorAll('button.tool');
+    for (let i = 0; i < btns.length; i++) {
+      btns[i].classList.toggle('on', btns[i].getAttribute('data-tool') === name);
+    }
+  }
+
+  (function bindTools() {
+    const btns = document.querySelectorAll('button.tool');
+    for (let i = 0; i < btns.length; i++) {
+      btns[i].addEventListener('click', function () {
+        selectTool(this.getAttribute('data-tool'));
+      });
+    }
+  })();
+
+  $('btnCancelGoal').addEventListener('click', function () {
+    if (!connected) { toast('未连接', true); return; }
+    if (topics.cancel) {
+      topics.cancel.publish(new ROSLIB.Message({ stamp: { secs: 0, nsecs: 0 }, id: '' }));
+    }
+    S.goal = null; S.gplan = []; S.lplan = [];
+    $('stGoal').textContent = '—';
+    $('stPath').textContent = '—';
+    draw();
+    toast('已取消导航目标');
+  });
+
+  function sendGoal(x, y) {
+    if (!connected) { toast('未连接', true); return; }
+    if (!topics.goalPub) return;
+    const msg = new ROSLIB.Message({
+      header: { frame_id: 'map', stamp: { secs: 0, nsecs: 0 } },
+      pose: { position: { x: x, y: y, z: 0 }, orientation: { x: 0, y: 0, z: 0, w: 1 } }
+    });
+    topics.goalPub.publish(msg);
+    if (topics.simpleGoalPub) topics.simpleGoalPub.publish(msg);
+    S.goal = { x: x, y: y };
+    $('stGoal').textContent = x.toFixed(2) + ', ' + y.toFixed(2);
+    toast('/goal_pose ← (' + x.toFixed(2) + ', ' + y.toFixed(2) + ')');
+    draw();
+  }
+
+  function sendInitialPose(x, y, yaw) {
+    if (!topics.initPub) return;
+    const h = (yaw || 0) / 2;
+    topics.initPub.publish(new ROSLIB.Message({
+      header: { frame_id: 'map', stamp: { secs: 0, nsecs: 0 } },
+      pose: {
+        pose: {
+          position: { x: x, y: y, z: 0 },
+          orientation: { x: 0, y: 0, z: Math.sin(h), w: Math.cos(h) }
+        },
+        covariance: [0.25, 0, 0, 0, 0, 0,
+                     0, 0.25, 0, 0, 0, 0,
+                     0, 0, 0, 0, 0, 0,
+                     0, 0, 0, 0, 0, 0,
+                     0, 0, 0, 0, 0, 0,
+                     0, 0, 0, 0, 0, 0.0685]
+      }
+    }));
+  }
+
+  let drag = null;
+  cv.addEventListener('mousedown', function (e) {
+    if (e.button === 0 && !e.shiftKey) {
+      const r = cv.getBoundingClientRect();
+      const w = s2w(e.clientX - r.left, e.clientY - r.top);
+      sendGoal(w[0], w[1]);
+    }
+    S.follow = false; $('follow').checked = false;
+    drag = { x: e.clientX, y: e.clientY, ox: S.ox, oy: S.oy };
+  });
+  cv.addEventListener('mousemove', function (e) {
+    if (!drag) return;
+    S.ox = drag.ox + (e.clientX - drag.x);
+    S.oy = drag.oy - (e.clientY - drag.y);
+    draw();
+  });
+  window.addEventListener('mouseup', function () { drag = null; });
+
+  cv.addEventListener('contextmenu', function (e) {
+    e.preventDefault();
+    if (!connected) return;
+    const r = cv.getBoundingClientRect();
+    const w = s2w(e.clientX - r.left, e.clientY - r.top);
+    sendInitialPose(w[0], w[1], S.pose ? S.pose.yaw : 0);
+    toast('已下发初始位姿 (' + w[0].toFixed(2) + ', ' + w[1].toFixed(2) + ')');
+  });
+
+  cv.addEventListener('wheel', function (e) {
+    e.preventDefault();
+    S.follow = false; $('follow').checked = false;
+    const r = cv.getBoundingClientRect();
+    const mx = e.clientX - r.left, my = e.clientY - r.top;
+    const w = s2w(mx, my);
+    S.scale = Math.max(1, Math.min(400, S.scale * (e.deltaY < 0 ? 1.15 : 1 / 1.15)));
+    S.ox = mx - w[0] * S.scale;
+    S.oy = (cv.clientHeight - my) - w[1] * S.scale;
+    $('stZoom').textContent = S.scale.toFixed(2) + ' px/m';
+    draw();
+  }, { passive: false });
+
+  $('connect').addEventListener('click', connect);
+  $('fit').addEventListener('click', fitView);
+  $('follow').addEventListener('change', function (e) {
+    S.follow = e.target.checked;
+    if (S.follow) toast('已开启跟随机器人');
+    draw();
+  });
+  $('reloadMap').addEventListener('click', function () {
+    if (!connected) { toast('未连接', true); return; }
+    try { topics.map.unsubscribe(); } catch (e) {}
+    S.map = null;
+    subMap();
+    toast('重新订阅 /map');
+  });
+  elAddr.addEventListener('keydown', function (e) { if (e.key === 'Enter') connect(); });
+
+  elAddr.value = defaultUrl();
+  resize();
+  connect();
+
+  // 放最后：此时 wrap / cv / ctx 这些 const 已初始化，DOM 布局也稳定了。
+  // 放在脚本顶部会踩 "Cannot access 'wrap' before initialization"。
+  initTopNav();
+})();
+</script>
+</body>
+</html>

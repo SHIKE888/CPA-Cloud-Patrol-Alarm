@@ -112,7 +112,8 @@ class AiOverlay(object):
                  spread_pose=True, pose_budget=2, pipeline=True,
                  source="raw", enabled=True,
                  zone=None, show_skeleton=True, show_score=True, show_label=True,
-                 show_hud=False, skeleton_only=False, state_path=None, verbose=False):
+                 show_hud=False, skeleton_only=False, state_path=None, verbose=False,
+                 action_model="", action_npz=""):
         self.ai_dir = os.path.abspath(ai_dir or default_ai_dir())
         mdir = os.path.join(self.ai_dir, "models")
         self.model_dir = mdir
@@ -172,6 +173,10 @@ class AiOverlay(object):
         self._draw_person = None
         self._draw_pose = None
         self.zone = list(zone or [])
+        # 动作识别后端：给了模型就走轻量模型（rknn 优先，numpy 兜底），
+        # 两个都没给/都不可用 —— 退回原来的几何规则（action_rules）。
+        self.action_model = action_model or ""
+        self.action_npz = action_npz or ""
 
         self.ok = False
         self.err = ""
@@ -259,6 +264,25 @@ class AiOverlay(object):
                         "active": p["id"] == self.preset})
         return out
 
+    def _build_action_engine(self, rule_cls):
+        """动作识别后端：轻量模型优先，不可用就退回几何规则。
+
+        为什么要这层兜底：模型文件可能没拷过去、rknnlite 版本对不上、
+        或者 NPU 已被别的进程占满 —— 这些都不应该让"动作识别"整体消失。
+        """
+        if self.action_model or self.action_npz:
+            try:
+                from action_model import ActionEngine, ActionModel   # noqa: WPS433
+                am = ActionModel(rknn_path=self.action_model,
+                                 npz_path=self.action_npz)
+                if am.ok:
+                    print("[ai] 动作识别: 轻量模型 (后端 %s)" % am.backend)
+                    return ActionEngine(am, alert_polygon=self.zone, cooldown=2.0)
+                print("[ai] 动作模型不可用(%s)，退回几何规则" % am.err)
+            except Exception as e:                                  # noqa: BLE001
+                print("[ai] 动作模型加载异常(%s)，退回几何规则" % e)
+        return rule_cls(alert_polygon=self.zone, box_margin=self.box_margin)
+
     def _load(self):
         """加载模型（只在需要时做一次）。"""
         board = os.path.join(self.ai_dir, "board")
@@ -282,8 +306,7 @@ class AiOverlay(object):
             return False
         self.detector = det
         self.tracker = SimpleTracker()
-        self.actions = ActionRecognizer(alert_polygon=self.zone,
-                                        box_margin=self.box_margin)
+        self.actions = self._build_action_engine(ActionRecognizer)
         self.ok = True
         if not det.pose or not det.pose.ok:
             self.err = "姿态模型不可用(仅画人体框): %s" % (
@@ -625,6 +648,32 @@ class AiOverlay(object):
                 pass
 
     # ------------------------------------------------------------------ 状态 / 调参
+    def keypoints(self):
+        """数据采集用：返回最近一次结果里的关键点（**像素坐标** + 置信度）。
+
+        只给 `record_action.py` 用，不进推流路径；采集时不再重跑推理，
+        所以对 NPU 零额外负载。
+        """
+        with self._lock:
+            res = list(self._result)
+            tt = self._result_t
+        out = []
+        for d in res:
+            kps = d.get("kps")
+            if kps is None:
+                continue
+            try:
+                rows = kps.tolist() if hasattr(kps, "tolist") else list(kps)
+                kk = [[round(float(v), 1) for v in row[:3]] for row in rows]
+            except Exception:                               # noqa: BLE001
+                continue
+            out.append({"tid": d.get("tid"),
+                        "box": [round(float(v), 1)
+                                for v in d.get("box", [0, 0, 0, 0])],
+                        "score": round(float(d.get("score", 0)), 3),
+                        "kps": kk})
+        return {"ok": self.ok, "t": float(tt or time.time()), "tracks": out}
+
     def status(self):
         with self._lock:
             res = list(self._result)

@@ -33,7 +33,7 @@ module tb_lineorder;
 		.i_tvalid (tvalid), .i_tuser (tuser), .i_tlast (tlast), .i_rgb (rgb),
 		.i_en (5'b00010), .i_gray_mode (1'b0),
 		.i_gauss_str (4'd8), .i_gauss_ker (2'd1),
-		.i_he_str (8'd255), .i_he_clip (8'd255), .i_he_temp (4'd2),
+		.i_he_str (8'd255), .i_he_clip (8'd255), 
 		.i_contrast (4'd4),
 		.o_tvalid (o_tvalid), .o_tuser (o_tuser), .o_tlast (o_tlast), .o_rgb (o_rgb)
 	);

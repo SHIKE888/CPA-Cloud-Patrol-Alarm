@@ -42,7 +42,7 @@
 //    0xF4 BASIC_CONTRAST 对比度强度 0..8 (默认 4)
 //    0xF8 BASIC_KER     高斯核尺寸 0=3x3 1=5x5 2=7x7 (默认 1)
 //    0xF9 BASIC_HE_CLIP 直方图桶上限 *64 (0=不限, 默认 255)
-//    0xFA BASIC_HE_TEMP LUT 时间平滑 0..8 (0=不平滑, 默认 2)
+//    0xFA （已废弃：HE “防频闪”平滑已内置固定，读始终返回 0）
 //    0xFB BASIC_LINEFIX [0] 1=行边界后移 16 像素（默认 0: V45.7 已直接从窗口
 //                            模块根源修好 16 像素错位，本项仅留作 A/B 调试）
 //    ---- 高级预处理 (V45, 单选, 硬件并行) ----
@@ -135,7 +135,6 @@ module jpeg_regfile #(
     output wire [1:0]   O_cfg_basic_ker,
     output wire [7:0]   O_cfg_basic_he,
     output wire [7:0]   O_cfg_basic_he_clip,
-    output wire [3:0]   O_cfg_basic_he_temp,
     output wire         O_cfg_basic_linefix,
     output wire [3:0]   O_cfg_basic_contrast,
 
@@ -252,7 +251,6 @@ module jpeg_regfile #(
     reg [1:0]  r_basic_ker;
     reg [7:0]  r_basic_he;
     reg [7:0]  r_basic_he_clip;
-    reg [3:0]  r_basic_he_temp;
     reg        r_basic_linefix;
     reg [3:0]  r_basic_contrast;
     reg [7:0]  r_heartbeat;
@@ -342,7 +340,6 @@ module jpeg_regfile #(
             r_basic_ker    <= 2'd1;    // 5x5
             r_basic_he     <= 8'd255;
             r_basic_he_clip<= 8'd255;
-            r_basic_he_temp<= 4'd2;
             r_basic_linefix<= 1'b0;
             r_basic_contrast <= 4'd4;
             r_cam_exp    <= 20'd0;     // 0 = 不动初始化表里的曝光
@@ -413,7 +410,6 @@ module jpeg_regfile #(
                     8'hF4: r_basic_contrast <= (I_wr_data[3:0] > 4'd8) ? 4'd8 : I_wr_data[3:0];
                     8'hF8: r_basic_ker    <= (I_wr_data[1:0] > 2'd2) ? 2'd2 : I_wr_data[1:0];
                     8'hF9: r_basic_he_clip<= I_wr_data;
-                    8'hFA: r_basic_he_temp<= (I_wr_data[3:0] > 4'd8) ? 4'd8 : I_wr_data[3:0];
                     8'hFB: r_basic_linefix<= I_wr_data[0];
                     8'hF5: r_pp_emboss_gain <= (I_wr_data[3:0] > 4'd8) ? 4'd8 : I_wr_data[3:0];
                     8'hF6: r_pp_emboss_bias <= I_wr_data;
@@ -522,7 +518,7 @@ module jpeg_regfile #(
                 8'hF4: O_rd_data <= {4'b0, r_basic_contrast};
                 8'hF8: O_rd_data <= {6'b0, r_basic_ker};
                 8'hF9: O_rd_data <= r_basic_he_clip;
-                8'hFA: O_rd_data <= {4'b0, r_basic_he_temp};
+                8'hFA: O_rd_data <= 8'h00;      // 已废弃: HE 平滑不再可调
                 8'hFB: O_rd_data <= {7'b0, r_basic_linefix};
                 8'hF5: O_rd_data <= {4'b0, r_pp_emboss_gain};
                 8'hF6: O_rd_data <= r_pp_emboss_bias;
@@ -617,7 +613,6 @@ module jpeg_regfile #(
     assign O_cfg_basic_he      = r_basic_he;
     assign O_cfg_basic_ker     = r_basic_ker;
     assign O_cfg_basic_he_clip = r_basic_he_clip;
-    assign O_cfg_basic_he_temp = r_basic_he_temp;
     assign O_cfg_basic_linefix = r_basic_linefix;
     assign O_cfg_basic_contrast= r_basic_contrast;
 

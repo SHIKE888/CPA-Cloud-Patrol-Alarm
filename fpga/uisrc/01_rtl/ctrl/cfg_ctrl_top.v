@@ -89,7 +89,6 @@ module cfg_ctrl_top #(
 	output wire [1:0]  o_basic_ker,
 	output wire [7:0]  o_basic_he,
 	output wire [7:0]  o_basic_he_clip,
-	output wire [3:0]  o_basic_he_temp,
 	output wire        o_basic_linefix,
 	output wire [3:0]  o_basic_contrast,
 
@@ -170,7 +169,6 @@ module cfg_ctrl_top #(
 	wire [1:0]  cfg_basic_ker;
 	wire [7:0]  cfg_basic_he;
 	wire [7:0]  cfg_basic_he_clip;
-	wire [3:0]  cfg_basic_he_temp;
 	wire        cfg_basic_linefix;
 	wire [3:0]  cfg_basic_contrast;
 	wire        cfg_soft_rst;
@@ -308,7 +306,6 @@ module cfg_ctrl_top #(
 		.O_cfg_basic_ker     (cfg_basic_ker),
 		.O_cfg_basic_he      (cfg_basic_he),
 		.O_cfg_basic_he_clip (cfg_basic_he_clip),
-		.O_cfg_basic_he_temp (cfg_basic_he_temp),
 		.O_cfg_basic_linefix(cfg_basic_linefix),
 		.O_cfg_basic_contrast(cfg_basic_contrast),
 		.I_st_frame_cnt  (cnt_s2),
@@ -441,7 +438,6 @@ module cfg_ctrl_top #(
 	reg [1:0] bkr_s1,  bkr_s2;
 	reg [7:0] bhe_s1,  bhe_s2;
 	reg [7:0] bhc_s1,  bhc_s2;
-	reg [3:0] bht_s1,  bht_s2;
 	reg       blf_s1,  blf_s2;
 	reg [3:0] bct_s1,  bct_s2;
 	reg [7:0] wbr_s1,  wbr_s2;
@@ -467,7 +463,6 @@ module cfg_ctrl_top #(
 			bkr_s1<= 2'd1;   bkr_s2<= 2'd1;
 			bhe_s1<= 8'd255; bhe_s2<= 8'd255;
 			bhc_s1<= 8'd255; bhc_s2<= 8'd255;
-			bht_s1<= 4'd2;   bht_s2<= 4'd2;
 			blf_s1<= 1'b0;   blf_s2<= 1'b0;
 			bct_s1<= 4'd4;   bct_s2<= 4'd4;
 			wbr_s1 <= 8'd128; wbr_s2 <= 8'd128;
@@ -491,7 +486,6 @@ module cfg_ctrl_top #(
 			bkr_s1  <= cfg_basic_ker;     bkr_s2  <= bkr_s1;
 			bhe_s1  <= cfg_basic_he;      bhe_s2  <= bhe_s1;
 			bhc_s1  <= cfg_basic_he_clip; bhc_s2  <= bhc_s1;
-			bht_s1  <= cfg_basic_he_temp; bht_s2  <= bht_s1;
 			blf_s1  <= cfg_basic_linefix; blf_s2  <= blf_s1;
 			bct_s1  <= cfg_basic_contrast;bct_s2  <= bct_s1;
 			// 这几个是慢变参数 (人手改的), 2 级同步足够;
@@ -536,7 +530,6 @@ module cfg_ctrl_top #(
 	assign o_basic_ker      = bkr_s2;
 	assign o_basic_he       = bhe_s2;
 	assign o_basic_he_clip  = bhc_s2;
-	assign o_basic_he_temp  = bht_s2;
 	assign o_basic_linefix  = blf_s2;
 	assign o_basic_contrast = bct_s2;
 

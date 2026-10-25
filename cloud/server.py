@@ -86,7 +86,7 @@ REG_RANGE = {                        # 允许直写的寄存器（白名单）
     "ADV_EMBOSS_GAIN": (0, 8), "ADV_EMBOSS_BIAS": (0, 255),
     "ADV_SHARP_GAIN": (1, 16), "BASIC_EN": (0, 31), "BASIC_GRAY": (0, 1),
     "BASIC_GAUSS": (0, 8), "BASIC_HE": (0, 255), "BASIC_CONTRAST": (0, 8),
-    "BASIC_KER": (0, 2), "BASIC_HE_CLIP": (0, 255), "BASIC_HE_TEMP": (0, 8),
+    "BASIC_KER": (0, 2), "BASIC_HE_CLIP": (0, 255),
     "BASIC_LINEFIX": (0, 1),
 }
 PRESETS = {"off", "orig", "sobel", "thresh", "morph", "median", "lap",
@@ -1479,7 +1479,7 @@ def seed_demo():
                    "ADV_EMBOSS_GAIN": 4, "ADV_EMBOSS_BIAS": 128, "ADV_SHARP_GAIN": 8,
                    "BASIC_GRAY": 1, "BASIC_GAUSS": 8, "BASIC_HE": 255,
                    "BASIC_CONTRAST": 4, "BASIC_KER": 1, "BASIC_HE_CLIP": 255,
-                   "BASIC_HE_TEMP": 2, "BASIC_LINEFIX": 0},
+                   "BASIC_LINEFIX": 0},
             "ai": {"enabled": True, "active": True, "source": "ai", "fps": 29.8,
                    "persons": 1, "risk": 0, "det_ms": 17.2, "pose_ms": 6.1,
                    "det_conf": 0.35, "tune": {"fall": 1.0, "run": 1.0,
