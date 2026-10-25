@@ -1,0 +1,3 @@
+# 车端(Jetson) 给 RTL8153 USB 网卡固定接口名 usbeth0，供 NetworkManager 静态配置使用
+# 驱动名 r8152 由 JetPack 内核内建，插上即匹配（无需 modprobe）
+ACTION=="add", SUBSYSTEM=="net", DRIVERS=="r8152", NAME="usbeth0"

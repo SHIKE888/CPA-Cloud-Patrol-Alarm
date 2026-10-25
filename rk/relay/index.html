@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>RK3576 ROS 中继 · 待接入</title>
+<style>
+  body{margin:0;font:14px/1.6 -apple-system,"Segoe UI","Noto Sans CJK SC",sans-serif;background:#0f1115;color:#e6e6e6}
+  .wrap{max-width:820px;margin:0 auto;padding:40px 24px}
+  h1{font-size:20px;margin:0 0 4px}
+  .sub{color:#8b949e;margin-bottom:24px}
+  .card{background:#161a21;border:1px solid #232a34;border-radius:10px;padding:16px 18px;margin-bottom:14px}
+  code{background:#1d2330;padding:2px 6px;border-radius:4px;color:#9ecbff}
+  .kv{display:grid;grid-template-columns:130px 1fr;gap:6px 12px}
+  .k{color:#8b949e}
+  .warn{color:#f0b46c}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>RK3576 ROS 中继</h1>
+  <div class="sub">中继服务已就绪；车端链路（RTL8153 网卡）尚未接入，WebSocket 反代暂时 502，属预期。</div>
+
+  <div class="card">
+    <div class="kv">
+      <div class="k">中继地址</div><div><code>http://&lt;本机 WiFi IP&gt;/</code></div>
+      <div class="k">中继内网口</div><div><code>end1 = 192.168.100.2/24</code></div>
+      <div class="k">车端地址</div><div><code>192.168.100.50~150</code>（DHCP，中继 dnsmasq 发放；Jetson + RTL8153 插上即得）</div>
+      <div class="k">Foxglove WS</div><div><code>ws://&lt;本机&gt;/foxglove</code> → 车端 :8765</div>
+      <div class="k">rosbridge WS</div><div><code>ws://&lt;本机&gt;/rosbridge</code> → 车端 :9090</div>
+      <div class="k">自检</div><div><a href="/relay-health" style="color:#9ecbff">/relay-health</a></div>
+    </div>
+  </div>
+
+  <div class="card warn">
+    阶段 0（网卡到货前）：本页与反代规则已固化；请在车端启动 <code>foxglove_bridge</code> 或在浏览器里用
+    Foxglove Studio 连接 <code>ws://&lt;本机&gt;/foxglove</code> 验证通路。
+  </div>
+</div>
+</body>
+</html>

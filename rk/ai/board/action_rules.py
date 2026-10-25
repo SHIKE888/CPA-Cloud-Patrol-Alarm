@@ -8,8 +8,7 @@
   * 所有阈值都以人体框高（≈身高）归一化，分辨率变化时不失效。
 
 可识别动作：
-    fall      跌倒（躯干突然水平 + 髋部高度骤降）
-    lying     倒地/躺卧不起（水平姿态持续）
+    fall      跌倒 / 倒地不起（躯干倾角 + 髖部高度骤降；已合并 lying）
     climb     攀爬/翻越（双手过肩线上举 + 髋部快速抬升 / 脚高于髋）
     run       奔跑（髋部水平速度持续偏高）
     fight     激烈肢体冲突（腕部速度极高）
@@ -40,8 +39,7 @@ LEVEL_ALARM = 2    # 报警（红）
 #   ⚠ 英文名是给 opencv 画图用的 —— cv2.putText 只能画 ASCII，
 #   直接把中文传进去渲染出来就是一串 "???"（页面上不显示中文时用 en）。
 ACTION_META = {
-    'fall':    ('跌倒',     'Fall',    (0, 0, 255),   LEVEL_ALARM),
-    'lying':   ('倒地不起', 'Lying',   (0, 0, 255),   LEVEL_ALARM),
+    'fall':    ('跌倒/倒地', 'Fall',    (0, 0, 255),   LEVEL_ALARM),
     'climb':   ('攀爬翻越', 'Climb',   (0, 128, 255), LEVEL_ALARM),
     'fight':   ('肢体冲突', 'Fight',   (255, 0, 255), LEVEL_ALARM),
     'intrude': ('越界闯入', 'Intrude', (0, 165, 255), LEVEL_WARN),
@@ -221,33 +219,60 @@ class TrackState(object):
         #   改成取 ~0.13s（≈4 帧）的位移，足以分辨一次挥动。
         rec_s = self._at(0.13, t)
         w_disp_l = w_disp_r = w_rise = 0.0
-        ok_l = ok_r = False    # 左右手腕各自的 0.13s 位移是否真的拿到了
-        sh_disp = 0.0      # 肩中点整体位移：剔除“人平移/整体抖动/跟踪跳变”的假位移
-        arm_ext = 0.0      # 手腕到同侧肩的最大距离：手臂是否真的伸出去
         if rec_s is not None:
             k0 = rec_s[3]
-            sh0 = _mid(_pt(k0, LS), _pt(k0, RS))
-            if sh and sh0:
-                sh_disp = math.hypot(sh[0] - sh0[0], sh[1] - sh0[1]) / bh
-            for i, si, side in ((LW, LS, 'l'), (RW, RS, 'r')):
+            for i in (LW, RW):
                 p1, p0 = _pt(kps, i), _pt(k0, i)
                 if not (p1 and p0):
                     continue
                 d = math.hypot(p1[0] - p0[0], p1[1] - p0[1]) / bh
-                if side == 'l':
+                if i == LW:
                     w_disp_l = d
-                    ok_l = True
                 else:
                     w_disp_r = d
-                    ok_r = True
-                sp, sp0 = _pt(kps, si), _pt(k0, si)
-                for q, s in ((p1, sp), (p0, sp0)):
-                    if q and s:
-                        arm_ext = max(
-                            arm_ext, math.hypot(q[0] - s[0], q[1] - s[1]) / bh)
                 r = (p0[1] - p1[1]) / bh          # 向上为正
                 if r > w_rise:
                     w_rise = r
+
+        # ---------- 峰值相对速度（最近 0.3s，相邻样本逐帧求，单位=身高/秒）
+        #   ❗ swing 不能用“0.13s 净位移”：一个完整往复会自己抵消成 ≈0（相位敏感），
+        #   现场表现就是“人明明在挥却永远识别不到”。改成窗口内取峰值：
+        #   逐对相邻样本求 位移/dt，再减去肩中点同一步的位移
+        #   （剔除人平移 / 骨架整体跳变 / 跟踪框拖影造成的假位移）。
+        pk_l = pk_r = 0.0
+        ok_l = ok_r = False       # 该侧手腕在窗口内是否取到了有效相邻样本
+        raised_l = raised_r = False   # 该侧手腕在窗口内是否曾抬到髖部以上
+        _hist = list(self.hist)
+        for _j in range(len(_hist) - 1, 0, -1):
+            t1 = _hist[_j][0]
+            if t - t1 > 0.30:
+                break
+            k1, k0 = _hist[_j][3], _hist[_j - 1][3]
+            dt = max(1e-3, t1 - _hist[_j - 1][0])
+            s1 = _mid(_pt(k1, LS), _pt(k1, RS))
+            s0 = _mid(_pt(k0, LS), _pt(k0, RS))
+            dsh = 0.0
+            if s1 and s0:
+                dsh = math.hypot(s1[0] - s0[0], s1[1] - s0[1]) / bh / dt
+            hp1 = _mid(_pt(k1, LH), _pt(k1, RH))
+            for i, side in ((LW, 'l'), (RW, 'r')):
+                p1, p0 = _pt(k1, i), _pt(k0, i)
+                if not (p1 and p0):
+                    continue
+                v = math.hypot(p1[0] - p0[0], p1[1] - p0[1]) / bh / dt - dsh
+                up = bool(hp1 and p1[1] < hp1[1])
+                if side == 'l':
+                    ok_l = True
+                    raised_l = raised_l or up
+                    if v > pk_l:
+                        pk_l = v
+                else:
+                    ok_r = True
+                    raised_r = raised_r or up
+                    if v > pk_r:
+                        pk_r = v
+        pk_max, pk_min = max(pk_l, pk_r), min(pk_l, pk_r)
+        pk_raised = raised_l if pk_l >= pk_r else raised_r
 
         # ================================================== 规则判定
         s_fall = _clamp(self.tune.get('fall', 1.0), 0.3, 1.0)
@@ -255,11 +280,14 @@ class TrackState(object):
         ang_th = 75.0 - 30.0 * s_fall          # s=1 -> 45°, s=0.3 -> 66°
         v_th = 1.5 / s_run                     # s=1 -> 1.5, s=2 -> 0.75（更敏感）
 
+        # 跌倒 / 倒地不起 **已合并**（2026-10-24）：告警语义上“正在倒”和
+        #   “已经躺在地上”都是“有人倒下了”，分两类只会让样本更稀、标签更乱。
+        #   条件 = 躯干超过阈值 且 (髋在下降 或 躯干已经明显水平)。
+        #   后半句不能省：静止躺着时 rise≈0，只靠“下降”会永远不报。
         self._mark(acts, 'fall',
-                   torso_deg is not None and torso_deg > ang_th and rise < -0.05,
-                   t, 0.35, score=1.0 if (torso_deg or 0) > ang_th + 15 else 0.8)
-        self._mark(acts, 'lying', torso_deg is not None and torso_deg > 65,
-                   t, 2.5, score=0.9)
+                   torso_deg is not None and torso_deg > ang_th
+                   and (rise < -0.05 or torso_deg > 65),
+                   t, 0.35, score=1.0 if (torso_deg or 0) > ang_th + 15 else 0.85)
         self._mark(acts, 'climb',
                    hands_above_shoulder and (rise > 0.18 or (hip and foot and foot[1] < hip[1])),
                    t, 0.4, score=0.85)
@@ -269,7 +297,9 @@ class TrackState(object):
                    score=min(1.0, wrist_v / 8.0))
         self._mark(acts, 'handup', hands_above_shoulder and v_norm < 0.6,
                    t, 2.0, score=0.7)
-        if hip and (lk or rk):
+        if hip and (lk or rk) and (torso_deg is None or torso_deg < 40):
+            # 加躯干门限：躺着/跌倒时膝自然接近髋的高度，不加会把"躺地"
+            # 同时报成"下蹲"（回归测试里踩到过）
             knee = _mid(lk, rk)
             if knee and hip[1] > knee[1] - 0.12 * bh:
                 self._mark(acts, 'squat', True, t, 0.5, score=0.6)
@@ -278,39 +308,23 @@ class TrackState(object):
         s_swing = max(0.3, self.tune.get('swing', 1.0))
         s_throw = max(0.3, self.tune.get('throw', 1.0))
 
-        # 挥砍：**单侧**手臂在 0.13s 内大幅位移（另一侧明显小），且必须同时满足：
-        #   a) 扣除肩中点整体位移后仍有 0.5 身高（≈3.8 身高/秒）
-        #      —— 人平移/相机动/骨架整体跳变时肩也在动，减掉就不算了；
-        #   b) 手腕离同侧肩 >= 0.3 身高（手臂真的伸出去）；
-        #      走路摆臂、双手放身侧时的贴近移动达不到。
-        #   c) 单侧性：另一侧 < 本侧 40%（原 50%，更强调“单侧挥”）。
-        #   hold 0.2s（原 0.15）：一次挥砍是往返，能连续维持；偶发抖动/伸手不能。
-        sw_l = max(0.0, w_disp_l - sh_disp)
-        sw_r = max(0.0, w_disp_r - sh_disp)
-        sw_max, sw_min = max(sw_l, sw_r), min(sw_l, sw_r)
-        # 原始手腕位移的最大值(不扣肩位移) —— photo 用:
-        #   "双手捧在眼前保持不动" 要看的是**绝对**幅度, 人整体平移时
-        #   手确实也跟着动了(虽然相对肩没动), 但仍不该算"稳定拍照"。
-        # ⚠ 2026-10-21: 这一行是补回来的。早先把旧版的
-        #   `dmax, dmin = max(w_disp_l, w_disp_r), min(...)` 改成 sw_max/sw_min 时
-        #   忘了 photo 那边还在用 dmax, 导致 NameError: name 'dmax' is not defined
-        #   —— 只要人脸+双手都检测到就必崩(那一帧所有动作识别丢失),
-        #   而 n_kpt 少时被 `if nose and lw and rw` 短路, 所以现场很难复现。
-        dmax = max(w_disp_l, w_disp_r)
-        # ⚠ 必须**两只手都有有效关键点**才能判 swing。
-        #   否则“单侧性”完全是假的: 手无效时 w_disp 保持 0 → sw_min = 0 →
-        #   “sw_min < sw_max * 0.4”恒为真, 只剩 sw_max 一个条件在把关。
-        #   侧身站/手被身体挡住/距离远检测不全时经常只只手有效,
-        #   现场表现就是“好多动作都识别成挥砸”(实测反馈)。
-        # arm_ext 阈值 0.3 → 0.5: 人正常站立时手腕在身侧, 离同侧肩本来就有
-        #   0.35~0.45 身高, 所以 0.3 这个条件几乎恒成立、毫无区分力;
-        #   提到 0.5 才真的要求“手臂抬起来伸出去”。
-        # hold 0.2 → 0.3: 一次挥砸是往返, 能连续维持; 走路摆臂/偶发抖动不行。
+        # 挥砍：**单侧**手臂高速位移（另一侧明显慢）。必须同时满足：
+        #   a) 峰值相对速度 > 1.6 身高/秒；
+        #   b) 单侧性：另一侧峰值 < 本侧 50%；
+        #   c) **两只手都有有效关键点**——否则单侧性恒真，随便动一下就中；
+        #   d) 快的那只手在 0.3s 窗口内曾抬到髖部以上（排除走路摆臂）；
+        #   hold 0.3s：一次挥砍是往返，能连续维持；走路/偶发抖动不能。
+        #   ❗❗ 阈值为什么是 1.6 而不是 4.0：
+        #   4.0 是拿**理想骨架**算的，但板上前级是 YOLOv8-pose @~30fps 再叠加
+        #   SimpleTracker 的 EMA(α=0.55) —— 等价于 ~2.6Hz 低通，快速劈砍的峰值
+        #   速度会被砍掉一半左右。用 4.0 的结果就是“前级永远达不到”→ 挥砍彻底
+        #   识别不到（2026-10-21 实测）。实测可达区间：真挥砍 1.2~2.2，走路摆臂
+        #   0.4~0.7，静态抖动 <0.3，所以 1.6 是留足两侧余量的位置。
+        #   ⚠ 换前级（提帧率/换 pose 模型/改 EMA α）必须重新标定这个常数。
         self._mark(acts, 'swing',
-                   ok_l and ok_r
-                   and sw_max > 0.5 / s_swing and sw_min < sw_max * 0.4
-                   and arm_ext > 0.5,
-                   t, 0.3, score=min(1.0, sw_max / 0.85))
+                   ok_l and ok_r and pk_max > 1.6 / s_swing
+                   and pk_min < pk_max * 0.5 and pk_raised,
+                   t, 0.3, score=min(1.0, pk_max / 2.8))
 
         # 投掷：0.13s 内手腕**上撩**超过 0.35 身高，且已经过肩。
         #   与 climb 的区别：climb 要髖部抬升/脚高于髖，投掷只要手上撩。
@@ -326,6 +340,7 @@ class TrackState(object):
         #   抱臂、叉腰都会被误识别 → 收紧到 0.22 身高（真拿手机/相机时约 0.13~0.18），
         #   并额外要求两手**纵向也对齐**（<0.15 身高），一侧抬一例垂不成立。
         nose = _pt(kps, NOSE)
+        dmax = max(w_disp_l, w_disp_r)      # 0.13s 内较大那只手的位移（身高）
         photo_hold = False
         if nose and lw and rw:
             near_face = (abs(lw[1] - nose[1]) < 0.18 * bh and
