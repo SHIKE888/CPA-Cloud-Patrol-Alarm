@@ -564,6 +564,9 @@ wire [127:0] S_post_tdata;
 wire [7:0]   S_wb_r, S_wb_b;      // 白平衡增益, 128 = 1.0x
 wire [6:0]   S_roi_pct;           // ROI 百分比
 wire [2:0]   S_fps_div;           // 帧率分频 (跳帧)
+// 单色标记: 高级层任一算子(都会输出 {0,gv,gv,gv}) 或初级-灰度 打开时，
+// 图像已无颜色信息 —— 此时白平衡会把它染色，色度也应当强制为 128。
+wire         S_mono_pp = (S_pp_mode != 4'd0) || S_basic_en[0];
 
 rgb_to_yuv422_quad u_rgb2yuv_quad (
 	.clk        (S_hs_rx_clk    ),
@@ -572,6 +575,7 @@ rgb_to_yuv422_quad u_rgb2yuv_quad (
 	.i_user_sof (S_post_tuser   ),
 	.i_last     (S_post_tlast   ),
 	.i_data     (S_post_tdata   ),
+	.i_mono     (S_mono_pp      ),
 	.o_de       (S_yuv_de       ),
 	.o_user_sof (S_yuv_sof      ),
 	.o_last     (S_yuv_last     ),
@@ -1558,7 +1562,7 @@ preproc_post #(
 	.i_rgb      (S_pp_tdata),
 	.i_wb_r     (S_wb_r),
 	.i_wb_b     (S_wb_b),
-	.i_mono     (S_pp_mode != 4'd0),
+	.i_mono     (S_mono_pp),
 	.i_roi_pct  (S_roi_pct),
 	.o_tvalid   (S_post_tvalid),
 	.o_tuser    (S_post_tuser),

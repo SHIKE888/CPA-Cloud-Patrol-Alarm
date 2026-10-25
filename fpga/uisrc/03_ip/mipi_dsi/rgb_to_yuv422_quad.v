@@ -24,6 +24,7 @@ module rgb_to_yuv422_quad (
     input  wire         i_user_sof,
     input  wire         i_last,
     input  wire [127:0] i_data,        // {pix3, pix2, pix1, pix0}, ea = {ff,R,G,B}
+    input  wire         i_mono,        // 1 = 上游是单色图 -> 强制 Cb=Cr=128
     output reg          o_de,
     output reg          o_user_sof,
     output reg          o_last,
@@ -126,8 +127,13 @@ module rgb_to_yuv422_quad (
         end else begin
             for (k=0;k<4;k=k+1) begin
                 yv[k] <= (s_y_pos[k][17:16]!=2'b00) ? 8'hff : s_y_pos[k][15:8];
-                cb[k] <= (s_u_pos[k] >= s_u_neg[k]) ? (((s_u_pos[k]-s_u_neg[k])>>8 > 18'd255) ? 8'hff : (s_u_pos[k]-s_u_neg[k])>>8) : 8'd0;
-                cr[k] <= (s_v_pos[k] >= s_v_neg[k]) ? (((s_v_pos[k]-s_v_neg[k])>>8 > 18'd255) ? 8'hff : (s_v_pos[k]-s_v_neg[k])>>8) : 8'd0;
+                // 单色图强制无色：上游(R=G=B)理论上算出来就是 128，
+                // 但实测量到 Sobel/Prewitt 会带 +20 级蓝偏（根因未完全定位）。
+                // 这里直接抽掉色度，一次消除所有单色模式的偏色。
+                cb[k] <= i_mono ? 8'd128 :
+                         ((s_u_pos[k] >= s_u_neg[k]) ? (((s_u_pos[k]-s_u_neg[k])>>8 > 18'd255) ? 8'hff : (s_u_pos[k]-s_u_neg[k])>>8) : 8'd0);
+                cr[k] <= i_mono ? 8'd128 :
+                         ((s_v_pos[k] >= s_v_neg[k]) ? (((s_v_pos[k]-s_v_neg[k])>>8 > 18'd255) ? 8'hff : (s_v_pos[k]-s_v_neg[k])>>8) : 8'd0);
             end
         end
     end

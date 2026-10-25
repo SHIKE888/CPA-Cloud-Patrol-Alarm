@@ -169,7 +169,8 @@ module preproc_win3x3 #(
 	reg [31:0] a_p1, a_p2;    // 上上上行组: 1 拍前 / 2 拍前
 	reg [31:0] b_p1, b_p2;
 	reg [31:0] c_p1, c_p2;
-	// ⚠ 与 preproc_win3x3_rgb 同一处修正: WIN 再寄存一级 -> 像素/标志要多 1 拍(d4)
+	// ⚠ o_rgb 用 d3: WIN 寄存一级后, 窗口中心 cu=c_p1 的延迟是 3 拍,
+	//   像素必须同样 3 拍才与 o_win* 同列。旧版用 d4(=4 拍) 差 1 组(4 像素)。
 	reg        v_d3, v_d4, u_d3, u_d4, t_d3, t_d4;
 	reg [127:0] rgb_d1, rgb_d2, rgb_d3, rgb_d4;
 
@@ -218,13 +219,16 @@ module preproc_win3x3 #(
 			o_winC    <= 48'd0;
 			o_rgb     <= 128'd0;
 		end else begin
-			o_tvalid <= v_d4;
-			o_tuser  <= u_d4;
-			o_tlast  <= t_d4;
+			o_tvalid <= v_d3;
+			o_tuser  <= u_d3;
+			o_tlast  <= t_d3;
 			o_winA   <= `WIN(a_pp, a_p1, wA);
 			o_winB   <= `WIN(b_pp, b_p1, wB);
 			o_winC   <= `WIN(c_pp, c_p1, wC);
-			o_rgb     <= rgb_d4;
+			// ⚠ o_rgb 必须与窗口中心(cu=c_p1, 延迟 3)同拍, 不是 d4(延迟 4)。
+			//   用 d4 时原图通路过 1 组(4 像素) 领先于窗口,
+			//   而高级层只用窗口 -> 整幅画面相对“原图”左移 4 像素。
+			o_rgb     <= rgb_d3;
 			// lcnt_d3 = 本拍输出这一行(当前行 C)的行号
 			o_rowmask <= {(lcnt_d3 >= 12'd2), (lcnt_d3 >= 12'd1), 1'b1};
 		end

@@ -178,13 +178,13 @@ module preproc_win3x3_rgb #(
 			o_winC    <= 144'd0;
 			o_rgb     <= 128'd0;
 		end else begin
-			o_tvalid  <= v_d4;
-			o_tuser   <= u_d4;
-			o_tlast   <= t_d4;
+			o_tvalid  <= v_d3;
+			o_tuser   <= u_d3;
+			o_tlast   <= t_d3;
 			o_winA    <= `WINR(a_pp, a_p1, wA);
 			o_winB    <= `WINR(b_pp, b_p1, wB);
 			o_winC    <= `WINR(c_pp, c_p1, wC);
-			o_rgb     <= rgb_d4;
+			o_rgb     <= rgb_d3;
 			o_rowmask <= {(lcnt_d3 >= 12'd2), (lcnt_d3 >= 12'd1), 1'b1};
 		end
 	end

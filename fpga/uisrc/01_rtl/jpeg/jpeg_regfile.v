@@ -339,7 +339,7 @@ module jpeg_regfile #(
             r_basic_gauss  <= 4'd8;
             r_basic_ker    <= 2'd1;    // 5x5
             r_basic_he     <= 8'd255;
-            r_basic_he_clip<= 8'd255;
+            r_basic_he_clip<= 8'd8;      // 默认开对比限制（实测 255->0 时 tnoise 13.3->7.3, p99 213->70）
             r_basic_linefix<= 1'b0;
             r_basic_contrast <= 4'd4;
             r_cam_exp    <= 20'd0;     // 0 = 不动初始化表里的曝光

@@ -3185,7 +3185,7 @@ FPGA_PRESETS = {
     # 初级 (多选位图; 这里给常用组合)
     "gray":      {"BASIC_EN": 1},
     "gauss":     {"BASIC_EN": 2, "BASIC_GAUSS": 6, "BASIC_KER": 1},
-    "he":        {"BASIC_EN": 4, "BASIC_HE": 255, "BASIC_HE_CLIP": 255},
+    "he":        {"BASIC_EN": 4, "BASIC_HE": 255, "BASIC_HE_CLIP": 8},
     "gray_gauss":{"BASIC_EN": 3},
     "gauss_he":  {"BASIC_EN": 6},
     "negative":  {"BASIC_EN": 16},
