@@ -35,7 +35,23 @@
 `timescale 1ns / 1ps
 
 module preproc_basic #(
-	parameter integer PX_PER_CLK = 4
+	parameter integer PX_PER_CLK = 4,
+	// 调试开关: 默认值与板上 bit 一致; 仿真时可编译期改掉做 A/B
+	//   P_SLOPE = LUT 每 bin 最大上升级数, 0 = 关闭斜率限制
+	//   P_IIR   = 1 开启帧间 1/4 平滑, 0 关闭
+	//
+	//   ★ V47.8: P_IIR 默认改为 0 (关闭)。
+	//   仿真(tb_he_big.v, 1920x1080 尺度, 静止场景, 帧边界严格对齐)四种组合 A/B:
+	//     纯 HE          -> 帧间均值极差 102/28352 = 0.36%, 第 1 帧即锁定
+	//     仅斜率限制      -> 极差 88,  第 1 帧即锁定
+	//     仅 IIR         -> 极差 2352, 单调漂移 6 帧未收敛   ← 漂移的唯一来源
+	//     斜率限制+IIR    -> 极差 2921, 单调漂移            ← 就是当时的板上配置
+	//   lut[64] = 48,36,27,20,15,11 正好是 48*0.75^n: IIR 是时间常数 4 帧的
+	//   一阶低通, 上电/切换/任何 ideal 变化后要 10~20 帧才收敛, 这段时间整帧
+	//   亮度持续单调变化 —— 就是用户看到的“闪”。帧间抖动已经只有 0.36%,
+	//   根本不需要 IIR; 噪点由 LUT_SLOPE 把噪声放大倍数硬限住(实测 maxslope=3)。
+	parameter [8:0]   P_SLOPE   = 9'd3,
+	parameter         P_IIR     = 1'b0
 )(
 	input  wire         clk,
 	input  wire         rst_n,
@@ -254,7 +270,7 @@ module preproc_basic #(
 	//     2) 帧间 IIR 1/4: new = (cur + 3*prev)/4, 抑制残余逐帧抖动。
 	//   两个凸组合都保单调、保斜率上限, 所以写进 LUT 的值始终满足约束。
 	//---------------------------------------------------------------------
-	localparam [8:0] LUT_SLOPE = 9'd3;
+	localparam [8:0] LUT_SLOPE = P_SLOPE;
 
 	reg  [8:0] lut_last;                // 上一个 bin 实际写入的 LUT 值
 
@@ -263,10 +279,11 @@ module preproc_basic #(
 	//   斜率限制形同虚设 —— 仿真实测 maxslope 仍然是 8。
 	//   现顺序: t_raw = (n + 3*prev)/4, 然后 t = clamp(t_raw, last, last+3)。
 	//   这样"写进 LUT 的值"本身一定单调且斜率 ≤ LUT_SLOPE, 与上一帧无关。
-	wire [11:0] lutv_mix = {4'd0, lutv_n} + {2'd0, lqp, 1'b0} + {3'd0, lqp};
-	wire [8:0]  lutv_m9  = (lutv_mix + 12'd2) >> 2;
-	wire [8:0]  lut_lo9  = lut_last;
-	wire [8:0]  lut_hi9  = lut_last + LUT_SLOPE;
+	wire [11:0] lutv_mix = P_IIR ? ({4'd0, lutv_n} + {2'd0, lqp, 1'b0} + {3'd0, lqp})
+	                            : {4'd0, lutv_n};
+	wire [8:0]  lutv_m9  = P_IIR ? ((lutv_mix + 12'd2) >> 2) : lutv_mix[8:0];
+	wire [8:0]  lut_lo9  = (P_SLOPE == 9'd0) ? 9'd0 : lut_last;
+	wire [8:0]  lut_hi9  = (P_SLOPE == 9'd0) ? 9'd511 : (lut_last + LUT_SLOPE);
 	wire [8:0]  lutv_t9  = (lutv_m9 < lut_lo9) ? lut_lo9 :
 	                       (lutv_m9 > lut_hi9) ? lut_hi9 : lutv_m9;
 	wire [7:0]  lutv_t   = (lutv_t9 > 9'd255) ? 8'hFF : lutv_t9[7:0];

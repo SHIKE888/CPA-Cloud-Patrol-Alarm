@@ -3226,6 +3226,62 @@ def _fpga_pp_on(fpga):
         return False, "读取失败: %s" % e
 
 
+# ---------------------------------------------------------------------------
+#  2026-10-25: 上电恢复单目通道 (0xDB[0]) —— 单目通道不要默认左目
+#
+#  【为什么要管这件事】
+#    FPGA 复位后 r_rx_sel = 0 就是 cam0/J2(左目)。只要 J2 没插模组, 时钟 mux
+#    就选了一条**没有像素时钟**的源: 整条 CSI 通路没有 S_hs_rx_clk ->
+#    rkcif 永远等不到帧 -> 上电即卡死, 而且只能重载 bitstream 才能救回来。
+#
+#  【做法】
+#    把最后一次"切换成功"的通道记进 state.json; 服务启动时在**打开
+#    /dev/video22 之前**先写回 FPGA。没有存档(首次上电/清了 state)就用
+#    DEFAULT_RX_SEL。0xDB 一个字节装了 3 个独立开关, 必须读-改-写, 只动 bit0。
+#
+#  ⚠ 这里只负责"恢复上次能用的通道", 不做在线探测 —— 在线探测(probe_modules
+#    的 0xEA/0xEB/0xEC 判据)在板上实测不可靠: ui_i2c 收不到 ACK 也会把整张
+#    初始化表硬走完, cfg_done 照样是 1。
+# ---------------------------------------------------------------------------
+RX_SEL_SECTION = "csi"
+DEFAULT_RX_SEL = 1          # 1 = cam1/J3(右目)。出厂板默认装右目。
+
+
+def rx_sel_get(state_path):
+    """取"这次上电该用哪一路": 优先用存档, 否则 DEFAULT_RX_SEL。"""
+    sel = DEFAULT_RX_SEL
+    if state_store is not None and state_path:
+        try:
+            saved = state_store.get(state_path, RX_SEL_SECTION) or {}
+            if "rx_sel" in saved:
+                sel = int(saved["rx_sel"]) & 0x01
+        except Exception:                                   # noqa: BLE001
+            pass
+    return sel
+
+
+def rx_sel_put(state_path, sel):
+    """记住这一路, 下次上电直接用它。"""
+    if state_store is not None and state_path:
+        try:
+            state_store.put(state_path, RX_SEL_SECTION, {"rx_sel": int(sel) & 0x01})
+        except Exception:                                   # noqa: BLE001
+            pass
+
+
+def apply_rx_sel(fpga, sel):
+    """把 0xDB[0] 设成 sel, 其余位(DUAL_EN/MARK_EN)保持不变。
+
+    返回写入后 0xDB 的回读值(以 FPGA 实际值为准)。
+    """
+    cur = fpga.read(0xDB)
+    want = (cur & 0xFE) | (int(sel) & 0x01)
+    if want != cur:
+        fpga.write(0xDB, want)
+        cur = fpga.read(0xDB)
+    return cur
+
+
 class FpgaI2C(object):
     """FPGA 寄存器堆的 I2C 访问。
 
@@ -3917,6 +3973,10 @@ class Handler(BaseHTTPRequestHandler):
                     except Exception:                              # noqa: BLE001
                         _new_sel = _old_sel
                     if _new_sel != _old_sel:
+                        # 记住这一路, 下次上电直接用它(见 apply_rx_sel)。
+                        # 只记"切换成功"的值 —— 万一切过去卡死, 存档还停在
+                        # 上一条能用的通道, 重新上电就能自己回到可用状态。
+                        rx_sel_put(getattr(self, "state_path", None), _new_sel)
                         snap["rx_switched"] = _new_sel
                         snap["message"] = ("%s; 已切到 cam%d, 服务重启中(约 10s)…"
                                            % (msg, _new_sel))
@@ -4469,12 +4529,26 @@ def main():
                 _pp_on, _pp_desc = _fpga_pp_on(FpgaI2C(args.fpga_bus, args.fpga_addr))
                 print("[ai] FPGA 预处理: %s" % _pp_desc)
 
+    # ---- 2026-10-25: 上电先把单目通道设对, 再打开采集设备 ----
+    #   必须在 cap.start() 之前: 一旦以"没有模组的那一路"去 open /dev/video22,
+    #   rkcif 会一直等不到帧、卡在里面, 之后只能重载 bitstream 才恢复。
+    if args.fpga_bus is not None and args.fpga_bus >= 0:
+        try:
+            _want = rx_sel_get(state_file)
+            _db = apply_rx_sel(FpgaI2C(args.fpga_bus, args.fpga_addr), _want)
+            print("[csi] 单目通道: 目标 cam%d, 0xDB=0x%02X (读回 RX_SEL=%d)"
+                  % (_want, _db, _db & 0x01))
+        except Exception as _e:                              # noqa: BLE001
+            print("[csi] 设置单目通道失败: %s: %s" % (type(_e).__name__, _e),
+                  file=sys.stderr)
+
     cap.start()
 
     Handler.hub = hub
     Handler.params = params
     Handler.args = args
     Handler.capture = cap
+    Handler.state_path = state_file
 
     # 如果这次是 start.sh 因为切分辨率重启起来的, 把用户原来的曝光补回去
     _restore_exp_after_switch()

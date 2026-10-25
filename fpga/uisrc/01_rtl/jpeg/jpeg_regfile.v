@@ -361,8 +361,14 @@ module jpeg_regfile #(
             // 换新 CSI RX 后 1080p 的 Bayer 相位变了, 默认从 GBRG 改为 RGGB。
             // 若颜色仍不对, 依次试 1(GRBG) / 2(GBRG) / 3(BGGR)。
             r_bayer_sel  <= 2'd0;
-            // 双路上电默认走 cam0 —— 保证"只接 cam0"时和 0x450D 单路版一致
-            r_rx_sel     <= 1'b0;
+            // 2026-10-25: 上电默认改走 **cam1(J3, 右目)**, 不再默认 cam0。
+            //   原因: 默认 cam0 时, 只要 J2 没插模组, 时钟 mux 就选了一条
+            //   **没有像素时钟**的源 -> 整条 CSI 通路没有 S_hs_rx_clk ->
+            //   rkcif 永远等不到帧 -> 上电即卡死, 且只能重载 bitstream 才能救。
+            //   出厂板默认装右目, 所以默认值跟着实际硬件走。
+            //   （RK 侧还会用 state.json 里记的"上次可用通道"覆盖这里, 见
+            //     mipi_webstream.py: apply_rx_sel / rx_sel_get）
+            r_rx_sel     <= 1'b1;
             r_dual_en    <= 1'b0;
             r_mark_en    <= 1'b0;
             dual_start   <= 1'b0;

@@ -80,6 +80,10 @@ module tb_he_flicker;
 	// PAT=3: 平坦 128 + **每帧不同**的伪噪声 (模拟真实传感器噪声)
 	integer cur_frame = 0;
 	integer ign_ps;
+	// JIT=1 时在行与行之间插入 1..5 拍的随机空闲 —— 像素内容完全不变,
+	// 只改变“空闲拍数”, 用于验证直方图统计是否依赖时序相位。
+	integer JIT;
+	integer jit;
 
 	function integer pxv;
 		input integer x;
@@ -164,6 +168,7 @@ module tb_he_flicker;
 
 	initial begin
 		ign_ps = $value$plusargs("PAT=%d", PAT);
+		ign_ps = $value$plusargs("JIT=%d", JIT);
 		repeat (5) @(posedge clk);
 		rst_n = 1'b1;
 		repeat (5) @(posedge clk);
@@ -184,6 +189,13 @@ module tb_he_flicker;
 					tvalid = 1'b1;
 					tuser  = (line == 0 && w == 0);
 					tlast  = (line == LINES-1 && w == NW-1);
+				end
+				if (JIT) begin
+					@(negedge clk);
+					tvalid = 1'b0; tuser = 1'b0; tlast = 1'b0;
+					jit = ({
+						$random} % 5) + 1;
+					repeat (jit) @(negedge clk);
 				end
 			end
 			@(negedge clk);
