@@ -115,7 +115,7 @@ class H(BaseHTTPRequestHandler):
         if p == "/api/fpga":
             with LOCK:
                 out = {"ok": True, "regs": dict(REGS),
-                       "status": {"CAM_ID": 0xA5, "VER": 0x4501,
+                       "status": {"CAM_ID": 0xA5, "VER": 0x4706,
                                   "FRAME_CNT": int((time.time() - T0) * FPS)},
                        "phys": {"cam_exp_ms": 16.6, "cam_exp_max_ms": 16.7,
                                 "cam_gain_db": 9.6, "ev": 0, "wb_r_pct": 100,
