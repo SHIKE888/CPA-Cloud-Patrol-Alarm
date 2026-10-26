@@ -78,6 +78,10 @@
   button.primary{background:var(--acc2); border-color:var(--acc2); color:#fff; font-weight:600}
   button.primary:hover{filter:brightness(1.12)}
   button.ghost.on{background:var(--acc); border-color:var(--acc); color:#04260c; font-weight:600}
+  /* 2026-10-26: 被禁用的按钮必须「看起来也是禁用的」。
+     之前双目模式下单目通道按钮没加 disabled 样式, 灰不灰都看不出来, 还能点。 */
+  button:disabled{opacity:.4; cursor:not-allowed}
+  button:disabled:hover{border-color:var(--line); color:var(--fg); filter:none}
   .dot{width:9px;height:9px;border-radius:50%;background:#6e7681;display:inline-block;margin-right:6px}
   .dot.ok{background:var(--acc); box-shadow:0 0 8px var(--acc)}
   .dot.bad{background:var(--err); box-shadow:0 0 8px var(--err)}
@@ -1022,6 +1026,16 @@ function syncToggles() {
     b.classList.toggle("on", Number(b.dataset.rot) === Number(params.rotate || 0)));
   document.querySelectorAll("[data-aisrc]").forEach(b =>
     b.classList.toggle("on", Number(b.dataset.aisrc) === Number(params.ai_src || 0)));
+  // 双目模式下「单目通道」不起作用 -> 整行灰掉 + 真正禁止点击
+  {
+    const dual = !!Number(params.dual ?? 0);
+    const cams = document.querySelectorAll("[data-cam]");
+    cams.forEach(b => { b.disabled = dual; });
+    if (cams.length) {
+      const row = cams[0].closest(".row");
+      if (row) row.style.opacity = dual ? ".4" : "1";
+    }
+  }
   // FPGA 硬件 JPEG: 有损/无损、闭环码控
   if ($("btnJpegHw")) {
     $("btnJpegHw").classList.toggle("on", !!jpegHw);
@@ -1212,7 +1226,16 @@ function syncQuad() {
 }
 
 async function syncCam() {
-  if (!base) return;
+  // 2026-10-26: 双目模式下「单目通道」必须**真正不可点**。
+  //   syncCam 每 3 个 poll 周期跑一次(见 _camTick), 与本函数的 dual 判断
+  //   必须一致, 否则会把 syncToggles 里设好的 disabled 又写回去。
+  const _dual = !!Number(params.dual ?? 0);
+  document.querySelectorAll("[data-cam]").forEach(b => {
+    b.disabled = _dual;
+    b.style.cursor = _dual ? "not-allowed" : "pointer";
+    b.title = _dual ? "双目模式下不切单目通道：请先切到「单目」" : "";
+  });
+  if (_dual || !base) return;
   try {
     const d = await api("/api/fpga");
     const r = (d.regs || {});
@@ -1223,6 +1246,11 @@ async function syncCam() {
 }
 document.querySelectorAll("[data-cam]").forEach(b => {
   b.onclick = async () => {
+    // 双保险: 即使某些浏览器/样式让 disabled 失效, 也不许在双目模式下切通道
+    if (Number(params.dual ?? 0)) {
+      toast("双目模式下不切单目通道，请先切到「单目」", true);
+      return;
+    }
     const c = Number(b.dataset.cam);
     try {
       await api("/api/fpga", {

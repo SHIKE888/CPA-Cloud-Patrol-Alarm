@@ -2300,7 +2300,17 @@ function syncQuad() {
 }
 
 async function syncCam() {
-  if (!base) return;
+  // 2026-10-26: 双目模式下「单目通道」整行禁用。
+  //   ★ 这里也必须判 dual: syncCam 每 3 个 poll 周期跑一次, 之前它按 dead
+  //     把 disabled 写回 false, 正好覆盖掉 syncToggles 里的 b.disabled = dual,
+  //     现象就是「已经灰掉了但还能点击选择」。
+  const dual = !!Number(params.dual ?? 0);
+  document.querySelectorAll("#viewVideo [data-cam]").forEach(b => {
+    b.disabled = dual;
+    b.style.cursor = dual ? "not-allowed" : "pointer";
+    if (dual) b.title = "双目模式下不切单目通道：请先切到「单目」";
+  });
+  if (dual || !base) return;
   try {
     const d = await api("/api/fpga");
     const r = (d.regs || {});
@@ -2326,6 +2336,11 @@ async function syncCam() {
 }
 document.querySelectorAll("#viewVideo [data-cam]").forEach(b => {
   b.onclick = async () => {
+    // 双保险: 即使 disabled 被样式/浏览器绕过, 也不许在双目模式下切通道
+    if (Number(params.dual ?? 0)) {
+      toast("双目模式下不切单目通道，请先切到「单目」", true);
+      return;
+    }
     const c = Number(b.dataset.cam);
     try {
       await api("/api/fpga", {
