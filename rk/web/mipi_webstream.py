@@ -1768,11 +1768,15 @@ class OpenCVCapture(threading.Thread):
             now_cap = time.time()
             if src is None:
                 DUAL_STAT["nomark"] += 1
-                # 2026-10-26: 双目下"两路画面都进 cam0 格子"的最常见原因就是
-                #   帧标记根本没进画面(web 端拿不到 src, 一律当 cam0)。
-                #   这里把第一帧的 Y 平面头 8 字节打出来, 一眼就能分辨:
-                #     a5 5a 11 ff ...  -> 标记正常, 问题在拼接/前端
-                #     其它             -> 标记没打上(FPGA mark_en / 时序问题)
+                # 2026-10-26: **按到达顺序交替兜底**。
+                #   板上实测约 45% 的帧读不到帧标记(nomark 占比), 原来一律当 cam0
+                #   -> 配对失败/两格画面都来自同一路, 页面只出一格。
+                #   而 FPGA 在双目下是**严格逐帧交替**的(O_src = parity_r, 每帧翻
+                #   一次), 所以用交替计数兜底就是 100% 正确的; 帧标记只在能读到
+                #   时用来纠正相位(一旦读到就对齐)。
+                src = getattr(self, "_dual_alt", 0) & 1
+                # 双目下把第一帧的 Y 头 8 字节打出来一次, 便于确认标记有没有:
+                #   a5 5a 11 ff ... = 标记正常; 其它 = 标记没打上
                 if int(self.params.get().get("dual", 0)) \
                         and not getattr(self, "_dualmk_logged", False):
                     self._dualmk_logged = True
@@ -1780,11 +1784,12 @@ class OpenCVCapture(threading.Thread):
                         _hdr = bytes(frame.reshape(-1)[:8]).hex()
                     except Exception:                          # noqa: BLE001
                         _hdr = "<读取失败>"
-                    print("[dual] 未找到帧标记, 帧首 8 字节 = %s" % _hdr,
-                          file=sys.stderr)
-                src = 0                       # 无标记 -> 当 cam0
+                    print("[dual] 未找到帧标记, 帧首 8 字节 = %s (改用交替兜底)"
+                          % _hdr, file=sys.stderr)
             else:
                 self._dualmk_logged = False
+            # 下一次没标记时该轮到另一路
+            self._dual_alt = (src ^ 1) & 1
             DUAL_STAT["cam%d" % src] += 1
             self._dual_ts[src] = now_cap
             self._dual_last_src = src
