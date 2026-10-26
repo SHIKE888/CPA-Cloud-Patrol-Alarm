@@ -18,11 +18,21 @@
  *      第 8 拍同拍。若状态机先等 o_done 再开量化, 这 8 拍数据已经错过。
  *      所以 q_valid / q_t 直接由 dct_ovalid 驱动, 与状态机解耦。
  *
- *  吞吐 (W=1920, H=1080, 147.5MHz):
- *      每块 8 拍读 + 30 拍 DCT + ~40 拍熵编码 = 78 拍
- *      每 MCU = 4 块 = 312 拍 -> 16200 MCU -> 5.05M 拍 -> 29 fps
- *      ★ 串行版。要 60fps 需让"块 i 的 DCT/量化"与"块 i-1 的熵编码"并行,
- *        中间加一块 64x16bit 双缓冲 RAM, 吞吐即变 max(120,150)=150 拍/MCU。
+ *  吞吐 (2026-10-26 实测, 见 fpga/sim/tb_jpeg_thru.v + run_jpeg_thru.ps1):
+ *      有损 (DCT/SOF0)  : 150.0 clk/MCU
+ *          @300MHz -> 255.9 Mpx/s = 1080p123 / 4K30.9
+ *          248.8 Mpx/s (双路1080p60 = 4K30) 只需 292MHz => 300MHz 够
+ *      无损 (DPCM/SOF3) : 320.2 clk/MCU
+ *          @300MHz -> 119.9 Mpx/s = 1080p58 / 4K14.5  => 差 2.5 倍, 待优化
+ *
+ *  ★ 旧注释写的 "每块 8+30+40=78 拍, 每 MCU 312 拍, 29fps @147.5MHz,
+ *    要 60fps 需做块级流水" **已经过期**: 块级流水 (pend / qzz 双缓冲 /
+ *    熵编码后台调度) 代码里已经实现, 实测就是 150 clk/MCU。不要再按
+ *    312 拍去规划, 也不需要再做流水化。
+ *
+ *  ★ 尺寸: MCU_X / MCU_Y / NWORD 全部改成**运行时** (i_width / i_height),
+ *    一个 bit 即可在 1080p / 4K / 双目拼接之间切换。W / H 参数只用于
+ *    确定行缓冲深度, 必须取所有模式中的**最大值** (当前 3840x2160)。
  *===========================================================================*/
 `timescale 1ns / 1ps
 
@@ -66,9 +76,13 @@ module jpeg_encoder_top #(
     output reg  [31:0] st_frame_cnt
 );
 
-    localparam integer MCU_X = W / 16;
-    localparam integer MCU_Y = H / 8;
-    localparam integer NWORD = (W / 2) * H;   // 无损模式的总 word 数
+    // ★ 2026-10-26: MCU 尺寸改成【运行时】(i_width / i_height)。
+    //   原来 MCU_X/MCU_Y 是编译期常量, 等于一个 bit 只能跑一种分辨率 ——
+    //   而赛题要在 1080p / 4K / 双目拼接之间切。W/H 参数从此只用来
+    //   确定行缓冲深度 (取最大分辨率), 不再参与帧结构计算。
+    wire [7:0]  MCU_X_RT = i_width[11:4];          // i_width  / 16
+    wire [8:0]  MCU_Y_RT = i_height[11:3];         // i_height / 8
+    wire [31:0] NWORD_RT = (i_width >> 1) * i_height;  // 无损模式总 word 数
 
     wire use_ll = i_lossless;
 
@@ -93,13 +107,17 @@ module jpeg_encoder_top #(
     wire        lb_grp_ready;
 
     reg  [2:0]  rd_row;
-    reg  [7:0]  rd_grp;
+    // ★ 2026-10-26: 组索引原来只有 8 位且只用 mx_reg[6:0] —— W=3840 时
+    //   每行 240 个 MCU, 组索引要到 479 (需 9 位), 会被截断 -> 4K 画面��影。
+    //   现在接全 mx_reg, 位宽 9 位 (最大 3840/8*2-1 = 959 够用)。
+    reg  [8:0]  rd_grp;
     reg  [1:0]  rd_sel;
     reg         grp_done;
 
     jpeg_linebuf #(.W(W)) u_linebuf (
         .clk         (clk),
         .rst_n       (rst_n),
+        .i_width     (i_width),          // ★ 运行时行宽 (W 参数只定存储深度)
         .i_valid     (s_valid & ~use_ll),
         .i_data      (s_data),
         .o_wr_ready  (lb_ready),
@@ -307,9 +325,9 @@ module jpeg_encoder_top #(
         default: begin huff_comp = 2'd2; huff_chroma = 1'b1; end
         endcase
         case (blk)
-        2'd0:    rd_grp = {mx_reg[6:0], 1'b0};
-        2'd1:    rd_grp = {mx_reg[6:0], 1'b1};
-        default: rd_grp = {1'b0, mx_reg[6:0]};
+        2'd0:    rd_grp = {mx_reg,  1'b0};
+        2'd1:    rd_grp = {mx_reg,  1'b1};
+        default: rd_grp = {1'b0, mx_reg};
         endcase
         rd_sel = blk;
     end
@@ -493,7 +511,7 @@ module jpeg_encoder_top #(
                 //   才能 flush。u_ll 是 4 clk/word 的流水, 收到第 NWORD 个时
                 //   最后一个 word 的码还在流水线里; 此时就 flush 出来的是半个码
                 //   —— 实测末尾 2 字节 0C 03 变成 1 字节 1F。
-                if (ll_wcnt >= NWORD && ll_ready) begin
+                if (ll_wcnt >= NWORD_RT && ll_ready) begin
                     ll_run   <= 1'b0;        // 停止接收, 不再允许上游推进
                     bp_flush <= 1'b1;
                     tstate   <= T_FIN;
@@ -587,11 +605,11 @@ module jpeg_encoder_top #(
                     end
                 end else begin
                     blk <= 2'd0;
-                    if (mx_reg == MCU_X - 1) begin
+                    if (mx_reg == (MCU_X_RT - 8'd1)) begin
                         mx_reg   <= 8'd0;
                         my       <= my + 9'd1;
                         grp_done <= 1'b1;       // 释放一个 8 行组
-                        if (my == MCU_Y - 1) begin
+                        if (my == (MCU_Y_RT - 9'd1)) begin
                             tstate   <= T_DRAIN;   // 等残留块编完再 flush
                         end else begin
                             tstate   <= T_WGRP;

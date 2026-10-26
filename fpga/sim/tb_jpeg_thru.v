@@ -17,6 +17,10 @@ module tb_jpeg_thru;
     parameter integer W = 320;              // 小尺寸即可: clk/MCU 与分辨率无关
     parameter integer H = 256;               // MCU=20x32=640, 把帧头/drain 开销摊薄
     parameter integer LL = 0;                // 0=有损(DCT) 1=无损(DPCM)
+    // 编译期尺寸 (= 行缓冲深度): 取最大分辨率, 与运行尺寸分离
+    //   这样顺便验证 MCU_X_RT / MCU_Y_RT 运行时机制是否正确生效
+    parameter integer PW = 3840;
+    parameter integer PH = 2160;
 
     reg clk = 1'b0;
     always #3.3 clk = ~clk;                    // ~151.5MHz
@@ -42,7 +46,7 @@ module tb_jpeg_thru;
     wire        st_busy, st_done;
     wire [31:0] st_cnt;
 
-    jpeg_encoder_top #(.W(W), .H(H)) dut (
+    jpeg_encoder_top #(.W(PW), .H(PH)) dut (
         .clk          (clk),
         .rst_n        (rst_n),
         .i_en         (1'b1),
@@ -87,6 +91,21 @@ module tb_jpeg_thru;
     reg     busy_d = 1'b0, done_d = 1'b0;
     integer t_busy_start = 0;
     integer t_done       = 0;
+
+    // 卡死定位: st_busy 期间每 50000 拍打一次关键内部状态
+    //  ⚠ 用自己的计数器, 不能用 cyc —— 两个 always 块同拍读写 cyc 会竞争,
+    //    取模条件基本永远命中不了 (实测就是这么"什么都没打印")。
+    integer dbg_cyc = 0;
+    always @(posedge clk) begin
+        if (!st_busy) dbg_cyc <= 0;
+        else          dbg_cyc <= dbg_cyc + 1;
+        if (st_busy && dbg_cyc != 0 && (dbg_cyc % 50000) == 0)
+            $display("DBG n=%0d tstate=%0d mx=%0d my=%0d rc=%0d pend=%0d wrow=%0d wx=%0d f0=%b f1=%b avail=%b rdy=%b",
+                     dbg_cyc, dut.tstate, dut.mx_reg, dut.my, dut.rc, dut.pend,
+                     dut.u_linebuf.wrow, dut.u_linebuf.wx,
+                     dut.u_linebuf.full0, dut.u_linebuf.full1,
+                     dut.lb_avail, dut.lb_ready);
+    end
 
     // 与分辨率无关的换算
     //   吞吐(Mpx/s) = 128 px/MCU / (clk/MCU) * f_clk
