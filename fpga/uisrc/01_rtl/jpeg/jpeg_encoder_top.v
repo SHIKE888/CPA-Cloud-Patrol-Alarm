@@ -662,3 +662,283 @@ module jpeg_encoder_top #(
     end
 
 endmodule
+
+//=============================================================================
+//  以下两个模块【内联】在本文件里, 而不是各占一个 .v 文件。
+//
+//  原因 (2026-10-26 踩过的坑): 新增 .v 文件必须同时进 TD 工程的 <File> 列表,
+//  而**已打开的 TD GUI 用的是内存里的旧列表** —— 直接综合就报
+//      ERROR: jpeg_enc_if(AW=10) is a black box in .../system_top.v(655)
+//  更糟的是: 用第二份 TD 实例或 TD 退出保存时, 会把它内存里的列表写回
+//  fpga_prj.al, 把手工加的条目冲掉(已实测两次)。
+//  => 把新增模块内联到**已在工程里**的 jpeg_encoder_top.v, 就绕开了整个问题。
+//     （Verilog 一个文件含多个 module 是合法的。）
+//  ⚠ 若以后要把它们拆回独立文件, 必须**先关 TD**, 再改 .al 并重新打开工程。
+//=============================================================================
+
+/*===========================================================================
+ * module jpeg_enc_if
+ * Description  : JPEG 编码器的输入接口 —— 跨时钟 + 反压 + 位宽转换
+ *
+ *  原来的接法 (system_top.v) 有三处硬伤, 导致这条 JPEG 支路**从来没有
+ *  出过一帧正确的图**:
+ *    ① 编码器直接挂在 S_hs_rx_clk (单路 32.4MHz) 域, 不是快时钟域;
+ *    ② 312/150 拍/MCU 下, 32.4MHz 只够 1080p 6.4fps;
+ *    ③ s_ready 连出来但**一根线都没用**, 而且只接了 s_data[31:0],
+ *       而源是 64bit = 4 像素/拍 —— 每拍 4 个像素里只有 2 个进编码器,
+ *       行缓冲永远凑不满 8 行。
+ *
+ *  本模块负责 ① 和 ③:
+ *    源侧 (s_clk 域, 4px/拍, 64bit, 带帧首标记)
+ *        -> 异步 FIFO (65bit = {sof, 4像素})
+ *        -> 拆成 2 个 32bit (= 2px) word, **严格按 e_ready 反压**
+ *        -> 编码器 (e_clk 域, 2px/拍)
+ *
+ *  关键约定 (照抄 jpeg_encoder_top / jpeg_linebuf 的契约):
+ *    · 编码器是**连续流**消费者: 每帧必须恰好 (W/2)*H 个 32bit word,
+ *      光栅顺序, 不能多不能少。少一个 word 整个帧就错位, 而且因为
+ *      行缓冲按 8 行一组乒乓 (H 必须是 8 的倍数), 错位会传染到后续帧。
+ *      => **绝对不能在帧内丢字**。整帧进/整帧不进要由上游按帧率控制。
+ *    · s_ready 必须被尊重: 行缓冲满时 (o_wr_ready=0) 编码器不收数据,
+ *      此时本模块把数据压在 FIFO 里, 不丢。
+ *    · 字节序: 一个 64bit 源字 {Cr3,Y3,Cb2,Y2,Cr1,Y1,Cb0,Y0},
+ *      低 32bit = 像素 0,1 -> 先送; 高 32bit = 像素 2,3。
+ *
+ *  诊断 (排查"出不了帧"时的第一手数据):
+ *    st_ovf     : 源侧 FIFO 溢出次数 (= 丢了 word, 一定出问题)
+ *    st_word_lo : 已转发 64bit word 数的低 16 位 (帧内进度)
+ *    st_sof     : 收到的帧首个数
+ *
+ *  仿真: fpga/sim/tb_jpeg_enc_if.v (run_jpeg_enc_if.ps1)
+ *        A: e_ready 恒1       words=768  ovf=0 sof=6 err=0
+ *        B: e_ready 1/4 反压  words=1536 ovf=0 sof=12 err=0
+ *        C: 编码器 20MHz 远慢于源 -> st_ovf=619 正确检出
+ *===========================================================================*/
+module jpeg_enc_if #(
+    parameter integer AW = 10,          // FIFO 深度 = 2^AW 个 65bit word
+    parameter integer DW = 65
+) (
+    // ---------------- 源侧: YUV422 4 像素/拍 ----------------
+    input  wire         s_clk,
+    input  wire         s_rst_n,
+    input  wire         s_valid,
+    input  wire [63:0]  s_data,
+    input  wire         s_sof,          // 该 word 是一个新帧的第 0 个 word
+
+    // ---------------- 编码器侧: YUV422 2 像素/拍 ----------------
+    input  wire         e_clk,
+    input  wire         e_rst_n,
+    output wire         e_valid,
+    output wire [31:0]  e_data,
+    input  wire         e_ready,
+
+    // ---------------- 诊断 ----------------
+    output reg  [15:0]  st_ovf,
+    output reg  [15:0]  st_word_lo,
+    output reg  [15:0]  st_sof,
+    output wire [AW-1:0] o_level
+);
+
+    //=============================================================== 源侧写
+    wire        f_full, f_empty;
+    wire [AW-1:0] f_wcnt, f_rcnt;
+    wire [DW-1:0] f_dout;
+
+    assign o_level = f_rcnt;
+
+    wire f_wr = s_valid & ~f_full;
+
+    //=============================================================== 读侧状态
+    //  ★ 必须全部声明在 FIFO 例化**之前** —— Verilog 先声明后使用,
+    //    否则 e_rd_en 里的 w_v/d_v 会被隐式声明成 1bit wire
+    //    (本工程已踩过三次, 见 memory)。
+    //  ★ FIFO 的 dout 是寄存器输出, rd_en 之后**晚一拍**才有数据,
+    //    所以用 d_v 精确对齐 (d_v <= rd_en), 与 csi2_pack V43 的修法同源。
+    reg         d_v;
+    reg         w_v;          // 手上有一个 64bit word 待拆
+    reg         half;         // 0 = 送低 32bit, 1 = 送高 32bit
+    reg  [63:0] w_data;
+
+    wire e_rd_en = ~w_v & ~d_v & ~f_empty;
+
+    always @(posedge s_clk or negedge s_rst_n) begin
+        if (!s_rst_n) begin
+            st_ovf <= 16'd0;
+            st_sof <= 16'd0;
+        end else begin
+            // 源侧溢出 = 丢了 word, 帧结构必然破坏。正常情况下应恒为 0。
+            if (s_valid && f_full) st_ovf <= st_ovf + 16'd1;
+            if (s_valid && s_sof)  st_sof <= st_sof + 16'd1;
+        end
+    end
+
+    fifo_32b_async_2 #(
+        .DATA_WIDTH (DW),
+        .ADDR_WIDTH (AW)
+    ) u_fifo (
+        .rst          (~(s_rst_n & e_rst_n)),
+        .wr_clk       (s_clk   ),
+        .rd_clk       (e_clk   ),
+        .din          ({s_sof, s_data}),
+        .wr_en        (f_wr    ),
+        .rd_en        (e_rd_en ),
+        .dout         (f_dout  ),
+        .full         (f_full  ),
+        .empty        (f_empty ),
+        .rd_data_count(f_rcnt  ),
+        .wr_data_count(f_wcnt  ),
+        .wr_rst_busy  (        ),
+        .rd_rst_busy  (        )
+    );
+
+    //=============================================================== 读侧: 拆字
+    assign e_valid = w_v;
+    assign e_data  = half ? w_data[63:32] : w_data[31:0];
+
+    always @(posedge e_clk or negedge e_rst_n) begin
+        if (!e_rst_n) begin
+            d_v       <= 1'b0;
+            w_v       <= 1'b0;
+            half      <= 1'b0;
+            w_data    <= 64'd0;
+            st_word_lo<= 16'd0;
+        end else begin
+            d_v <= e_rd_en;
+
+            // 默认: 消化当前 word
+            if (w_v && e_ready) begin
+                if (!half) begin
+                    half <= 1'b1;            // 低 32bit 已被接走, 接着送高 32bit
+                end else begin
+                    half <= 1'b0;
+                    w_v  <= 1'b0;            // 一个 word 的两半都送完了
+                    st_word_lo <= st_word_lo + 16'd1;
+                end
+            end
+
+            // 取到新 word: 覆写 (d_v=1 时 w_v 必为 0, 见下)
+            if (d_v) begin
+                w_data <= f_dout[63:0];
+                w_v    <= 1'b1;
+                half   <= 1'b0;
+            end
+        end
+    end
+
+    //  ★ 上面"覆写"成立的前提: d_v=1 时 w_v 一定还是 0。
+    //    证明: d_v <= e_rd_en, 而 e_rd_en 要求 ~w_v, 所以发起读的那一拍 w_v=0;
+    //    之后 w_v 只可能被同一个 d_v 置 1, 不可能提前变 1。
+    //    这条不变式一旦被破坏, 就会静默丢 word —— 所以 TB 里加了逐字比对。
+
+    wire _unused_sof  = f_dout[64];
+    wire _unused_wcnt = |f_wcnt;
+
+endmodule
+
+/*===========================================================================
+ * module jpeg_byte_bridge
+ * Description  : JPEG 码流跨时钟桥 —— 编码器域(300MHz) -> CSI-2 发送域(byte_clk 150MHz)
+ *
+ *  原来 csi2_frame_tx_var (X_jv) 挂在 S_hs_rx_clk (单路 32.4MHz) 上,
+ *  而它的 hs_en/hs_data 直接喂给 D-PHY TX —— 那是在 **S_dsi_byte_clk**(150MHz)
+ *  域采样的。这条 JPEG 支路的最后一跳本来就是跨时钟域没做同步,
+ *  又一个"从来没跑过"的证据。
+ *
+ *  数据量很小: 3840x1080@60 按 Q75 约 12~18 MB/s, 256 深 (9bit) 够吸收突发。
+ *  9bit = {last, byte}, last 只在每帧最后一个字节 (0xFF/0xD9) 置位,
+ *  用来保持 csi2_frame_tx_var 的 s_tlast 语义。
+ *
+ *  仿真: fpga/sim/tb_jpeg_byte_bridge.v
+ *        300MHz->150MHz, 读侧 1/3 随机反压: sent=3000 got=3000 err=0 PASS
+ *===========================================================================*/
+module jpeg_byte_bridge #(
+    parameter integer AW = 8            // 深度 = 2^AW 字节
+) (
+    // ---------------- 写侧: 编码器字节流 ----------------
+    input  wire        w_clk,
+    input  wire        w_rst_n,
+    input  wire        w_valid,
+    input  wire [7:0]  w_data,
+    input  wire        w_last,
+    output wire        w_ready,         // = ~full, 送给编码器 m_ready
+
+    // ---------------- 读侧: csi2_frame_tx_var ----------------
+    input  wire        r_clk,
+    input  wire        r_rst_n,
+    output wire        r_valid,
+    output wire [7:0]  r_data,
+    output wire        r_last,
+    input  wire        r_ready,
+
+    // ---------------- 诊断 ----------------
+    //  st_bp = 写侧被 FIFO 满反压的拍数。**正常可非零** ——
+    //    编码器从 m_ready 得到了反压, 不会丢字节; 这里只记录背压量,
+    //    如果它一直很大 (接近总拍数) 说明读侧 (CSI-2 发送) 卡住了。
+    output reg  [15:0] st_bp,
+    output wire [AW-1:0] o_level
+);
+
+    //  ★ 读侧状态必须声明在 FIFO 例化之前 (Verilog 先声明后使用)
+    reg         d_v;                    // FIFO dout 有效 (rd_en 后一拍)
+    reg         h_v;                    // 手上有一个字节待送
+    reg  [8:0]  h_data;
+
+    wire        f_full, f_empty;
+    wire [8:0]  f_dout;
+    wire [AW-1:0] f_rcnt, f_wcnt;
+
+    wire r_rd_en = ~h_v & ~d_v & ~f_empty;
+
+    assign o_level = f_rcnt;
+
+    assign w_ready = ~f_full;
+    wire   w_wr    = w_valid & ~f_full;
+
+    always @(posedge w_clk or negedge w_rst_n) begin
+        if (!w_rst_n) st_bp <= 16'd0;
+        else if (w_valid && f_full) st_bp <= st_bp + 16'd1;
+    end
+
+    fifo_32b_async_2 #(
+        .DATA_WIDTH (9),
+        .ADDR_WIDTH (AW)
+    ) u_fifo (
+        .rst          (~(w_rst_n & r_rst_n)),
+        .wr_clk       (w_clk   ),
+        .rd_clk       (r_clk   ),
+        .din          ({w_last, w_data}),
+        .wr_en        (w_wr    ),
+        .rd_en        (r_rd_en ),
+        .dout         (f_dout  ),
+        .full         (f_full  ),
+        .empty        (f_empty ),
+        .rd_data_count(f_rcnt  ),
+        .wr_data_count(f_wcnt  ),
+        .wr_rst_busy  (        ),
+        .rd_rst_busy  (        )
+    );
+
+    //=============================================================== 读侧 FWFT
+    assign r_valid = h_v;
+    assign r_data  = h_data[7:0];
+    assign r_last  = h_data[8];
+
+    always @(posedge r_clk or negedge r_rst_n) begin
+        if (!r_rst_n) begin
+            d_v    <= 1'b0;
+            h_v    <= 1'b0;
+            h_data <= 9'd0;
+        end else begin
+            d_v <= r_rd_en;
+
+            if (h_v && r_ready) h_v <= 1'b0;          // 字节被接走
+            if (d_v) begin
+                h_data <= f_dout;
+                h_v    <= 1'b1;
+            end
+        end
+    end
+
+    wire _unused_wcnt2 = |f_wcnt;
+
+endmodule
