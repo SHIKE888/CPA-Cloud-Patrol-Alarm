@@ -1571,20 +1571,133 @@ class OpenCVCapture(threading.Thread):
             self.need_reopen = ev
         ev.set()
 
+    def switch_source(self, sel, force=False):
+        """请求切换 CSI 单目通道 (cam0/cam1)。
+
+        2026-10-26: 真正的写入放在采集线程里、且在 **cap.release() 之后**。
+        原因: 如果边推流边改时钟 mux, BUFG 会在两个无关时钟之间切换,
+        下游 (image_correction / isp / preproc / yuv / dbuf 写口) 可能停在
+        非法状态, 而 TX 侧又不在换源窗里复位 -> 板上就是"画面永久卡死,
+        RK 一帧收不到, 但 E1 还在涨"。
+        关流后再改, 等价于一次干净的上电序列。
+
+        force=True: 即使目标值相同, 也先写反相值再写目标值, 强制产生一次
+        S_clk_chg -> FPGA 换源复位窗。这是板上实测唯一能把卡死链路救回来的
+        动作(写 0xDB=0x00 后立即恢复 55fps)。
+        """
+        self._pending_rx_sel = int(sel) & 1
+        if force:
+            self._force_edge = True
+        self.request_reopen()
+
+    def _watchdog_loop(self):
+        """独立看门狗线程 (2026-10-26)。
+
+        为什么必须独立线程: `cap.read()` 在 rkcif 卡住时会**永久阻塞**,
+        采集循环根本不会进入下一轮 —— 循环内的检查形同虚设, 只能靠 35 秒的
+        `_capture_selfheal()` 去重启整个进程(要重载 AI 模型, web 端就是
+        "频繁断联重连")。
+
+        做法: 超时后直接 `cap.release()` 打断阻塞的 read ( `stop()` 里已经
+        用同一招), 再 request_reopen() 让采集线程重开。
+        连续第 2 次超时, 追加一个"强制换源边沿"—— 板上实测这是唯一能把
+        卡死链路救回来的动作。
+        """
+        while not self.stop_flag.is_set():
+            time.sleep(0.5)
+            lt = getattr(self, "_last_ok_t", None)
+            c = getattr(self, "_cap", None)
+            if lt is None or c is None:
+                continue
+            if (time.time() - lt) <= 3.0:
+                continue
+            self._last_ok_t = time.time()
+            n = getattr(self, "_wd_trips", 0) + 1
+            self._wd_trips = n
+            print("[watchdog] 3 秒无帧, 恢复中 (第 %d 次)" % n, file=sys.stderr)
+            if n >= 2:
+                sel = None
+                try:
+                    b = getattr(self.args, "fpga_bus", None)
+                    if b is not None and b >= 0:
+                        sel = FpgaI2C(b, self.args.fpga_addr).read(0xDB) & 1
+                except Exception:                              # noqa: BLE001
+                    sel = None
+                if sel is not None:
+                    self._pending_rx_sel = sel
+                    self._force_edge = True
+            try:
+                c.release()          # 打断阻塞的 read()
+            except Exception:                                  # noqa: BLE001
+                pass
+            self.request_reopen()
+
     def _capture_loop(self, dev):
+        threading.Thread(target=self._watchdog_loop, daemon=True).start()
         cap = None
         self._cap = None
         seq = 0
         while not self.stop_flag.is_set():
             t_start = time.time()
-            # 模式切换: 先丢掉旧句柄, 下面用新的 args 重新打开
+            # 看门狗: 3 秒没帧就重开采集(不断进程, 不重载 AI 模型)。
+            #   换源/切模式后 FPFA 偶尔会有残留状态, 重开一次就能拉回来。
+            if cap is not None:
+                _lt = getattr(self, "_last_ok_t", None)
+                if _lt is not None and (time.time() - _lt) > 3.0:
+                    self._last_ok_t = time.time()
+                    _n = getattr(self, "_wd_trips", 0) + 1
+                    self._wd_trips = _n
+                    print("[watchdog] 3 秒无帧, 恢复中 (第 %d 次)" % _n,
+                          file=sys.stderr)
+                    # 第 1 次: 单纯重开设备 (轻, 不断流);
+                    # 第 2 次起: 再打一个强制换源边沿 (唯一能救活卡死链路的动作)
+                    if _n >= 2:
+                        _cs = None
+                        try:
+                            _b = getattr(self.args, "fpga_bus", None)
+                            if _b is not None and _b >= 0:
+                                _cs = FpgaI2C(_b, self.args.fpga_addr).read(0xDB) & 1
+                        except Exception:                      # noqa: BLE001
+                            _cs = None
+                        if _cs is not None:
+                            self.switch_source(_cs, force=True)
+                        else:
+                            self.request_reopen()
+                    else:
+                        self.request_reopen()
+            # 模式切换 / 换源: 先丢掉旧句柄, 下面用新参数重新打开
             _ev = getattr(self, "need_reopen", None)
             if _ev is not None and _ev.is_set():
                 _ev.clear()
                 if cap is not None:
                     cap.release()
                     cap = None
-                print("[opencv] 检测到分辨率/帧率切换, 重新打开采集")
+                # ★ 2026-10-26: 换源必须在设备已关流之后写。
+                #   不弹重启进程: 那样要重新加载 AI 模型(约20s), web 端就是
+                #   "频繁断联重连"。
+                _ps = getattr(self, "_pending_rx_sel", None)
+                if _ps is not None:
+                    self._pending_rx_sel = None
+                    try:
+                        _bus = getattr(self.args, "fpga_bus", None)
+                        if _bus is not None and _bus >= 0:
+                            _fp = FpgaI2C(_bus, self.args.fpga_addr)
+                            _cur = _fp.read(0xDB)
+                            _want = (_cur & 0xFE) | (int(_ps) & 1)
+                            if _want != _cur or getattr(self, "_force_edge", False):
+                                if getattr(self, "_force_edge", False):
+                                    self._force_edge = False
+                                    _fp.write(0xDB, (_want & 0xFE) | ((_want ^ 1) & 1))
+                                    time.sleep(0.15)
+                                _fp.write(0xDB, _want)
+                                print("[csi] 换源(已关流): 0xDB 0x%02X -> 0x%02X"
+                                      % (_cur, _want))
+                            # 等 FPGA 换源复位窗(120ms)结杨
+                            time.sleep(0.35)
+                    except Exception as _se:                  # noqa: BLE001
+                        print("[csi] 换源失败: %s: %s"
+                              % (type(_se).__name__, _se), file=sys.stderr)
+                print("[opencv] 重新打开采集")
             # 每轮重读 —— 改分辨率后必须拿新尺寸重开
             w, h = self.args.width, self.args.height
             if cap is None or not cap.isOpened():
@@ -1599,6 +1712,7 @@ class OpenCVCapture(threading.Thread):
                 print("[opencv] 打开 %s ..." % dev)
                 cap = cv2.VideoCapture(dev, cv2.CAP_V4L2)
                 self._cap = cap          # 供 stop()/切模式时强制打断阻塞的 read
+                self._last_ok_t = time.time()   # 看门狗计时起点
                 if self.args.fourcc:
                     cap.set(cv2.CAP_PROP_FOURCC,
                             cv2.VideoWriter_fourcc(*self.args.fourcc))
@@ -1638,7 +1752,8 @@ class OpenCVCapture(threading.Thread):
                 time.sleep(0.02)
                 continue
             self.fail_count = 0
-
+            self._last_ok_t = time.time()      # 看门狗: 有帧就刷新
+            self._wd_trips = 0                 # 看门狗: 帧回来了就清零
             seq += 1
             # V43: 留一份【原始缓冲】引用给抓拍用。推流为了省 CPU 会缩到
             #       --stream-width(默认1920), 所以 /snapshot.jpg 拿到的永远是
@@ -3995,6 +4110,23 @@ class Handler(BaseHTTPRequestHandler):
                                         "modules": _mods,
                                         "meta": fpga_meta(),
                                     }, 409)
+                # ★ 2026-10-26: RX_SEL 不在这里写。
+                #   改成"交给采集线程, 在 cap.release() 之后写" —— 只有那样
+                #   才是干净的 s_stream(off) -> 换时钟 mux -> s_stream(on)。
+                #   边推流边改 mux 会让 BUFG 在两个无关时钟间切换, 下游可能
+                #   停在非法状态, 而 TX 侧又不在换源窗里复位 -> 永久卡死。
+                _rx_req = None
+                if isinstance(body, dict):
+                    _b2 = {}
+                    for _k, _v in body.items():
+                        if str(_k).strip().upper() == "RX_SEL":
+                            try:
+                                _rx_req = int(_v) & 1
+                            except (TypeError, ValueError):
+                                _rx_req = None
+                        else:
+                            _b2[_k] = _v
+                    body = _b2
                 wok, msg = self.fpga.apply(body)
                 # 写完立刻回读 —— FPGA 侧可能把值夹过, 前端以回读为准
                 _ok, snap = self.fpga.snapshot()
@@ -4010,21 +4142,28 @@ class Handler(BaseHTTPRequestHandler):
                 snap["write_ok"] = wok
                 snap["message"] = msg
                 snap["meta"] = fpga_meta()
-                # 通道真的变了才重启采集（写同样的值不折腾）
-                if _old_sel is not None:
+                # 换源: 交给采集线程在关流后执行 (不重启进程 -> 不重载 AI)
+                if _old_sel is not None and _rx_req is not None \
+                        and _rx_req != _old_sel:
+                    _cap = Handler.capture
+                    if _cap is not None and hasattr(_cap, "switch_source"):
+                        _cap.switch_source(_rx_req)
+                        rx_sel_put(getattr(self, "state_path", None), _rx_req)
+                        snap["rx_switched"] = _rx_req
+                        snap["message"] = ("%s; 正在切到 cam%d（关流后写入, "
+                                           "约 2 秒, 不重启服务）"
+                                           % (msg, _rx_req))
+                        _bump_rev("fpga")
+                        return self._json(snap, 200)
+                    # 采集对象没有该接口 -> 退回直接写寄存器
                     try:
-                        _new_sel = self.fpga.read(0xDB) & 0x01
-                    except Exception:                              # noqa: BLE001
-                        _new_sel = _old_sel
-                    if _new_sel != _old_sel:
-                        # 记住这一路, 下次上电直接用它(见 apply_rx_sel)。
-                        # 只记"切换成功"的值 —— 万一切过去卡死, 存档还停在
-                        # 上一条能用的通道, 重新上电就能自己回到可用状态。
-                        rx_sel_put(getattr(self, "state_path", None), _new_sel)
-                        snap["rx_switched"] = _new_sel
-                        snap["message"] = ("%s; 已切到 cam%d, 服务重启中(约 10s)…"
-                                           % (msg, _new_sel))
-                        _schedule_service_restart(1.5)
+                        _c = self.fpga.read(0xDB)
+                        self.fpga.write(0xDB, (_c & 0xFE) | _rx_req)
+                        rx_sel_put(getattr(self, "state_path", None), _rx_req)
+                        snap["rx_switched"] = _rx_req
+                        snap["message"] = "%s; 已切到 cam%d" % (msg, _rx_req)
+                    except Exception:                          # noqa: BLE001
+                        pass
                 _bump_rev("fpga")           # 通知其它在线前端
                 return self._json(snap, 200 if (wok and snap.get("ok")) else 500)
             if path == "/api/mode":
