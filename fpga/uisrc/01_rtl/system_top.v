@@ -1064,7 +1064,17 @@ reg  [17:0] S_ud_dly;
 reg         S_ud_rst_win;                       // 1 = 正在复位 dbuf/FDMA
 always @(posedge I_sysclk_25m or negedge S_pll_lock) begin
 	if (!S_pll_lock)                     S_ud_dly <= 18'd0;
-	else if (S_res_chg_d == 2'b01)       S_ud_dly <= 18'd1;        // 从切换沿开始计时
+	// 2026-10-26: **换 CSI 源也必须复位 dbuf + FDMA**。
+	//   原来这里只认 S_res_chg_d(切分辨率), 换源时虽然 S_res_hold25 开了
+	//   120ms 窗、写侧/读侧/byte 域都复位了, 但 dbuf/FDMA 这一路没动 ->
+	//   FDMA 停在旧源的 AXI 突发中途 -> 写侧永久堵死, 而 VTC 照旧自由跑 ->
+	//   板上现象: MIPI_CSI2 ERR1 0x1000000(crc,vc:0) / 0x10(fs/fe mis) 刷屏,
+	//   rkcif 报 "csi size err size:0x0", 画面卡死且只能重烧 bit 才能恢复。
+	//   ⚠ 只加在这一处: 绝不能加进 S_res_evt / S_reload_wait —— 那两个会触发
+	//     传感器整表重写 + D-PHY 长复位(>500ms), 换源时两颗传感器都没停,
+	//     不需要也不应该重写它们。
+	else if (S_res_chg_d == 2'b01 ||
+	         S_src_chg || S_clk_chg)     S_ud_dly <= 18'd1;        // 从切换沿开始计时
 	else if (S_ud_dly == 18'd0)          S_ud_dly <= 18'd0;
 	else if (S_ud_dly <  UD_RST_DLY)     S_ud_dly <= S_ud_dly + 18'd1;
 	else                                 S_ud_dly <= 18'd0;        // 到点停

@@ -1653,7 +1653,23 @@ class OpenCVCapture(threading.Thread):
             now_cap = time.time()
             if src is None:
                 DUAL_STAT["nomark"] += 1
+                # 2026-10-26: 双目下"两路画面都进 cam0 格子"的最常见原因就是
+                #   帧标记根本没进画面(web 端拿不到 src, 一律当 cam0)。
+                #   这里把第一帧的 Y 平面头 8 字节打出来, 一眼就能分辨:
+                #     a5 5a 11 ff ...  -> 标记正常, 问题在拼接/前端
+                #     其它             -> 标记没打上(FPGA mark_en / 时序问题)
+                if int(self.params.get().get("dual", 0)) \
+                        and not getattr(self, "_dualmk_logged", False):
+                    self._dualmk_logged = True
+                    try:
+                        _hdr = bytes(frame.reshape(-1)[:8]).hex()
+                    except Exception:                          # noqa: BLE001
+                        _hdr = "<读取失败>"
+                    print("[dual] 未找到帧标记, 帧首 8 字节 = %s" % _hdr,
+                          file=sys.stderr)
                 src = 0                       # 无标记 -> 当 cam0
+            else:
+                self._dualmk_logged = False
             DUAL_STAT["cam%d" % src] += 1
             self._dual_ts[src] = now_cap
             self._dual_last_src = src
