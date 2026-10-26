@@ -621,54 +621,116 @@ wire        S_jpeg_tx_sel;
 wire        S_jpeg_m_ready;
 
 `ifdef JPEG_EN
-	wire        S_jpeg_s_ready;
 	wire [6:0]  S_jpeg_qt_a, S_jpeg_qt_b;
 	wire [7:0]  S_jpeg_qta, S_jpeg_qtb;
 	wire        S_jpeg_m_valid, S_jpeg_m_last;
 	wire [7:0]  S_jpeg_m_data;
 	wire [31:0] S_jpeg_cnt;
 
-	jpeg_qtable_ram X_jpeg_qt (
-		.I_clk       (S_hs_rx_clk ),
-		.I_rst_n     (S_pll_lock  ),
-		.I_wr_en     (1'b0        ),
-		.I_wr_addr   (8'd0        ),
-		.I_wr_data   (8'd0        ),
-		.I_rd_idx_a  (S_jpeg_qt_a ),
-		.O_rd_data_a (             ),
-		.O_rd_data_a_asyn (S_jpeg_qta ),
-		.I_rd_idx_b  (S_jpeg_qt_b ),
-		.O_rd_data_b (S_jpeg_qtb  )
+	//==========================================================================
+	// 2026-10-26  JPEG 支路重新接线
+	//
+	//  原来这条支路**从来没有出过一帧正确的图**, 三处结构性问题:
+	//   ① 编码器挂在 S_hs_rx_clk (单路 32.4MHz) —— 312/150 拍/MCU 下 1080p
+	//      只有 6.4fps; 实测该编码器是 150.0 clk/MCU(块级流水已实现),
+	//      @300MHz = 255.9 Mpx/s, 够双路1080p60 / 4K30 (248.8, 余量 2.7%)。
+	//   ② 输入只接了 S_yuv_data[31:0] (源是 64bit=4px), 且 s_ready 悬空没用
+	//      -> 每拍丢一半像素, 行缓冲永远凑不满 8 行。
+	//      现在经 jpeg_enc_if: 跨时钟 + 尊重 s_ready + 64bit 拆成 2×32bit。
+	//   ③ csi2_frame_tx_var 挂在 32.4MHz, 却直接喂 150MHz 域的 D-PHY TX
+	//      -> 最后一跳 CDC 没做。现在经 jpeg_byte_bridge 跨到 S_dsi_byte_clk。
+	//
+	//  ⚠ 分辨率改成运行时 (i_width/i_height), 一个 bit 通吃 1080p/4K/拼接;
+	//    W/H 参数取最大值 3840x2160, 只用于确定行缓冲深度。
+	//==========================================================================
+	wire S_jpg_clk  = S_dsi_hs_x4;                    // pll_dsi clk3 = 300MHz
+	wire S_jpg_rstn = S_pll_lock & S_dsi_pll_lock & S_res_rstn_byte;
+
+	// --- 输入接口 (YUV 域 -> 编码器域) ---
+	wire        S_je_v, S_je_rdy;
+	wire [31:0] S_je_d;
+	wire [15:0] S_je_bp, S_je_wlo, S_je_sof;
+	wire [9:0]  S_je_lvl;
+
+	jpeg_enc_if #(.AW(10)) X_jenc_if (
+		.s_clk      (S_hs_rx_clk               ),
+		.s_rst_n    (S_pll_lock & S_res_rstn_rx),
+		.s_valid    (S_yuv_de                  ),
+		.s_data     (S_yuv_data                ),  // 用未打标记的那份: 标记会污染左上角
+		.s_sof      (S_yuv_sof                 ),
+		.e_clk      (S_jpg_clk                 ),
+		.e_rst_n    (S_jpg_rstn                ),
+		.e_valid    (S_je_v                    ),
+		.e_data     (S_je_d                    ),
+		.e_ready    (S_je_rdy                  ),
+		.st_ovf     (S_je_bp                   ),
+		.st_word_lo (S_je_wlo                  ),
+		.st_sof     (S_je_sof                  ),
+		.o_level    (S_je_lvl                  )
 	);
 
-	jpeg_encoder_top #(.W(1920), .H(1080)) X_jpeg (
-		.clk            (S_hs_rx_clk    ),
-		.rst_n          (S_pll_lock     ),
-		.i_en           (1'b1           ),
-		.i_soft_rst     (1'b0           ),
-		.i_lossless     (1'b0           ),
-		.i_width        (12'd1920       ),
-		.i_height       (12'd1080       ),
-		.o_qt_idx_a     (S_jpeg_qt_a    ),
-		.i_qt_data_a    (S_jpeg_qta     ),
-		.o_qt_idx_b     (S_jpeg_qt_b    ),
-		.i_qt_data_b    (S_jpeg_qtb     ),
-		.s_valid        (S_yuv_de       ),
-		.s_data         (S_yuv_data[31:0]),
-		.s_ready        (S_jpeg_s_ready ),
-		.m_valid        (S_jpeg_m_valid ),
-		.m_data         (S_jpeg_m_data  ),
-		.m_last         (S_jpeg_m_last  ),
-		.m_ready        (S_jpeg_m_ready ),
+	jpeg_qtable_ram X_jpeg_qt (
+		.I_clk       (S_jpg_clk  ),
+		.I_rst_n     (S_jpg_rstn ),
+		.I_wr_en     (1'b0       ),
+		.I_wr_addr   (8'd0       ),
+		.I_wr_data   (8'd0       ),
+		.I_rd_idx_a  (S_jpeg_qt_a),
+		.O_rd_data_a (           ),
+		.O_rd_data_a_asyn (S_jpeg_qta),
+		.I_rd_idx_b  (S_jpeg_qt_b),
+		.O_rd_data_b (S_jpeg_qtb )
+	);
+
+	jpeg_encoder_top #(.W(3840), .H(2160)) X_jpeg (
+		.clk            (S_jpg_clk     ),
+		.rst_n          (S_jpg_rstn    ),
+		.i_en           (1'b1          ),
+		.i_soft_rst     (1'b0          ),
+		.i_lossless     (1'b0          ),
+		.i_width        (S_h_active[11:0]  ),   // 运行时分辨率
+		.i_height       (S_v_active[11:0]  ),
+		.o_qt_idx_a     (S_jpeg_qt_a   ),
+		.i_qt_data_a    (S_jpeg_qta    ),
+		.o_qt_idx_b     (S_jpeg_qt_b   ),
+		.i_qt_data_b    (S_jpeg_qtb    ),
+		.s_valid        (S_je_v        ),
+		.s_data         (S_je_d        ),
+		.s_ready        (S_je_rdy      ),
+		.m_valid        (S_jpeg_m_valid),
+		.m_data         (S_jpeg_m_data ),
+		.m_last         (S_jpeg_m_last ),
+		.m_ready        (S_jpeg_m_ready),
 		.st_frame_bytes (S_jpeg_st_bytes),
 		.st_busy        (S_jpeg_st_busy ),
 		.st_done        (S_jpeg_st_done ),
 		.st_frame_cnt   (S_jpeg_cnt     )
 	);
 
-	// CSI-2 可变长发送 (DT=0x18, 乒乓双缓冲): 编码器输出是连续字节流,
-	// 也不知道每包多大, 所以走 csi2_frame_tx_var。乒乓让攒包和发包并行,
-	// s_tready 基本一直为 1, 避免编码器的 block 流水被长停顿打乱。
+	// --- 码流跨到 D-PHY 的 byte_clk 域 (150MHz) ---
+	wire        S_jv_valid, S_jv_last, S_jv_ready;
+	wire [7:0]  S_jv_data;
+	wire [15:0] S_jb_bp;
+	wire [7:0]  S_jb_lvl;
+
+	jpeg_byte_bridge #(.AW(8)) X_jbyte_br (
+		.w_clk   (S_jpg_clk        ),
+		.w_rst_n (S_jpg_rstn       ),
+		.w_valid (S_jpeg_m_valid   ),
+		.w_data  (S_jpeg_m_data    ),
+		.w_last  (S_jpeg_m_last    ),
+		.w_ready (S_jpeg_m_ready   ),
+		.r_clk   (S_dsi_byte_clk   ),
+		.r_rst_n (S_dphy_rst_n & S_res_rstn_byte),
+		.r_valid (S_jv_valid       ),
+		.r_data  (S_jv_data        ),
+		.r_last  (S_jv_last        ),
+		.r_ready (S_jv_ready       ),
+		.st_bp   (S_jb_bp          ),
+		.o_level (S_jb_lvl         )
+	);
+
+	// --- CSI-2 可变长发送 (DT=0x18, 乒乓双缓冲), 必须在 S_dsi_byte_clk 域 ---
 	wire        S_jv_hs_en, S_jv_hs_last;
 	wire [31:0] S_jv_hs_data;
 
@@ -678,13 +740,13 @@ wire        S_jpeg_m_ready;
 		.DT        (6'h18),
 		.VC        (2'b00)
 	) X_jv (
-		.clk        (S_hs_rx_clk    ),
-		.rst_n      (S_pll_lock     ),
+		.clk        (S_dsi_byte_clk),
+		.rst_n      (S_dphy_rst_n & S_res_rstn_byte),
 		.enable     (S_jpeg_tx_sel  ),
-		.s_tvalid   (S_jpeg_m_valid ),
-		.s_tdata    (S_jpeg_m_data  ),
-		.s_tlast    (S_jpeg_m_last  ),
-		.s_tready   (S_jpeg_m_ready ),
+		.s_tvalid   (S_jv_valid     ),
+		.s_tdata    (S_jv_data      ),
+		.s_tlast    (S_jv_last      ),
+		.s_tready   (S_jv_ready     ),
 		.hs_en      (S_jv_hs_en     ),
 		.hs_data    (S_jv_hs_data   ),
 		.hs_last    (S_jv_hs_last   ),
@@ -692,6 +754,10 @@ wire        S_jpeg_m_ready;
 		.packet_cnt (               ),
 		.byte_cnt   (               )
 	);
+
+	// 诊断口暂未接只读寄存器, 先 silencer —— 否则 TD 会把整段逻辑优化掉,
+	// 资源数字会假性变小, 排查时又得怀疑人生。
+	wire _unused_jpeg_diag = |{S_je_bp, S_je_wlo, S_je_sof, S_je_lvl, S_jb_bp, S_jb_lvl};
 `endif
 
 `ifndef JPEG_EN

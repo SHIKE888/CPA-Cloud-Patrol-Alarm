@@ -641,6 +641,22 @@
                     <Attr Name="CompileOrder" Val="102"/>
                 </FileInfo>
             </File>
+            <File Path="uisrc/01_rtl/jpeg/jpeg_enc_if.v">
+                <FileInfo>
+                    <Attr Name="UsedInSyn" Val="true"/>
+                    <Attr Name="UsedInP&R" Val="true"/>
+                    <Attr Name="BelongTo" Val="design_1"/>
+                    <Attr Name="CompileOrder" Val="104"/>
+                </FileInfo>
+            </File>
+            <File Path="uisrc/01_rtl/jpeg/jpeg_byte_bridge.v">
+                <FileInfo>
+                    <Attr Name="UsedInSyn" Val="true"/>
+                    <Attr Name="UsedInP&R" Val="true"/>
+                    <Attr Name="BelongTo" Val="design_1"/>
+                    <Attr Name="CompileOrder" Val="106"/>
+                </FileInfo>
+            </File>
             <File Path="uisrc/01_rtl/ctrl/i2c_slave.v">
                 <FileInfo>
                     <Attr Name="UsedInSyn" Val="true"/>
