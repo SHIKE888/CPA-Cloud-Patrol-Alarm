@@ -314,4 +314,22 @@ $128 \text{ px/MCU} \div 150.0 \times 300\text{MHz} = 255.9$ Mpx/s，对 248.8 �
 5. **J5**：`dual_stitch` 接入（`W` 改 3840，行缓冲 ERAM ≈ +26 块）。
 6. **J6**：修无损路径（吞吐 2.5× + 帧间死锁）。
 
+### 9. 进度（2026-10-26）
+
+| 步骤 | 状态 | 依据 |
+|---|---|---|
+| 实测编码器吞吐 | ✅ | `tb_jpeg_thru`：有损 150.0 clk/MCU，无损 320.2 clk/MCU |
+| 编码器运行时尺寸（修 3 个 4K 潜伏 bug） | ✅ | `a5f0467`，输出字节与改造前完全一致 |
+| `jpeg_enc_if`（跨时钟 + 反压 + 拆字） | ✅ | `tb_jpeg_enc_if` PASS，`a8df18b` |
+| `jpeg_byte_bridge`（码流 300→150MHz） | ✅ | `tb_jpeg_byte_bridge` PASS，`103dc44` |
+| `system_top` 接线 + `CFG_VER`=0x4709 | ✅ 代码完成 | `064d576`，`iverilog -E` 通过 |
+| **TD 综合验证** | ⬜ **待做** | `system_top` 依赖厂商原语，只能 TD 编 |
+| RK 侧 DT=0x18 | ⬜ | rkcif 是否接受未验证 |
+| `dual_stitch` / 无损修复 | ⬜ | — |
+
+⚠ **TD 工程注意**：新文件已写入 `fpga/fpga_prj.al`，但**已打开的 TD GUI 用内存里的
+旧文件列表**，直接综合会报 `jpeg_enc_if` / `jpeg_byte_bridge` 找不到模块。
+必须先**重新打开工程**（或手工 Add Files 加入这两个文件）再综合。
+（另：启动第二个 TD 实例会在退出时把 `.al` 里手写的条目冲掉，已经踩过一次。）
+
 
