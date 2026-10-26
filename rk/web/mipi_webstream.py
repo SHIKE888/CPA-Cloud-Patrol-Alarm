@@ -3531,6 +3531,20 @@ def probe_modules(fpga, force=False):
     """
     if fpga is None:
         return {"supported": False, "reason": "no-fpga"}
+    # 2026-10-26: **这个判据整体停用** —— 它在板上被证明是错的。
+    #   实测(两路模组都插着、cam1 正常出 55fps 画面):
+    #       0xEA = 0x00  (cam0/cam1 的 cfg_done 全是 0)
+    #       0xEB = 0x00  (cam0 AE 计数不涨)
+    #       0xEC = 0x00  (cam1 AE 计数不涨, 但画面明明在跑)
+    #   0x4705 上这两个读数还会恒为 0x03。总之它压根反映不了"有没有模组"。
+    #   后果很严重: 前端 syncCam() 拿 alive=false 把**能用的那一路**按钮置灰,
+    #   用户直接报"选不了左目"。
+    #   而"切到空通道会卡死"这件事, 已在 2026-10-26 的 RTL 里从根上修好了
+    #   (换源时补上 dbuf/FDMA 复位, 见 system_top.v 的 S_ud_dly), 换源可以自恢复,
+    #   不再需要这层会误伤的硬拦截。
+    return {"supported": False,
+            "reason": "probe disabled: 0xEA/0xEB/0xEC 实测不能作为模组判据"}
+    # ---- 以下为旧实现, 保留仅供追溯, 不再执行 ----
     now = time.time()
     if (not force) and _MODULE_CACHE["val"] is not None \
             and (now - _MODULE_CACHE["t"]) < _MODULE_CACHE_TTL:
@@ -3892,6 +3906,20 @@ class Handler(BaseHTTPRequestHandler):
                     out = self.params.reset()
                 else:
                     out = self.params.update(_clamp_params(body))
+                # 2026-10-26: **params.dual 必须同步到 FPGA 0xDB[1]**。
+                #   以前这里只改 RK 侧的拼接参数, FPGA 的 dual_en 从来没被写过 ->
+                #   点"双目"后 FPGA 仍然只出同一路(也不打帧标记), 结果两格画面
+                #   都来自那一路 -> 板上表现就是"两个画面都挤在 cam0 窗口"。
+                #   4K 下 FPGA 自己会把 S_dual_eff 置 0(带宽不够), 这里照写即可。
+                if self.fpga is not None:
+                    try:
+                        _dw = 1 if int(out.get("dual", 0)) else 0
+                        if ((self.fpga.read(0xDB) >> 1) & 1) != _dw:
+                            self.fpga.apply({"DUAL_EN": _dw})
+                            print("[dual] 同步 FPGA 0xDB[1] -> %d" % _dw)
+                    except Exception as _e:                    # noqa: BLE001
+                        print("[dual] 同步 DUAL_EN 失败: %s" % _e,
+                              file=sys.stderr)
                 # 参数变化后立刻下发到采集管线 (GStreamer 后端无需重启推流)
                 cap = Handler.capture
                 if cap is not None and hasattr(cap, "apply"):
@@ -4548,12 +4576,24 @@ def main():
     # ---- 2026-10-25: 上电先把单目通道设对, 再打开采集设备 ----
     #   必须在 cap.start() 之前: 一旦以"没有模组的那一路"去 open /dev/video22,
     #   rkcif 会一直等不到帧、卡在里面, 之后只能重载 bitstream 才恢复。
+    # ---- 2026-10-26: 上电一律先进单目(dual_en=0) ----
+    #   双目会把时钟 mux **强制**选到 cam0(见 system_top.v 的 S_clk_sel_r)。
+    #   如果上电时 cam0 没插模组, 整条 CSI 通路没有像素时钟 -> 立刻卡死且只能
+    #   重烧 bit。所以上电先进单目, 用户要双目时再点按钮(那时才同步 DUAL_EN)。
     if args.fpga_bus is not None and args.fpga_bus >= 0:
         try:
+            _fpga = FpgaI2C(args.fpga_bus, args.fpga_addr)
+            if int(params.get().get("dual", 0)):
+                params.update({"dual": 0})
+                print("[csi] 上电强制单目: params.dual 已归 0")
             _want = rx_sel_get(state_file)
-            _db = apply_rx_sel(FpgaI2C(args.fpga_bus, args.fpga_addr), _want)
-            print("[csi] 单目通道: 目标 cam%d, 0xDB=0x%02X (读回 RX_SEL=%d)"
-                  % (_want, _db, _db & 0x01))
+            _db = apply_rx_sel(_fpga, _want)
+            if (_db >> 1) & 1:                      # 清 dual_en(bit1)
+                _fpga.write(0xDB, _db & 0xFD)
+                _db = _fpga.read(0xDB)
+                print("[csi] 上电强制单目: 已清 FPGA 0xDB[1]")
+            print("[csi] 单目通道: 目标 cam%d, 0xDB=0x%02X (RX_SEL=%d DUAL_EN=%d)"
+                  % (_want, _db, _db & 0x01, (_db >> 1) & 1))
         except Exception as _e:                              # noqa: BLE001
             print("[csi] 设置单目通道失败: %s: %s" % (type(_e).__name__, _e),
                   file=sys.stderr)
