@@ -24,7 +24,8 @@ iverilog -g2005 -I "$j" $pdef -o tb_jpeg_thru.vvp `
     "$j/jpeg_headers.v" `
     "$j/jpeg_lossless_enc.v" `
     "$j/jpeg_qtable_ram.v" `
-    "$j/jpeg_range.v"
+    "$j/jpeg_range.v" `
+    "../uisrc/03_ip/al_fifo/fifo_32b_async_2.v"
 if ($LASTEXITCODE -ne 0) { Write-Host "COMPILE FAILED"; exit 1 }
 
 vvp tb_jpeg_thru.vvp

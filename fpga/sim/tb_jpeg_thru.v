@@ -17,10 +17,12 @@ module tb_jpeg_thru;
     parameter integer W = 320;              // 小尺寸即可: clk/MCU 与分辨率无关
     parameter integer H = 256;               // MCU=20x32=640, 把帧头/drain 开销摊薄
     parameter integer LL = 0;                // 0=有损(DCT) 1=无损(DPCM)
-    // 编译期尺寸 (= 行缓冲深度): 取最大分辨率, 与运行尺寸分离
-    //   这样顺便验证 MCU_X_RT / MCU_Y_RT 运行时机制是否正确生效
-    parameter integer PW = 3840;
-    parameter integer PH = 2160;
+    // 编译期尺寸 (= 行缓冲深度)。
+    //  ⚠ 2026-10-26 回退: MCU 尺寸改回编译期, 所以 PW/PH 必须等于运行尺寸。
+    //    曾经用 PW=3840/PH=2160 + 运行 320x256 验证"运行时尺寸"; 那个能力已不做,
+    //    因为 y_mem 8192x64 在 TD 里映射不到 ERAM (回退成 LUT-RAM, slice 爆到 88.9%)。
+    parameter integer PW = 320;
+    parameter integer PH = 256;
 
     reg clk = 1'b0;
     always #3.3 clk = ~clk;                    // ~151.5MHz

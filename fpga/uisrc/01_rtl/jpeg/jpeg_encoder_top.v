@@ -76,13 +76,18 @@ module jpeg_encoder_top #(
     output reg  [31:0] st_frame_cnt
 );
 
-    // ★ 2026-10-26: MCU 尺寸改成【运行时】(i_width / i_height)。
-    //   原来 MCU_X/MCU_Y 是编译期常量, 等于一个 bit 只能跑一种分辨率 ——
-    //   而赛题要在 1080p / 4K / 双目拼接之间切。W/H 参数从此只用来
-    //   确定行缓冲深度 (取最大分辨率), 不再参与帧结构计算。
-    wire [7:0]  MCU_X_RT = i_width[11:4];          // i_width  / 16
-    wire [8:0]  MCU_Y_RT = i_height[11:3];         // i_height / 8
-    wire [31:0] NWORD_RT = (i_width >> 1) * i_height;  // 无损模式总 word 数
+    // ★ 2026-10-26 (紧急回退): MCU 尺寸改回**编译期**。
+    //   曾经改成运行时 (MCU_X_RT/MCU_Y_RT), 但为了支持 4K 把 W/H 参数提到
+    //   3840x2160 后, jpeg_linebuf 的 y_mem 变成 8192 x 64bit —— TD **无法**把它
+    //   映射到 ERAM20k, 直接回退成 8192 个 LUT-RAM:
+    //     综合报告: #used ram 17704 / #dram lut 17456, u_linebuf 单个模块 LUT=4539
+    //     slice 43993(68.4%) -> 57186(88.9%), 布线 57 分钟还停在 50%
+    //   => 先回到已验证的 1920x1080 (y_mem 4096 x 64bit), 恢复资源。
+    //   4K / 拼接要上 JPEG 时, 必须重新设计行缓冲 (比如 8 行单缓冲 + 更高频),
+    //   不能再简单地把 W 参数放大。
+    localparam integer MCU_X = W / 16;
+    localparam integer MCU_Y = H / 8;
+    localparam integer NWORD = (W / 2) * H;   // 无损模式的总 word 数
 
     wire use_ll = i_lossless;
 
@@ -117,7 +122,6 @@ module jpeg_encoder_top #(
     jpeg_linebuf #(.W(W)) u_linebuf (
         .clk         (clk),
         .rst_n       (rst_n),
-        .i_width     (i_width),          // ★ 运行时行宽 (W 参数只定存储深度)
         .i_valid     (s_valid & ~use_ll),
         .i_data      (s_data),
         .o_wr_ready  (lb_ready),
@@ -511,7 +515,7 @@ module jpeg_encoder_top #(
                 //   才能 flush。u_ll 是 4 clk/word 的流水, 收到第 NWORD 个时
                 //   最后一个 word 的码还在流水线里; 此时就 flush 出来的是半个码
                 //   —— 实测末尾 2 字节 0C 03 变成 1 字节 1F。
-                if (ll_wcnt >= NWORD_RT && ll_ready) begin
+                if (ll_wcnt >= NWORD && ll_ready) begin
                     ll_run   <= 1'b0;        // 停止接收, 不再允许上游推进
                     bp_flush <= 1'b1;
                     tstate   <= T_FIN;
@@ -605,11 +609,11 @@ module jpeg_encoder_top #(
                     end
                 end else begin
                     blk <= 2'd0;
-                    if (mx_reg == (MCU_X_RT - 8'd1)) begin
+                    if (mx_reg == (MCU_X - 8'd1)) begin
                         mx_reg   <= 8'd0;
                         my       <= my + 9'd1;
                         grp_done <= 1'b1;       // 释放一个 8 行组
-                        if (my == (MCU_Y_RT - 9'd1)) begin
+                        if (my == (MCU_Y - 9'd1)) begin
                             tstate   <= T_DRAIN;   // 等残留块编完再 flush
                         end else begin
                             tstate   <= T_WGRP;

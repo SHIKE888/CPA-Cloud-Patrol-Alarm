@@ -682,10 +682,14 @@ wire        S_jpeg_m_ready;
 		.O_rd_data_b (S_jpeg_qtb )
 	);
 
-	jpeg_encoder_top #(.W(3840), .H(2160)) X_jpeg (
+	jpeg_encoder_top #(.W(1920), .H(1080)) X_jpeg (
 		.clk            (S_jpg_clk     ),
 		.rst_n          (S_jpg_rstn    ),
-		.i_en           (1'b1          ),
+		// ⚠ 4K 模式下必须关掉编码器: 行缓冲按 1920 定深, 尺寸不符会出废帧。
+		//   (曾把 W/H 提到 3840x2160 想支持 4K, 结果 y_mem 8192x64 TD 映射不到 ERAM,
+		//    回退成 17456 个 LUT-RAM, slice 68.4% -> 88.9%, 布线跑不完。
+		//    4K JPEG 得重新设计行缓冲再来。)
+		.i_en           (~S_is_4k      ),
 		.i_soft_rst     (1'b0          ),
 		.i_lossless     (1'b0          ),
 		.i_width        (S_h_active[11:0]  ),   // 运行时分辨率

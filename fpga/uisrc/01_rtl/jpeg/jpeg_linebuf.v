@@ -34,11 +34,6 @@ module jpeg_linebuf #(
     input  wire        clk,
     input  wire        rst_n,
 
-    // ★ 2026-10-26: 行宽改成运行时。W 参数只用来定存储深度 (= 最大分辨率),
-    //   否则换分辨率时 wrow 按旧 W 计行, 8 行组永远凑不满 -> 编码器永久等
-    //   lb_avail (实测: 改成运行时 MCU 后帧不再完成就是这个原因)。
-    input  wire [11:0] i_width,
-
     // ---------------- 输入: YUV422 {Cr,Y1,Cb,Y0}, 2 像素/拍 ----------------
     input  wire        i_valid,
     input  wire [31:0] i_data,
@@ -163,8 +158,7 @@ module jpeg_linebuf #(
             end
 
             if (i_valid && o_wr_ready) begin
-                // 每行 word 数 = i_width/2 (每个 word 2 个像素), 与旧 WX-1 等价
-                if (wx == ((i_width >> 1) - 12'd1)) begin
+                if (wx == WX - 1) begin
                     wx <= 11'd0;
                     if (wrow == 3'd7) begin
                         wrow        <= 3'd0;
