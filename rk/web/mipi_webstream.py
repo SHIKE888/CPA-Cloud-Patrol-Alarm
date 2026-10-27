@@ -878,6 +878,8 @@ class FrameHub:
             #   就拿它算。比读 FPGA 的 0xA0 可靠: 不依赖 I2C、也不依赖编码器
             #   是 FPGA 还是直通, 反正这就是链路上真实走过的码流大小。
             self._jpeg_bytes = len(jpeg) if jpeg else 0
+            # 帧自己的宽高 —— 压缩比必须用它做分母(推流帧可能被缩小过)
+            self._jpeg_wh = _jpeg_dims(jpeg) if jpeg else None
             self._frame_id += 1
             if jpeg is not None and ts is not None:
                 self._t_cap = ts
@@ -1110,11 +1112,18 @@ class SysMonitor:
         #   真实码流 = FPGA 的上一帧字节数(0xA0~0xA2) x fps。
         #   压缩比 = 未压缩字节 / 压缩后字节, 无单位, 越大越省。
         if width and height:
-            raw_bpf = float(width) * float(height) * 2.0     # YUV422 2B/px
+            # 压缩比的基准 = **这张 JPEG 自己的像素数**, 不是采集尺寸。
+            #   推流帧会被 --stream-width 缩小(1920x1080 -> 960x540),
+            #   用采集尺寸当分母会把压缩比虚报 4 倍。
+            _wh = getattr(hub, "_jpeg_wh", None)
+            jw, jh = (_wh if _wh else (width, height))
+            raw_bpf = float(jw) * float(jh) * 2.0     # YUV422 2B/px
             link    = LINK_BYTES_PER_SEC
             jb = getattr(hub, "_jpeg_bytes", 0) or None
 
-            m = {"link_mb_s": round(link / 1e6, 1)}
+            m = {"link_mb_s": round(link / 1e6, 1),
+                 "jpeg_w": jw, "jpeg_h": jh,
+                 "stream_scaled": (jw, jh) != (width, height)}
             if fps:
                 m["raw_mb_s"] = round(raw_bpf * fps / 1e6, 1)
 
@@ -2800,6 +2809,42 @@ class GstCapture(threading.Thread):
 # ============================================================================
 CTRL_RE = re.compile(
     r"^\s*(\S+)\s+(0x[0-9a-fA-F]+)\s+\((\w+)\)\s*:\s*(.*)$")
+
+
+def _jpeg_dims(buf):
+    """从 JPEG 头里读 SOF 段的宽高, 不解像素(几十微秒)。取不到返回 None。
+
+    为什么必须用**帧自己的**宽高 (2026-10-27 踩过的坑):
+      推流帧会被 --stream-width 缩小(实测 1920x1080 -> 960x540),
+      而 /api/sys 里的 width/height 是**采集**尺寸。
+      拿采集尺寸当压缩比的分母会虚报 4 倍 —— 页面上出现 42.4:1,
+      而同一画面按帧自身尺寸算只有 11:1。
+    """
+    if not buf or len(buf) < 4 or buf[0] != 0xFF or buf[1] != 0xD8:
+        return None
+    i, n = 2, len(buf)
+    SOF = (0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7,
+           0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF)
+    while i + 9 < n:
+        if buf[i] != 0xFF:
+            i += 1
+            continue
+        m = buf[i + 1]
+        if m == 0xFF:
+            i += 1
+            continue
+        if m in (0xD8, 0xD9, 0x01) or 0xD0 <= m <= 0xD7:
+            i += 2
+            continue
+        seglen = (buf[i + 2] << 8) | buf[i + 3]
+        if seglen <= 0:
+            return None
+        if m in SOF:
+            h = (buf[i + 5] << 8) | buf[i + 6]
+            w = (buf[i + 7] << 8) | buf[i + 8]
+            return (w, h)
+        i += 2 + seglen
+    return None
 
 
 def list_v4l2_controls(dev, v4l2ctl="v4l2-ctl"):
