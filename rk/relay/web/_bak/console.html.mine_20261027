@@ -1,0 +1,3688 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>云端智联定点巡航安防预警系统 局域网控制平台</title>
+<script src="vendor/roslib.min.js"></script>
+<style>
+/* ========== 基础 / 顶部导航（两视图共用） ========== */
+*{ box-sizing: border-box; }
+html,body{ height: 100%; margin: 0; }
+body{
+    font: 13px/1.5 -apple-system, "Segoe UI", "Noto Sans CJK SC", sans-serif;
+    background: #0d1117; color: #e6edf3; display: flex; flex-direction: column;
+  }
+.topnav{
+    display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+    padding: 0 12px; min-height: 44px; flex: none;
+    background: #161b22; border-bottom: 1px solid #2a323d;
+  }
+.topnav .brand{ font-weight: 600; margin-right: 12px; white-space: nowrap; }
+.topnav .brand i{ font-style: normal; font-weight: 400; color: #8b949e;
+                     margin-left: 8px; font-size: 12px; }
+.topnav a.tab{
+    padding: 5px 12px; border-radius: 8px; text-decoration: none;
+    font-size: 13px; color: #8b949e; border: 1px solid transparent;
+  }
+.topnav a.tab:hover{ color: #e6edf3; background: #21262d; border-color: #30363d; }
+.topnav a.tab.active{ background: #1f6feb; border-color: #1f6feb; color: #fff; font-weight: 600; }
+.topnav .sp{ margin-left: auto; }
+.topnav .host{ color: #8b949e; font-size: 12px; font-family: ui-monospace, monospace; }
+.view{ flex: 1; display: flex; flex-direction: column; min-height: 0; }
+.view[hidden]{ display: none !important; }
+#viewMap header{
+    display: flex; gap: 10px; align-items: center; padding: 10px 16px;
+    min-height: 56px; box-sizing: border-box;
+    background: var(--panel); border-bottom: 1px solid var(--line); flex-wrap: wrap;
+  }/* 两个子标题栏的首项都用 .ttl，尺寸/字重/配色完全一致 */
+#viewMap header .ttl{ color: #58a6ff; font-weight: 600; font-size: 15px; line-height: 1.2;
+    margin: 0 12px 0 0; white-space: nowrap; letter-spacing: 0; }
+#viewMap .row2{ border-top: 0; }
+#viewMap input[type=text],#viewMap input[type=number]{
+    background: #0d1117; border: 1px solid #30363d; color: #e6edf3;
+    padding: 5px 8px; border-radius: 6px; font-family: ui-monospace, monospace;
+  }
+#viewMap #addr{ min-width: 250px; }
+#viewMap input[type=number]{ width: 68px; }
+#viewMap button{
+    background: #21262d; border: 1px solid #30363d; color: #e6edf3;
+    padding: 5px 10px; border-radius: 6px; cursor: pointer; user-select: none;
+  }
+#viewMap button:hover{ background: #30363d; }
+#viewMap button:active{ transform: translateY(1px); }
+#viewMap button.primary{ background: #238636; border-color: #2ea043; }
+#viewMap button.danger{ background: #8b2c2c; border-color: #b34242; }
+#viewMap button.warn{ background: #8a6300; border-color: #b8860b; }
+#viewMap #dot{ width: 9px; height: 9px; border-radius: 50%; background: #8b949e; display: inline-block; }
+#viewMap #dot.on{ background: #3fb950; box-shadow: 0 0 8px #3fb950; }
+#viewMap header .grp{ color: #8b949e; font-size: 12px; margin: 0 4px 0 8px; }
+#viewMap header .sep{ width: 1px; align-self: stretch; background: #30363d; margin: 0 6px; }
+#viewMap button.tool.on{ background: #1f6feb; border-color: #1f6feb; color: #fff; font-weight: 600; }
+[hidden]{ display: none !important; }
+#viewMap main{ flex: 1; display: flex; min-height: 0; position: relative; padding: 14px; gap: 14px; }
+#viewMap #wrap{ flex: 1; position: relative; background: #010409; overflow: hidden;
+    border: 1px solid var(--line); border-radius: 12px; }
+#viewMap canvas{ display: block; cursor: crosshair; }
+/* 右列：与视频采集页同宽（360px）、同内距（14px）、同卡片样式 */
+#viewMap #sidecol{ width: 360px; flex: none; min-height: 0;
+    display: flex; flex-direction: column; gap: 14px;
+    overflow-y: auto; overscroll-behavior: contain;
+    scrollbar-width: thin; scrollbar-color: #30363d transparent; }
+#viewMap #sidecol::-webkit-scrollbar{ width: 8px }
+#viewMap #sidecol::-webkit-scrollbar-thumb{ background: #30363d; border-radius: 4px }
+#viewMap #sidecol::-webkit-scrollbar-track{ background: transparent }
+#viewMap aside{
+    width: auto; background: transparent; border: 0; border-radius: 0;
+    padding: 0; overflow: visible; font-size: 12px; flex: none;
+    display: flex; flex-direction: column; gap: 14px;
+  }
+/* 四张卡：完全同一套底/描边/圆角/内距 */
+#viewMap aside > section,
+#viewMap #dpad{
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 12px; padding: 14px;
+  }
+/* 四张卡的标题：同字号/字重/字距 */
+#viewMap #sidecol h3{ margin: 0 0 10px; font-size: 13px; color: var(--dim); font-weight: 600;
+             letter-spacing: .05em; text-transform: uppercase; }
+/* 信息卡吃掉剩余高度，这样卡片间距全部是 14px，中间不会出现空档 */
+#viewMap aside > section{ display: flex; flex-direction: column; }
+/* 按钮行：三列等宽 / 两列等宽，行距统一 8px */
+#viewMap .btnrow{ display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+#viewMap .btnrow + .btnrow{ margin-top: 8px; }
+#viewMap .btnrow.wide{ grid-template-columns: repeat(2, 1fr); }
+/* 仪表盘单元：与视频采集页 .metrics 同一套 */
+#viewMap .metrics{ display: grid; grid-template-columns: 1fr 1fr;
+    grid-template-rows: 1fr 1fr; gap: 1px;
+    background: var(--line); border: 1px solid var(--line);
+    border-radius: 10px; overflow: hidden; }
+#viewMap .metrics .m{ background: #12151a; padding: 9px 11px 10px; min-width: 0;
+    overflow: hidden; transition: background .2s; }
+#viewMap .metrics .m:hover{ background: #171b21; }
+#viewMap .metrics i{ display: block; font-style: normal; font-size: 10.5px;
+    letter-spacing: .05em; color: var(--dim); margin-bottom: 5px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#viewMap .metrics b{ display: block; font-size: 14px; line-height: 1.15; font-weight: 600;
+    color: var(--fg); font-variant-numeric: tabular-nums;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* 遥控卡：方向键 + 速度，占满剩余高度后贴底 */
+#viewMap #dpad{ display: flex; flex-direction: column; flex: 1 1 auto; }
+#viewMap #dpad .grid{ display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px;
+    width: 100%; max-width: 280px; margin: auto; }
+#viewMap #dpad button{ font-size: 22px; padding: 0; width: 100%; height: auto;
+    aspect-ratio: 1 / 1; border-radius: 10px;
+    background: var(--panel2); border: 1px solid var(--line); color: #c9d4e0;
+    transition: background .12s, border-color .12s, color .12s, transform .06s; }
+#viewMap #dpad button:hover{ background: #2b333e; border-color: var(--acc2); color: #fff; }
+#viewMap #dpad button:active{ transform: scale(.96); }
+#viewMap #dpad .stop{ grid-column: 2; grid-row: 2; font-size: 15px; font-weight: 600;
+    background: #8b2c2c; border-color: #b34242; color: #ffd7d7; }
+#viewMap #dpad .stop:hover{ background: #a33535; border-color: #d05555; color: #fff; }
+/* 速度两行，与方向键同属「遥控」卡 */
+#viewMap #dpad .speed{ display: grid; grid-template-columns: 1fr 1fr;
+    gap: 8px 12px; align-items: center; }
+#viewMap #dpad .speed .vrow{ display: flex; align-items: stretch; gap: 0; min-width: 0;
+    background: #0d1117; border: 1px solid var(--line); border-radius: 6px;
+    overflow: hidden; transition: border-color .12s, box-shadow .12s; }
+#viewMap #dpad .speed .vrow:focus-within{ border-color: #1f6feb;
+    box-shadow: 0 0 0 2px rgba(31,111,235,.25); }
+/* 名字和输入框本体连在一起：名字做成左侧内嵌标签 */
+#viewMap #dpad .speed .vrow span{ display: flex; align-items: center; padding: 0 8px;
+    font-size: 12px; color: var(--dim); background: var(--panel2);
+    border-right: 1px solid var(--line); white-space: nowrap; }
+#viewMap #dpad .speed input[type=number]{ flex: 1 1 auto; min-width: 0; width: auto;
+    padding: 4px 8px; font-size: 12px;
+    background: transparent; border: 0; color: var(--fg);
+    text-align: right; font-variant-numeric: tabular-nums; }
+#viewMap #dpad .speed input[type=number]:focus{ outline: none; box-shadow: none; }
+#viewMap #toast{
+    position: absolute; left: 50%; transform: translateX(-50%); bottom: 18px;
+    padding: 7px 14px; border-radius: 8px; background: #1f6feb33; border: 1px solid #1f6feb;
+    color: #cae8ff; opacity: 0; transition: opacity .25s; pointer-events: none; max-width: 60%;
+    z-index: 6;
+  }
+#viewMap #toast.show{ opacity: 1; }
+#viewMap #toast.err{ background: #8b2c2c55; border-color: #b34242; color: #ffd7d7; }
+
+/* ========== 视频采集工作台（原 mipi_viewer.html） ========== */
+:root{--bg:#0d1117;--panel:#161b22;--panel2:#21262d;--line:#30363d;--fg:#e6edf3;--dim:#8b949e;--acc:#3fb950;--acc2:#1f6feb;--warn:#d29922;--err:#f85149}
+#viewVideo *{box-sizing:border-box}
+#viewVideo{
+    margin:0; background:var(--bg); color:var(--fg);
+    font:14px/1.5 "Segoe UI","Microsoft YaHei",system-ui,sans-serif;
+  }
+#viewVideo header{
+    display:flex; gap:10px; align-items:center; flex-wrap:wrap;
+    padding:10px 16px; min-height:56px; box-sizing:border-box;
+    background:var(--panel); border-bottom:1px solid var(--line);
+    position:sticky; top:0; z-index:10;
+  }
+#viewVideo header h1{font-size:15px; line-height:1.2; margin:0 12px 0 0; font-weight:600;
+    white-space:nowrap; color:#58a6ff}
+#viewVideo input[type=text],#viewVideo select{
+    background:var(--panel2); border:1px solid var(--line); color:var(--fg);
+    border-radius:6px; padding:5px 8px; font-size:13px; height:30px;
+  }
+#viewVideo input[type=text]{width:230px}
+#viewVideo select{
+    cursor:pointer; appearance:none; -webkit-appearance:none; padding-right:28px;
+    background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6'><path d='M0 0h10L5 6z' fill='%238b949e'/></svg>");
+    background-repeat:no-repeat; background-position:right 9px center;
+    transition:.15s;
+  }
+#viewVideo select:hover{border-color:var(--acc2)}
+#viewVideo input[type=text]:focus,#viewVideo select:focus{outline:none; border-color:var(--acc2)}
+#viewVideo select option{background:var(--panel2); color:var(--fg)}
+#viewVideo select:disabled{opacity:.55; cursor:not-allowed}
+#viewVideo .row select{flex:1}
+#viewVideo button{
+    background:var(--panel2); border:1px solid var(--line); color:var(--fg);
+    border-radius:6px; padding:5px 10px; cursor:pointer; font-size:13px;
+    transition:.15s;
+  }
+#viewVideo button:disabled{ opacity: .4; cursor: not-allowed; }
+#viewVideo button:disabled:hover{ border-color: var(--line); color: var(--fg); background: var(--panel2); }
+#viewVideo button.primary{background:var(--acc2); border-color:var(--acc2); color:#fff; font-weight:600}
+#viewVideo button.primary:hover{filter:brightness(1.12)}
+#viewVideo button.ghost.on{background:var(--acc); border-color:var(--acc); color:#04260c; font-weight:600}
+#viewVideo .dot{width:9px;height:9px;border-radius:50%;background:#6e7681;display:inline-block;margin-right:6px}
+#viewVideo .dot.ok{background:var(--acc); box-shadow:0 0 8px var(--acc)}
+#viewVideo .dot.bad{background:var(--err); box-shadow:0 0 8px var(--err)}
+#viewVideo main{display:grid; grid-template-columns:minmax(0,1fr) 360px; gap:14px;
+       padding:14px; align-items:start}
+@media(max-width:1100px){
+#viewVideo main{grid-template-columns:minmax(0,1fr)}
+}
+#viewVideo #colLeft{
+    width:100%;
+    max-width:100%;
+    margin:0;
+    /* 绝对单页 + 左栏不允许滚动：高度锁定，内部由画面自己收缩 */
+    height:calc(100vh - 128px);
+    max-height:calc(100vh - 128px);
+    overflow:hidden;
+    display:flex;
+    flex-direction:column;
+  }
+#viewVideo #colLeft > .card{
+    flex:1 1 auto; min-height:0; height:100%;
+    display:flex; flex-direction:column;
+  }
+/* 画面吃掉剩余高度，宽度由 16:9 反推，不再把卡片撑高 */
+#viewVideo #stage{
+    flex:1 1 0; min-height:0;
+    width:auto; max-width:100%;
+    margin:0 auto;
+  }
+@media(min-width:1101px){
+#viewVideo #colRight{
+      max-height:calc(100vh - 128px);
+      overflow-y:auto; overscroll-behavior:contain;
+      padding-right:6px;
+      scrollbar-width:thin; scrollbar-color:#30363d transparent;
+    }
+#viewVideo #colRight::-webkit-scrollbar{width:8px}
+#viewVideo #colRight::-webkit-scrollbar-thumb{background:#30363d;border-radius:4px}
+#viewVideo #colRight::-webkit-scrollbar-track{background:transparent}
+}
+#viewVideo #colRight{display:flex; flex-direction:column}
+#viewVideo #colRight > .card{
+    flex:1 1 auto; min-height:0;
+    display:flex; flex-direction:column;
+  }
+#viewVideo #colRight > .card > .tabbody{
+    flex:1 1 auto; min-height:0;
+  }
+@media(min-width:1101px){
+#viewVideo #colRight > .card > .tabbody{overflow-y:auto; padding-right:4px}
+}
+#viewVideo .card{background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:14px}
+#viewVideo .card h2{font-size:13px; margin:0 0 10px; color:var(--dim); font-weight:600;
+           letter-spacing:.05em; text-transform:uppercase}
+#viewVideo #stage{
+    background:#000; border:1px solid var(--line); border-radius:12px;
+    width:100%; aspect-ratio:16 / 9;
+    margin:0 auto;
+    display:flex; align-items:center; justify-content:center;
+    overflow:hidden; position:relative;
+  }
+#viewVideo #stream{width:100%; height:100%; object-fit:contain; display:block}
+#viewVideo #quad{position:absolute; inset:0; display:none;
+        grid-template-columns:1fr 1fr; grid-template-rows:1fr 1fr;
+        gap:4px; padding:4px; box-sizing:border-box; background:#000}
+#viewVideo .qc{position:relative; background:#000; border:1px solid var(--line);
+      border-radius:6px; overflow:hidden;
+      display:flex; align-items:center; justify-content:center}
+#viewVideo .qc>b{position:absolute; left:6px; top:4px; z-index:2;
+        font-size:11px; font-weight:600; color:#9fe;
+        background:rgba(0,0,0,.55); padding:1px 6px; border-radius:4px}
+#viewVideo .qb{width:100%; height:100%; display:flex;
+      align-items:center; justify-content:center; overflow:hidden}
+#viewVideo .qb canvas,#viewVideo .qb img{max-width:100%; max-height:100%;
+                      object-fit:contain; display:block}
+#viewVideo .dph{color:var(--dim); font-size:12px; text-align:center; line-height:1.8}
+/* 未连接提示：做成覆盖层，单目/双目都能看到，也不会被 img 挤到左边 */
+#viewVideo #placeholder{text-align:center; font-size:13px;
+               position:absolute; inset:0; z-index:3; pointer-events:none;
+               display:flex; align-items:center; justify-content:center}
+#viewVideo #placeholder .phbox{color:var(--dim); line-height:1.9; padding:14px 22px;
+               background:rgba(13,17,23,.9); border:1px solid var(--line);
+               border-radius:10px; box-shadow:0 6px 20px rgba(0,0,0,.45); max-width:80%}
+#viewVideo .row{display:flex; align-items:center; gap:10px; margin:9px 0; min-width:0}
+#viewVideo .row label{flex:0 1 84px; min-width:0; color:var(--dim); font-size:13px;
+             overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+#viewVideo .row input[type=range]{flex:1; min-width:0; accent-color:var(--acc2); height:22px}
+#viewVideo .row .val{flex:0 0 30px; text-align:right; white-space:nowrap;
+            padding-right:2px;
+            font-variant-numeric:tabular-nums;
+            color:var(--fg); font-size:12.5px}
+#viewVideo #tab-cam .row label{flex:0 0 76px}
+#viewVideo #tab-cam .row .val{flex:0 0 62px}
+#viewVideo .grid2{display:grid; grid-template-columns:1fr 1fr; gap:8px}
+#viewVideo .grid3{display:grid; grid-template-columns:repeat(3,1fr); gap:8px}
+#viewVideo .grid4{display:grid; grid-template-columns:repeat(4,1fr); gap:8px}
+#viewVideo .pp{display:flex; flex-direction:column; gap:6px; padding-right:4px}
+#viewVideo .ppbtn{width:100%; text-align:left; padding:7px 10px;
+         touch-action:manipulation; -webkit-tap-highlight-color:transparent}
+#viewVideo .ppbtn.lock{opacity:.55; transition:opacity .12s}
+#viewVideo .ppparam{display:none; margin:0 0 4px 10px; padding:2px 0 2px 10px;
+           border-left:2px solid var(--line)}
+#viewVideo .ppparam.show{display:block; animation:ppIn .14s ease-out}
+@keyframes ppIn{from{opacity:0; transform:translateY(-3px)} to{opacity:1; transform:none}}
+#viewVideo .ppparam .row{gap:8px; margin:7px 0}
+#viewVideo .ppparam .row label{flex:0 0 56px; font-size:12px}
+@media (max-width:820px){
+#viewVideo .row{gap:8px}
+#viewVideo .row label{flex:0 0 64px}
+#viewVideo .ppparam .row label{flex:0 0 46px}
+#viewVideo #tab-cam .row label{flex:0 0 64px}
+#viewVideo #tab-cam .row .val{flex:0 0 54px}
+}
+#viewVideo .sep{height:1px;background:var(--line);margin:14px 0}
+#viewVideo .hint{color:var(--dim); font-size:12px; margin:6px 0 0}
+/* ---- 云台页签：方向键盘 ----
+   长按方向键持续转，松手立即停。touch-action:none 必须写 —— 手机上
+   不写会被当成长按选中/滚动，pointerup 收不到，云台就会一直转。 */
+#viewVideo .gzpad{
+  display:grid; grid-template-columns:repeat(3,1fr);
+  grid-template-rows:repeat(3,46px); gap:8px; margin:8px 0 4px;
+  max-width:264px; margin-left:auto; margin-right:auto;
+  user-select:none; -webkit-user-select:none;
+}
+#viewVideo .gzbtn{
+  font-size:19px; line-height:1; padding:0; touch-action:none;
+  -webkit-tap-highlight-color:transparent; user-select:none;
+}
+#viewVideo .gzbtn[data-jog="up"]{grid-area:1/2}
+#viewVideo .gzbtn[data-jog="left"]{grid-area:2/1}
+#viewVideo .gzbtn[data-jog="right"]{grid-area:2/3}
+#viewVideo .gzbtn[data-jog="down"]{grid-area:3/2}
+#viewVideo #gzStop{grid-area:2/2; color:var(--warn)}
+#viewVideo .gzbtn.act{background:var(--acc2); border-color:var(--acc2);
+  color:#fff; font-weight:600}
+#viewVideo #tab-gz .kv b{font-variant-numeric:tabular-nums; font-weight:600}
+#viewVideo .kv{display:flex;justify-content:space-between;gap:8px}
+#viewVideo .mgroup{display:flex; align-items:center; gap:7px; font-size:10.5px;
+    letter-spacing:.10em; color:var(--dim); margin:16px 0 7px}
+#viewVideo .mgroup::before{content:""; width:3px; height:10px; border-radius:2px;
+    background:var(--accent, #1f6feb)}
+#viewVideo .metrics{display:grid; gap:1px; background:var(--line);
+    border:1px solid var(--line); border-radius:10px; overflow:hidden}
+#viewVideo #status.metrics{grid-template-columns:repeat(6,1fr)}
+/* 2026-10-27: 8 -> 9 列。新增「JPEG 压缩比」一格, 列数不跟着加的话
+   第 9 格会被挤到第二行(用户反馈: 不要单起一行)。 */
+#viewVideo .metrics.load{grid-template-columns:repeat(9,1fr)}
+@media (max-width:820px){
+#viewVideo #status.metrics{grid-template-columns:repeat(3,1fr)}
+#viewVideo .metrics.load{grid-template-columns:repeat(3,1fr)}
+}
+#viewVideo .metrics .m{background:#12151a; padding:9px 11px 10px; min-width:0;
+    transition:background .2s}
+#viewVideo .metrics .m:hover{background:#171b21}
+#viewVideo .metrics i{display:block; font-style:normal; font-size:10.5px; letter-spacing:.05em;
+    color:var(--dim); margin-bottom:5px; white-space:nowrap; overflow:hidden;
+    text-overflow:ellipsis}
+#viewVideo .metrics b{display:block; font-size:14px; line-height:1.15; font-weight:600;
+    color:var(--fg); font-variant-numeric:tabular-nums; white-space:nowrap;
+    overflow:hidden; text-overflow:ellipsis}
+#viewVideo .metrics u{display:block; height:3px; margin-top:7px; border-radius:2px;
+    background:rgba(255,255,255,.09); overflow:hidden; text-decoration:none}
+#viewVideo .metrics u span{display:block; height:100%; width:0; border-radius:2px;
+    background:#3fb950; transition:width .35s ease, background .35s ease}
+#viewVideo #toast{
+    position:fixed; left:50%; bottom:26px; transform:translateX(-50%) translateY(20px);
+    background:#1f6feb; color:#fff; padding:9px 18px; border-radius:10px;
+    opacity:0; pointer-events:none; transition:.25s; font-size:13px; z-index:99;
+  }
+#viewVideo #toast.show{opacity:1; transform:translateX(-50%) translateY(0)}
+#viewVideo #toast.err{background:var(--err)}
+#viewVideo .scroll{max-height:260px; overflow:auto}
+#viewVideo .scroll::-webkit-scrollbar{width:8px}
+#viewVideo .scroll::-webkit-scrollbar-thumb{background:#30363d;border-radius:4px}
+#viewVideo .tabs{display:flex; gap:6px; margin:-2px 0 14px}
+/* 未选中的页签也要有框，四颗按钮看起来才是同一组控件 */
+#viewVideo .tab{background:var(--panel2); border:1px solid var(--line);
+       border-radius:8px; padding:7px 13px; color:var(--dim);
+       font-size:13px; cursor:pointer; transition:background .12s, color .12s, border-color .12s}
+#viewVideo .tab:hover{color:var(--fg); border-color:var(--acc2)}
+#viewVideo .tab.on{background:var(--acc2); border-color:var(--acc2); color:#fff; font-weight:600}
+#viewVideo .tabbody{padding-top:2px}
+#viewVideo .tabs + .tabbody .hint:first-child{margin-top:0}
+#viewVideo #lanChip{
+    display:flex; align-items:center; gap:5px;
+    font-size:11.5px; color:var(--dim); cursor:pointer; user-select:none;
+    border:1px solid var(--line); border-radius:7px; padding:4px 9px;
+    white-space:nowrap; transition:.15s;
+  }
+#viewVideo #lanChip:hover{color:var(--fg); border-color:var(--acc2)}
+#viewVideo #reloadBar{
+    grid-column:1 / -1;
+    display:flex; align-items:center; gap:12px;
+    margin:0; padding:11px 14px;
+    background:#3d2b00; border:1px solid #9e6a03; border-radius:10px;
+    color:#f0d58c; font-size:13px;
+  }
+#viewVideo #reloadBar b{color:#ffd75f}
+#viewVideo #reloadBar button{
+    margin-left:auto; background:#9e6a03; border-color:#9e6a03;
+    color:#fff; font-weight:600; padding:6px 14px;
+  }
+#viewVideo #reloadBar button:hover{filter:brightness(1.15)}
+#viewVideo #reloadBar .cnt{opacity:.75; font-variant-numeric:tabular-nums}
+#viewVideo #rebootMask{
+    position:fixed; inset:0; z-index:9999;
+    display:flex; align-items:center; justify-content:center;
+    background:rgba(6,8,12,.86);
+  }
+#viewVideo #rebootMask[hidden]{display:none}
+#viewVideo #rebootMask .box{
+    text-align:center; padding:36px 52px; border-radius:16px;
+    background:#12161d; border:1px solid #2a3340;
+    box-shadow:0 20px 60px rgba(0,0,0,.65);
+  }
+#viewVideo #rebootMask .title{font-size:22px; font-weight:700; color:#fff; margin-top:16px}
+#viewVideo #rebootMask .sub{margin-top:10px; color:#9fb0c4; font-size:14px}
+#viewVideo #rebootMask .cnt{margin-top:8px; color:#ffd75f; font-size:13px;
+                   font-variant-numeric:tabular-nums}
+#viewVideo #rebootMask .spin{
+    width:42px; height:42px; margin:0 auto;
+    border:4px solid #2a3340; border-top-color:var(--acc2);
+    border-radius:50%; animation:rbspin .9s linear infinite;
+  }
+@keyframes rbspin{to{transform:rotate(360deg)}}
+/* 视口约束：内容区内部滚动，不允许抛到文档级 */
+#viewVideo{min-height:0; overflow:hidden}
+#viewVideo main{min-height:0}
+#viewVideo > header{flex:none}
+/* 绝对单页：文档级永不出滚动条 */
+html, body{overflow:hidden}
+
+/* ---------------------------------------------------------------------------
+   窄屏兜底（≤1100px）：main 会切成单栏，左右两栏竖向堆叠。
+   此时 #colRight 的 overflow-y:auto 只在 min-width:1101px 下定义，
+   而 #viewVideo 与 html/body 都是 overflow:hidden —— 结果是下半屏
+   （摄像头 / 预处理 / AI 标注 页签）被裁掉，且页面上找不到任何可滚容器。
+   实测 826x546：#viewVideo 内容 1556px、可见 502px，被裁 1054px。
+   这里让「视图自身」在窄屏下可滚；宽屏仍是左栏固定 + 右栏独立滚动。
+   注意必须写在上面的 #viewVideo{overflow:hidden} 之后才能覆盖。
+--------------------------------------------------------------------------- */
+@media (max-width:1100px){
+  #viewVideo{ overflow-y:auto; overflow-x:hidden; overscroll-behavior:contain }
+  #viewVideo main{ align-items:start }
+  #viewVideo #colLeft{ height:auto; max-height:none; overflow:visible }
+  #viewVideo #colRight{ max-height:none; overflow:visible }
+  #viewVideo #colRight > .card > .tabbody{ overflow:visible }
+}
+
+</style>
+</head>
+<body>
+<nav class="topnav">
+  <span class="brand">云端智联定点巡航安防预警系统 <i>局域网控制平台</i></span>
+  <a href="#" class="tab active" data-view="video">视频采集</a>
+  <a href="#" class="tab" data-view="map">调度控制</a>
+  <span class="sp"></span>
+  <span class="host" id="topHost"></span>
+</nav>
+
+<!-- 视频采集视图：iframe 懒加载板子 9012 的页面（不合并代码，避免 id/变量互相污染） -->
+<!-- 视频采集视图：原 mipi_viewer.html 的完整工作台，已并入本文件 -->
+<div id="viewVideo" class="view" hidden>
+<header>
+  <h1>FPGA MIPI 画面控制台</h1>
+  <input id="vAddr" type="text" value="" spellcheck="false"
+         title="中继板 IP（视频已反代到 80 端口，留空即用当前页面地址）">
+  <button class="primary" id="btnConn">连接</button>
+  <button id="btnSnap">抓拍</button>
+  <span style="display:flex;gap:4px;align-items:center;margin-left:6px">
+    <span style="color:var(--dim);font-size:12px">画面源</span>
+    <button class="ghost srcbtn on" data-src="raw"
+            title="原始画面（不做 AI 叠加，零额外开销）">原图</button>
+    <button class="ghost srcbtn" data-src="ai"
+            title="叠加人体框 / 姿态骨架 / 危险动作标签">AI 标注</button>
+    <span class="dot" id="aiDot" title="AI 状态"></span>
+  </span>
+  <span style="margin-left:auto;display:flex;align-items:center;gap:12px">
+    <span id="lanChip" hidden
+          title="同一 WiFi / 局域网内的手机、平板用这个地址打开">局域网 —</span>
+    <span><span class="dot" id="vDot"></span><span id="connTxt">未连接</span></span>
+  </span>
+</header>
+
+<main>
+  <div id="reloadBar" hidden style="grid-column:1/-1">
+    <span>输出格式已切换为 <b id="reloadMode">—</b>，本页的画面连接已失效，刷新后自动恢复。</span>
+    <span class="cnt" id="reloadCnt"></span>
+    <button id="btnReloadNow">立即刷新</button>
+  </div>
+
+  <!-- 切分辨率时会整板重启，用这个遮罩挡住画面并给出明确提示 -->
+  <div id="rebootMask" hidden>
+    <div class="box">
+      <div class="spin"></div>
+      <div class="title">服务正在重启，请耐心等待</div>
+      <div class="sub" id="rebootSub">正在切换输出格式…</div>
+      <div class="cnt" id="rebootCnt"></div>
+    </div>
+  </div>
+  <!-- ---------------- 画面 ---------------- -->
+  <div id="colLeft">
+    <div class="card">
+      <h2>实时画面</h2>
+      <div id="stage">
+        <div id="placeholder"><div class="phbox">点击右上角「连接」后开始拉流<br>
+          <span style="font-size:12px;opacity:.7">视频已反代到 80 端口，地址就填中继板 IP（与网页同一地址）</span></div>
+        </div>
+        <img id="stream" alt="stream" style="display:none">
+        <div id="quad">
+          <div class="qc"><b>cam0</b>
+            <div class="qb"><canvas id="cvL"></canvas></div></div>
+          <div class="qc"><b>cam1</b>
+            <div class="qb"><canvas id="cvR"></canvas></div></div>
+          <div class="qc"><b>骨架</b>
+            <div class="qb"><canvas id="cvSkel"></canvas></div></div>
+          <div class="qc"><b>深度（预留）</b>
+            <div class="qb dph">双目融合测距<br>待实现</div></div>
+        </div>
+      </div>
+      <!-- 画面下方指标区: 等分网格, 整齐对齐 -->
+      <div class="mgroup">运行</div>
+      <div id="status" class="metrics">
+        <div class="m"><i>状态</i><b id="sState">—</b></div>
+        <div class="m"><i>分辨率</i><b id="sSize">—</b></div>
+        <div class="m"><i>帧率</i><b id="sFps">—</b></div>
+        <div class="m"><i>YOLO</i><b id="sAiFps">—</b></div>
+        <div class="m"><i>检测</i><b id="sAiRes">—</b></div>
+        <div class="m"><i>后端</i><b id="sBackend">—</b></div>
+      </div>
+
+      <div class="mgroup">链路 / 负载</div>
+      <div class="metrics load">
+        <div class="m"><i>MIPI</i><b id="b_mipi">—</b><u><span id="p_mipi"></span></u></div>
+        <div class="m"><i>JPEG 压缩比</i><b id="b_ratio">—</b><u><span id="p_ratio"></span></u></div>
+        <div class="m"><i>CPU</i><b id="b_cpu">—</b><u><span id="p_cpu"></span></u></div>
+        <div class="m"><i id="l_npu">NPU</i><b id="b_npu">—</b><u><span id="p_npu"></span></u></div>
+        <div class="m"><i>RAM</i><b id="b_ram">—</b><u><span id="p_ram"></span></u></div>
+        <div class="m"><i>DDR</i><b id="b_ddr">—</b><u><span id="p_ddr"></span></u></div>
+        <div class="m"><i>传输延时</i><b id="b_lat">—</b></div>
+        <div class="m"><i>网络延时</i><b id="b_net">—</b><u><span id="p_net"></span></u></div>
+        <div class="m"><i>队列 / 帧号</i><b id="b_q">—</b></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ---------------- 右列: 选项卡 ---------------- -->
+  <div id="colRight">
+    <div class="card">
+      <div class="tabs">
+        <button class="tab on" data-tab="cam">摄像头</button>
+        <button class="tab" data-tab="pp">预处理</button>
+        <button class="tab" data-tab="sw">画面</button>
+        <button class="tab" data-tab="ai">AI 标注</button>
+        <button class="tab" data-tab="gz">云台</button>
+      </div>
+
+      <!-- ======== 摄像头 / 输出 ======== -->
+      <div class="tabbody" id="tab-cam">
+        <!-- ======== FPGA 硬件 JPEG 编码 (jpeg_encoder_top / jpeg_regfile 0x00-0x05) ========
+             2026-10-27: 「硬件编码」开关已移除 —— 赛题不允许软件压缩,
+             硬件编码是唯一通路, 留个开关只会让人误以为能退回软编。 -->
+        <div class="row"><label>JPEG 编码</label>
+          <div style="flex:1;display:flex;gap:6px">
+            <button class="ghost on" data-jll="0" style="flex:1">有损 SOF0</button>
+            <button class="ghost" data-jll="1" style="flex:1">无损 SOF3</button>
+          </div>
+        </div>
+        <div class="row"><label>质量 Q</label>
+          <input type="range" id="p_jpeg_q" min="1" max="100" step="1" value="75">
+          <span class="val" id="v_jpeg_q">75</span></div>
+        <div class="row"><label>目标码率</label>
+          <input type="range" id="p_jpeg_kb" min="10" max="600" step="10" value="120">
+          <span class="val" id="v_jpeg_kb">120 KB/帧</span></div>
+        <div class="row"><label>闭环码控</label>
+          <div style="flex:1;display:flex;gap:6px">
+            <button class="ghost on" data-jrc="0" style="flex:1">关(定 Q)</button>
+            <button class="ghost" data-jrc="1" style="flex:1">开(收敛到目标)</button>
+          </div>
+        </div>
+        <div class="row" style="font-size:11px;opacity:.65">
+          <span>硬件 JPEG 编码器已通过逐字节仿真(有损 12 尺寸 / 无损 6 尺寸)；
+                需烧写含 jpeg_encoder_top 的 bitstream 后本组参数才在板上生效。</span>
+        </div>
+
+        <div class="sep"></div>
+
+        <div class="row"><label>推流模式</label>          <div style="flex:1;display:flex;gap:6px">
+            <button class="ghost" data-mode="mono" style="flex:1">单目</button>
+            <button class="ghost" data-mode="dual" style="flex:1">双目</button>
+          </div>
+        </div>
+        <div class="row"><label>单目通道</label>
+          <div style="flex:1;display:flex;gap:6px">
+            <button class="ghost" data-cam="0" style="flex:1">左目(CAM0)</button>
+            <button class="ghost" data-cam="1" style="flex:1">右目(CAM1)</button>
+          </div>
+        </div>
+        <div class="row"><label>AI 通道</label>
+          <div style="flex:1;display:flex;gap:6px">
+            <button class="ghost" data-aisrc="0" style="flex:1">左目(CAM0)</button>
+            <button class="ghost" data-aisrc="1" style="flex:1">右目(CAM1)</button>
+          </div>
+        </div>
+
+        <div class="sep"></div>
+
+        <div class="row"><label>曝光时间</label>
+          <input type="range" id="f_cam_exp" min="0.05" max="16.7" step="0.05" value="16">
+          <span class="val" id="fv_cam_exp">16.0 ms</span></div>
+
+        <div class="row"><label>增益</label>
+          <input type="range" id="f_cam_gain" min="0" max="30" step="0.3" value="14.4">
+          <span class="val" id="fv_cam_gain">14.4 dB</span></div>
+
+        <div class="row"><label>曝光补偿</label>
+          <input type="range" id="f_cam_ev" min="-3" max="3" step="1" value="0">
+          <span class="val" id="fv_cam_ev">0 EV</span></div>
+
+        <div class="sep"></div>
+
+        <!-- 2026-10-27: 数字白平衡控件已下线 —— FPGA 侧那级乘法器已删(腾 DSP),
+             白平衡由 ISP 的 ui_awb 自动完成。 -->
+
+        <div class="grid2" style="margin-top:6px">
+          <button id="btnCamPush">重新下发</button>
+        </div>
+
+        <div class="sep"></div>
+
+        <div class="row"><label>输出格式</label>
+          <select id="sel_mode"></select></div>
+
+        <div style="margin-top:6px">
+          <button id="btnApplyMode" style="width:100%">应用输出格式</button>
+        </div>
+
+        <p class="hint" id="modeHint">连接后自动读取模式表。</p>
+
+        <div class="row"><label>有效画面</label>
+          <input type="range" id="f_roi" min="25" max="100" step="1" value="100">
+          <span class="val" id="fv_roi">100%</span></div>
+      </div>
+
+      <!-- ======== 预处理 ======== -->
+      <div class="tabbody" id="tab-pp" hidden>
+        <div class="grid2" style="margin-bottom:8px">
+          <button class="ghost" id="btnPpAllOff">全部关闭</button>
+          <button id="btnPpRefresh">刷新</button>
+        </div>
+
+        <p class="hint" style="margin:0 0 6px"><b>初级预处理（多选）</b><br>
+          三套算法在 FPGA 内同时运行，固定顺序：高斯 → 直方图均衡 → 灰度 → 对比度 → 反色。</p>
+
+        <div class="pp">
+          <button class="ghost ppbtn" data-basic="0">灰度化</button>
+          <div class="ppparam" id="bp_0">
+            <div class="row"><label>系数</label>
+              <select id="s_gray_mode" style="flex:1">
+                <option value="0">BT.601</option>
+                <option value="1">BT.709</option>
+              </select></div>
+          </div>
+
+          <button class="ghost ppbtn" data-basic="1">高斯滤波</button>
+          <div class="ppparam" id="bp_1">
+            <div class="row"><label>强度</label>
+              <input type="range" id="f_BASIC_GAUSS" min="0" max="8" step="1" value="8">
+              <span class="val" id="fv_BASIC_GAUSS">8</span></div>
+            <div class="row"><label title="3x3 轻、5x5 中、7x7 重（级联二项式核，≈高斯 σ 0.85 / 1.0 / 1.24）">核尺寸</label>
+              <div class="grid3" style="flex:1">
+                <button class="ghost" id="btnKer0">3×3</button>
+                <button class="ghost" id="btnKer1">5×5</button>
+                <button class="ghost" id="btnKer2">7×7</button>
+              </div></div>
+          </div>
+
+          <button class="ghost ppbtn" data-basic="2">直方图均衡</button>
+          <div class="ppparam" id="bp_2">
+            <div class="row"><label>强度</label>
+              <input type="range" id="f_BASIC_HE" min="0" max="255" step="1" value="255">
+              <span class="val" id="fv_BASIC_HE">255</span></div>
+            <div class="row"><label title="限制单个亮度桶的最大计数（x64）。调小可以抑制“大面积背景被硬拉伸成噪点”，0 = 不限制">对比限制</label>
+              <input type="range" id="f_BASIC_HE_CLIP" min="0" max="255" step="1" value="8">
+              <span class="val" id="fv_BASIC_HE_CLIP">8</span></div>
+          </div>
+
+          <button class="ghost ppbtn" data-basic="3">对比度拉伸</button>
+          <div class="ppparam" id="bp_3">
+            <div class="row"><label>强度</label>
+              <input type="range" id="f_BASIC_CONTRAST" min="0" max="8" step="1" value="4">
+              <span class="val" id="fv_BASIC_CONTRAST">4</span></div>
+          </div>
+
+          <!-- 2026-10-27: 反色已下线（不在赛题硬指标里，腾 DSP） -->
+        </div>
+
+        <div class="sep" style="margin:10px 0"></div>
+
+        <p class="hint" style="margin:0 0 6px"><b>高级预处理（单选）</b></p>
+
+        <div class="pp">
+          <button class="ghost ppbtn" data-adv="0">关闭 / 原图</button>
+
+          <button class="ghost ppbtn" data-adv="1">Sobel 边缘</button>
+          <div class="ppparam" id="ap_1">
+            <div class="row"><label>增益</label>
+              <input type="range" id="f_ADV_SOBEL_SH" min="1" max="16" step="1" value="8">
+              <span class="val" id="fv_ADV_SOBEL_SH">8</span></div>
+          </div>
+
+          <button class="ghost ppbtn" data-adv="2">阈值分割</button>
+          <div class="ppparam" id="ap_2">
+            <div class="row"><label>阈值</label>
+              <input type="range" id="f_ADV_THRESH" min="0" max="255" step="1" value="128">
+              <span class="val" id="fv_ADV_THRESH">128</span></div>
+          </div>
+
+          <button class="ghost ppbtn" data-adv="3">形态学</button>
+          <div class="ppparam" id="ap_3">
+            <div class="row"><label>阈值</label>
+              <input type="range" id="f_ADV_MORPH_TH" min="0" max="255" step="1" value="128">
+              <span class="val" id="fv_ADV_MORPH_TH">128</span></div>
+            <div class="grid2" style="margin-top:6px">
+              <button class="ghost" id="btnMorph0">腐蚀 (&amp;)</button>
+              <button class="ghost" id="btnMorph1">膨胀 (|)</button>
+            </div>
+          </div>
+
+          <!-- 2026-10-27: 中值/拉普拉斯/浮雕/Prewitt 已下线
+               （赛题硬指标只要求 高斯/直方图/灰度/对比度拉伸/阈值/形态学/Sobel） -->
+        </div>
+
+        <p class="hint">每个算法一个按钮，参数滑条只在选中时显示。两级可同时生效；
+          全部在 FPGA 内并行实现，<b>不占用 RK 的 CPU</b>。</p>
+      </div>
+
+      <!-- ======== 画面（软件） ======== -->
+      <div class="tabbody" id="tab-sw" hidden>
+        <div class="row"><label>亮度</label>
+          <input type="range" id="p_brightness" min="-100" max="100" step="1" value="0">
+          <span class="val" id="v_brightness">0</span></div>
+
+        <div class="row"><label>对比度</label>
+          <input type="range" id="p_contrast" min="0.2" max="3" step="0.01" value="1">
+          <span class="val" id="v_contrast">1.00</span></div>
+
+        <div class="row"><label>饱和度</label>
+          <input type="range" id="p_saturation" min="0" max="3" step="0.01" value="1">
+          <span class="val" id="v_saturation">1.00</span></div>
+
+        <div class="row"><label>色相</label>
+          <input type="range" id="p_hue" min="-180" max="180" step="1" value="0">
+          <span class="val" id="v_hue">0</span></div>
+
+        <div class="row"><label>伽马</label>
+          <input type="range" id="p_gamma" min="0.2" max="3" step="0.01" value="1">
+          <span class="val" id="v_gamma">1.00</span></div>
+
+        <div class="row"><label>输出缩放</label>
+          <input type="range" id="p_scale" min="0.25" max="1.5" step="0.05" value="1">
+          <span class="val" id="v_scale">1.00</span></div>
+
+        <div class="row"><label>JPEG 质量</label>
+          <input type="range" id="p_quality" min="30" max="95" step="1" value="80">
+          <span class="val" id="v_quality">80</span></div>
+
+        <div class="row"><label>帧率上限</label>
+          <input type="range" id="p_fps" min="1" max="90" step="1" value="60">
+          <span class="val" id="v_fps">60</span></div>
+
+        <div class="sep"></div>
+
+        <div class="grid2" style="margin-bottom:8px">
+          <button class="ghost" id="btnMirror">水平镜像</button>
+          <button class="ghost" id="btnFlipv">垂直翻转</button>
+        </div>
+        <div class="grid4">
+          <button class="ghost" data-rot="0">0°</button>
+          <button class="ghost" data-rot="90">90°</button>
+          <button class="ghost" data-rot="180">180°</button>
+          <button class="ghost" data-rot="270">270°</button>
+        </div>
+        <p class="hint">这些是 RK 侧的软件处理（CPU 完成），与 FPGA 侧参数互不干涉。
+          帧率上限填 60 以上等于不限速；缩放/质量调小可明显降低 CPU 占用。</p>
+        <div class="sep"></div>
+        <button id="btnReset" style="width:100%">重置画面参数</button>
+      </div>
+
+      <!-- ======== AI 标注（人体检测 / 姿态骨架 / 危险动作） ======== -->
+      <div class="tabbody" id="tab-ai" hidden>
+        <div class="row"><label>画面源</label>
+          <div style="flex:1;display:flex;gap:8px">
+            <button class="ghost srcbtn on" data-src="raw" style="flex:1">原图</button>
+            <button class="ghost srcbtn" data-src="ai" style="flex:1">AI 标注</button>
+          </div></div>
+
+        <div class="grid2" style="margin:8px 0">
+          <button class="ghost on" id="btnAiEnable">AI 已启用</button>
+          <button class="ghost" id="btnAiRefresh">刷新状态</button>
+        </div>
+
+        <div class="row"><label title="两档都是同一套 640 模型（精度最高）；区别是“跑一级检测的那一帧要不要同时跑姿态”">模型档位</label>
+          <div id="aiPresets" style="flex:1;display:flex;gap:6px"></div></div>
+
+        <div class="row"><label>AI 帧率</label>
+          <input type="range" id="a_fps" min="1" max="60" step="1" value="30">
+          <span class="val" id="av_fps">30 fps</span></div>
+
+        <div class="row"><label title="一级人体检测每 N 帧才跑一次；调大能明显提帧，中间帧靠姿态关节框跟随人体">检测间隔</label>
+          <input type="range" id="a_det_interval" min="1" max="6" step="1" value="2">
+          <span class="val" id="av_det_interval">2 帧</span></div>
+
+        <div class="row"><label title="每帧最多给几个人跑姿态。姿态是逐人串行的，人多时帧率会按人数下降；限成 2 后其余人沿用上一帧关节（框位移补偿），人数不超过预算时完全不变。0 = 不限制">姿态预算</label>
+          <input type="range" id="a_pose_budget" min="0" max="8" step="1" value="2">
+          <span class="val" id="av_pose_budget">2 人</span></div>
+
+        <div class="row"><label>检测阈值</label>
+          <input type="range" id="a_det_conf" min="0.1" max="0.9" step="0.01" value="0.35">
+          <span class="val" id="av_det_conf">0.35</span></div>
+
+        <div class="row"><label title="关节只保留在一级人体框附近这个范围内；调小可抑制远处的误识别关节">关节范围</label>
+          <input type="range" id="a_kpt_margin" min="0.05" max="1" step="0.05" value="0.15">
+          <span class="val" id="av_kpt_margin">0.15</span></div>
+
+        <div class="row"><label title="关节到人体框中心的距离上限（相对框对角/2）；调小可抑制飘到远处的鬼点">距框中心</label>
+          <input type="range" id="a_kpt_scale_max" min="0.5" max="2.5" step="0.05" value="1.2">
+          <span class="val" id="av_kpt_scale_max">1.20</span></div>
+
+        <div class="row"><label title="二级姿态只在这个外扩倍数的 ROI 里找关节">ROI 外扩</label>
+          <input type="range" id="a_roi_expand" min="1" max="1.6" step="0.05" value="1.15">
+          <span class="val" id="av_roi_expand">1.15</span></div>
+
+        <div class="row"><label>跌倒灵敏度</label>
+          <input type="range" id="a_fall" min="0.3" max="1" step="0.05" value="1">
+          <span class="val" id="av_fall">1.00</span></div>
+
+        <div class="row"><label>奔跑灵敏度</label>
+          <input type="range" id="a_run" min="0.5" max="2.5" step="0.05" value="1">
+          <span class="val" id="av_run">1.00</span></div>
+
+        <div class="sep"></div>
+
+        <div class="grid3">
+          <button class="ghost on" id="btnAiScore">置信度</button>
+          <button class="ghost on" id="btnAiLabel">动作标签</button>
+          <button class="ghost" id="btnAiHud">角标</button>
+        </div>
+        <div class="grid2" style="margin-top:8px">
+          <button class="ghost on" id="btnAiSk">骨架</button>
+          <button class="ghost" id="btnAiSkOnly">纯骨骼（黑底）</button>
+        </div>
+
+        <div class="sep"></div>
+
+        <div style="font-size:12px;color:var(--dim);line-height:1.9">
+          <div class="kv"><span>模型</span><b id="aiState">—</b></div>
+          <div class="kv"><span>YOLO 帧率</span><b id="aiFps">—</b></div>
+          <div class="kv"><span>一级检测帧率</span><b id="aiDetFps">—</b></div>
+          <div class="kv"><span>视频帧率</span><b id="aiVFps">—</b></div>
+          <div class="kv"><span>耗时 检测/姿态</span><b id="aiMs">—</b></div>
+          <div class="kv"><span>当前人数</span><b id="aiPersons">—</b></div>
+        </div>
+
+        <div class="sep"></div>
+        <div style="font-weight:600;font-size:12px;margin-bottom:6px">
+          检测结果 <span id="aiDetT" style="font-weight:400;color:var(--dim)"></span></div>
+        <div class="scroll" id="aiDets" style="max-height:160px;font-size:12px">
+          <p class="hint">暂无（切到「AI 标注」并启用 AI 后显示）</p>
+        </div>
+
+        <div class="sep"></div>
+        <div style="font-weight:600;font-size:12px;margin-bottom:6px">报警事件</div>
+        <div class="scroll" id="aiEvents" style="max-height:140px;font-size:12px">
+          <p class="hint">暂无</p>
+        </div>
+    </div>
+
+    <!-- ======== 云台（QGimbal）：快捷控制 / 零点 / YOLO 目标追踪 ======== -->
+    <div class="tabbody" id="tab-gz" hidden>
+      <p class="hint" style="margin-top:0">
+        长按方向键持续转动，<b>松手立即停</b>（后端还有 0.8 s 看门狗）。
+        软件限位 <b>Yaw ±<span id="gzLimYaw">170</span>° / Pitch
+        ±<span id="gzLimPitch">42</span>°</b>，并且再与固件
+        <span id="gzLimFw">limit.pitch.deg</span> 取小 —— 目标值永远不会越界。
+      </p>
+
+      <div class="gzpad">
+        <button class="gzbtn" data-jog="up"    title="视线向上（Pitch +）">↑</button>
+        <button class="gzbtn" data-jog="left"  title="视线向左（Yaw +）">←</button>
+        <button class="gzbtn" id="gzStop"      title="停止（角度保持，不失能）">■</button>
+        <button class="gzbtn" data-jog="right" title="视线向右（Yaw −）">→</button>
+        <button class="gzbtn" data-jog="down"  title="视线向下（Pitch −）">↓</button>
+      </div>
+
+      <div class="row"><label>速度</label>
+        <input type="range" id="gz_speed" min="5" max="45" step="1" value="25">
+        <span class="val" id="gzv_speed" style="flex:0 0 62px">25 °/s</span></div>
+
+      <div class="sep"></div>
+
+      <div class="grid2">
+        <button id="gzZero" title="把当前姿态记为回零参考（软件零点，不写固件 Flash）">设置零点</button>
+        <button id="gzHome" title="转到零点位置（绝对角度模式，不会超限）">回到零点</button>
+      </div>
+      <div class="grid2" style="margin-top:8px">
+        <button class="ghost" id="gzTrack">开启追踪</button>
+        <button class="ghost" id="gzRelease"
+                title="关闭串口，把 /dev/ttyACM0 让给官方上位机 / gimbal_keyctrl.py">释放串口</button>
+      </div>
+
+      <div class="sep"></div>
+      <div style="font-size:12px;color:var(--dim);line-height:1.9">
+        <div class="kv"><span>Yaw 绝对/相对</span><b id="gzYaw">—</b></div>
+        <div class="kv"><span>Pitch 绝对/相对</span><b id="gzPitch">—</b></div>
+        <div class="kv"><span>目标</span><b id="gzTgt">—</b></div>
+        <div class="kv"><span>零点</span><b id="gzZeroPos">—</b></div>
+        <div class="kv"><span>追踪</span><b id="gzTrk">关闭</b></div>
+        <div class="kv"><span>追踪误差 x,y</span><b id="gzErr">—</b></div>
+        <div class="kv"><span>云台</span><b id="gzMsg">未连接</b></div>
+      </div>
+
+      <div class="sep"></div>
+      <p class="hint" style="margin:0 0 6px">
+        追踪方向反了就点下面翻一下（立即生效并保存，不用改代码/重启）：</p>
+      <div class="grid2">
+        <button class="ghost" id="gzYawInv">Yaw 反向</button>
+        <button class="ghost" id="gzPitchInv">Pitch 反向</button>
+      </div>
+      <p class="hint">追踪取 YOLO 检测框里<b>面积最大</b>的目标，把它的中心拉到画面中心；
+        开启时若 AI 没在跑，会自动切到「仅推理」（画面不变）。
+        手动按方向键会自动接管并关闭追踪。</p>
+    </div>
+
+    <!-- ---------------- FPGA 通信状态（常显） ---------------- -->
+    <div class="card" style="margin-top:14px">
+      <h2>FPGA 通信状态</h2>
+      <div style="font-size:12px;color:var(--dim);line-height:1.9">
+        <div class="kv"><span>通信状态</span><b id="fsState">—</b></div>
+        <div class="kv"><span>帧计数</span><b id="fsFrames">—</b></div>
+        <div class="kv"><span>心跳</span><b id="fsBeat">—</b></div>
+        <div class="kv"><span>版本</span><b id="fsVer">—</b></div>
+        <div class="kv"><span>摄像头下发</span><b id="fsCamWr">—</b></div>
+      </div>
+    </div>
+  </div>
+</main>
+
+<div id="vToast"></div>
+</div>
+
+<div id="viewMap" class="view">
+<header>
+  <b class="ttl">ROS 控制台</b>
+  <span id="dot"></span>
+  <input id="addr" type="text" spellcheck="false" placeholder="ws://192.168.0.100:9090">
+  <button class="primary" id="connect">连接</button>
+  <button id="fit">适应画面</button>
+  <label style="display:flex;gap:5px;align-items:center;color:#8b949e;cursor:pointer">
+    <input type="checkbox" id="follow"> 跟随
+  </label>
+  <button id="reloadMap">重订阅 /map</button>
+</header>
+
+<main>
+  <div id="wrap">
+    <canvas id="cv"></canvas>
+    <div id="toast"></div>
+  </div>
+
+  <div id="sidecol">
+    <aside>
+      <section id="ctrlbox">
+        <h3>控制</h3>
+        <div class="btnrow">
+          <button id="btnMapping" class="primary">开始建图</button>
+          <button id="btnSaveMap" class="warn">保存建图</button>
+          <button id="btnNav" class="primary">进入导航</button>
+        </div>
+        <div class="btnrow">
+          <button class="tool navOnly" data-tool="goal" hidden>有向目标</button>
+          <button class="tool navOnly" data-tool="waypoint" hidden>无向目标</button>
+          <button class="tool navOnly" data-tool="pose" hidden>小车位姿</button>
+          <button class="tool navOnly" data-tool="rect" hidden>矩形警戒</button>
+          <button class="tool navOnly" data-tool="circle" hidden>圆形警戒</button>
+          <button class="tool navOnly" data-tool="pan" hidden>平移</button>
+        </div>
+        <div class="btnrow wide">
+          <button id="btnCancelGoal" class="danger">清除目标</button>
+          <button id="btnStopAll">停止全部</button>
+        </div>
+      </section>
+
+      <section>
+        <h3>链路</h3>
+        <div class="metrics">
+          <div class="m"><i>状态</i><b id="st">未连接</b></div>
+          <div class="m"><i>模式</i><b id="stMode">—</b></div>
+          <div class="m"><i>/map</i><b id="stMap">—</b></div>
+          <div class="m"><i>/scan</i><b id="stScan">—</b></div>
+        </div>
+      </section>
+
+      <section>
+        <h3>位姿</h3>
+        <div class="metrics">
+          <div class="m"><i>机器人</i><b id="stPose">—</b></div>
+          <div class="m"><i>目标</i><b id="stGoal">—</b></div>
+          <div class="m"><i>路径</i><b id="stPath">—</b></div>
+          <div class="m"><i>缩放</i><b id="stZoom">—</b></div>
+        </div>
+      </section>
+    </aside>
+
+    <div id="dpad">
+      <h3>遥控</h3>
+      <div class="grid">
+        <button data-vx="1"  data-wz="0"  style="grid-column:2;grid-row:1">▲</button>
+        <button data-vx="0"  data-wz="1"  style="grid-column:1;grid-row:2">◀</button>
+        <button class="stop" id="dpadStop">停</button>
+        <button data-vx="0"  data-wz="-1" style="grid-column:3;grid-row:2">▶</button>
+        <button data-vx="-1" data-wz="0"  style="grid-column:2;grid-row:3">▼</button>
+      </div>
+      <div class="speed">
+        <div class="vrow"><span>线速</span>
+          <input id="vlin" type="number" value="0.15" step="0.05" min="0.02" max="0.6"></div>
+        <div class="vrow"><span>角速</span>
+          <input id="wang" type="number" value="0.6" step="0.1" min="0.2" max="2"></div>
+      </div>
+    </div>
+  </div>
+</main>
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  // ── 顶层视图切换：视频采集 / 建图导航 ───────────────────────────────
+  // 视频界面用 iframe 嵌板子 9012 的页面，而不是把 mipi_viewer.html 那 2000+
+  // 行一起并进来 —— 两边 DOM id 和全局变量重名太多（base / cv / addr / toast
+  // 全撞），合并到一个文件必然互相污染。iframe 天然隔离，视觉上仍是同一页面。
+  // 首次切到视频才设 src，避免一打开就连两路数据。
+  var HOSTNAME = location.hostname || 'localhost';
+  var videoLoaded = false;
+
+  function showView(name) {
+    var vv = document.getElementById('viewVideo');
+    var vm = document.getElementById('viewMap');
+    if (vv) vv.hidden = (name !== 'video');
+    if (vm) vm.hidden = (name !== 'map');
+    var tabs = document.querySelectorAll('.topnav [data-view]');
+    for (var i = 0; i < tabs.length; i++) {
+      tabs[i].classList.toggle('active', tabs[i].getAttribute('data-view') === name);
+    }
+    if (name === 'video') {
+      // 视频工作台代码已并入本文件，无需 iframe。
+      // 首次切过来才触发连接，避免一打开就连两路数据。
+      videoLoaded = true;
+      if (typeof window.relayVideoActivate === 'function') window.relayVideoActivate();
+    } else {
+      // 离开视频视图：先把云台点动停住（按钮被隐藏后 pointerup 收不到）
+      if (typeof window.relayGzStop === 'function') window.relayGzStop();
+      resize();          // canvas 在 hidden 时尺寸会变成 0，切回来必须重算
+    }
+  }
+
+  // 注意：这里只定义，不立即执行。resize() 里用到的 wrap/cv/ctx 是 const，
+  // 在脚本顶部还处于暂时性死区（TDZ），此时调用会报
+  //   Cannot access 'wrap' before initialization
+  // 所以真正调用放到脚本最末尾。
+  function initTopNav() {
+    var e = document.getElementById('topHost');
+    if (e) e.textContent = HOSTNAME;
+    var tabs = document.querySelectorAll('.topnav [data-view]');
+    for (var i = 0; i < tabs.length; i++) {
+      tabs[i].addEventListener('click', function (ev) {
+        ev.preventDefault();
+        var n = this.getAttribute('data-view');
+        localStorage.setItem('relay_view', n);
+        showView(n);
+      });
+    }
+    // 记住上次停在哪个界面；首次进来默认建图导航
+    showView(localStorage.getItem('relay_view') || 'map');
+  }
+
+  const cv = document.getElementById('cv');
+  // alpha:false   -> 画布不透明，合成器跳过 alpha 混合
+  // desynchronized -> 走低延迟合成路径（绕过 vsync 排队），拖动/点云更跟手
+  const ctx = cv.getContext('2d', { alpha: false, desynchronized: true });
+  const wrap = document.getElementById('wrap');
+  const elToast = document.getElementById('toast');
+  const elAddr = document.getElementById('addr');
+  const elDot = document.getElementById('dot');
+  const $ = (id) => document.getElementById(id);
+
+  let ros = null, connected = false, tfClient = null;
+  const topics = {};
+
+  const S = {
+    map: null, scan: null, pose: null, goal: null,
+    gplan: [], lplan: [],
+    scale: 50, ox: 0, oy: 0,
+    scanCount: 0, scanT: 0,
+    tfStatic: {},                                   // child -> {x,y,yaw,parent}
+    baseLaser: { x: 0.12, y: 0.0, yaw: -Math.PI / 2 }, // 兜底：本车实测值
+    bounds: null,                                   // 已建图区域（格坐标）
+    follow: false,
+    sceneRev: 0                                     // 静态层失效计数（地图/路径/视图变更时 ++）
+  };
+
+  // 已建图区域边界（只统计非未知格子），避免被 40m 大窗口稀释
+  function computeBounds(m) {
+    const w = m.info.width, h = m.info.height, d = m.data;
+    let x0 = w, x1 = -1, y0 = h, y1 = -1;
+    for (let y = 0; y < h; y++) {
+      const row = y * w;
+      for (let x = 0; x < w; x++) {
+        if (d[row + x] >= 0) {
+          if (x < x0) x0 = x;
+          if (x > x1) x1 = x;
+          if (y < y0) y0 = y;
+          if (y > y1) y1 = y;
+        }
+      }
+    }
+    return x1 < 0 ? null : { x0: x0, y0: y0, x1: x1, y1: y1 };
+  }
+
+  function toast(msg, isErr) {
+    elToast.textContent = msg;
+    elToast.className = 'show' + (isErr ? ' err' : '');
+    clearTimeout(toast._t);
+    toast._t = setTimeout(() => { elToast.className = ''; }, 2600);
+  }
+
+  // 默认走「中继反代」：页面既然是从 http://<中继>/map.html 打开的，
+  // WebSocket 就用同源的 /rosbridge。这样车端 WiFi 可以完全关掉，数据只经
+  // RTL8153 千兆链路 -> 中继 -> 浏览器。
+  // 只有显式 ?ws= 参数、或 localStorage 里存过「非车端直连」的地址才用它。
+  function defaultUrl() {
+    const p = new URLSearchParams(location.search);
+    if (p.get('ws')) return p.get('ws');
+    const saved = localStorage.getItem('ros_ws');
+    // 旧默认值是 ws://192.168.0.100:9090（车端 WiFi 直连），这条链路已废弃，
+    // 即使存着也不再用，否则关掉车端 WiFi 就连不上了。
+    if (saved && !/\/\/192\.168\.0\.100:9090/.test(saved)) return saved;
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    return proto + '//' + location.host + '/rosbridge';
+  }
+
+  // dpr 封顶 2：4K 屏 dpr=3 时每帧要填充的物理像素是 2.25 倍，点云会明显发涩
+  function dprNow() {
+    return Math.min(window.devicePixelRatio || 1, 2);
+  }
+
+  function resize() {
+    const r = wrap.getBoundingClientRect();
+    const dpr = dprNow();
+    cv.width = Math.max(1, Math.floor(r.width * dpr));
+    cv.height = Math.max(1, Math.floor(r.height * dpr));
+    cv.style.width = r.width + 'px';
+    cv.style.height = r.height + 'px';
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    S.sceneRev++;
+    draw();
+  }
+  new ResizeObserver(resize).observe(wrap);
+
+  const w2s = (x, y) => [S.ox + x * S.scale, cv.clientHeight - (S.oy + y * S.scale)];
+  const s2w = (px, py) => [(px - S.ox) / S.scale, (cv.clientHeight - py - S.oy) / S.scale];
+
+  function buildMapImage(m) {
+    const w = m.info.width, h = m.info.height;
+    const img = ctx.createImageData(w, h);
+    const d = img.data, src = m.data;
+    // 【关键】y 方向要翻转：
+    //   nav_msgs/OccupancyGrid 的 data 是行优先、从地图「左下角」开始、y 轴向上；
+    //   ImageData 的第 0 行却是图像「顶部」。两者 y 相反，不翻转整张图就会上下
+    //   镜像 —— 表现就是"地图墙线跟激光点云对不上"，而位姿/点云看着都对。
+    for (let y = 0; y < h; y++) {
+      const srow = y * w;
+      const drow = (h - 1 - y) * w;
+      for (let x = 0; x < w; x++) {
+        const v = src[srow + x];
+        const g = v < 0 ? 58 : 255 - Math.round(v * 2.55);
+        const j = (drow + x) * 4;
+        d[j] = g; d[j + 1] = g; d[j + 2] = g; d[j + 3] = 255;
+      }
+    }
+    const off = document.createElement('canvas');
+    off.width = w; off.height = h;
+    off.getContext('2d').putImageData(img, 0, 0);
+    m.canvas = off;
+  }
+
+  function fitView() {
+    if (!S.map) { S.scale = 50; S.ox = 20; S.oy = 20; draw(); return; }
+    const { width, height, resolution, origin } = S.map.info;
+    const b = S.bounds || { x0: 0, y0: 0, x1: width - 1, y1: height - 1 };
+    const wx0 = origin.position.x + b.x0 * resolution;
+    const wy0 = origin.position.y + b.y0 * resolution;
+    const wx1 = origin.position.x + (b.x1 + 1) * resolution;
+    const wy1 = origin.position.y + (b.y1 + 1) * resolution;
+    const mw = Math.max(1, wx1 - wx0), mh = Math.max(1, wy1 - wy0);
+    const padT = 20, padR = 20, padB = 20, padL = 20;
+    const availW = Math.max(80, cv.clientWidth - padL - padR);
+    const availH = Math.max(80, cv.clientHeight - padT - padB);
+    S.scale = Math.max(2, Math.min(120, Math.min(availW / mw, availH / mh)));
+    S.ox = padL + (availW - mw * S.scale) / 2 - wx0 * S.scale;
+    S.oy = padB + (availH - mh * S.scale) / 2 - wy0 * S.scale;
+    $('stZoom').textContent = S.scale.toFixed(2) + ' px/m';
+    draw();
+  }
+
+  function drawPolylineOn(g, pts, color, lw) {
+    if (!pts || pts.length < 2) return;
+    g.strokeStyle = color; g.lineWidth = lw; g.lineJoin = 'round';
+    g.beginPath();
+    pts.forEach((p, i) => {
+      const q = w2s(p.x, p.y);
+      i ? g.lineTo(q[0], q[1]) : g.moveTo(q[0], q[1]);
+    });
+    g.stroke();
+  }
+
+  let lastDraw = 0;
+  // 地图更新立即重绘（不等节流），点云等高频源仍走 draw() 限速
+  function drawNow() {
+    lastDraw = 0;
+    draw();
+  }
+
+  // ── 静态层缓存（网格 + 地图 + 路径）────────────────────────────────
+  // 点云以 10 Hz 重绘，而地图/网格在两次 update 之间完全没变。以前每帧都要
+  // 逐格重画一遍网格线 + 整张地图缩放 blit，白白占掉一半绘制预算。
+  // 现在只在「视图变了 / 地图变了 / 路径变了」时重建，其余帧只做一次纹理拷贝。
+  let sceneCv = null, sceneCtx = null, sceneKey = '';
+
+  function rebuildScene(W, H) {
+    if (!sceneCv) {
+      sceneCv = document.createElement('canvas');
+      sceneCtx = sceneCv.getContext('2d', { alpha: false });
+    }
+    if (sceneCv.width !== cv.width || sceneCv.height !== cv.height) {
+      sceneCv.width = cv.width;
+      sceneCv.height = cv.height;
+    }
+    const dpr = dprNow();
+    sceneCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    sceneCtx.fillStyle = '#0d1117';
+    sceneCtx.fillRect(0, 0, W, H);
+
+    // 网格：整批合成一条 path，只提交一次 stroke
+    sceneCtx.strokeStyle = '#161b22'; sceneCtx.lineWidth = 1;
+    sceneCtx.beginPath();
+    const step = S.scale >= 40 ? 1 : S.scale >= 12 ? 5 : 25;
+    for (let x = Math.floor((0 - S.ox) / S.scale / step) * step; S.ox + x * S.scale < W; x += step) {
+      const px = S.ox + x * S.scale;
+      if (px >= 0) { sceneCtx.moveTo(px, 0); sceneCtx.lineTo(px, H); }
+    }
+    for (let y = Math.floor((0 - S.oy) / S.scale / step) * step; H - (S.oy + y * S.scale) > 0; y += step) {
+      const py = H - (S.oy + y * S.scale);
+      if (py <= H) { sceneCtx.moveTo(0, py); sceneCtx.lineTo(W, py); }
+    }
+    sceneCtx.stroke();
+
+    // 地图：nearest 采样让 GPU 放大，锯齿边界保持锐利
+    if (S.map && S.map.canvas) {
+      const { width, height, resolution, origin } = S.map.info;
+      const p0 = w2s(origin.position.x, origin.position.y + height * resolution);
+      sceneCtx.imageSmoothingEnabled = false;
+      sceneCtx.drawImage(S.map.canvas, p0[0], p0[1],
+                         width * resolution * S.scale, height * resolution * S.scale);
+    }
+
+    drawPolylineOn(sceneCtx, S.gplan, '#1f6feb', 3);
+    drawPolylineOn(sceneCtx, S.lplan, '#f0883e', 2);
+  }
+
+  function draw() {
+    const now = performance.now();
+    if (now - lastDraw < 16) return;      // ~60fps 上限
+    lastDraw = now;
+
+    const W = cv.clientWidth, H = cv.clientHeight;
+
+    // 跟随机器人
+    if (S.follow && S.pose) {
+      S.ox = W / 2 - S.pose.x * S.scale;
+      S.oy = H / 2 - S.pose.y * S.scale;
+      S.sceneRev++;
+    }
+
+    const key = W + '|' + H + '|' + S.scale.toFixed(3) + '|' +
+                S.ox.toFixed(2) + '|' + S.oy.toFixed(2) + '|' + S.sceneRev;
+    if (key !== sceneKey) { rebuildScene(W, H); sceneKey = key; }
+
+    // 静态层整块拷贝（GPU 纹理 blit），不再逐格重绘
+    ctx.drawImage(sceneCv, 0, 0, W, H);
+
+    if (S.scan) {
+      const sc = S.scan;
+      const bl = S.tfStatic[sc.frame] || S.baseLaser;
+      const cb = Math.cos(bl.yaw), sb = Math.sin(bl.yaw);
+      const pw = S.pose;
+      const cp = pw ? Math.cos(pw.yaw) : 1, sp = pw ? Math.sin(pw.yaw) : 0;
+      const px0 = pw ? pw.x : 0, py0 = pw ? pw.y : 0;
+      ctx.fillStyle = '#58a6ff';
+      // 一条 path + 一次 fill：1300 次 fillRect 会变成 1300 次绘制提交，
+      // 合成到一条路径后 GPU 只跑一遍光栅化。矩阵变换也内联展开，省掉
+      // 每点一次的数组分配（w2s 会 new 一个 [x,y]）。
+      ctx.beginPath();
+      for (let i = 0; i < sc.ranges.length; i++) {
+        const r = sc.ranges[i];
+        if (!isFinite(r) || r < sc.rmin || r > sc.rmax) continue;
+        const a = sc.amin + i * sc.ainc;
+        const lx = r * Math.cos(a), ly = r * Math.sin(a);
+        // laser -> base
+        const bx = bl.x + lx * cb - ly * sb;
+        const by = bl.y + lx * sb + ly * cb;
+        // base -> map（内联 w2s）
+        const sx = S.ox + (px0 + bx * cp - by * sp) * S.scale;
+        const sy = H - (S.oy + (py0 + bx * sp + by * cp) * S.scale);
+        if (sx < -5 || sy < -5 || sx > W + 5 || sy > H + 5) continue;
+        ctx.rect(sx - 1, sy - 1, 2, 2);
+      }
+      ctx.fill();
+    }
+
+    if (S.goal) {
+      const g = w2s(S.goal.x, S.goal.y);
+      ctx.strokeStyle = '#f0883e'; ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(g[0] - 9, g[1]); ctx.lineTo(g[0] + 9, g[1]);
+      ctx.moveTo(g[0], g[1] - 9); ctx.lineTo(g[0], g[1] + 9);
+      ctx.stroke();
+      ctx.beginPath(); ctx.arc(g[0], g[1], 11, 0, Math.PI * 2); ctx.stroke();
+    }
+
+    if (S.pose) {
+      const r = w2s(S.pose.x, S.pose.y);
+      ctx.save();
+      ctx.translate(r[0], r[1]);
+      ctx.rotate(-S.pose.yaw);
+      ctx.fillStyle = 'rgba(63,185,80,0.22)';
+      ctx.beginPath(); ctx.moveTo(0, 0); ctx.arc(0, 0, 34, -0.45, 0.45); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = '#3fb950';
+      ctx.beginPath();
+      ctx.moveTo(14, 0); ctx.lineTo(-8, 8); ctx.lineTo(-4, 0); ctx.lineTo(-8, -8);
+      ctx.closePath(); ctx.fill();
+      ctx.strokeStyle = '#0d1117'; ctx.lineWidth = 1; ctx.stroke();
+      ctx.restore();
+    }
+
+    const barM = S.scale > 40 ? 1 : S.scale > 12 ? 5 : 10;
+    const barPx = barM * S.scale;
+    ctx.strokeStyle = '#8b949e'; ctx.fillStyle = '#8b949e'; ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(W - 16 - barPx, H - 18); ctx.lineTo(W - 16, H - 18);
+    ctx.stroke();
+    ctx.font = '11px ui-monospace, monospace';
+    ctx.fillText(barM + ' m', W - 16 - barPx, H - 24);
+  }
+
+  function disconnect() {
+    if (tfClient) { try { tfClient.unsubscribe('base_footprint'); } catch (e) {} tfClient = null; }
+    if (ros) { try { ros.close(); } catch (e) {} }
+    ros = null; connected = false;
+    elDot.classList.remove('on');
+    $('st').textContent = '未连接';
+  }
+
+  function connect() {
+    const url = elAddr.value.trim() || defaultUrl();
+    localStorage.setItem('ros_ws', url);
+    disconnect();
+    $('st').textContent = '连接中…';
+    ros = new ROSLIB.Ros({ url: url });
+
+    ros.on('connection', function () {
+      connected = true;
+      elDot.classList.add('on');
+      $('st').textContent = '已连接';
+      toast('已连接 ' + url);
+      subscribe();
+    });
+    ros.on('error', function (e) {
+      $('st').textContent = '错误';
+      toast('连接错误：' + (e && e.message ? e.message : '见控制台'), true);
+    });
+    ros.on('close', function () {
+      connected = false; elDot.classList.remove('on');
+      $('st').textContent = '已断开';
+      stopVel(false);
+    });
+  }
+
+  function subMap() {
+    topics.map = new ROSLIB.Topic({
+      ros: ros, name: '/relay/map', messageType: 'nav_msgs/OccupancyGrid',
+      throttle_rate: 50, queue_length: 1
+    });
+    topics.map.subscribe(function (msg) {
+      // 车端重启建图时会先发一帧 1x1 占位图，用来冲掉 latch 住的旧地图。
+      // 收到它就把画面清空，等真正的新图；否则屏幕上一直挂着上一轮的残图。
+      if (msg.info.width <= 1 && msg.info.height <= 1) {
+        S.map = null; S.bounds = null;
+        S.mapHz = 0; S.mapT = 0; S.mapCount = 0;
+        S.sceneRev++;
+        $('stMap').textContent = '等待新地图…';
+        drawNow();
+        return;
+      }
+      const first = !S.map;
+      S.map = { info: msg.info, data: msg.data };
+      buildMapImage(S.map);
+      S.bounds = computeBounds(S.map);
+      S.sceneRev++;                       // 地图变了 -> 静态层失效
+      // 统计地图实际刷新率
+      S.mapCount = (S.mapCount || 0) + 1;
+      const now = performance.now();
+      if (!S.mapT) { S.mapT = now; S.mapCount = 1; }
+      if (now - S.mapT > 1000) {
+        S.mapHz = S.mapCount * 1000 / (now - S.mapT);
+        S.mapT = now; S.mapCount = 0;
+      }
+      const hzTxt = S.mapHz ? ' · ' + S.mapHz.toFixed(1) + ' Hz' : '';
+      $('stMap').textContent = msg.info.width + '×' + msg.info.height +
+        ' @ ' + msg.info.resolution.toFixed(3) + hzTxt + (S.bounds ? '（已建 ' +
+        ((S.bounds.x1 - S.bounds.x0 + 1) * msg.info.resolution).toFixed(1) + '×' +
+        ((S.bounds.y1 - S.bounds.y0 + 1) * msg.info.resolution).toFixed(1) + ' m）' : '');
+      if (first) fitView(); else drawNow();
+    });
+  }
+
+  function subscribe() {
+    subMap();
+
+    topics.scan = new ROSLIB.Topic({
+      ros: ros, name: '/scan', messageType: 'sensor_msgs/LaserScan',
+      throttle_rate: 100, queue_length: 1
+    });
+    topics.scan.subscribe(function (msg) {
+      let n = 0;
+      for (let i = 0; i < msg.ranges.length; i++) {
+        const r = msg.ranges[i];
+        if (isFinite(r) && r >= msg.range_min && r <= msg.range_max) n++;
+      }
+      S.scan = {
+        frame: msg.header.frame_id,
+        ranges: msg.ranges,
+        amin: msg.angle_min, ainc: msg.angle_increment,
+        rmin: msg.range_min, rmax: msg.range_max
+      };
+      S.scanCount++;
+      const now = performance.now();
+      if (!S.scanT || now - S.scanT > 700) {
+        const hz = S.scanT ? (S.scanCount * 1000 / (now - S.scanT)) : 0;
+        $('stScan').textContent = n + ' 点' + (hz ? ' · ' + hz.toFixed(1) + ' Hz' : '');
+        S.scanT = now; S.scanCount = 0;
+      }
+      draw();
+    });
+
+    // 静态坐标变换（base->laser 的安装偏移）
+    topics.tfs = new ROSLIB.Topic({
+      ros: ros, name: '/tf_static', messageType: 'tf2_msgs/TFMessage'
+    });
+    topics.tfs.subscribe(function (m) {
+      (m.transforms || []).forEach(function (tr) {
+        const q = tr.transform.rotation;
+        S.tfStatic[tr.child_frame_id] = {
+          x: tr.transform.translation.x,
+          y: tr.transform.translation.y,
+          yaw: Math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z)),
+          parent: tr.header.frame_id
+        };
+      });
+      draw();
+    });
+
+    // 位姿：车端 relay_ctl 以 map 系直接发布（不依赖前端 TF 计算）
+    topics.pose = new ROSLIB.Topic({
+      ros: ros, name: '/relay/robot_pose', messageType: 'geometry_msgs/PoseStamped',
+      throttle_rate: 100, queue_length: 1
+    });
+    topics.pose.subscribe(function (m) {
+      const p = m.pose.position, q = m.pose.orientation;
+      const yaw = Math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z));
+      S.pose = { x: p.x, y: p.y, yaw: yaw };
+      $('stPose').textContent = p.x.toFixed(2) + ', ' + p.y.toFixed(2) +
+        ' @ ' + (yaw * 57.2958).toFixed(0) + '°';
+      draw();
+    });
+
+    topics.gplan = new ROSLIB.Topic({
+      ros: ros, name: '/move_base/NavfnROS/plan', messageType: 'nav_msgs/Path',
+      throttle_rate: 300, queue_length: 1
+    });
+    topics.gplan.subscribe(function (m) {
+      S.gplan = m.poses.map(function (p) { return { x: p.pose.position.x, y: p.pose.position.y }; });
+      $('stPath').textContent = '全局 ' + S.gplan.length + ' 点';
+      S.sceneRev++;
+      draw();
+    });
+
+    // 局部路径必须订阅 /move_base/local_plan（move_base 自己在 private_nh 下转发，
+    // 与实际用 DWA 还是 TEB 无关）。
+    // 以前写的是 /move_base/DWAPlannerROS/local_plan —— 但 WHEELTEC 的
+    // turn_on_wheeltec_robot.launch 在 navigation=true 时启的是
+    // teb_local_planner（DWA 那行是注释掉的），于是这个话题永远没人发布，
+    // 页面上局部路径一直画不出来。全局路径保持 NavfnROS（默认全局规划器）。
+    topics.lplan = new ROSLIB.Topic({
+      ros: ros, name: '/move_base/local_plan', messageType: 'nav_msgs/Path',
+      throttle_rate: 200, queue_length: 1
+    });
+    topics.lplan.subscribe(function (m) {
+      S.lplan = m.poses.map(function (p) { return { x: p.pose.position.x, y: p.pose.position.y }; });
+      S.sceneRev++;
+      draw();
+    });
+
+    topics.goalPub = new ROSLIB.Topic({ ros: ros, name: '/goal_pose', messageType: 'geometry_msgs/PoseStamped' });
+    topics.simpleGoalPub = new ROSLIB.Topic({ ros: ros, name: '/move_base_simple/goal', messageType: 'geometry_msgs/PoseStamped' });
+    topics.initPub = new ROSLIB.Topic({ ros: ros, name: '/initialpose', messageType: 'geometry_msgs/PoseWithCovarianceStamped' });
+    topics.cancel = new ROSLIB.Topic({ ros: ros, name: '/move_base/cancel', messageType: 'actionlib_msgs/GoalID' });
+    topics.cmdVel = new ROSLIB.Topic({ ros: ros, name: '/cmd_vel', messageType: 'geometry_msgs/Twist' });
+
+    toast('已订阅 /map /scan /tf');
+  }
+
+  let velTimer = null;
+  let velTarget = { vx: 0, wz: 0 };
+  function publishVel(vx, wz) {
+    if (!topics.cmdVel) return;
+    topics.cmdVel.publish(new ROSLIB.Message({
+      linear: { x: vx, y: 0, z: 0 }, angular: { x: 0, y: 0, z: wz }
+    }));
+  }
+  // 速度 = 「目标值 + 单一心跳定时器」。改速度只更新 velTarget，不重建定时器：
+  // 旧写法 startVel 里先 stopVel 再 setInterval，按住 W 再叠一个 A 时会插进
+  // 一帧 0 速度，车会一顿一顿的。
+  function startVel(vx, wz) {
+    if (!connected) { toast('未连接', true); return; }
+    velTarget.vx = vx; velTarget.wz = wz;
+    publishVel(vx, wz);                       // 立刻发一条，跟手
+    if (!velTimer) {
+      velTimer = setInterval(function () {
+        publishVel(velTarget.vx, velTarget.wz);
+      }, 100);
+    }
+  }
+  function stopVel(notify) {
+    if (velTimer) { clearInterval(velTimer); velTimer = null; }
+    velTarget.vx = 0; velTarget.wz = 0;
+    publishVel(0, 0);
+    if (notify) toast('已发送停车指令');
+  }
+
+  const padBtns = document.querySelectorAll('#dpad [data-vx]');
+  for (let i = 0; i < padBtns.length; i++) {
+    (function (btn) {
+      const vx = parseFloat(btn.getAttribute('data-vx'));
+      const wz = parseFloat(btn.getAttribute('data-wz'));
+      btn.addEventListener('pointerdown', function (e) {
+        e.preventDefault();
+        const lin = Math.abs(parseFloat($('vlin').value) || 0.15);
+        const ang = Math.abs(parseFloat($('wang').value) || 0.6);
+        startVel(vx > 0 ? lin : (vx < 0 ? -lin : 0), wz > 0 ? ang : (wz < 0 ? -ang : 0));
+      });
+      const stop = function () { stopVel(false); };
+      btn.addEventListener('pointerup', stop);
+      btn.addEventListener('pointerleave', stop);
+      btn.addEventListener('pointercancel', stop);
+      btn.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+    })(padBtns[i]);
+  }
+  $('dpadStop').addEventListener('click', function () { stopVel(true); });
+  $('btnStopAll').addEventListener('click', function () { stopVel(true); callSrv('stop'); });
+
+  // ── 键盘遥控：WASD + 方向键，空格急停 ────────────────────────────
+  // 安全约束（上次撞车就是因为速度指令没断干净）：
+  //   1. 只做「按下/抬起」的即时映射，没有 toggle，松手就停；
+  //   2. 窗口失焦 / 切标签页 / 页面隐藏 —— 一律立即发零速。
+  //      否则 Alt+Tab 之后 keyup 收不到，车会一直按最后一条指令跑；
+  //   3. 焦点在输入框里时不接管按键，否则输 IP、改速度时车会乱动；
+  //   4. 空格和方向键都要 preventDefault，免得页面滚动。
+  const KEYMAP = {
+    KeyW: 'fwd',  ArrowUp:    'fwd',
+    KeyS: 'back', ArrowDown:  'back',
+    KeyA: 'left', ArrowLeft:  'left',
+    KeyD: 'right', ArrowRight: 'right'
+  };
+  const held = { fwd: false, back: false, left: false, right: false };
+  let lastKeyEvent = 0;              // 最后一次收到键盘事件的时间（含操作系统的长按重复）
+
+  function typingInField(el) {
+    if (!el) return false;
+    const t = (el.tagName || '').toUpperCase();
+    return t === 'INPUT' || t === 'TEXTAREA' || t === 'SELECT' || el.isContentEditable;
+  }
+
+  function heldAny() {
+    return held.fwd || held.back || held.left || held.right;
+  }
+
+  // 支持组合键：W+A = 前进同时左转
+  function applyHeld() {
+    const vx = (held.fwd ? 1 : 0) - (held.back ? 1 : 0);
+    const wz = (held.left ? 1 : 0) - (held.right ? 1 : 0);
+    if (!vx && !wz) { stopVel(false); return; }
+    // 注意不能用 `parseFloat(x) || 0.15`：用户把速度填 0 时 0 是 falsy，
+    // 会被偷换成 0.15，而「填 0」恰恰是想要它不动。
+    const a = parseFloat($('vlin').value), b = parseFloat($('wang').value);
+    const lin = isFinite(a) ? Math.abs(a) : 0.15;
+    const ang = isFinite(b) ? Math.abs(b) : 0.6;
+    startVel(vx * lin, wz * ang);
+  }
+
+  function releaseAll(reason) {
+    if (heldAny() && reason) {        // 只有确实有键按着才提示，平时 keyup 不刷屏
+      toast(reason, true);
+    }
+    held.fwd = held.back = held.left = held.right = false;
+    stopVel(false);
+  }
+
+  window.addEventListener('keydown', function (e) {
+    if (e.ctrlKey || e.altKey || e.metaKey) return;   // 不抢浏览器快捷键
+    if (typingInField(e.target)) return;
+    if (e.code === 'Space') {                         // 空格 = 急停
+      e.preventDefault();
+      held.fwd = held.back = held.left = held.right = false;
+      stopVel(true);
+      return;
+    }
+    const a = KEYMAP[e.code];
+    if (!a) return;
+    e.preventDefault();
+    lastKeyEvent = Date.now();                        // 重复事件也算心跳
+    if (e.repeat) return;                             // 长按重复只刷新心跳，不重复下发
+    held[a] = true;
+    applyHeld();
+  });
+
+  window.addEventListener('keyup', function (e) {
+    const a = KEYMAP[e.code];
+    if (!a) return;
+    e.preventDefault();
+    lastKeyEvent = Date.now();
+    held[a] = false;
+    applyHeld();
+  });
+
+  // ── 按键看门狗：keyup 丢了也能停住 ────────────────────────────────
+  // 场景：Alt+Tab 切走但 blur 没触发、远程桌面卡顿把 keyup 吞了、浏览器
+  // 把按键给了别的元素…… 这时 held 会永远停在 true，车就一路跑下去。
+  // 靠两个独立判据兜底：
+  //   1) 操作系统按住某键会周期性发 repeat keydown，拿它当心跳。
+  //      超过 1.2 s 一条键盘事件都没有 = 我们已经不知道键还按着没 -> 停车。
+  //   2) document.hasFocus() 为 false（页面根本没焦点）-> 停车。
+  // 注意判据 1 是 fail-safe：如果系统把「按键重复」关掉了，长按会被当成
+  // 松手（每 1.2 s 停一次），这是故意的，宁可难用也不能乱跑。
+  setInterval(function () {
+    if (!heldAny()) return;
+    if (!document.hasFocus()) { releaseAll('页面失焦，已停车'); return; }
+    if (Date.now() - lastKeyEvent > 1200) { releaseAll('按键超时，已停车'); return; }
+  }, 200);
+
+  window.addEventListener('blur', function () { releaseAll('窗口失焦，已停车'); });
+  document.addEventListener('visibilitychange', function () {
+    if (document.hidden) releaseAll('页面隐藏，已停车');
+  });
+  // 用鼠标点了页面任何地方（点地图发目标、点按钮）说明注意力已经转到鼠标上，
+  // 之前按住的键多半也丢了，一并清掉。
+  // 必须用捕获阶段（第三个参数 true）：D-pad 按钮自己的 pointerdown 先于 window
+  // 的冒泡处理执行，如果在冒泡里清，会把按钮刚发出去的速度又停掉。
+  window.addEventListener('pointerdown', function () {
+    if (heldAny()) releaseAll('已切换到鼠标操作，停车');
+  }, true);
+
+  function callSrv(name, cb) {
+    if (!connected) { toast('未连接', true); return; }
+    const srv = new ROSLIB.Service({
+      ros: ros, name: '/relay/' + name, serviceType: 'std_srvs/Trigger'
+    });
+    toast('调用 /relay/' + name + ' …');
+    srv.callService(new ROSLIB.ServiceRequest({}), function (res) {
+      toast((res.success ? '✔ ' : '✖ ') + res.message, !res.success);
+      if (cb) cb(res);
+    }, function () { toast('/relay/' + name + ' 调用失败（relay_ctl 在跑吗？）', true); });
+  }
+
+  $('btnMapping').addEventListener('click', function () {
+    // 「开始建图」= 不管现在有没有图，一律重新开始。
+    // 先就地清屏，不等车端回包：旧图留在屏幕上会让人以为按钮没生效。
+    S.map = null; S.bounds = null;
+    S.mapHz = 0; S.mapT = 0; S.mapCount = 0;
+    S.sceneRev++;
+    $('stMap').textContent = '重新建图中…';
+    drawNow();
+    callSrv('start_mapping', function (res) {
+      if (res.success) $('stMode').textContent = '建图';
+    });
+    setNavUI(false);          // 回建图模式，收起导航工具栏
+  });
+  $('btnSaveMap').addEventListener('click', function () {
+    callSrv('save_map', function (res) {
+      if (res.success) $('stMode').textContent = '建图（已保存）';
+    });
+  });
+  $('btnNav').addEventListener('click', function () {
+    callSrv('start_navigation', function (res) {
+      if (!res.success) return;
+      $('stMode').textContent = '导航';
+      // 进入导航就把「建图结束位置」隐式设为初始位姿，不再单独放按钮
+      applyLastPose();
+      setNavUI(true);
+    });
+  });
+
+  // 用建图结束时记录的位姿发 /initialpose。
+  // 原来是个独立按钮「设为建图结束位置」，现在合并进「进入导航」自动执行。
+  // 注意不要写成 $('xxx').addEventListener —— 那个按钮已经删了，会 null 报错
+  // 把整个脚本的后续初始化全部打断。
+  function applyLastPose() {
+    callSrv('last_pose', function (res) {
+      if (!res.success) {
+        toast('还没有保存过地图位姿，请用「小车位姿」工具手动指定', true);
+        return;
+      }
+      try {
+        const st = JSON.parse(res.message);
+        if (!st.pose) { toast('保存时没取到位姿', true); return; }
+        sendInitialPose(st.pose.x, st.pose.y, st.pose.yaw);
+        toast('已用建图结束位置设初始位姿 (' +
+          st.pose.x.toFixed(2) + ', ' + st.pose.y.toFixed(2) + ')');
+      } catch (e) { toast('解析位姿失败', true); }
+    });
+  }
+  // ── 导航工具栏 ───────────────────────────────────────────────
+  // 只在导航模式下显示。当前工具决定「左键点画布」干什么 ——
+  // 建图时左键乱点就发导航目标是非常危险的，所以要用工具显式切换。
+  function setNavUI(on) {
+    S.navMode = !!on;
+    const els = document.querySelectorAll('.navOnly');
+    for (let i = 0; i < els.length; i++) els[i].hidden = !on;
+    if (on) {
+      selectTool('goal');
+    } else {
+      selectTool(null);
+      S.waypoints = [];
+      S.zones = [];
+    }
+    S.sceneRev++;
+    draw();
+  }
+
+  function selectTool(name) {
+    S.tool = name;
+    const btns = document.querySelectorAll('button.tool');
+    for (let i = 0; i < btns.length; i++) {
+      btns[i].classList.toggle('on', btns[i].getAttribute('data-tool') === name);
+    }
+  }
+
+  (function bindTools() {
+    const btns = document.querySelectorAll('button.tool');
+    for (let i = 0; i < btns.length; i++) {
+      btns[i].addEventListener('click', function () {
+        selectTool(this.getAttribute('data-tool'));
+      });
+    }
+  })();
+
+  $('btnCancelGoal').addEventListener('click', function () {
+    if (!connected) { toast('未连接', true); return; }
+    if (topics.cancel) {
+      topics.cancel.publish(new ROSLIB.Message({ stamp: { secs: 0, nsecs: 0 }, id: '' }));
+    }
+    S.goal = null; S.gplan = []; S.lplan = [];
+    $('stGoal').textContent = '—';
+    $('stPath').textContent = '—';
+    draw();
+    toast('已取消导航目标');
+  });
+
+  function sendGoal(x, y) {
+    if (!connected) { toast('未连接', true); return; }
+    if (!topics.goalPub) return;
+    const msg = new ROSLIB.Message({
+      header: { frame_id: 'map', stamp: { secs: 0, nsecs: 0 } },
+      pose: { position: { x: x, y: y, z: 0 }, orientation: { x: 0, y: 0, z: 0, w: 1 } }
+    });
+    topics.goalPub.publish(msg);
+    if (topics.simpleGoalPub) topics.simpleGoalPub.publish(msg);
+    S.goal = { x: x, y: y };
+    $('stGoal').textContent = x.toFixed(2) + ', ' + y.toFixed(2);
+    toast('/goal_pose ← (' + x.toFixed(2) + ', ' + y.toFixed(2) + ')');
+    draw();
+  }
+
+  function sendInitialPose(x, y, yaw) {
+    if (!topics.initPub) return;
+    const h = (yaw || 0) / 2;
+    topics.initPub.publish(new ROSLIB.Message({
+      header: { frame_id: 'map', stamp: { secs: 0, nsecs: 0 } },
+      pose: {
+        pose: {
+          position: { x: x, y: y, z: 0 },
+          orientation: { x: 0, y: 0, z: Math.sin(h), w: Math.cos(h) }
+        },
+        covariance: [0.25, 0, 0, 0, 0, 0,
+                     0, 0.25, 0, 0, 0, 0,
+                     0, 0, 0, 0, 0, 0,
+                     0, 0, 0, 0, 0, 0,
+                     0, 0, 0, 0, 0, 0,
+                     0, 0, 0, 0, 0, 0.0685]
+      }
+    }));
+  }
+
+  let drag = null;
+  cv.addEventListener('mousedown', function (e) {
+    if (e.button === 0 && !e.shiftKey) {
+      const r = cv.getBoundingClientRect();
+      const w = s2w(e.clientX - r.left, e.clientY - r.top);
+      sendGoal(w[0], w[1]);
+    }
+    S.follow = false; $('follow').checked = false;
+    drag = { x: e.clientX, y: e.clientY, ox: S.ox, oy: S.oy };
+  });
+  cv.addEventListener('mousemove', function (e) {
+    if (!drag) return;
+    S.ox = drag.ox + (e.clientX - drag.x);
+    S.oy = drag.oy - (e.clientY - drag.y);
+    draw();
+  });
+  window.addEventListener('mouseup', function () { drag = null; });
+
+  cv.addEventListener('contextmenu', function (e) {
+    e.preventDefault();
+    if (!connected) return;
+    const r = cv.getBoundingClientRect();
+    const w = s2w(e.clientX - r.left, e.clientY - r.top);
+    sendInitialPose(w[0], w[1], S.pose ? S.pose.yaw : 0);
+    toast('已下发初始位姿 (' + w[0].toFixed(2) + ', ' + w[1].toFixed(2) + ')');
+  });
+
+  cv.addEventListener('wheel', function (e) {
+    e.preventDefault();
+    S.follow = false; $('follow').checked = false;
+    const r = cv.getBoundingClientRect();
+    const mx = e.clientX - r.left, my = e.clientY - r.top;
+    const w = s2w(mx, my);
+    S.scale = Math.max(1, Math.min(400, S.scale * (e.deltaY < 0 ? 1.15 : 1 / 1.15)));
+    S.ox = mx - w[0] * S.scale;
+    S.oy = (cv.clientHeight - my) - w[1] * S.scale;
+    $('stZoom').textContent = S.scale.toFixed(2) + ' px/m';
+    draw();
+  }, { passive: false });
+
+  $('connect').addEventListener('click', connect);
+  $('fit').addEventListener('click', fitView);
+  $('follow').addEventListener('change', function (e) {
+    S.follow = e.target.checked;
+    if (S.follow) toast('已开启跟随机器人');
+    draw();
+  });
+  $('reloadMap').addEventListener('click', function () {
+    if (!connected) { toast('未连接', true); return; }
+    try { topics.map.unsubscribe(); } catch (e) {}
+    S.map = null;
+    subMap();
+    toast('重新订阅 /map');
+  });
+  elAddr.addEventListener('keydown', function (e) { if (e.key === 'Enter') connect(); });
+
+  elAddr.value = defaultUrl();
+  resize();
+  connect();
+
+  // 放最后：此时 wrap / cv / ctx 这些 const 已初始化，DOM 布局也稳定了。
+  // 放在脚本顶部会踩 "Cannot access 'wrap' before initialization"。
+  initTopNav();
+})();
+</script>
+
+<script>
+/* ===== 视频采集工作台（原 mipi_viewer.html，整体并入）===== */
+(function () {
+
+"use strict";
+
+const $ = id => document.getElementById(id);
+// 统一导航：本页跑在中继的 9012 端口，建图页在 80 端口。
+// 跨端口必须用当前主机名动态拼，写相对路径会指到 :9012/map.html（不存在）。
+
+
+let base = "";            // http://host:port
+let connected = false;
+let params = {};          // 本地镜像的参数
+let pushTimer = null;
+
+/* ---------------- 工具 ---------------- */
+function toast(msg, isErr) {
+  const t = $("vToast");
+  t.textContent = msg;
+  t.className = "show" + (isErr ? " err" : "");
+  clearTimeout(t._h);
+  t._h = setTimeout(() => { t.className = ""; }, 1800);
+}
+function setDot(ok, txt) {
+  $("vDot").className = "dot " + (ok ? "ok" : "bad");
+  $("connTxt").textContent = txt;
+}
+
+/* ---------------- 左右两列底部对齐 ---------------- */
+// 目标: 左列底边 = 右列底边, 且整体不超一屏。
+//   1) 先量“画面以外的固定高度”(卡片内边距/标题/两组指标);
+//   2) 用一屏减去它, 得到画面应有的高度 -> 反推宽度;
+//   3) 再把右列高度钉在左列实测高度上, 超出部分在右列内滚。
+// 不写死常数: 指标行数/字号/窗口缩放变了也能对上。
+const _colL = document.getElementById("colLeft");
+const _colR = document.getElementById("colRight");
+const _stage = document.getElementById("stage");
+
+function _stageAR() {
+  const v = getComputedStyle(_stage).aspectRatio || "16 / 9";
+  const p = v.split("/");
+  const a = parseFloat(p[0]), b = parseFloat(p[1] || 1);
+  return (a > 0 && b > 0) ? a / b : 16 / 9;
+}
+
+function syncColHeight() {
+  if (!_colL || !_colR || !_stage) return;
+  if (window.innerWidth <= 1100) {          // 单列: 不限制
+    _stage.style.maxWidth = "";
+    _colR.style.height = "";
+    return;
+  }
+  const avail = window.innerHeight - 84;    // 顶部 header + 上下 padding 留白
+  const ar = _stageAR();
+  const stageH = _stage.getBoundingClientRect().height;
+  const leftH = _colL.getBoundingClientRect().height;
+  const extra = Math.max(60, leftH - stageH);   // 画面以外的固定高度
+  const wantH = Math.max(240, avail - extra);
+  const wantW = Math.round(wantH * ar);
+  // 注意 parseFloat("") === NaN, 而 NaN 参与比较恒为 false,
+  // 会静默跳过赋值 —— 必须显式判 NaN。
+  const cur = parseFloat(_stage.style.maxWidth);
+  if (isNaN(cur) || Math.abs(cur - wantW) > 1) {
+    _stage.style.maxWidth = wantW + "px";
+  }
+  const finalH = Math.round(_colL.getBoundingClientRect().height);
+  _colR.style.height = finalH + "px";
+}
+
+if (window.ResizeObserver) new ResizeObserver(syncColHeight).observe(_stage);
+window.addEventListener("resize", syncColHeight);
+syncColHeight();
+
+/* ---------------- 连接 ---------------- */
+// 拉流自动重连：
+//   切分辨率时服务端会 execv 重启(监听 socket 被关), 浏览器的 MJPEG <img>
+//   连接挂掉后既不会报错也不会自己重连 —— 表现就是“画面卡住, 要刷新页面”。
+//   这里做三件事：onerror 重试、服务端 clients 变 0 时重连、切模式后主动重连。
+let streamTimer = null, streamTries = 0, zeroClientHits = 0, streamGen = 0;
+let streamPending = false;      // 正在重连(避免重复发起)
+let streamPendingAt = 0;        // 本次重连发起时刻
+let lastForceAt = 0;            // 上次强制重建时刻(限频, 否则风暴)
+// 流看门狗: 服务端发布的 frame_id 不再增长 = 画面已经死了。
+// 切分辨率时服务端 execv 重启, <img> 那条 multipart 连接会半死 ——
+// 既不报错也不会自己恢复, streamPending 还卡在 true, 于是永远重连不了。
+let lastFrameId = null, lastFrameAdvAt = 0;
+let switchUntil = 0;            // 切模式静默期(这期间由切换流程自己重连)
+let deadStrikes = 0;            // 连续“强制重连也没用”的次数
+let needReload = false;         // 别人切了格式 -> 只能刷新, 不再无憩重连
+let reloadTimer = null;
+
+function showReloadBar(modeText) {
+  needReload = true;
+  clearTimeout(streamTimer);          // 停止自动重连, 否则会把连接堆爆
+  const bar = $("reloadBar");
+  if (!bar) return;
+  if (modeText && $("reloadMode")) $("reloadMode").textContent = modeText;
+  bar.hidden = false;
+  setDot(false, "需刷新才能继续");
+  let left = 10;
+  const cnt = $("reloadCnt");
+  const tick = () => {
+    if (cnt) cnt.textContent = left + " 秒后自动刷新";
+    if (left-- <= 0) { location.reload(); return; }
+    reloadTimer = setTimeout(tick, 1000);
+  };
+  clearTimeout(reloadTimer);
+  tick();
+}
+
+$("btnReloadNow").onclick = () => {
+  clearTimeout(reloadTimer);
+  location.reload();
+};
+
+// 关键: 每次重连都【新建一个 <img>】再替换旧的。
+// 复用同一个元素改 src 时, 浏览器有时会保留那条已经半死的 multipart 请求,
+// 新请求发不出去 —— 表现就是“画面卡住不管怎么重连都没用”。新建元素能强制
+// 断旧请求 + 开新请求。
+function startStream(force) {
+  if (!base) return;
+  if (needReload) return;                  // 等用户刷新, 不再重连
+  clearTimeout(streamTimer);
+  if (streamPending && !force) return;     // 已有请求在跑, 不重复发
+  if (force) {
+    // ★ 限频: 服务端采集挂了的时候, 无限重连会把连接堆爆(实测堆到 22 个)
+    if (Date.now() - lastForceAt < 5000) return;
+    lastForceAt = Date.now();
+    // 作废旧一轮的所有回调, 把挂死的 <img> 真的断开再清掉
+    streamGen++;
+    const imgs = document.querySelectorAll('img[id="stream"]');
+    for (let i = 1; i < imgs.length; i++) imgs[i].remove();
+    const cur = $("stream");
+    if (cur && cur.parentNode) { try { cur.src = ""; } catch (e) {} }
+  }
+  streamPending = true;
+  streamPendingAt = Date.now();
+
+  // ★ 每次重连都先把旧的 <img> 从 DOM 里拿掉。
+  //   只把 src 置空不够 —— 浏览器有时会继续持有那条 multipart 请求,
+  //   服务端就多挂一个客户端名额。实测一个页面重连几次就能把并发上限顶满,
+  //   进而把采集线程饿死(fps 直接 0)。宁可闪一下黑, 也不要连接泄漏。
+  document.querySelectorAll('img[id="stream"]').forEach(el => {
+    try { el.src = ""; } catch (e) {}
+    el.remove();
+  });
+
+  const img = document.createElement("img");
+  img.id = "stream"; img.alt = "stream";
+  // 先藏起来：拿到第一帧后由 syncQuad() 按「有没有画面」决定是否显示，
+  // 避免空 img 占位挤压 #stage 里的其它内容（提示文字会被挤到左边）。
+  img.style.display = "none";
+
+  const gen = ++streamGen;
+  img.onload = () => {
+    if (gen !== streamGen) { img.remove(); return; }
+    streamPending = false;
+    connected = true; zeroClientHits = 0; streamTries = 0;
+    deadStrikes = 0;
+    lastFrameId = null; lastFrameAdvAt = Date.now();   // 重新开始看门狗计时
+    setDot(true, "已连接");
+    syncQuad();          // 新建的 <img> 要重新应用四宫格显隐
+  };
+  img.onerror = () => {
+    if (gen !== streamGen) return;
+    streamPending = false;
+    img.remove();
+    connected = false;
+    setDot(false, "重连中…");
+    streamTries++;
+    if (streamTries <= 40) {
+      streamTimer = setTimeout(startStream, Math.min(2000, 400 + streamTries * 250));
+    } else {
+      setDot(false, "拉流失败");
+      toast("拉流失败, 尝试重新加载页面…", true);
+      setTimeout(() => location.reload(), 1200);
+    }
+  };
+  img.src = base + "/stream?t=" + Date.now();
+  $("stage").appendChild(img);
+  $("placeholder").style.display = "none";
+}
+
+function connect() {
+  let a = $("vAddr").value.trim();
+  if (!a) { toast("请填写服务器地址", true); return; }
+  if (!/^https?:\/\//i.test(a)) a = "http://" + a;
+  const nb = a.replace(/\/+$/, "");
+  const same = (nb === base);
+  base = nb;
+  localStorage.setItem("mipi_addr", $("vAddr").value.trim());
+
+  streamTries = 0;
+  // ★ 已连接且地址没变时不要重建流：每次重建都会在服务端多挂一路，
+  //   旧连接要等下一次写失败才释放，表现为“路数一直 +1”。
+  const alive = connected && !!document.querySelector('img[id="stream"]') && !needReload;
+  if (same && alive) {
+    setDot(true, "已连接");
+  } else {
+    setDot(true, "连接中…");
+    startStream(true);
+  }
+  getParams().then(loadFpga).then(() => loadModes());
+  loadNet();
+  aiLoad(true);
+  fpgaPoll();
+  gzPoll();
+  poll();
+  sysPoll();
+}
+
+/* ---------------- 参数 ---------------- */
+async function api(path, opt) {
+  const r = await fetch(base + path, Object.assign({
+    headers: { "Content-Type": "application/json" },
+    cache: "no-store"
+  }, opt || {}));
+  if (!r.ok) {
+    // 2026-10-25: 后端拒绝时(如 409 切到无模组通道)会带 message,
+    // 以前只抛状态码, 用户看不出为什么失败。
+    let msg = path + " -> " + r.status;
+    try {
+      const j = await r.json();
+      if (j && j.message) msg = j.message;
+      else if (j && j.error) msg = j.error;
+    } catch (e2) { /* 非 JSON, 用状态码 */ }
+    throw new Error(msg);
+  }
+  return r.json();
+}
+
+async function getParams() {
+  try {
+    params = await api("/api/params");
+    Object.keys(params).forEach(k => {
+      const el = $("p_" + k); if (!el) return;
+      // 正在拖这个滑块时不要被别人改的值打断
+      if (document.activeElement === el) return;
+      el.value = params[k];
+      syncLabel(k);
+    });
+    syncToggles();
+  } catch (e) { toast("读取参数失败: " + e.message, true); }
+}
+
+function syncLabel(k) {
+  const el = $("p_" + k), lab = $("v_" + k);
+  if (!el || !lab) return;
+  const step = parseFloat(el.step || "1");
+  lab.textContent = (step < 1) ? parseFloat(el.value).toFixed(2) : el.value;
+}
+function syncToggles() {
+  $("btnMirror").classList.toggle("on", !!params.mirror);
+  $("btnFlipv").classList.toggle("on", !!params.flipv);
+  // 单目 / 双目 两档
+  const _m = Number(params.dual ?? 0) ? "dual" : "mono";
+  document.querySelectorAll("#viewVideo [data-mode]").forEach(b =>
+    b.classList.toggle("on", b.dataset.mode === _m));
+  document.querySelectorAll("#viewVideo [data-rot]").forEach(b =>
+    b.classList.toggle("on", Number(b.dataset.rot) === Number(params.rotate || 0)));
+  document.querySelectorAll("#viewVideo [data-aisrc]").forEach(b =>
+    b.classList.toggle("on", Number(b.dataset.aisrc) === Number(params.ai_src || 0)));
+  // 双目模式下「单目通道」不起作用 -> 整行灰掉
+  {
+    const dual = !!Number(params.dual ?? 0);
+    const cams = document.querySelectorAll("#viewVideo [data-cam]");
+    cams.forEach(b => { b.disabled = dual; });
+    if (cams.length) {
+      const row = cams[0].closest(".row");
+      if (row) { row.style.opacity = dual ? ".4" : "1"; }
+    }
+  }
+  // FPGA 硬件 JPEG: 有损/无损、闭环码控
+  // (「硬件编码」开关已于 2026-10-27 移除: 硬件编码是唯一通路)
+  document.querySelectorAll("#viewVideo [data-jll]").forEach(b =>
+    b.classList.toggle("on", Number(b.dataset.jll) === Number(params.jpeg_ll || 0)));
+  document.querySelectorAll("#viewVideo [data-jrc]").forEach(b =>
+    b.classList.toggle("on", Number(b.dataset.jrc) === Number(params.jpeg_rc || 0)));
+  // 无损模式下 Q / 目标码率无意义 -> 置灰
+  {
+    const ll = Number(params.jpeg_ll || 0) === 1;
+    ["p_jpeg_q", "p_jpeg_kb"].forEach(id => {
+      const el = $(id); if (!el) return;
+      el.disabled = ll; el.parentElement.style.opacity = ll ? ".4" : "1";
+    });
+    if ($("v_jpeg_q"))  $("v_jpeg_q").textContent  = String(params.jpeg_q ?? 75);
+    if ($("v_jpeg_kb")) $("v_jpeg_kb").textContent = (params.jpeg_kb ?? 120) + " KB/帧";
+    if ($("p_jpeg_q"))  $("p_jpeg_q").value  = params.jpeg_q ?? 75;
+    if ($("p_jpeg_kb")) $("p_jpeg_kb").value = params.jpeg_kb ?? 120;
+  }
+  syncQuad();        // 双目/单目切换时重排：四宫格 <-> 单画面
+}
+
+function schedulePush() {
+  clearTimeout(pushTimer);
+  pushTimer = setTimeout(async () => {
+    try { params = await api("/api/params", { method: "POST", body: JSON.stringify(params) }); }
+    catch (e) { toast("参数下发失败: " + e.message, true); }
+  }, 60);
+}
+
+/* 滑块绑定 */
+["brightness","contrast","saturation","hue","gamma","scale","quality","fps"]
+.forEach(k => {
+  const el = $("p_" + k);
+  el.addEventListener("input", () => {
+    params[k] = parseFloat(el.value);
+    syncLabel(k);
+    schedulePush();
+  });
+});
+
+/* 开关 / 旋转 */
+$("btnMirror").onclick = () => { params.mirror = params.mirror ? 0 : 1; syncToggles(); schedulePush(); };
+$("btnFlipv").onclick  = () => { params.flipv  = params.flipv  ? 0 : 1; syncToggles(); schedulePush(); };
+
+/* FPGA 硬件 JPEG 编码参数 (jpeg_regfile 0x00 / 0x01 / 0x02-0x04 / 0x05) */
+// 2026-10-27: 硬件编码是唯一通路, 开关已从界面移除。
+//   这里保留 jpegHw 变量只为兼容 syncToggles() 里的显示逻辑, 恒为 1。
+let jpegHw = 1;
+(async () => {
+  try {
+    const r = await api("/api/jpeg");
+    jpegHw = r.hw ? 1 : 0; syncToggles();
+  } catch (e) { /* 老版本后端没有 /api/jpeg, 忽略 */ }
+})();
+
+document.querySelectorAll("#viewVideo [data-jll]").forEach(b => {
+  b.onclick = () => { params.jpeg_ll = Number(b.dataset.jll); syncToggles(); schedulePush(); };
+});
+document.querySelectorAll("#viewVideo [data-jrc]").forEach(b => {
+  b.onclick = () => { params.jpeg_rc = Number(b.dataset.jrc); syncToggles(); schedulePush(); };
+});
+[["p_jpeg_q", "jpeg_q", v => String(v)],
+ ["p_jpeg_kb", "jpeg_kb", v => v + " KB/帧"]].forEach(([id, key, fmt]) => {
+  const el = $(id);
+  if (!el) return;
+  el.addEventListener("input", () => {
+    params[key] = parseInt(el.value, 10);
+    $("v_" + key).textContent = fmt(el.value);
+    schedulePush();
+  });
+});
+/* 推流模式: 单目 / 双目拼接(左cam0右cam1)
+   ★ 完全显式, 不会自动切 —— 想单目就点单目, 不会因为看到两路标记被改掉。 */
+document.querySelectorAll("#viewVideo [data-mode]").forEach(b => {
+  b.onclick = () => {
+    const m = b.dataset.mode;
+    params.dual      = (m === "mono") ? 0 : 1;
+    params.dual_demo = 0;          // 演示模式已从界面移除, 保持关闭
+    syncToggles(); schedulePush();
+    toast(m === "mono" ? "单目 全屏" : "双目拼接 3840×1080");
+  };
+});
+document.querySelectorAll("#viewVideo [data-rot]").forEach(b => {
+  b.onclick = () => { params.rotate = Number(b.dataset.rot); syncToggles(); schedulePush(); };
+});
+
+/* 单目通道: 写 FPGA 的 0xDB[0] (走 /api/fpga 的位操作, 保留 mark_en/dual_en) */
+/* ---------------- 双目四宫格 ---------------- */
+// 上左 cam0 / 上右 cam1 / 下左 骨架 / 下右 深度(预留)
+// 两路上视频用 canvas 从【同一条】MJPEG 流裁左/右半边 ——
+// 不能建两个 <img src=/stream>: 服务端 _stream_acquire(ip) 是
+// "同 IP 只留最新一路", 第二个 img 会把第一个顶掉, 两个都黑。
+let _quadTimer = null, _skelTimer = null;
+
+// COCO-17 骨架连接(0-based), 与板端 det_core.py 的 SKELETON 一致
+const COCO_EDGES = [[15, 13], [13, 11], [16, 14], [14, 12], [11, 12], [5, 11],
+  [6, 12], [5, 6], [5, 7], [6, 8], [7, 9], [8, 10], [1, 2], [0, 1], [0, 2],
+  [1, 3], [2, 4], [3, 5], [4, 6]];
+const KP_CONF = 0.3;          // 低于这个置信度的关节点不画
+
+// 后端只给坐标(JSON), 这里自己用 canvas 画 —— 比传 JPEG 省带宽、
+// 放大不糊、后端也不用每帧 imencode。
+function drawPose(data) {
+  const c = $("cvSkel"); if (!c) return;
+  const W = +data.w || 960, H = +data.h || 540;
+  // 只在尺寸变化时设, 否则每次都会清空重来(浪费)
+  if (c.width !== W || c.height !== H) { c.width = W; c.height = H; }
+  const g = c.getContext("2d");
+  g.fillStyle = "#000"; g.fillRect(0, 0, W, H);
+  const ps = data.persons || [];
+  if (!ps.length) {
+    g.fillStyle = "#556"; g.font = "16px sans-serif";
+    g.textAlign = "center";
+    g.fillText("无人体", W / 2, H / 2);
+    g.textAlign = "start";
+    return;
+  }
+  ps.forEach(function (p) {
+    const k = p.k || [], b = p.b || [];
+    // 人体框
+    if (b.length >= 4) {
+      g.strokeStyle = "#0f0"; g.lineWidth = 3;
+      g.strokeRect(b[0], b[1], b[2] - b[0], b[3] - b[1]);
+      if (p.t != null) {
+        g.fillStyle = "#0f0"; g.font = "bold 20px sans-serif";
+        g.fillText("ID" + p.t, b[0] + 4, Math.max(20, b[1] - 6));
+      }
+    }
+    // 骨架连线
+    g.strokeStyle = "#0ff"; g.lineWidth = 4; g.lineCap = "round";
+    COCO_EDGES.forEach(function (e) {
+      const a = k[e[0]], d = k[e[1]];
+      if (!a || !d || a[2] < KP_CONF || d[2] < KP_CONF) return;
+      g.beginPath(); g.moveTo(a[0], a[1]); g.lineTo(d[0], d[1]); g.stroke();
+    });
+    // 关节点
+    g.fillStyle = "#ff0";
+    k.forEach(function (q) {
+      if (q[2] < KP_CONF) return;
+      g.beginPath(); g.arc(q[0], q[1], 5, 0, 6.2832); g.fill();
+    });
+  });
+}
+
+async function skelTick() {
+  if (!base) return;
+  try { drawPose(await api("/api/pose")); } catch (e) { /* 静默 */ }
+}
+
+// 页面上可能同时存在多个 img[id="stream"]（重连会新建，旧的要等 onerror 才移除）。
+// 一律取「真的一帧画面」那个，否则会把空 img 当成视频源 —— 表现就是
+// 双目切回单目后画面不出来、或提示文字被挤到左边。
+function streamImg() {
+  const all = document.querySelectorAll('img[id="stream"]');
+  for (let i = all.length - 1; i >= 0; i--) {
+    if (all[i].naturalWidth > 0) return all[i];
+  }
+  return all.length ? all[all.length - 1] : null;
+}
+
+function quadDraw() {
+  const src = streamImg();
+  if (!src || !src.naturalWidth) return;
+  const w = src.naturalWidth, h = src.naturalHeight, hw = w >> 1;
+  [["cvL", 0], ["cvR", hw]].forEach(function (p) {
+    const c = $(p[0]); if (!c) return;
+    if (c.width !== hw || c.height !== h) { c.width = hw; c.height = h; }
+    c.getContext("2d").drawImage(src, p[1], 0, hw, h, 0, 0, hw, h);
+  });
+}
+
+function syncQuad() {
+  const q = $("quad"); if (!q) return;
+  const on = !!Number(params.dual ?? 0);
+  q.style.display = on ? "grid" : "none";
+  const s = streamImg();
+  // 单目且还没有任何有效帧时必须把 img 藏掉：否则它作为 flex item 占位，
+  // 会把「点击连接后开始拉流」的提示挤到左边（双目切回单目就会看到）。
+  if (s) s.style.display = (on || !s.naturalWidth) ? "none" : "block";
+  // 立即应用外框比例(不等下一轮 poll): 四宫格每格 16:9 => 整体 16:9
+  if (on) $("stage").style.aspectRatio = "16 / 9";
+  if (on) {
+    if (!_quadTimer) _quadTimer = setInterval(quadDraw, 33);
+    if (!_skelTimer) {
+      _skelTimer = setInterval(skelTick, 100);
+    }
+  } else {
+    if (_quadTimer) { clearInterval(_quadTimer); _quadTimer = null; }
+    if (_skelTimer) { clearInterval(_skelTimer); _skelTimer = null; }
+  }
+}
+
+async function syncCam() {
+  // 2026-10-26: 双目模式下「单目通道」整行禁用。
+  //   ★ 这里也必须判 dual: syncCam 每 3 个 poll 周期跑一次, 之前它按 dead
+  //     把 disabled 写回 false, 正好覆盖掉 syncToggles 里的 b.disabled = dual,
+  //     现象就是「已经灰掉了但还能点击选择」。
+  const dual = !!Number(params.dual ?? 0);
+  document.querySelectorAll("#viewVideo [data-cam]").forEach(b => {
+    b.disabled = dual;
+    b.style.cursor = dual ? "not-allowed" : "pointer";
+    if (dual) b.title = "双目模式下不切单目通道：请先切到「单目」";
+  });
+  if (dual || !base) return;
+  try {
+    const d = await api("/api/fpga");
+    const r = (d.regs || {});
+    const rs = Number(r.RX_SEL || 0);
+    const mods = d.modules || {};
+    document.querySelectorAll("#viewVideo [data-cam]").forEach(b => {
+      const c = Number(b.dataset.cam);
+      b.classList.toggle("on", c === rs);
+      // 2026-10-25: 没插模组的那一路直接禁用。
+      //   切过去会让时钟 mux 选到没有像素时钟的源 -> rkcsi2-dphy 永久卡死,
+      //   之后连强制 FPGA 复位都救不回来, 只能重载 bitstream。
+      //   正在用的那一路不禁用(即使探测说不在线, 也不能把当前画面锁死)。
+      const m = mods.supported ? (mods["cam" + c] || null) : null;
+      const dead = !!(m && !m.alive && c !== rs);
+      b.disabled = dead;
+      b.style.opacity = dead ? ".4" : "1";
+      b.style.cursor = dead ? "not-allowed" : "pointer";
+      b.title = dead
+        ? (c ? "右目(CAM1)" : "左目(CAM0)") + "：未检测到模组（AE 计数不增长）"
+        : "";
+    });
+  } catch (e) { /* 静默: FPGA 没启用时不影响页面 */ }
+}
+document.querySelectorAll("#viewVideo [data-cam]").forEach(b => {
+  b.onclick = async () => {
+    // 双保险: 即使 disabled 被样式/浏览器绕过, 也不许在双目模式下切通道
+    if (Number(params.dual ?? 0)) {
+      toast("双目模式下不切单目通道，请先切到「单目」", true);
+      return;
+    }
+    const c = Number(b.dataset.cam);
+    try {
+      await api("/api/fpga", {
+        method: "POST", body: JSON.stringify({ RX_SEL: c })
+      });
+      toast("已切到 " + (c ? "右目(CAM1)" : "左目(CAM0)"));
+      syncCam();
+    } catch (e) { toast("切通道失败: " + e.message, true); }
+  };
+});
+
+/* AI 通道: 双目模式下喂哪半边 */
+document.querySelectorAll("#viewVideo [data-aisrc]").forEach(b => {
+  b.onclick = () => {
+    params.ai_src = Number(b.dataset.aisrc);
+    document.querySelectorAll("#viewVideo [data-aisrc]").forEach(x =>
+      x.classList.toggle("on", x === b));
+    schedulePush();
+    toast("AI 通道 -> " + (params.ai_src ? "右目(CAM1)" : "左目(CAM0)"));
+  };
+});
+
+$("btnReset").onclick = async () => {
+  try {
+    await api("/api/params", { method: "POST", body: JSON.stringify({ reset: true }) });
+    await getParams();
+    toast("参数已重置");
+  } catch (e) { toast("重置失败: " + e.message, true); }
+};
+
+/* ---------------- 抓拍 ---------------- */
+// 改由服务端按【采集原始分辨率】出图：推流帧被缩到 --stream-width(默认1920)，
+// 拿 <img> 画到 canvas 只能得到 1920 宽的图。
+$("btnSnap").onclick = async () => {
+  if (!base) { toast("还没连接", true); return; }
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  try {
+    const r = await fetch(base + "/snapshot.jpg?full=1&t=" + Date.now(),
+                          { cache: "no-store" });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const b = await r.blob();
+    // 读出真实像素尺寸, 顺便写进文件名
+    const size = await new Promise(res => {
+      const im = new Image();
+      im.onload = () => res(im.naturalWidth + "x" + im.naturalHeight);
+      im.onerror = () => res("");
+      im.src = URL.createObjectURL(b);
+    });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(b);
+    a.download = "mipi_" + stamp + (size ? "_" + size : "") + ".jpg";
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+    toast("已保存" + (size ? " " + size : ""));
+  } catch (e) {
+    toast("抓拍失败: " + e.message, true);
+  }
+};
+
+/* ---------------- FPGA 硬件参数 (I2C @0x40) ---------------- */
+let fpgaRegs = {};
+let fpgaPushTimer = null;
+let fpgaPending = {};        // 合并这段时间内所有改动, 避免“后一次覆盖前一次”
+let fpgaTimer = null;
+let ppVerWarned = false;
+
+/* ------------------------------------------------------------------
+   预处理按钮消抖
+   误触表现为: 连点两下 -> 开了又关; 或两个按钮快速连点 -> 只有后一个生效,
+   回读后前一个被“打回去” -> 界面看起来在抖。
+   处理: 同一按钮 PP_DEBOUNCE_MS 内只认一次; 不同按钮不互相阻断(多选要能连点)。
+   ------------------------------------------------------------------ */
+const PP_DEBOUNCE_MS = 260;
+const ppLastClick = new WeakMap();
+function ppClickOK(btn) {
+  const now = (window.performance && performance.now) ? performance.now() : Date.now();
+  const last = ppLastClick.get(btn) || -1e9;
+  if (now - last < PP_DEBOUNCE_MS) return false;   // 同按钮 260ms 内重复点击 -> 忽略
+  ppLastClick.set(btn, now);
+  btn.classList.add("lock");
+  setTimeout(() => btn.classList.remove("lock"), PP_DEBOUNCE_MS);
+  return true;
+}
+
+/* ------------------------------------------------------------------
+   乐观覆盖层
+   现象: 点开一个预处理, 参数滑条刚出来又消失。
+   原因: 刚下发的值要经过 I2C 写 -> FPGA 内部 2 级同步才生效; 这期间
+         ——120ms 后的 POST 回读、或 3 秒一次的 /api/fpga 轮询——
+         返回的还是旧值, 直接盖回 fpgaRegs, UI 就按旧值把面板收起。
+   处理: 写过的寄存器在 OVERLAY_MS 内一律以本地值为准; 过期后自然回到回读值。
+   ------------------------------------------------------------------ */
+const FG_OVERLAY_MS = 1500;
+const fgOverlay = {};
+
+function fgMerge(regs) {
+  const out = Object.assign({}, regs || {});
+  const now = Date.now();
+  Object.keys(fgOverlay).forEach(k => {
+    const o = fgOverlay[k];
+    if (o && o.until > now) out[k] = o.v;
+    else delete fgOverlay[k];
+  });
+  return out;
+}
+
+function fgRemember(patch) {
+  const until = Date.now() + FG_OVERLAY_MS;
+  Object.keys(patch || {}).forEach(k => { fgOverlay[k] = { v: patch[k], until }; });
+}
+
+const BASIC_BITS = [1, 2, 4, 8, 16];   // data-basic 0..4
+
+function fpgaSyncUI() {
+  const r = fpgaRegs;
+
+  // ---- 初级 (多选按钮 + 选中才显示滑条) ----
+  const ben = Number(r.BASIC_EN || 0);
+  document.querySelectorAll("#viewVideo [data-basic]").forEach(b => {
+    const idx = Number(b.dataset.basic);
+    const on = !!(ben & BASIC_BITS[idx]);
+    b.classList.toggle("on", on);
+    const p = $("bp_" + idx);
+    if (p) p.classList.toggle("show", on);
+  });
+  if ($("s_gray_mode") && r.BASIC_GRAY !== undefined) {
+    $("s_gray_mode").value = String(Number(r.BASIC_GRAY));
+  }
+  ["BASIC_GAUSS", "BASIC_HE", "BASIC_HE_CLIP", "BASIC_CONTRAST"].forEach(k => {
+    const el = $("f_" + k);
+    if (el && r[k] !== undefined && document.activeElement !== el) el.value = r[k];
+    if (el && $("fv_" + k)) $("fv_" + k).textContent = el.value;
+  });
+  // 高斯核尺寸三选一
+  const ker = Number(r.BASIC_KER || 0);
+  ["btnKer0", "btnKer1", "btnKer2"].forEach((id, i) => {
+    const b = $(id);
+    if (b) b.classList.toggle("on", Number(r.BASIC_EN || 0) & 2 && i === ker);
+  });
+  const blf = $("btnLineFix");
+  if (blf) blf.classList.toggle("on", Number(r.BASIC_LINEFIX || 0) === 1);
+
+
+  // ---- 高级 (单选按钮 + 只显示选中项的滑条) ----
+  const advOn = Number(r.PP_EN) === 1;
+  const advMode = Number(r.ADV_MODE || 0);
+  document.querySelectorAll("#viewVideo [data-adv]").forEach(b => {
+    b.classList.toggle("on", advOn && Number(b.dataset.adv) === advMode);
+  });
+  for (let v = 1; v <= 8; v++) {
+    const p = $("ap_" + v);
+    if (p) p.classList.toggle("show", advOn && advMode === v);
+  }
+  // 2026-10-27: 拉普拉斯/浮雕/Prewitt 已下线, 对应的滑块不再刷新
+  ["ADV_THRESH", "ADV_MORPH_TH", "ADV_SOBEL_SH"].forEach(k => {
+    const el = $("f_" + k);
+    if (el && r[k] !== undefined && document.activeElement !== el) el.value = r[k];
+    if (el && $("fv_" + k)) $("fv_" + k).textContent = el.value;
+  });
+  $("btnMorph0").classList.toggle("on", Number(r.ADV_MORPH_SEL) === 0 &&
+                                        Number(r.PP_EN) === 1 &&
+                                        Number(r.ADV_MODE) === 3);
+  $("btnMorph1").classList.toggle("on", Number(r.ADV_MORPH_SEL) === 1 &&
+                                        Number(r.PP_EN) === 1 &&
+                                        Number(r.ADV_MODE) === 3);
+}
+
+function fpgaShowSt(d) {
+  const st = d.status || {};
+  $("fsState").textContent = d.ok ? "在线" : ("离线 — " + (d.error || "?"));
+  $("fsFrames").textContent = (st.FRAME_CNT !== undefined) ? st.FRAME_CNT : "—";
+  $("fsBeat").textContent   = (st.HEARTBEAT !== undefined) ? st.HEARTBEAT : "—";
+  $("fsVer").textContent    = (st.VER !== undefined)
+      ? "0x" + st.VER.toString(16).toUpperCase().padStart(4, "0") : "—";
+  // 版本表：CFG_VER 每烧一版 +1，这里登记含义，不再硬编码某个版本的提示文案。
+  const VER_NOTES = {
+    0x4501: "V45.1 预处理初版",
+    0x4506: "V45.6 稳定版",
+    0x4507: "V45.7 修复行首 16 像素错位",
+    0x4509: "V45.9 参数扫描加重试",
+    0x450D: "V45.13 参数扫描兜底",
+    0x4700: "V47.0 双目交替推流",
+    0x4704: "V47.4",
+    0x4705: "V47.5",
+    0x4706: "V47.6 移除锐化 / HE 内置斜率限制与跳帧平滑（去「防频闪」）/ 单色算子跳过白平衡",
+    0x4707: "V47.7 修窗口相位（高斯 5x5/7x7 与高级层不再错位）+ 单色强制无色 + HE 对比限制默认 8"
+  };
+  const VER_NEWEST = 0x4707;
+  const _ver = (st.VER !== undefined) ? Number(st.VER) : null;
+  if (_ver !== null && $("fsVer")) {
+    let t = "板上 bit 版本 0x" + _ver.toString(16).toUpperCase().padStart(4, "0") +
+            (VER_NOTES[_ver] ? "（" + VER_NOTES[_ver] + "）" : "（未登记版本）") +
+            "；页面期望的最新版本 0x" + VER_NEWEST.toString(16).toUpperCase().padStart(4, "0");
+    if (_ver < VER_NEWEST) t += "。当前 bit 偏旧，需重新综合烧写才具备最新修复";
+    $("fsVer").title = t;
+  }
+  if ($("fsCamWr")) {
+    $("fsCamWr").textContent = (st.CAM_WR_CNT !== undefined)
+      ? (st.CAM_WR_CNT + (Number(st.CAM_BUSY) ? "  (下发中)" : "")) : "—";
+  }
+}
+
+async function loadFpga() {
+  try {
+    const d = await api("/api/fpga");
+    fpgaRegs = fgMerge(d.regs || fpgaRegs);
+    fpgaSyncUI();
+    camSyncUI(d.phys);
+    fpgaShowSt(d);
+  } catch (e) {
+    $("fsState").textContent = "不可用（" + e.message + "）";
+  }
+}
+
+function scheduleFpgaPush(patch) {
+  Object.assign(fpgaPending, patch);      // 合并, 后写覆盖同名字段
+  fgRemember(patch);                      // 本地值优先, 防旧回读把 UI 打回
+  Object.assign(fpgaRegs, patch);
+  fpgaSyncUI();
+  clearTimeout(fpgaPushTimer);
+  fpgaPushTimer = setTimeout(async () => {
+    const send = fpgaPending;
+    fpgaPending = {};
+    try {
+      const d = await api("/api/fpga", { method: "POST", body: JSON.stringify(send) });
+      fpgaRegs = fgMerge(d.regs || fpgaRegs);   // 以 FPGA 回读为准，但本地刚写的值优先
+      fpgaSyncUI();
+      fpgaShowSt(d);
+      if (d.write_ok === false) toast("FPGA 写入失败: " + (d.message || "?"), true);
+      // 开了预处理（Sobel/阈值/形态学），服务端会把 AI 标注自动切回原图
+      if (d.ai_off) {
+        toast("已打开 FPGA 预处理，AI 标注" + d.ai_off);
+        await aiLoad(true);          // 刷新 AI 面板：画面源按钮跟着切回「原图」
+      }
+    } catch (e) { toast("FPGA 参数下发失败: " + e.message, true); }
+  }, 120);
+}
+
+/* 初级: 按钮切换位图; 参数滑条只在选中时显示 */
+document.querySelectorAll("#viewVideo [data-basic]").forEach(b => {
+  b.onclick = () => {
+    if (!ppClickOK(b)) return;                 // 消抖: 同按钮连点只认一次
+    const bit = BASIC_BITS[Number(b.dataset.basic)];
+    const next = Number(fpgaRegs.BASIC_EN || 0) ^ bit;
+    scheduleFpgaPush({ BASIC_EN: next });
+  };
+});
+
+$("s_gray_mode").onchange = () =>
+  scheduleFpgaPush({ BASIC_GRAY: parseInt($("s_gray_mode").value, 10) });
+
+/* 高斯核尺寸: 3x3 / 5x5 / 7x7 (0xF8 BASIC_KER) */
+["btnKer0", "btnKer1", "btnKer2"].forEach((id, i) => {
+  const b = $(id);
+  if (!b) return;
+  b.onclick = () => {
+    if (!ppClickOK(b)) return;
+    // 选核尺寸时顺便把高斯打开, 否则改了也看不出变化
+    scheduleFpgaPush({ BASIC_KER: i, BASIC_EN: Number(fpgaRegs.BASIC_EN || 0) | 2 });
+  };
+});
+
+/* 初级滑条: 动一下顺便把对应算法打开 */
+const BASIC_SLIDER_BIT = {BASIC_GAUSS: 2, BASIC_KER: 2, BASIC_HE: 4, BASIC_HE_CLIP: 4, BASIC_CONTRAST: 8};
+Object.keys(BASIC_SLIDER_BIT).forEach(k => {
+  const el = $("f_" + k);
+  if (!el) return;
+  el.addEventListener("input", () => {
+    $("fv_" + k).textContent = el.value;
+    const patch = { BASIC_EN: Number(fpgaRegs.BASIC_EN || 0) | BASIC_SLIDER_BIT[k] };
+    patch[k] = parseInt(el.value, 10);
+    scheduleFpgaPush(patch);
+  });
+});
+
+/* 高级: 单选按钮 */
+document.querySelectorAll("#viewVideo [data-adv]").forEach(b => {
+  b.onclick = () => {
+    if (!ppClickOK(b)) return;                 // 消抖: 同按钮连点只认一次
+    const v = Number(b.dataset.adv);
+    scheduleFpgaPush(v === 0 ? { PP_EN: 0 } : { PP_EN: 1, ADV_MODE: v });
+  };
+});
+$("btnPpAllOff").onclick  = () => { if (ppClickOK($("btnPpAllOff")))  scheduleFpgaPush({ PP_EN: 0, BASIC_EN: 0 }); };
+$("btnMorph0").onclick    = () => { if (ppClickOK($("btnMorph0")))    scheduleFpgaPush({ ADV_MORPH_SEL: 0 }); };
+$("btnMorph1").onclick    = () => { if (ppClickOK($("btnMorph1")))    scheduleFpgaPush({ ADV_MORPH_SEL: 1 }); };
+$("btnPpRefresh").onclick = async () => { await loadFpga(); toast("已刷新 FPGA 参数"); };
+
+["ADV_THRESH", "ADV_MORPH_TH", "ADV_SOBEL_SH", "ADV_LAP_SH", "ADV_PREW_SH",
+ "ADV_EMBOSS_GAIN", "ADV_EMBOSS_BIAS"].forEach(k => {
+  const el = $("f_" + k);
+  if (!el) return;
+  el.addEventListener("input", () => {
+    $("fv_" + k).textContent = el.value;
+    const patch = {}; patch[k] = parseInt(el.value, 10);
+    scheduleFpgaPush(patch);
+  });
+});
+
+/* 定期读心跳/帧计数 —— 证明 FPGA 在线且链路在跑 */
+/* ---------------- 输出格式（单个下拉：4K@25 / 1080P@60 / 720P@90） ---------------- */
+let modeTable = null;
+let curModeId = null;
+
+// 框里固定这三个档；服务端没有哪个就少哪个（不会凭空造出来）
+const MODE_CHOICES = ["4k25", "1080p60", "720p90"];
+
+function allModes() {
+  const out = [];
+  (modeTable && modeTable.resolutions || []).forEach(r => r.modes.forEach(m => out.push(m)));
+  return out;
+}
+
+function modeTag(m) {
+  if (m.h >= 2160) return "4K";
+  if (m.h >= 1080) return "1080P";
+  if (m.h >= 720)  return "720P";
+  return m.w + "×" + m.h;
+}
+
+function modeText(m) {
+  let s = modeTag(m) + "@" + m.fps + "fps";
+  if (!m.impl) s += "  ⚠ RTL 未实现";
+  else if (!m.ok) s += "  ⚠ 超带宽 " + m.load_pct + "%";
+  return s;
+}
+
+async function loadModes(keep) {
+  try {
+    modeTable = await api("/api/modes");
+  } catch (e) { toast("读取模式表失败: " + e.message, true); return; }
+  const sel = $("sel_mode");
+  const old = keep ? sel.value : null;
+  const all = allModes();
+  let list = MODE_CHOICES.map(id => all.find(m => m.id === id)).filter(Boolean);
+  if (!list.length) list = all;              // 服务端还没这三档时把全部列出来
+  sel.innerHTML = "";
+  list.forEach(m => {
+    const o = document.createElement("option");
+    o.value = m.id;
+    o.textContent = modeText(m);
+    if (!m.ok || !m.impl) o.style.color = "#f88";
+    sel.appendChild(o);
+  });
+  const cid = modeTable.current && modeTable.current.id;
+  if (cid && list.some(m => m.id === cid)) sel.value = cid;
+  if (old && list.some(m => m.id === old)) sel.value = old;
+  curModeId = sel.value;
+  modeHint();
+}
+
+function curModeObj() {
+  const id = $("sel_mode").value;
+  return allModes().find(m => m.id === id) || null;
+}
+
+function modeHint() {
+  const m = curModeObj(), h = $("modeHint");
+  if (!m || !modeTable) { h.textContent = "—"; return; }
+  let s = "<b>" + m.label + "</b> · 载荷 " + m.load_mb_s + " MB/s / 链路 " +
+          modeTable.link_mb_s + " MB/s = <b>" + m.load_pct + "%</b>";
+  if (m.load_pct > 85) s += " · <b style='color:#f88'>超过 85%，跑不动</b>";
+  if (!m.impl) s += " · <b style='color:#f88'>此帧率需跳帧，当前 RTL 未实现</b>";
+  if (modeTable.current && modeTable.current.id === m.id) s += " · 当前已是该模式";
+  else s += " · 点下方「应用输出格式」切换（<b style='color:#ffd75f'>需重启板子，约 70~90 秒</b>）";
+  h.innerHTML = s;
+}
+
+$("sel_mode").addEventListener("change", modeHint);
+
+$("btnApplyMode").onclick = async () => {
+  const m = curModeObj();
+  if (!m) return;
+  if (!confirm(
+      "切换到 " + m.label + " ?\n\n" +
+      "· 切分辨率需要**重启板子**（运行中直接切会导致 MIPI 链路失锁、黑屏且只能断电）\n" +
+      "· 重启约 70~90 秒，期间所有页面都看不到画面\n" +
+      "· **页面不用刷新**，恢复后自动续流\n\n" +
+      "采集格式将变为 " + m.w + " x " + m.h + "。")) return;
+  toast("正在切换到 " + m.id + " …");
+  let r = null;
+  try {
+    r = await api("/api/mode",
+                  { method: "POST", body: JSON.stringify({ id: m.id }) });
+    if (r.ok) toast((r.log || []).join("  |  ") || "已切换");
+    else toast(r.error || (r.log || []).join("  |  ") || "切换失败", true);
+  } catch (e) {
+    // 服务端被 pkill 时 POST 可能收不到响应 —— 这是正常流程，继续等恢复
+  }
+  if (r && !r.ok) return;              // 明确失败就别等
+  await waitModeReady(m.label);
+};
+
+/* 切模式后：页面不刷新，等服务端真正出帧了再重挂 MJPEG 流。
+   服务端短时间重启（pkill + start.sh），期间 /api/sys 会失败或 fps=0。
+   旧版直接弹“请刷新页面”，现在改成静默等待 + 自动续流。 */
+let modeWaitGen = 0;
+
+/* ---- 重启遮罩 ---- */
+let rebootTimer = null;
+function showRebootMask(label) {
+  const m = $("rebootMask");
+  if (!m) return;
+  m.hidden = false;
+  if ($("rebootSub"))
+    $("rebootSub").textContent = "正在切换到 " + (label || "新模式") + "，板子将重启";
+  const t0 = Date.now();
+  clearInterval(rebootTimer);
+  const tick = () => {
+    const s = Math.round((Date.now() - t0) / 1000);
+    if ($("rebootCnt"))
+      $("rebootCnt").textContent = "已等待 " + s + " 秒（通常 70~90 秒，最长 150 秒）";
+  };
+  tick();
+  rebootTimer = setInterval(tick, 500);
+}
+function hideRebootMask() {
+  clearInterval(rebootTimer);
+  rebootTimer = null;
+  const m = $("rebootMask");
+  if (m) m.hidden = true;
+}
+
+async function waitModeReady(label) {
+  const gen = ++modeWaitGen;
+  clearTimeout(streamTimer);
+  needReload = false;
+  showRebootMask(label);
+  switchUntil = Date.now() + 150000;   // 整个板子在重启，约 70~90 秒
+  connected = false; streamPending = false;
+  setDot(false, "板子重启中…");
+  const t0 = Date.now();
+  let ok = false;
+  while (gen === modeWaitGen && Date.now() - t0 < 150000) {
+    await new Promise(r => setTimeout(r, 1200));
+    try {
+      const d = await api("/api/sys");
+      const fps = (d.capture && d.capture.fps) || 0;
+      if (fps > 0.5) { ok = true; break; }
+    } catch (e) { /* 服务还在重启 */ }
+  }
+  if (gen !== modeWaitGen) return;
+  hideRebootMask();
+  switchUntil = 0;
+  streamTries = 0; deadStrikes = 0; zeroClientHits = 0;
+  if (ok) {
+    await loadModes(true).catch(() => {});
+    // 切模式走 start.sh 重启进程 -> 旧 MJPEG 连接必死，必须重建。
+    lastForceAt = 0;                     // 绕过 startStream 的 5s 限频
+    startStream(true);
+    toast("切换完成: " + (label || ""));
+  } else {
+    // 真的起不来才让用户刷新（兜底）
+    setDot(false, "切换超时");
+    showReloadBar(label);
+  }
+}
+
+/* ---------------- 系统指标 ---------------- */
+let sysTimer = null;
+
+function fmtPct(v) { return (v === null || v === undefined) ? "—" : v + "%"; }
+
+/* 迷你占用条: 绿<60% 黄<85% 红>=85% (模块级, 网络延时也用) */
+function bar(id, pct) {
+  const el = $(id); if (!el) return;
+  const p = Math.max(0, Math.min(100, Number(pct) || 0));
+  el.style.width = p + "%";
+  el.style.background = p >= 85 ? "#f85149" : p >= 60 ? "#d29922" : "#3fb950";
+}
+
+async function sysPollOnce() {
+  if (!base) return;
+  let d;
+  try { d = await api("/api/sys"); }
+  catch (e) {
+    // 切模式期间服务端在重启, 请求会失败 —— 连续失败就主动重连拉流
+    if (Date.now() < switchUntil) return;      // 切换流程自己会重连
+    if (!streamPending || Date.now() - streamPendingAt > 6000) {
+      if (++zeroClientHits >= 5) { zeroClientHits = 0; startStream(true); }
+    }
+    return;
+  }
+  const set = (id, v) => { const el = $(id); if (el) el.textContent = v; };
+
+  if (d.mipi) {
+    // MIPI 格: 链路上真实码率 (JPEG 压缩后)
+    const mp = d.mipi;
+    // 2026-10-27: 直通模式下 RK 只搬字节(不解码不重编码), 直接写在数字后面
+    set("b_mipi", mp.used_mb_s + " MB/s" + (mp.jpeg_direct ? " 直通" : ""));
+    bar("p_mipi", mp.pct);
+    const el = $("b_mipi");
+    if (el) {
+      const parts = [];
+      parts.push((mp.compressed ? "压缩后 " : "未压缩估算 ") + mp.used_mb_s + " / " +
+                 mp.link_mb_s + " MB/s（" + mp.pct + "%）");
+      if (mp.jpeg_bytes) parts.push("单帧 " + mp.jpeg_bytes + " 字节");
+      if (mp.jpeg_direct) parts.push("RK 直通: FPGA 码流直接转发, 零解码零重编码");
+      if (mp.jpeg_invalid) parts.push("⚠ 帧字节数非法（编码器没真正输出码流）");
+      el.title = parts.join(" · ");
+    }
+
+    // JPEG 压缩比格: 单独一格, 不再塞在 MIPI 里
+    const rEl = $("b_ratio");
+    if (rEl) {
+      if (mp.compressed && mp.ratio) {
+        set("b_ratio", mp.ratio + ":1");
+        // 进度条用"压缩后占链路"的比例, 满格就是打满带宽
+        bar("p_ratio", mp.pct);
+        rEl.title = "压缩比 " + mp.ratio + ":1 · 压缩前 " + mp.raw_mb_s +
+                    " MB/s → 压缩后 " + mp.used_mb_s + " MB/s · 单帧 " +
+                    (mp.jpeg_bytes || "—") + " 字节" +
+                    (mp.jpeg_direct ? " · RK 直通(零重编码)" : " · RK 重编码");
+      } else {
+        set("b_ratio", mp.jpeg_invalid ? "非法" : "—");
+        bar("p_ratio", 0);
+        rEl.title = mp.jpeg_invalid
+          ? "FPGA 报的帧字节数大于未压缩字节数, 说明编码器没真正输出码流（不是真实压缩比）"
+          : "等链路出 JPEG 码流后才有压缩比";
+      }
+    }
+  }
+  if (d.cpu) {
+    set("b_cpu", fmtPct(d.cpu.total));
+    bar("p_cpu", d.cpu.total);
+    const el = $("b_cpu");
+    if (el) el.title = "各核: " + ((d.cpu.cores || []).map(v => v + "%").join(" / ") || "—");
+  }
+  // 空闲时显示“空闲”，比一个恒为 0 的百分比更好读
+  const loadTxt = v => (v === null || v === undefined) ? "—" :
+                       (Number(v) === 0 ? "空闲" : v + "%");
+  if (d.npu) {
+    set("b_npu", loadTxt(d.npu.load_pct));
+    bar("p_npu", d.npu.load_pct || 0);
+    set("l_npu", d.npu.freq_mhz ? "NPU " + d.npu.freq_mhz + "M" : "NPU");
+    const el = $("b_npu");
+    if (el) el.title = "RKNN NPU · 占用 " +
+      (d.npu.load_pct === null ? "—" : d.npu.load_pct + "%") +
+      (d.npu.freq_mhz ? " · " + d.npu.freq_mhz + "MHz" : "");
+  }
+  if (d.ram) {
+    set("b_ram", d.ram.used_mb + "M·" + d.ram.pct + "%");
+    bar("p_ram", d.ram.pct);
+    const el = $("b_ram");
+    if (el) el.title = d.ram.used_mb + " / " + d.ram.total_mb + " MB（" +
+                       d.ram.pct + "%）";
+  }
+  if (d.ddr) { set("b_ddr", fmtPct(d.ddr.load_pct)); bar("p_ddr", d.ddr.load_pct); }
+  if (d.latency_ms && d.latency_ms.capture_to_ready !== null) {
+    set("b_lat", d.latency_ms.capture_to_ready + " ms");
+    const el = $("b_lat");
+    if (el) el.title = "采集→可推流 " + d.latency_ms.capture_to_ready +
+                       " ms；最新帧已等待 " + d.latency_ms.newest_frame_age + " ms";
+  }
+  let q = "—";
+  if (d.frame_id !== undefined) q = "#" + d.frame_id;
+  if (d.clients !== undefined) q += " · " + d.clients + "路";
+  set("b_q", q);
+
+  // ★ 流看门狗: 服务端帧号不再增长 = 这条 multipart 已经死了。
+  //   （切分辨率后服务端 execv 重启, 旧的 <img> 连接会半死: 不报错、不重连）
+  if (d.frame_id !== undefined) {
+    if (lastFrameId === null || d.frame_id !== lastFrameId) {
+      lastFrameId = d.frame_id; lastFrameAdvAt = Date.now();
+    } else if (Date.now() - lastFrameAdvAt > 8000) {
+      lastFrameAdvAt = Date.now();
+      if (Date.now() < switchUntil) return;      // 正在切模式, 别捣乱
+      // ★ 服务端自己就没在出帧(fps=0): 重连再多次也没用, 只会把并发名额堆满
+      //   进而把采集线程饿死。这种情况只提示, 不重连。
+      const capFps = d.capture && d.capture.fps;
+      if (capFps !== undefined && capFps !== null && capFps <= 0.01) {
+        setDot(false, "采集无数据（需重启服务）");
+        return;
+      }
+      if (deadStrikes >= 3) {
+        // 连着重连三次都拿不到帧 -> 是服务端采集挂了, 再重连也没用
+        setDot(false, "采集无数据, 请重启服务");
+        return;
+      }
+      deadStrikes++;
+      setDot(false, "流已断, 重连中…");
+      startStream(true);
+    }
+  }
+  // 服务端重启期间, /api/sys 能通但帧号不动, 这也能兜住
+  if (d.clients === 0 && connected && !streamPending) {
+    if (++zeroClientHits >= 3) { zeroClientHits = 0; startStream(true); }
+  } else {
+    zeroClientHits = 0;
+  }  {
+    const el = $("b_q");
+    if (el && d.queues) el.title = "队列 raw " + d.queues.raw + " / bgr " +
+      d.queues.bgr + "；帧号 " + d.frame_id + "；推流客户端 " + d.clients;
+  }
+
+  // 硬件编码实际生效状态（参数非默认或开了 AI 时会自动回落）
+
+  // 网络延时: 浏览器 <-> 板子的 HTTP 往返。异步跑, 不阻塞本帧指标
+  pingNet();
+
+  // 多前端同步: 任何一处改了参数就把版本号 +1, 其它页面轮询到变化后
+  // 自己拉一次对应接口。首次只记录不下手, 避免刚连上就白拉三遍。
+  if (d.rev) {
+    ["params", "fpga", "ai", "mode"].forEach(async k => {
+      const r = d.rev[k];
+      if (r === undefined || r === null) return;
+      if (revSeen[k] < 0 && revSeen[k] !== -999) { revSeen[k] = r; return; }
+      if (r === revSeen[k]) return;
+      revSeen[k] = r;                     // 先占位, 防止同一轮重复拉
+      const ok = await applyRemote(k);
+      if (!ok) revSeen[k] = -999;          // 拉失败了(服务端正在重启) -> 下轮重试
+    });
+  }
+}
+
+/* ---------------- 多前端参数同步 ---------------- */
+// 同一 WiFi 下可能同时开着好几台设备页面。谁改了参数, 服务端就把对应
+// 版本号 +1, 这里轮询发现变化就补拉一次, 保证大家的 UI 一致。
+let revSeen = { params: -1, fpga: -1, ai: -1, mode: -1 };
+
+async function applyRemote(kind) {
+  try {
+    if (kind === "params") { await getParams(); return true; }
+    if (kind === "fpga") { await loadFpga(); return true; }
+    if (kind === "ai") { await aiLoad(); return true; }
+    if (kind === "mode") {
+      // ★ 分辨率/格式变了, 已有的 MJPEG 连接已经失效。
+      //   现在由 waitModeReady 等服务真正出帧后自动续流（不再要求刷新页面）。
+      try { await loadModes(); } catch (e) {}
+      const m = curModeObj();
+      await waitModeReady(m ? m.label : "新模式");
+      return true;
+    }
+  } catch (e) { return false; }
+  return true;
+}
+
+/* ---------------- 网络延时 (浏览器 <-> 板子) ---------------- */
+// 打一个极小的 /api/ping 量往返。连打 3 次取最小的那个:
+// 最小的最接近真实 RTT, 被浏览器排队/垃圾回收拖慢的那几次剔掉。
+// 跨 WiFi / 手机接入时这个值会明显变大, 是排查“卡”的第一看指标。
+let netMs = null;
+let netBusy = false;
+
+async function pingNet() {
+  if (!base || netBusy) return;
+  netBusy = true;
+  let best = Infinity;
+  try {
+    for (let i = 0; i < 3; i++) {
+      const t0 = performance.now();
+      const r = await fetch(base + "/api/ping?t=" + Date.now(),
+                            { cache: "no-store" });
+      await r.text();
+      best = Math.min(best, performance.now() - t0);
+    }
+    netMs = isFinite(best) ? Math.round(best * 10) / 10 : null;
+  } catch (e) {
+    netMs = null;
+  } finally {
+    netBusy = false;
+  }
+  const el = $("b_net");
+  if (!el) return;
+  if (netMs === null) {
+    el.textContent = "—";
+    bar("p_net", 0);
+    el.title = "测不到（连接断开？）";
+  } else {
+    el.textContent = netMs + " ms";
+    bar("p_net", Math.min(100, netMs));   // 0~100ms 直接当百分比
+    el.title = "浏览器 → 板子 HTTP 往返 " + netMs + " ms" +
+      "\n(<20 局域网优秀, 20~60 一般, >60 偏慢/信号差)" +
+      "\n注意: 这是控制通道的 RTT, 画面延时看左边「传输延时」格";
+  }
+}
+
+function sysPoll() {
+  clearInterval(sysTimer);
+  sysTimer = setInterval(sysPollOnce, 1000);
+  sysPollOnce();
+}
+function fpgaPoll() {
+  clearInterval(fpgaTimer);
+  fpgaTimer = setInterval(async () => {
+    if (!connected) return;
+    try {
+      const d = await api("/api/fpga");
+      fpgaRegs = fgMerge(d.regs || fpgaRegs);
+      fpgaShowSt(d);
+    } catch (e) { /* 静默, 不打扰用户 */ }
+  }, 3000);
+}
+
+/* ---------------- 选项卡切换 ---------------- */
+document.querySelectorAll("#viewVideo [data-tab]").forEach(b => {
+  b.onclick = () => {
+    // 离开「云台」页签时先把点动停掉 —— 否则长按方向键切页签，
+    // 定时器还在续 jog，画面切走了云台还在转。
+    if (b.dataset.tab !== "gz") gzReleaseAll();
+    document.querySelectorAll("#viewVideo [data-tab]").forEach(x =>
+      x.classList.toggle("on", x === b));
+    ["cam", "pp", "sw", "ai", "gz"].forEach(t => {
+      const el = $("tab-" + t);
+      if (el) el.hidden = (t !== b.dataset.tab);
+    });
+  };
+});
+
+/* ---------------- 局域网推流地址 ---------------- */
+// 板子同时挂着有线(end0=192.168.137.x, 只对直连的 PC 有效) 和
+// USB WiFi(wlx*=192.168.1.x)。同一 WiFi 下的手机/平板要用 WiFi 那个。
+async function loadNet() {
+  const chip = $("lanChip");
+  if (!chip) return;
+  try {    const d = await api("/api/net");
+    const nets = (d.nets || []).filter(n => n.ip && !n.ip.startsWith("127."));
+    const ips = nets.map(n => n.ip);
+    if (!ips.length) return;
+    const cur = (base.split("//")[1] || "").split(":")[0];
+    // 优先选无线网卡: 有线(192.168.137.x)只有直连的 PC 能访问,
+    // 同一 WiFi 下的手机/平板必须用 wl* 那块网卡的地址。
+    const wifi = nets.find(n =>/^wl/i.test(n.iface));
+    const pick = wifi ? wifi.ip
+               : (ips.includes(cur) ? cur : ips[0]);
+    const addr = "http://" + pick + "/";
+    chip.dataset.addr = addr;
+    chip.textContent = "局域网 " + pick;
+    chip.title = "同一 WiFi / 局域网内的手机、平板用这个地址打开：" + addr
+               + (ips.length > 1 ? "\n全部地址：" + ips.map(a => "\n  " + a).join("") : "");
+    chip.hidden = false;
+  } catch (e) { /* 老服务端没这个接口 */ }
+}
+
+/* ---------------- 摄像头 / 输出参数（物理量） ----------------
+   网页用物理量（曝光 ms / 增益 dB / 帧率 fps），后端再换算成
+   IMX415 的 SHR0 / GAIN —— 直接用裸寄存器值没法用。
+   2026-10-27: 白平衡两项已下线（FPGA 侧数字白平衡乘法器已删，改由 ISP 自动 AWB）。 */
+const CAM_CTRL = [
+  { id: "f_cam_exp",  key: "cam_exp_ms",  fmt: v => v.toFixed(2) + " ms"  },
+  { id: "f_cam_gain", key: "cam_gain_db", fmt: v => v.toFixed(1) + " dB"  },
+  { id: "f_cam_ev",   key: "ev",          fmt: v => v.toFixed(0) + " EV"  },
+  { id: "f_roi",      key: "roi_pct",     fmt: v => v.toFixed(0) + " %"   },
+];
+let camPushTimer = null;
+
+function camLab(c) { return $("fv_" + c.id.slice(2)); }
+
+function camSyncUI(phys) {
+  if (!phys) return;
+  // 曝光上限跟分辨率模式走(4K≈39.9ms / 1080p≈16.7ms)。
+  // 不同步 max 的话, 4K 下后端回读 20 多 ms 时会超出滑块范围 ——
+  // 滑块被 clamp 在 16, 但数字显示 20 多, 既看不见也拖不回去。
+  const expEl = $("f_cam_exp");
+  if (expEl && phys.cam_exp_max_ms > 0) {
+    expEl.max = phys.cam_exp_max_ms;
+    expEl.step = 0.05;
+  }
+  CAM_CTRL.forEach(c => {
+    const el = $(c.id), lab = camLab(c);
+    if (!el || phys[c.key] === undefined) return;
+    if (document.activeElement === el) return;   // 别打断本地拖动
+    el.value = phys[c.key];
+    if (lab) lab.textContent = c.fmt(parseFloat(el.value));
+  });
+}
+
+function camPush() {
+  const body = {};
+  CAM_CTRL.forEach(c => { body[c.key] = parseFloat($(c.id).value); });
+  clearTimeout(camPushTimer);
+  camPushTimer = setTimeout(async () => {
+    try {
+      const d = await api("/api/fpga", { method: "POST", body: JSON.stringify(body) });
+      camSyncUI(d.phys);          // 以 FPGA 回读为准
+      fpgaShowSt(d);
+      if (d.write_ok === false) toast("下发失败: " + (d.message || "?"), true);
+    } catch (e) { toast("下发失败: " + e.message, true); }
+  }, 120);
+}
+
+CAM_CTRL.forEach(c => {
+  const el = $(c.id);
+  if (!el) return;
+  el.addEventListener("input", () => {
+    const lab = camLab(c);
+    if (lab) lab.textContent = c.fmt(parseFloat(el.value));
+    camPush();
+  });
+});
+
+// 2026-10-27: 白平衡控件已下线 —— FPGA 侧数字白平衡(R/B 增益乘法器)已删,
+//   白平衡由 ISP 的 ui_awb 自动完成。原来这里给 btnWbReset 绑 onclick,
+//   控件删掉后 $("btnWbReset") 是 null, 会抛异常把后面的绑定全部打断。
+$("btnCamPush").onclick = () => {
+  api("/api/fpga", {
+    method: "POST",
+    body: JSON.stringify({ CAM_TRIG: Math.floor(Math.random() * 255) })
+  }).then(d => {
+    camSyncUI(d.phys);
+    fpgaShowSt(d);
+    toast("已重新下发摄像头参数");
+  }).catch(e => toast("下发失败: " + e.message, true));
+};
+
+/* ---------------- AI 标注（人体框 / 骨架 / 危险动作） --------------
+   画面源切换是“服务端换内容”：hub 只推一路 JPEG，切到 AI 后编码线程
+   才把标注画上去 —— 所以不占额外带宽，也不用重连流。 */
+let ai = null;
+let aiPushTimer = null;
+
+function aiDotState() {
+  const d = $("aiDot");
+  if (!d) return;
+  if (!ai || !ai.ok) d.className = "dot bad";
+  else d.className = "dot" + (ai.active ? " ok" : "");
+}
+
+/* 检测结果：逐个人列出来（ID / 置信度 / 框 / 有效关节数 / 动作） */
+function renderDets(ai) {
+  const de = ai.detections || [];
+  const age = (ai.age_ms == null) ? null : Math.round(ai.age_ms);
+  $("aiDetT").textContent = (ai.active && age != null) ? "（" + age + " ms 前）" : "";
+  if (!ai.active) {
+    $("aiDets").innerHTML = '<p class="hint">AI 未运行（画面源为「原图」或已停用）</p>';
+    return;
+  }
+  if (!de.length) {
+    $("aiDets").innerHTML = '<p class="hint">本帧未检出人体</p>';
+    return;
+  }
+  $("aiDets").innerHTML = de.map(d => {
+    const col = d.risk >= 2 ? "#f66" : (d.risk >= 1 ? "#fa3" : "#8f8");
+    const kp  = (d.n_kpt == null) ? "" : " · 关节" + d.n_kpt + "/17";
+    const en  = d.labels_en || d.labels || [];
+    const cn  = d.labels || [];
+    const act = en.length ? " · " + en.map((w, i) => w + (cn[i] ? " " + cn[i] : "")).join("/") : "";
+    return '<div style="color:' + col + ';white-space:nowrap">ID' + (d.tid ?? "-") +
+           "  " + Math.round(d.score * 100) + "%  框(" + (d.box || []).join(",") + ")" +
+           kp + act + "</div>";
+  }).join("");
+}
+
+function aiTopSync() {
+  const on = !!(ai && ai.active);
+  const n  = (ai && ai.detections ? ai.detections.length : 0);
+  $("sAiFps").textContent = on ? (Number(ai.fps).toFixed(1) + " fps")
+                              : (ai && ai.ok ? "未运行（原图）" : "—");
+  $("sAiRes").textContent = on ? (n ? n + " 人" : "无人") : "—";
+}
+
+function setSlider(id, labId, v, suffix, digits) {
+  const el = $(id);
+  if (!el || el === document.activeElement) return;
+  el.value = v;
+  const lab = $(labId);
+  if (lab) lab.textContent = digits ? Number(v).toFixed(digits) : (v + (suffix || ""));
+}
+
+/* 模型档位：精确 / 平衡 / 极速 / 极速+ —— 每个档位是一整套（det + pose），点一下热切换 */
+function aiPresets(ai) {
+  const box = $("aiPresets");
+  const list = (ai && ai.presets) || [];
+  const have = list.filter(p => p.exists);
+  if (!have.length) {
+    box.innerHTML = '<span class="hint" style="margin:0">无可用模型</span>';
+    return;
+  }
+  box.innerHTML = have.map(p =>
+    '<button class="ghost' + (p.active ? " on" : "") + '" data-preset="' + p.id +
+    '" title="' + (p.note || "") + '" style="flex:1">' + p.name + '</button>').join("");
+  box.querySelectorAll("#viewVideo [data-preset]").forEach(b => {
+    b.onclick = () => aiPush({ preset: b.dataset.preset });
+  });
+}
+
+function aiSyncUI() {
+  if (!ai) return;
+  document.querySelectorAll("#viewVideo .srcbtn").forEach(b =>
+    b.classList.toggle("on", (b.dataset.src === "ai") === (ai.source === "ai")));
+  $("btnAiEnable").classList.toggle("on", !!ai.enabled);
+  $("btnAiEnable").textContent = ai.enabled ? "AI 已启用" : "AI 已停用";
+
+  setSlider("a_fps", "av_fps", ai.fps_target, " fps");
+  setSlider("a_det_interval", "av_det_interval", ai.det_interval ?? 2, " 帧");
+  setSlider("a_pose_budget", "av_pose_budget", ai.pose_budget ?? 2, " 人");
+  if ((ai.pose_budget ?? 2) === 0) $("av_pose_budget").textContent = "不限";
+  setSlider("a_det_conf", "av_det_conf", ai.det_conf, null, 2);
+  setSlider("a_kpt_margin", "av_kpt_margin", ai.kpt_margin ?? 0.15, null, 2);
+  setSlider("a_kpt_scale_max", "av_kpt_scale_max", ai.kpt_scale_max ?? 1.2, null, 2);
+  setSlider("a_roi_expand", "av_roi_expand", ai.roi_expand ?? 1.15, null, 2);
+  if (ai.tune) {
+    setSlider("a_fall", "av_fall", ai.tune.fall ?? 1, null, 2);
+    setSlider("a_run", "av_run", ai.tune.run ?? 1, null, 2);
+  }
+  $("btnAiSk").classList.toggle("on", !!ai.show_skeleton);
+  $("btnAiScore").classList.toggle("on", !!ai.show_score);
+  $("btnAiLabel").classList.toggle("on", !!ai.show_label);
+  $("btnAiHud").classList.toggle("on", !!ai.show_hud);
+  $("btnAiSkOnly").classList.toggle("on", !!ai.skeleton_only);
+
+  $("aiState").textContent = ai.ok ? (ai.err ? "已加载 · " + ai.err : "已加载")
+                                   : (ai.err || "未加载");
+  $("aiFps").textContent = ai.active
+      ? Number(ai.fps).toFixed(1) + " fps"
+      : "已停止";
+  $("aiDetFps").textContent = ai.active ? Number(ai.fps_det ?? 0).toFixed(1) + " fps" : "—";
+  $("aiMs").textContent = ai.det_ms + " / " + ai.pose_ms + " ms";
+  $("aiPersons").textContent = ai.persons;
+
+  renderDets(ai);
+  aiPresets(ai);
+
+  const ev = (ai.events || []).slice().reverse();
+  $("aiEvents").innerHTML = ev.length
+    ? ev.map(e => '<div style="color:#f88">' + new Date(e.t * 1000).toLocaleTimeString() +
+        '  ID' + e.tid + '  ' + (e.en || e.label || e.cn) + (e.cn ? " " + e.cn : "") + '  ' +
+        Math.round(e.score * 100) + '%</div>').join("")
+    : '<p class="hint">暂无</p>';
+  aiDotState();
+  aiTopSync();
+}
+
+async function aiLoad(first) {
+  try {
+    ai = await api("/api/ai");
+    aiSyncUI();
+  } catch (e) {
+    ai = null;
+    if (first) {
+      $("aiState").textContent = "不可用（" + e.message + "）";
+      $("aiDot").className = "dot bad";
+    }
+  }
+}
+
+function aiPush(patch) {
+  clearTimeout(aiPushTimer);
+  aiPushTimer = setTimeout(async () => {
+    try {
+      const r = await api("/api/ai", { method: "POST", body: JSON.stringify(patch) });
+      ai = r.ai || ai;
+      aiSyncUI();
+      // 切到「AI 标注」时服务端会顺手关掉 FPGA 预处理，重新拉一次寄存器状态，
+      // 免得页面上的「预处理」按钮还亮着
+      if (ai && ai.active && ("source" in patch || "enabled" in patch)) {
+        loadFpga();
+        if (ai.pp_off) toast("已自动关闭 FPGA 预处理（" + ai.pp_off + "）");
+      }
+      // 换模型要重新 load_rknn，几百 ms 内帧率会归零一下，给个提示
+      if ("preset" in patch && ai) {
+        const nm = (ai.presets || []).find(p => p.id === ai.preset);
+        toast("已切换到「" + (nm ? nm.name : ai.preset) + "」");
+      }
+      if ("skeleton_only" in patch && ai) {
+        toast(ai.skeleton_only ? "已切到纯骨骼（黑底）" : "已恢复画面叠加");
+      }
+    } catch (e) { toast("AI 设置失败: " + e.message, true); }
+  }, 60);
+}
+
+document.querySelectorAll("#viewVideo .srcbtn").forEach(b => {
+  b.onclick = () => aiPush({ source: b.dataset.src });
+});
+$("btnAiEnable").onclick  = () => aiPush({ enabled: !(ai && ai.enabled) });
+$("btnAiRefresh").onclick = async () => { await aiLoad(true); toast("已刷新 AI 状态"); };
+$("btnAiSk").onclick    = () => aiPush({ show_skeleton: !(ai && ai.show_skeleton) });
+$("btnAiScore").onclick = () => aiPush({ show_score: !(ai && ai.show_score) });
+$("btnAiLabel").onclick = () => aiPush({ show_label: !(ai && ai.show_label) });
+$("btnAiHud").onclick   = () => aiPush({ show_hud: !(ai && ai.show_hud) });
+$("btnAiSkOnly").onclick = () => aiPush({ skeleton_only: !(ai && ai.skeleton_only) });
+
+$("a_fps").addEventListener("input", e => {
+  $("av_fps").textContent = e.target.value + " fps";
+  aiPush({ ai_fps: Number(e.target.value) });
+});
+$("a_det_conf").addEventListener("input", e => {
+  $("av_det_conf").textContent = Number(e.target.value).toFixed(2);
+  aiPush({ det_conf: Number(e.target.value) });
+});
+$("a_det_interval").addEventListener("input", e => {
+  $("av_det_interval").textContent = e.target.value + " 帧";
+  aiPush({ det_interval: Number(e.target.value) });
+});
+$("a_pose_budget").addEventListener("input", e => {
+  const n = Number(e.target.value);
+  $("av_pose_budget").textContent = n === 0 ? "不限" : n + " 人";
+  aiPush({ pose_budget: n });
+});
+$("a_kpt_margin").addEventListener("input", e => {
+  $("av_kpt_margin").textContent = Number(e.target.value).toFixed(2);
+  aiPush({ kpt_margin: Number(e.target.value) });
+});
+$("a_kpt_scale_max").addEventListener("input", e => {
+  $("av_kpt_scale_max").textContent = Number(e.target.value).toFixed(2);
+  aiPush({ kpt_scale_max: Number(e.target.value) });
+});
+$("a_roi_expand").addEventListener("input", e => {
+  $("av_roi_expand").textContent = Number(e.target.value).toFixed(2);
+  aiPush({ roi_expand: Number(e.target.value) });
+});
+$("a_fall").addEventListener("input", e => {
+  $("av_fall").textContent = Number(e.target.value).toFixed(2);
+  aiPush({ tune: { fall: Number(e.target.value) } });
+});
+$("a_run").addEventListener("input", e => {
+  $("av_run").textContent = Number(e.target.value).toFixed(2);
+  aiPush({ tune: { run: Number(e.target.value) } });
+});
+
+/* ---------------- 云台（QGimbal） ----------------
+   安全要点（与 gimbal_web.py 的看门狗互补，两边都要有）：
+     * 按住期间每 200 ms 续一次 jog，后端 hold=0.8 s，超时自动归零速度；
+     * pointerup 绑在 window 上，另外 blur / visibilitychange / pagehide
+       也强制 stop —— 之前遥控小车就因为 pointerup 丢了、定时器残留，
+       指令一直发，车一路撞墙。云台同理，而且它撞的是排线。
+     * 只用角度模式，后端目标值已限幅；这里发错了最多是"不动"。
+---------------------------------------------------------- */
+let gz = null;                 // 最近一次 /api/gimbal 返回
+let gzTimer = null;
+let gzHoldTimer = null;        // 按住时续 jog 的定时器
+let gzJog = [0, 0];            // 当前方向（未乘速度/符号）
+let gzSpeedTimer = null;
+
+// 方向 -> 关节速度方向（"视线往右" = Yaw 负速度，与 gimbal_keyctrl.py 的键位一致）
+const GZ_DIR = {
+  left:  { yaw: +1, pitch: 0 },
+  right: { yaw: -1, pitch: 0 },
+  up:    { yaw: 0,  pitch: +1 },
+  down:  { yaw: 0,  pitch: -1 },
+};
+
+async function gzPost(body) {
+  if (!base) return null;
+  try {
+    gz = await api("/api/gimbal", { method: "POST", body: JSON.stringify(body) });
+    gzSync();
+    return gz;
+  } catch (e) {
+    toast("云台: " + e.message, true);
+    return null;
+  }
+}
+
+async function gzLoad() {
+  if (!base) return;
+  try { gz = await api("/api/gimbal"); }
+  catch (e) { gz = { ok: false, available: false, error: e.message }; }
+  gzSync();
+}
+
+function gzPoll() {
+  clearInterval(gzTimer);
+  gzTimer = setInterval(() => { if (connected) gzLoad(); }, 800);
+  gzLoad();
+}
+
+function gzSync() {
+  const g = gz || {};
+  const lim = g.limits || {};
+  const deg = v => (v == null ? "—" : (v >= 0 ? "+" : "") + Number(v).toFixed(1) + "°");
+  if ($("gzLimYaw"))   $("gzLimYaw").textContent   = (lim.yaw_rel ?? 170);
+  if ($("gzLimPitch")) $("gzLimPitch").textContent = (lim.pitch_rel ?? 42);
+  if ($("gzLimFw"))    $("gzLimFw").textContent    =
+      lim.pitch_fw ? ("limit.pitch.deg=" + lim.pitch_fw + "°")
+                   : "（读不到限位，已按 28° 保守处理）";
+  $("gzYaw").textContent     = deg(g.yaw_deg) + " / " + deg(g.yaw_rel_deg);
+  $("gzPitch").textContent   = deg(g.pitch_deg) + " / " + deg(g.pitch_rel_deg);
+  $("gzTgt").textContent     = g.target ? deg(g.target[0]) + ", " + deg(g.target[1]) : "—";
+  $("gzZeroPos").textContent = g.zero ? deg(g.zero[0]) + ", " + deg(g.zero[1]) : "—";
+  const trk = g.track || {};
+  $("gzTrk").textContent = g.tracking
+    ? ("开启 · " + (trk.state || "…") +
+       (trk.persons != null ? " · " + trk.persons + " 人" : ""))
+    : "关闭";
+  $("gzErr").textContent = (g.tracking && trk.err && trk.err.length === 2)
+    ? (Number(trk.err[0]).toFixed(3) + ", " + Number(trk.err[1]).toFixed(3))
+    : "—";
+  const msg = g.msg || g.error || "—";
+  $("gzMsg").textContent = msg;
+  $("gzMsg").style.color = g.ok ? "" : "var(--warn)";
+  $("gzTrack").classList.toggle("on", !!g.tracking);
+  $("gzTrack").textContent = g.tracking ? "关闭追踪" : "开启追踪";
+  const sg = g.signs || {};
+  $("gzYawInv").classList.toggle("on", Number(sg.yaw) < 0);
+  $("gzPitchInv").classList.toggle("on", Number(sg.pitch) < 0);
+  // 速度滑块：跟随后端（别的页面改过也能同步），但不打断本地拖动
+  if (g.speed_max && document.activeElement !== $("gz_speed")) {
+    $("gz_speed").value = Math.round(g.speed_max);
+    $("gzv_speed").textContent = Math.round(g.speed_max) + " °/s";
+  }
+  // 没连上/不可用 -> 方向键整块灰掉，避免"点了没反应"的误解
+  const off = !g.available || (g.error && !g.connected);
+  document.querySelectorAll("#tab-gz [data-jog]").forEach(b => { b.disabled = !!off; });
+  $("gzStop").disabled = !!off;
+}
+
+function gzSendJog() {
+  if (!gzJog[0] && !gzJog[1]) return;
+  const sp = Number($("gz_speed").value) || 25;
+  const sg = (gz && gz.signs) || {};
+  const ys = Number(sg.yaw) < 0 ? -1 : 1;
+  const ps = Number(sg.pitch) < 0 ? -1 : 1;
+  gzPost({
+    action: "jog",
+    yaw: gzJog[0] * sp * ys,
+    pitch: gzJog[1] * sp * ps,
+    hold: 0.8,
+  });
+}
+
+function gzReleaseAll() {
+  const was = (gzJog[0] || gzJog[1]);
+  clearInterval(gzHoldTimer);
+  gzHoldTimer = null;
+  gzJog = [0, 0];
+  document.querySelectorAll("#tab-gz [data-jog]").forEach(x => x.classList.remove("act"));
+  if (was) gzPost({ action: "stop" });
+}
+// 外层视图切换（视频 <-> 建图）时按钮会被隐藏、pointerup 收不到，
+// 所以把停手动作暴露出去，让 showView() 切走时叫一声。
+window.relayGzStop = function () { try { gzReleaseAll(); } catch (e) {} };
+
+document.querySelectorAll("#tab-gz [data-jog]").forEach(b => {
+  const dir = GZ_DIR[b.dataset.jog];
+  b.addEventListener("pointerdown", ev => {
+    if (ev.button !== undefined && ev.button !== 0) return;
+    ev.preventDefault();
+    gzJog = [dir.yaw, dir.pitch];
+    document.querySelectorAll("#tab-gz [data-jog]").forEach(x => x.classList.remove("act"));
+    b.classList.add("act");
+    clearInterval(gzHoldTimer);
+    gzSendJog();                                   // 第一下发要立刻，不能等 200 ms
+    gzHoldTimer = setInterval(gzSendJog, 200);
+    try { if (ev.pointerId != null) b.setPointerCapture(ev.pointerId); } catch (e) {}
+  });
+  b.addEventListener("contextmenu", e => e.preventDefault());
+});
+["pointerup", "pointercancel"].forEach(ev =>
+  window.addEventListener(ev, () => gzReleaseAll()));
+window.addEventListener("blur", () => gzReleaseAll());
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) gzReleaseAll();
+});
+window.addEventListener("pagehide", () => {
+  try {
+    navigator.sendBeacon(base + "/api/gimbal", JSON.stringify({ action: "stop" }));
+  } catch (e) {}
+});
+
+// 零点/回零/追踪这些动作是后端线程异步做的，POST 回来时只是"已下发"。
+// 等一会儿再拉一次状态，把真正的结果（成功/被拒/超时）弹出来。
+function gzToastSoon(ms) {
+  setTimeout(async () => {
+    await gzLoad();
+    if (gz && gz.msg) toast(gz.msg, /失败|拒绝|不可用|超时|未/.test(gz.msg));
+  }, ms || 1100);
+}
+
+$("gzStop").onclick = () => { gzReleaseAll(); gzPost({ action: "stop" }); };
+
+$("gzZero").onclick = async () => {
+  if (!confirm("把云台【当前姿态】设为「零点」？\n\n" +
+               "· 这是软件零点（存在 state.json），不写固件 Flash\n" +
+               "· 之后「回到零点」和追踪都以它为参考\n" +
+               "· 限位仍会用固件关节角的 ±170° 再兜一层，不会多转半圈")) return;
+  const g = await gzPost({ action: "zero", mode: "soft" });
+  if (g) { toast(g.msg || "已下发"); gzToastSoon(1200); }
+};
+
+$("gzHome").onclick = async () => {
+  const g = await gzPost({ action: "home" });
+  if (g) { toast(g.msg || "回零中…"); gzToastSoon(2500); }
+};
+
+$("gzTrack").onclick = async () => {
+  const on = !(gz && gz.tracking);
+  const g = await gzPost({ action: "track", on: on });
+  if (g) toast(g.msg || (on ? "追踪已开启" : "追踪已关闭"));
+};
+
+$("gzRelease").onclick = async () => {
+  gzReleaseAll();
+  const g = await gzPost({ action: "release" });
+  if (g) toast(g.msg || "串口已释放");
+};
+
+$("gzYawInv").onclick = () => {
+  const cur = Number(((gz && gz.signs) || {}).yaw || 1);
+  gzPost({ action: "config", yaw_sign: cur < 0 ? 1 : -1 });
+};
+$("gzPitchInv").onclick = () => {
+  const cur = Number(((gz && gz.signs) || {}).pitch || 1);
+  gzPost({ action: "config", pitch_sign: cur < 0 ? 1 : -1 });
+};
+
+$("gz_speed").addEventListener("input", e => {
+  $("gzv_speed").textContent = e.target.value + " °/s";
+  clearTimeout(gzSpeedTimer);
+  gzSpeedTimer = setTimeout(() =>
+    gzPost({ action: "config", speed_max: Number(e.target.value) }), 150);
+});
+
+/* ---------------- 状态轮询 ---------------- */
+let _camTick = 0;
+async function poll() {
+  if (!base) return;
+  try {
+    const st = await api("/api/status");
+    $("sState").textContent   = "运行中";
+    $("sBackend").textContent = (st.backend || "?") + " / " + (st.device || "?");
+    $("sSize").textContent    = (st.width || "?") + " × " + (st.height || "?");
+    // 黑框比例跟着实际分辨率走, 换模式时不会突然变形
+    // ⚠ 双目例外: 推流是 3840x1080(32:9), 但界面是 2x2 四宫格,
+    //   每格要 16:9 => 整体也是 32:18 = 16:9。直接用 32:9 会把
+    //   每个格子压成 32:9 的扁条。
+    const _aw = +st.width, _ah = +st.height;
+    if (+(st.params && st.params.dual ? st.params.dual : 0) > 0) {
+      $("stage").style.aspectRatio = "16 / 9";
+    } else if (_aw > 0 && _ah > 0) {
+      $("stage").style.aspectRatio = _aw + " / " + _ah;
+    }
+    $("sFps").textContent     = (st.fps ?? "?") + " fps";
+    // ---- 双目状态 ----
+    const _d = st.dual;
+    if (_d && $("dualLine")) {
+      const _ms = v => (v == null ? "—" : Math.round(v) + "ms");
+      const _tag = _d.active ? "拼接中"
+                  : (Number(params.dual ?? 1) ? "等两路标记" : "已关闭");
+      const _s = _d.stat || {};
+      $("dualLine").textContent =
+        _tag + " · cam0 " + _ms(_d.cam0_age_ms) + " · cam1 " + _ms(_d.cam1_age_ms)
+        + " · 拼 " + (_s.pair || 0) + " / 单路 " + (_s.single || 0)
+        + " · 无标记 " + (_s.nomark || 0);
+    } else if ($("dualLine")) {
+      $("dualLine").textContent = "服务端未启用双目";
+    }
+    if (st.ai) {
+      ai = st.ai;
+      $("aiVFps").textContent = (st.fps ?? "?") + " fps";
+      aiSyncUI();
+    } else {
+      $("aiVFps").textContent = (st.fps ?? "?") + " fps";
+      $("sAiFps").textContent = "—";
+      $("sAiRes").textContent = "—";
+    }
+    setDot(true, "已连接");
+  } catch (e) {
+    if (connected) setDot(false, "服务无响应");
+  }
+  // 通道状态跟着 FPGA 走（可能被命令行 i2cset 改过），每 3 拍刷一次
+  _camTick = (_camTick + 1) % 3;
+  if (_camTick === 0) syncCam();
+  setTimeout(poll, 2000);
+}
+
+/* ---------------- 启动 ---------------- */
+$("btnConn").onclick = connect;
+$("lanChip").onclick = () => {
+  const a = $("lanChip").dataset.addr;
+  if (!a) return;
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(a)
+      .then(() => toast("已复制 " + a))
+      .catch(() => toast(a));
+  } else { toast(a); }
+};
+$("vAddr").addEventListener("keydown", e => { if (e.key === "Enter") connect(); });
+(function initVideo(){
+  // 视频工作台已并入 map.html：页面在中继 80 端口，视频服务仍在同一主机的 9012。
+  if (location.protocol.indexOf("http") === 0) {
+    // 视频服务已反代到 80 端口：页面自己就是入口，直接用当前源（host[:port]）
+  $("vAddr").value = location.host || location.hostname;
+  } else {
+    const saved = localStorage.getItem("mipi_addr");
+    if (saved) $("vAddr").value = saved;
+    const h = location.hash.replace("#", "");
+    if (h) $("vAddr").value = h;
+  }
+  // 不在这里自动连接：建图页首屏不需要视频数据流，
+  // 切到「视频采集」时由外层 showView() 调 relayVideoActivate()。
+})();
+
+// 外层切到视频视图时调用，只连一次
+window.relayVideoActivate = function () {
+  if (window.__relayVideoOn) return;
+  window.__relayVideoOn = true;
+  try { connect(); } catch (e) { toast("视频连接失败: " + e, true); }
+};
+
+// ★ 首次加载就直接停在「视频采集」时（页签记在 localStorage 里），
+//   外层的 initTopNav() → showView('video') 跑在本脚本**之前**，那时
+//   window.relayVideoActivate 还不存在，激活调用被丢掉了。
+//   所以这里补一次：视频视图当前可见就连上，否则等用户切页签。
+if (document.getElementById('viewVideo') &&
+    !document.getElementById('viewVideo').hidden) {
+  window.relayVideoActivate();
+}
+
+})();
+</script>
+</body>
+</html>

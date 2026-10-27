@@ -59,7 +59,7 @@
 <header>
   <h1>动作识别 · 轻量模型流程演示</h1>
   <span class="tag">合成骨架 → 归一化 → 32×17×3 张量 → 分类 → 滞回 → 告警　|　
-    分类器为 <b>DEMO</b> 实现，上板时替换为 <code>action_net.rknn</code></span>
+    分类器为 <b>真模型</b>（浏览器内跑 ST-GCN，权重与板上 action_net.npz 同一份）</span>
 </header>
 
 <div class="wrap">
@@ -76,6 +76,7 @@
     <div class="row">
       <button id="btnAuto" class="on">自动轮播</button>
       <button id="btnPause">暂停</button>
+      <button id="btnSrc" class="on">真模型</button>
     </div>
     <div class="row">
       <span class="lbl">关键点噪声</span>
@@ -106,7 +107,7 @@
 
   <!-- 概率 -->
   <div class="card">
-    <h2>③ 模型输出（11 类）</h2>
+    <h2>③ 模型输出（10 类）</h2>
     <div class="bars" id="bars"></div>
     <div class="stat" id="clsStat">—</div>
   </div>
@@ -145,6 +146,8 @@
   </div>
 </div>
 
+<script src="action_net_weights.js"></script>
+<script src="action_net_js.js"></script>
 <script>
 "use strict";
 
@@ -418,12 +421,17 @@ function bboxOf(pose){
 }
 
 // ----------------------------------------------------------------- 状态
+const INFER_DT = 0.2;      // 模型推理节流（秒）= 5 Hz。
+                           // JS 前向约 68 ms/次，10 Hz 会占满 68% 主线程（动画卡顿），
+                           // 5 Hz 已经比动作的秒级变化快很多。
+
 const S = {
   t:0, actIdx:0, auto:true, paused:false, noise:0.012, lag:0.55,
   buf:[], seq:null, probs:null, ema:null, obs:null,
   cand:null, candT:0, missT:0, active:{}, events:[],
   ruleHits:new Set(), modelHits:new Set(),
   lastInferT:-1, inferMs:0, note:'',
+  net:null, netOk:false, useNet:true,
 };
 window.__S = S;          // 便于调试/自动化测试读取内部状态
 
@@ -756,6 +764,32 @@ const btnPause=document.getElementById('btnPause');
 btnPause.onclick=()=>{ S.paused=!S.paused; btnPause.classList.toggle('on',S.paused);
                        btnPause.textContent=S.paused?'继续':'暂停'; };
 
+// ---- 真模型（ST-GCN，浏览器内前向）
+//   权重 action_net_weights.js 由 rk/ai/convert/export_action_js.py 从
+//   action_net.npz 生成；前向在 action_net_js.js，与 action_np.py 数值一致
+//   （_parity.html 会做逐样本对拍，Δ≈6e-7）。
+const btnSrc=document.getElementById('btnSrc');
+try{
+  if (typeof ActionNetJS==='undefined' || typeof window.ACTION_NET==='undefined')
+    throw new Error('未加载 action_net_weights.js / action_net_js.js');
+  S.net=new ActionNetJS();
+  S.netOk=true;
+  btnSrc.title='当前：真模型（'+S.net.classes.length+' 类，'
+              + (S.net.T)+'×17×3 输入）\n点击切回演示分类器';
+}catch(e){
+  S.netOk=false; S.useNet=false;
+  btnSrc.classList.remove('on'); btnSrc.textContent='演示分类器';
+  btnSrc.title='真模型不可用：'+e.message;
+  console.warn('[demo] 真模型不可用，退回演示分类器：', e);
+}
+btnSrc.onclick=()=>{
+  if(!S.netOk) return;
+  S.useNet=!S.useNet;
+  btnSrc.classList.toggle('on',S.useNet);
+  btnSrc.textContent=S.useNet?'真模型':'演示分类器';
+  S.ema=null; S.active={}; S.cand=null;   // 换源后概率含义变了，清掉 EMA
+};
+
 const noiseEl=document.getElementById('noise');
 noiseEl.oninput=()=>{ S.noise=+noiseEl.value/1000;
   document.getElementById('noiseV').textContent=S.noise.toFixed(3); };
@@ -775,7 +809,7 @@ function step(dt){
   // 自动轮播
   if (S.auto){
     elapsed+=dt;
-    if (elapsed>5.5){ elapsed=0; S.actIdx=(S.actIdx+1)%11; selAct.selectedIndex=S.actIdx; }
+    if (elapsed>5.5){ elapsed=0; S.actIdx=(S.actIdx+1)%selAct.options.length; selAct.selectedIndex=S.actIdx; }
   }
   const key=selAct.options[S.actIdx].value;
   S.t += dt;
@@ -806,13 +840,21 @@ function step(dt){
   S.buf.push({t:S.t, n});
   if (S.buf.length>90) S.buf.shift();
 
-  // 每 3 帧重建一次序列（≈10Hz，与板上 ActionEngine 的 fps 默认值一致）
-  if (S.buf.length>=8 && (S.t-S.lastInferT)>=0.1){
+  // 模型推理节流（默认 5 Hz，见 INFER_DT）
+  if (S.buf.length>=8 && (S.t-S.lastInferT)>=INFER_DT){
     S.lastInferT=S.t;
     const t0=performance.now();
+    // 最近 32 帧 ≈ 1.03 s —— 与训练窗口（32 帧@30fps）对齐。
+    // 板上 ActionEngine 默认 window=1.2 s，所以两者看到的动作速度一致。
     S.seq=resample(S.buf.slice(-32), T_LEN);
     const f=features(S.seq);
-    const p=demoClassifier(f);
+    let p;
+    if (S.netOk && S.useNet){
+      const r=S.net.predict(S.seq);       // ← 真模型：与 action_np.py 同一套前向
+      p=Array.prototype.slice.call(r.probs);
+    } else {
+      p=demoClassifier(f);                // 演示用显式规则（可切回对比）
+    }
     S.inferMs=performance.now()-t0;
     S.ema = S.ema ? S.ema.map((v,i)=>0.5*v+0.5*p[i]) : p.slice();
     hysteresis(S.ema, S.t);
@@ -871,7 +913,8 @@ function render(pose,box,nmap,obs){
   const actList=Object.keys(S.active);
   document.getElementById('hAct').textContent = actList.length
       ? actList.map(k=>CLASSES[CI[k]].cn).join('、') : '无';
-  document.getElementById('hMs').textContent = S.inferMs.toFixed(2)+' ms (DEMO)';
+  document.getElementById('hMs').textContent = S.inferMs.toFixed(2)+' ms'
+      + (S.netOk && S.useNet ? ' (ST-GCN JS)' : ' (DEMO)');
   document.getElementById('bhV').textContent = S.bhPx?S.bhPx.toFixed(2):'—';
 
   // 时间线
