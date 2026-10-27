@@ -2597,25 +2597,33 @@ function fpgaShowSt(d) {
   $("fsVer").textContent    = (st.VER !== undefined)
       ? "0x" + st.VER.toString(16).toUpperCase().padStart(4, "0") : "—";
   // 版本表：CFG_VER 每烧一版 +1，这里登记含义，不再硬编码某个版本的提示文案。
+  // ★ 唯一真源是 fpga/uisrc/01_rtl/ctrl/cfg_ctrl_top.v 的 CFG_VER 注释块，
+  //   改 RTL 版本号时**必须同步这里**，否则页面会把新 bit 报成“未登记版本”。
   const VER_NOTES = {
     0x4501: "V45.1 预处理初版",
     0x4506: "V45.6 稳定版",
     0x4507: "V45.7 修复行首 16 像素错位",
     0x4509: "V45.9 参数扫描加重试",
     0x450D: "V45.13 参数扫描兜底",
+    0x4600: "V46.0 flash 兜底版 · 终极回退，断电即回落，勿覆盖 flash",
     0x4700: "V47.0 双目交替推流",
     0x4704: "V47.4",
     0x4705: "V47.5",
     0x4706: "V47.6 移除锐化 / HE 内置斜率限制与跳帧平滑（去「防频闪」）/ 单色算子跳过白平衡",
-    0x4707: "V47.7 修窗口相位（高斯 5x5/7x7 与高级层不再错位）+ 单色强制无色 + HE 对比限制默认 8"
+    0x4707: "V47.7 修窗口相位（高斯 5x5/7x7 与高级层不再错位）+ 单色强制无色 + HE 对比限制默认 8",
+    0x4708: "V47.8 修 HE 频闪根因（删帧间 IIR，首帧即锁定；10 帧均值极差 3536→172）",
+    0x470A: "V47.10 JPEG 直通（0x0B[0] 码流 / [1] DT18 / [2] 帧尾补零）",
+    0x470B: "V47.11 JPEG 编码器真正接入（异步 FIFO 拆字 + 147.5MHz + 看门狗）",
+    0x470C: "V47.12 编码器时钟回退 31.25MHz（147.5MHz 时序不收敛，fmax≈45MHz）",
+    0x470D: "V47.13 按赛题裁剪预处理腾 DSP（删反色/中值/拉普拉斯/浮雕/Prewitt/数字白平衡）"
   };
-  const VER_NEWEST = 0x4707;
+  const VER_NEWEST = 0x470D;
   const _ver = (st.VER !== undefined) ? Number(st.VER) : null;
   if (_ver !== null && $("fsVer")) {
     let t = "板上 bit 版本 0x" + _ver.toString(16).toUpperCase().padStart(4, "0") +
             (VER_NOTES[_ver] ? "（" + VER_NOTES[_ver] + "）" : "（未登记版本）") +
             "；页面期望的最新版本 0x" + VER_NEWEST.toString(16).toUpperCase().padStart(4, "0");
-    if (_ver < VER_NEWEST) t += "。当前 bit 偏旧，需重新综合烧写才具备最新修复";
+    if (_ver < VER_NEWEST) t += "。当前 bit 偏旧。注：flash 里那版是终极兜底，偏旧属正常；新 bit 只做 volatile 下载试烧，不要写 flash";
     $("fsVer").title = t;
   }
   if ($("fsCamWr")) {
