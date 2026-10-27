@@ -585,16 +585,10 @@ html, body{overflow:hidden}
 
         <div class="sep"></div>
 
-        <div class="row"><label>白平衡 R</label>
-          <input type="range" id="f_wb_r" min="0" max="200" step="1" value="100">
-          <span class="val" id="fv_wb_r">100%</span></div>
-
-        <div class="row"><label>白平衡 B</label>
-          <input type="range" id="f_wb_b" min="0" max="200" step="1" value="100">
-          <span class="val" id="fv_wb_b">100%</span></div>
+        <!-- 2026-10-27: 数字白平衡控件已下线 —— FPGA 侧那级乘法器已删(腾 DSP),
+             白平衡由 ISP 的 ui_awb 自动完成。 -->
 
         <div class="grid2" style="margin-top:6px">
-          <button class="ghost" id="btnWbReset">白平衡归零</button>
           <button id="btnCamPush">重新下发</button>
         </div>
 
@@ -664,7 +658,7 @@ html, body{overflow:hidden}
               <span class="val" id="fv_BASIC_CONTRAST">4</span></div>
           </div>
 
-          <button class="ghost ppbtn" data-basic="4">反色</button>
+          <!-- 2026-10-27: 反色已下线（不在赛题硬指标里，腾 DSP） -->
         </div>
 
         <div class="sep" style="margin:10px 0"></div>
@@ -699,31 +693,8 @@ html, body{overflow:hidden}
             </div>
           </div>
 
-          <button class="ghost ppbtn" data-adv="4">中值滤波</button>
-
-          <button class="ghost ppbtn" data-adv="5">拉普拉斯</button>
-          <div class="ppparam" id="ap_5">
-            <div class="row"><label>增益</label>
-              <input type="range" id="f_ADV_LAP_SH" min="1" max="16" step="1" value="8">
-              <span class="val" id="fv_ADV_LAP_SH">8</span></div>
-          </div>
-
-          <button class="ghost ppbtn" data-adv="6">浮雕</button>
-          <div class="ppparam" id="ap_6">
-            <div class="row"><label>增益</label>
-              <input type="range" id="f_ADV_EMBOSS_GAIN" min="0" max="8" step="1" value="4">
-              <span class="val" id="fv_ADV_EMBOSS_GAIN">4</span></div>
-            <div class="row"><label>偏置</label>
-              <input type="range" id="f_ADV_EMBOSS_BIAS" min="0" max="255" step="1" value="128">
-              <span class="val" id="fv_ADV_EMBOSS_BIAS">128</span></div>
-          </div>
-
-          <button class="ghost ppbtn" data-adv="7">Prewitt</button>
-          <div class="ppparam" id="ap_7">
-            <div class="row"><label>增益</label>
-              <input type="range" id="f_ADV_PREW_SH" min="1" max="16" step="1" value="8">
-              <span class="val" id="fv_ADV_PREW_SH">8</span></div>
-          </div>
+          <!-- 2026-10-27: 中值/拉普拉斯/浮雕/Prewitt 已下线
+               （赛题硬指标只要求 高斯/直方图/灰度/对比度拉伸/阈值/形态学/Sobel） -->
         </div>
 
         <p class="hint">每个算法一个按钮，参数滑条只在选中时显示。两级可同时生效；
@@ -2484,8 +2455,8 @@ function fpgaSyncUI() {
     const p = $("ap_" + v);
     if (p) p.classList.toggle("show", advOn && advMode === v);
   }
-  ["ADV_THRESH", "ADV_MORPH_TH", "ADV_SOBEL_SH", "ADV_LAP_SH", "ADV_PREW_SH",
-   "ADV_EMBOSS_GAIN", "ADV_EMBOSS_BIAS"].forEach(k => {
+  // 2026-10-27: 拉普拉斯/浮雕/Prewitt 已下线, 对应的滑块不再刷新
+  ["ADV_THRESH", "ADV_MORPH_TH", "ADV_SOBEL_SH"].forEach(k => {
     const el = $("f_" + k);
     if (el && r[k] !== undefined && document.activeElement !== el) el.value = r[k];
     if (el && $("fv_" + k)) $("fv_" + k).textContent = el.value;
@@ -3063,14 +3034,13 @@ async function loadNet() {
 }
 
 /* ---------------- 摄像头 / 输出参数（物理量） ----------------
-   网页用物理量（曝光 ms / 增益 dB / 白平衡 % / 帧率 fps），后端再换算成
-   IMX415 的 SHR0 / GAIN 和 FPGA 的数字增益 —— 直接用裸寄存器值没法用。 */
+   网页用物理量（曝光 ms / 增益 dB / 帧率 fps），后端再换算成
+   IMX415 的 SHR0 / GAIN —— 直接用裸寄存器值没法用。
+   2026-10-27: 白平衡两项已下线（FPGA 侧数字白平衡乘法器已删，改由 ISP 自动 AWB）。 */
 const CAM_CTRL = [
   { id: "f_cam_exp",  key: "cam_exp_ms",  fmt: v => v.toFixed(2) + " ms"  },
   { id: "f_cam_gain", key: "cam_gain_db", fmt: v => v.toFixed(1) + " dB"  },
   { id: "f_cam_ev",   key: "ev",          fmt: v => v.toFixed(0) + " EV"  },
-  { id: "f_wb_r",     key: "wb_r_pct",    fmt: v => v.toFixed(0) + " %"   },
-  { id: "f_wb_b",     key: "wb_b_pct",    fmt: v => v.toFixed(0) + " %"   },
   { id: "f_roi",      key: "roi_pct",     fmt: v => v.toFixed(0) + " %"   },
 ];
 let camPushTimer = null;
@@ -3120,13 +3090,9 @@ CAM_CTRL.forEach(c => {
   });
 });
 
-$("btnWbReset").onclick = () => {
-  $("f_wb_r").value = 100; $("f_wb_b").value = 100;
-  $("fv_wb_r").textContent = "100 %"; $("fv_wb_b").textContent = "100 %";
-  camPush();
-};
-
-// 强制重发一次: 写 CAM_TRIG 任意值, FPGA 侧检测到变化就重下发全部摄像头参数
+// 2026-10-27: 白平衡控件已下线 —— FPGA 侧数字白平衡(R/B 增益乘法器)已删,
+//   白平衡由 ISP 的 ui_awb 自动完成。原来这里给 btnWbReset 绑 onclick,
+//   控件删掉后 $("btnWbReset") 是 null, 会抛异常把后面的绑定全部打断。
 $("btnCamPush").onclick = () => {
   api("/api/fpga", {
     method: "POST",

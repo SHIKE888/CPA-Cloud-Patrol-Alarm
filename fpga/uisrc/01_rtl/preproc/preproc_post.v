@@ -104,35 +104,14 @@ module preproc_post #(
 	              (row >= roi_y0) && (row < (roi_y0 + roi_h));
 
 	//============================================================== 白平衡增益
-	// 4 个像素, 每个 32 位 {8'h00, R, G, B} —— 高 8 位是填充, 不参与
-	function [7:0] gain8;
-		input [7:0] v;
-		input [7:0] g;
-		reg [15:0] t;
-		begin
-			t = v * g;                    // 最大 255*255 = 65025
-			gain8 = t[14:7] + t[6];       // (v*g + 64) >> 7 的近似四舍五入
-		end
-	endfunction
-
-	wire [7:0] wb_gain_r = i_wb_r;
-	wire [7:0] wb_gain_b = i_wb_b;
-
-	// 对每个像素的 R/B 做增益; 128 时结果等于原值 (t = v*128, [14:7] = v)
-	wire [31:0] p0 = i_rgb[ 31: 0];
-	wire [31:0] p1 = i_rgb[ 63:32];
-	wire [31:0] p2 = i_rgb[ 95:64];
-	wire [31:0] p3 = i_rgb[127:96];
-
-	wire [31:0] g0 = {8'h00, gain8(p0[23:16], wb_gain_r), p0[15:8], gain8(p0[7:0], wb_gain_b)};
-	wire [31:0] g1 = {8'h00, gain8(p1[23:16], wb_gain_r), p1[15:8], gain8(p1[7:0], wb_gain_b)};
-	wire [31:0] g2 = {8'h00, gain8(p2[23:16], wb_gain_r), p2[15:8], gain8(p2[7:0], wb_gain_b)};
-	wire [31:0] g3 = {8'h00, gain8(p3[23:16], wb_gain_r), p3[15:8], gain8(p3[7:0], wb_gain_b)};
-
-	wire [127:0] wb_rgb = i_mono ? i_rgb : {g3, g2, g1, g0};
+	// 2026-10-27: 数字白平衡(R/B 增益) 已整块删除 —— 不在赛题硬指标
+	//   (高斯/直方图/灰度/对比度拉伸/阈值/形态学/Sobel) 里, 而它每像素要
+	//   2 个乘法器(4 lane = 8 DSP), 现在 DSP 很紧。
+	//   i_wb_r / i_wb_b / i_mono 端口保留但不再使用, TD 会自动优化掉,
+	//   cfg/UI 的连线一根都不用改。ROI 裁剪保留。
 
 	// 窗口外填视频黑 (RGB=0)
-	wire [127:0] out_rgb = in_roi ? wb_rgb : 128'd0;
+	wire [127:0] out_rgb = in_roi ? i_rgb : 128'd0;
 
 	//============================================================== 输出寄存
 	always @(posedge clk or negedge rst_n) begin

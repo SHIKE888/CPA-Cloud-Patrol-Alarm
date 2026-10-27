@@ -828,9 +828,11 @@ module preproc_basic #(
 		wire [7:0] g4 = i_en[3] ? contrast8(g3, i_contrast) : g3;
 		wire [7:0] b4 = i_en[3] ? contrast8(b3, i_contrast) : b3;
 
-		wire [7:0] r5 = i_en[4] ? (8'hFF - r4) : r4;
-		wire [7:0] g5 = i_en[4] ? (8'hFF - g4) : g4;
-		wire [7:0] b5 = i_en[4] ? (8'hFF - b4) : b4;
+// 2026-10-27: 反色(bit4) 已删除 —— 不在赛题硬指标(高斯/直方图/灰度/对比度拉伸)
+	//   里。i_en[4] 保留但不再使用, 写 1 不会反色也不会报错。
+	wire [7:0] r5 = r4;
+	wire [7:0] g5 = g4;
+	wire [7:0] b5 = b4;
 
 		assign final_pix[(32*j) +: 32] = {8'h00, r5, g5, b5};
 	end
