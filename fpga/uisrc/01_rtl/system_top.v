@@ -1527,44 +1527,25 @@ ui_image_correction #(
 );
 
 //=============================================================================
-//  双目交替帧调度 (2026-10-21)
+//  2026-10-27 删除「双目交替帧调度」(dual_frame_sched)
 //
-//  单目 (S_dual_en=0): 按 0xDB[0] 二选一，全速推流 —— 与 0x4601 行为一致
-//  双目 (S_dual_en=1): cam0/cam1 逐帧交替，各 30fps，输出仍是 1080p60
-//                      （两路传感器仍按 60fps 采，FPGA 每路两帧取一帧）
+//  原因: 赛题要求传给 RK 的是 JPEG 压缩流, 两路要同时进来(拼接后一次编码),
+//        而不是"逐帧交替各 30fps"。交替调度被 jpeg 通路取代, 属冗余。
+//        而且它内部的 cam1 行组环形缓冲是之前"两格同一路"故障的嫌疑点。
 //
-//  ⚠ 4K 模式强制按单目处理（带宽装不下两路），见 S_dual_eff
+//  现在只保留最小功能: 按 0xDB[0] 在本域内二选一 (选中的那一路本来就与
+//  S_hs_rx_clk 同源, 所以这个 mux 不跨时钟)。双目拼接(dual_stitch)接进来时,
+//  这里会换成 stitch 的输出。
 //=============================================================================
-assign S_dual_eff = S_dual_en & ~S_is_4k;
+assign S_dual_eff = S_dual_en & ~S_is_4k;   // 仅作寄存器回读/网页显示用
 
-dual_frame_sched #(
-    .DATA_WIDTH (40),
-    .LINE_GRP   (480)          // 1080p: 1920px / 4
-) X_dual_sched (
-    .I_clk        (S_hs_rx_clk      ),
-    // ⚠ 和 I_clk 用同一个时钟: dual_frame_sched 内部 d1_r/v1_r/u1_r/l1_r
-    //    都用 I_clk 采样, I_clk1 只用作行组环形缓冲的写时钟。两者必须同域,
-    //    否则 cam1 的 tuser 会被漏採 -> dbuf 不轮转 -> 画面冻结。
-    .I_clk1       (S_hs_rx_clk      ),
-    .I_rst_n      (S_pll_lock       ),
-    .I_dual_en    (S_dual_eff       ),
-    .I_sel        (S_rx_sel_rx      ),
-    .I_d0         (S_crop0_tdata    ),
-    .I_v0         (S_crop0_tvalid   ),
-    .I_u0         (S_crop0_tuser    ),
-    .I_l0         (S_crop0_tlast    ),
-    .I_d1         (S_crop1_tdata    ),
-    .I_v1         (S_crop1_tvalid   ),
-    .I_u1         (S_crop1_tuser    ),
-    .I_l1         (S_crop1_tlast    ),
-    .O_d          (S_axis_tdata     ),
-    .O_v          (S_axis_tvalid    ),
-    .O_u          (S_axis_tuser     ),
-    .O_l          (S_axis_tlast     ),
-    .O_src        (S_out_src        ),
-    .O_ch1_lost   (S_ch1_lost       ),
-    .O_parity     (S_frame_parity   )
-);
+assign S_axis_tdata  = S_rx_sel_rx ? S_crop1_tdata  : S_crop0_tdata;
+assign S_axis_tvalid = S_rx_sel_rx ? S_crop1_tvalid : S_crop0_tvalid;
+assign S_axis_tuser  = S_rx_sel_rx ? S_crop1_tuser  : S_crop0_tuser;
+assign S_axis_tlast  = S_rx_sel_rx ? S_crop1_tlast  : S_crop0_tlast;
+assign S_out_src     = S_rx_sel_rx;         // 供帧标记用 (raw 通路若关闭则无意义)
+assign S_ch1_lost    = 1'b0;
+assign S_frame_parity= 1'b0;
 
 
 
@@ -2339,16 +2320,15 @@ wire        S_hs_en;
 wire [31:0] S_hs_data;
 wire        S_hs_last;
 
-// 数据源三选一 (常量选择, 综合时只保留一路)
-//   TX_SRC_SEL: 0=packer 正式通路  1=ui_dbuf.R 直连(跳过packer)  2=内置TPG
-wire        S_tx_tvalid = (TX_SRC_SEL == 2'd2) ? S_test_tvalid :
-                          (TX_SRC_SEL == 2'd1) ? S_dsi_R_tvalid : S_pack_tvalid;
-wire [31:0] S_tx_tdata  = (TX_SRC_SEL == 2'd2) ? S_test_tdata  :
-                          (TX_SRC_SEL == 2'd1) ? S_dsi_R_tdata32: S_pack_tdata;
-wire        S_tx_tsof   = (TX_SRC_SEL == 2'd2) ? S_test_tsof   :
-                          (TX_SRC_SEL == 2'd1) ? S_dsi_R_tuser  : S_pack_tsof;
-wire        S_tx_tlast  = (TX_SRC_SEL == 2'd2) ? S_test_tlast  :
-                          (TX_SRC_SEL == 2'd1) ? S_dsi_R_tlast  : S_pack_tlast;
+// 数据源: 只有 csi2_pack 一路
+//  ★ 2026-10-27: 原来的三选一 (TX_SRC_SEL: 0=packer / 1=dbuf直连 / 2=内置TPG)
+//    已删掉后两个 —— 它们只是 V32 时期二分定位"4K 撕裂"的临时诊断 tap,
+//    目的早已达到。断开后 TD 会把 csi2_test_src 整块优化掉, 不占资源。
+//    否则"改动后画面变了"和"TPG 还在跑"会混在一起, 排查时又要多一层怀疑。
+wire        S_tx_tvalid = S_pack_tvalid;
+wire [31:0] S_tx_tdata  = S_pack_tdata;
+wire        S_tx_tsof   = S_pack_tsof;
+wire        S_tx_tlast  = S_pack_tlast;
 
 csi2_frame_tx #(
 	.DT			(6'h1E),	// YUV422-8bit  (必须与 RK 驱动 MEDIA_BUS_FMT_YUYV8_2X8 一致)
