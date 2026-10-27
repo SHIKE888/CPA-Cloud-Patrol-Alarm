@@ -84,6 +84,12 @@ module preproc_basic #(
 
 	//-------------------------------------------------------------------------
 	// 0. 工具函数
+	// ★ 2026-10-28: 原来用 3 个乘法器算 BT.601/709 亮度。全设计 lum_sel 被调用 5 处
+	//   (preproc_basic 4 + preproc_win3x3 1) = **60 个 DSP**；2 个 JPEG 引擎要 96 个，
+	//   总 DSP 会超 240。改成纯移位加(系数是常量, 逐位等价):
+	//     601: 77=64+8+4+1  150=128+16+4+2  29=16+8+4+1
+	//     709: 54=32+16+4+2 183=128+32+16+4+2+1  19=16+2+1
+	//   r,g,b<=255 且权重和恰好=256 -> 最大 65280, 16 位不溢出。
 	//-------------------------------------------------------------------------
 	function [7:0] lum_sel;
 		input [7:0]           r;
@@ -91,9 +97,16 @@ module preproc_basic #(
 		input [7:0]           b;
 		input                 mode;      // 0=601  1=709
 		reg   [15:0]          t;
+		reg   [15:0]          t0, t1;
 		begin
-			t = mode ? (54 * r + 183 * g + 19 * b)
-			         : (77 * r + 150 * g + 29 * b);
+			t0 = (({8'd0,r} << 6) + ({8'd0,r} << 3) + ({8'd0,r} << 2) + {8'd0,r})
+			   + (({8'd0,g} << 7) + ({8'd0,g} << 4) + ({8'd0,g} << 2) + ({8'd0,g} << 1))
+			   + (({8'd0,b} << 4) + ({8'd0,b} << 3) + ({8'd0,b} << 2) + {8'd0,b});
+			t1 = (({8'd0,r} << 5) + ({8'd0,r} << 4) + ({8'd0,r} << 2) + ({8'd0,r} << 1))
+			   + (({8'd0,g} << 7) + ({8'd0,g} << 5) + ({8'd0,g} << 4) + ({8'd0,g} << 2)
+			                                         + ({8'd0,g} << 1) + {8'd0,g})
+			   + (({8'd0,b} << 4) + ({8'd0,b} << 1) + {8'd0,b});
+			t = mode ? t1 : t0;
 			lum_sel = t[15:8];
 		end
 	endfunction
@@ -793,7 +806,9 @@ module preproc_basic #(
 		wire [7:0] bb2 = i_en[2] ? clamp8($signed({8'd0, bg}) + hd) : bg;
 
 		assign rgb_b[(32*j) +: 32] = {8'h00, rr2, gg2, bb2};
-		assign lum_b[(8*j)   +: 8] = lum_sel(rr2, gg2, bb2, i_gray_mode);
+		// ★ 2026-10-28: 原来这里直接 assign lum_b = lum_sel(rr2,gg2,bb2)。
+		//   实测该链 17.85ns@70MHz(需 14.0): p2_d4 -> pr mux -> mix8 -> HE 混合 -> hd -> clamp
+		//   -> lum_sel 3 个 DSP 加链 -> lum_s。已把 lum_sel 移到 rgb_q 之后单独成一级。
 	end
 	endgenerate
 
@@ -804,20 +819,38 @@ module preproc_basic #(
 	reg         vb, ub, tb;
 	reg [127:0] rgb_s;
 	reg [31:0]  lum_s;
+	reg [127:0] rgb_q;          // ★ 流水: 混合+HE+clamp 的结果先寄存
+	reg         v_q, u_q, t_q;
 
 	always @(posedge clk or negedge rst_n) begin
 		if (!rst_n) begin
 			vb <= 1'b0; ub <= 1'b0; tb <= 1'b0;
 			rgb_s <= 128'd0;
 			lum_s <= 32'd0;
+			rgb_q <= 128'd0;
+			v_q <= 1'b0; u_q <= 1'b0; t_q <= 1'b0;
 		end else begin
-			vb    <= v_d8;
-			ub    <= u_d8;
-			tb    <= t_d8;
-			rgb_s <= rgb_b;
+			vb    <= v_q;
+			ub    <= u_q;
+			tb    <= t_q;
+			rgb_s <= rgb_q;
 			lum_s <= lum_b;
+			v_q   <= v_d8;
+			u_q   <= u_d8;
+			t_q   <= t_d8;
+			rgb_q <= rgb_b;
 		end
 	end
+
+	// 亮度从 rgb_q 算, 与 rgb_s 同一级 -> 仍然对齐
+	generate
+	for (j = 0; j < 4; j = j + 1) begin : g_lum
+		assign lum_b[(8*j) +: 8] = lum_sel(rgb_q[(32*j) + 16 +: 8],
+		                                  rgb_q[(32*j) +  8 +: 8],
+		                                  rgb_q[(32*j)      +: 8],
+		                                  i_gray_mode);
+	end
+	endgenerate
 
 	//-------------------------------------------------------------------------
 	// 12. Stage C: 灰度 / 对比度 / 反色 -> 输出
