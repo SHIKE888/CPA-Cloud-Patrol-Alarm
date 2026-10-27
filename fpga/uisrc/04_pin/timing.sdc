@@ -5,7 +5,6 @@ derive_clocks
 
 rename_clock -name {S_clk_24m} [get_clocks {X_ui_pll/pll_inst.clkc[0]}]
 rename_clock -name {S_pclkx1}  [get_clocks {X_ui_pll/pll_inst.clkc[1]}]
-rename_clock -name {S_pclkx5}  [get_clocks {X_ui_pll/pll_inst.clkc[2]}]
 rename_clock -name {S_clk_70m} [get_clocks {X_ui_pll/pll_inst.clkc[3]}]
 
 rename_clock -name {S_dsi_25m}     [get_clocks {u_ui_pll_dsi/pll_inst.clkc[0]}]
@@ -13,7 +12,6 @@ rename_clock -name {S_dsi_byte}    [get_clocks {u_ui_pll_dsi/pll_inst.clkc[1]}]
 rename_clock -name {S_dsi_hs_x2}   [get_clocks {u_ui_pll_dsi/pll_inst.clkc[2]}]
 rename_clock -name {S_dsi_hs_x4}   [get_clocks {u_ui_pll_dsi/pll_inst.clkc[3]}]
 rename_clock -name {S_dsi_hs_x4_q} [get_clocks {u_ui_pll_dsi/pll_inst.clkc[4]}]
-rename_clock -name {S_dsi_lp}      [get_clocks {u_ui_pll_dsi/pll_inst.clkc[5]}]
 
 # V30: 这里原来�?-exclusive(互斥时钟), 但这些时钟是【异步并发】的�?#   -exclusive 会让 STA 完全跳过这些域之间的所有路�? �?STA 覆盖率只�?~32% 的直接原因�?#   改成 -asynchronous: 域间不查(�?async FIFO 隔离), 但各域内部照查�?#=============================================================================
 # V34 (2026-10-17): 重写时钟分组 —�?这是"时序不收�?的真正原�?#
@@ -35,17 +33,11 @@ rename_clock -name {S_dsi_lp}      [get_clocks {u_ui_pll_dsi/pll_inst.clkc[5]}]
 #       一个在�?", 而这些时钟是【异步并发】的, 应该�?-asynchronous�?#       用错会让 STA 完全跳过域间路径, STA 覆盖率只�?~32%�?#   (2) 即便改对, 分组也不完整 —�?sys_clk �?S_clk_70m、ddr �?pll 之间都没覆盖�?#   后果: 布局布线器一直花力气�?�?�?280 个永远不可能满足�?CDC 路径,
 #         反而挤占了真正要收敛的域内路径的资源�?#
 # 本版: 把所有时钟域声明成互斥异步组 —�?域间不查, 域内照查�?#      同一 PLL 派生、且内部互相通信的时钟放在同一组里, 组内仍然分析�?#=============================================================================
-# 2026-10-28: S_st_clk (pclkx1/2 = 73.75MHz) �� S_enc_clk (pclkx1/4 = 36.875MHz) �� RTL ��
-# �� toggle FF + BUFG ���ɵ�, TD �����Զ������ǽ�ʱ�� => ������/�����������û��ʱ����!
-# ������ʽ��������; ������������֮�䶼���첽 FIFO ���, ���Ը��Ե���һ�顣
-create_clock -name {S_st_clk}  -period 13.559 -waveform {0.000 6.780}  [get_pins {X_bufg_st_clk/clkout}]
-create_clock -name {S_enc_clk} -period 27.118 -waveform {0.000 13.559} [get_pins {X_bufg_enc_clk/clkout}]
 
 set_clock_groups -asynchronous \
     -group [get_clocks {sys_clk}] \
     -group [get_clocks {ddr_clk}] \
     -group [get_clocks {X_ui_ddr/dfi_clk X_ui_ddr/mcu_clk}] \
-    -group [get_clocks {S_clk_24m S_clk_70m S_pclkx1 S_pclkx5}] \
-    -group [get_clocks {S_st_clk}] \
-    -group [get_clocks {S_enc_clk}] \
-    -group [get_clocks {S_dsi_25m S_dsi_byte S_dsi_hs_x2 S_dsi_hs_x4 S_dsi_hs_x4_q S_dsi_lp}]
+    -group [get_clocks {S_clk_24m S_pclkx1}] \
+    -group [get_clocks {S_clk_70m}] \
+    -group [get_clocks {S_dsi_25m S_dsi_byte S_dsi_hs_x2 S_dsi_hs_x4 S_dsi_hs_x4_q}]

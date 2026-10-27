@@ -1568,26 +1568,20 @@ sensor_sync_start #(
 //    切换后立刻有 120ms 写侧复位窗兜住。
 //--------------------------------------------------------------------------
 // ★ 2026-10-28: 双目**同时**采集后不再有"选源"，两路 RX 各自跑自己的恢复时钟，
-//   拼接模块 (dual_stitch) 是唯一的跨时钟点。这里生成两个固定时钟:
-//     S_st_clk  = pclkx1/2 = 73.75MHz  -> 拼接 / ISP / preproc / dbuf 写侧
-//     S_enc_clk = pclkx1/4 = 36.875MHz -> JPEG 编码器 (旧 fmax 45MHz, 不能给更快)
-//   而 S_hs_rx_clk 这个名字继续指向 S_st_clk —— 文件里所有已经调好的下游代码一行不用改。
-reg S_st_clk_div;
-always @(posedge S_pclkx1 or negedge S_pll_lock) begin
-	if (!S_pll_lock) S_st_clk_div <= 1'b0;
-	else             S_st_clk_div <= ~S_st_clk_div;
-end
-
+//   拼接模块 (dual_stitch) 是唯一的跨时钟点。
+//
+//   像素域时钟 = **PLL 现成的 70MHz 输出 (S_clk_70m)**，不再用 toggle-FF 分频：
+//     - 70MHz x 4px = 280 Mpx/s >= 需要的 248.8 (余量 12.6%)
+//     - 拼接读侧 964 拍/行 @70MHz = 13.77us < 源行 14.81us (余量 7%)
+//     - 它是真 PLL 输出: derive_clocks 会自动建时钟、set_clock_groups 能引用。
+//       (toggle FF + BUFG 生成的时钟, TD 的 create_clock 按引脚名找不到 -> 整条
+//        set_clock_groups 命令失败 -> 所有 CDC 被当同步路径算 -> 假违例 −6.8ns)
+//   JPEG 编码器仍用 pclkx1/4 = 36.875MHz (旧 fmax 45MHz, 不能给更快)。
 reg [1:0] S_enc_div;
 always @(posedge S_pclkx1 or negedge S_pll_lock) begin
 	if (!S_pll_lock) S_enc_div <= 2'b00;
 	else             S_enc_div <= S_enc_div + 2'd1;
 end
-
-PH1_LOGIC_BUFG X_bufg_st_clk (
-	.i ( S_st_clk_div  ),
-	.o ( S_st_clk      )
-);
 
 PH1_LOGIC_BUFG X_bufg_enc_clk (
 	.i ( S_enc_div[1]  ),
@@ -1600,7 +1594,8 @@ always @(posedge I_sysclk_25m or negedge S_pll_lock) begin
 	else             S_clk_sel_r <= 1'b0;
 end
 
-// 下游像素域 = 拼接输出时钟 (73.75MHz)
+// 下游像素域 = 拼接输出时钟 (70MHz, PLL 直出)
+assign S_st_clk    = S_clk_70m;
 assign S_hs_rx_clk = S_st_clk;
 
 //--------------------------------------------------------------------------
