@@ -62,9 +62,25 @@ module cfg_ctrl_top #(
 	//                   (rkcif 行为与 NV16 通路完全一致, 最稳妥, 占带宽);
 	//                   0=短帧 (省带宽, 待板上验证收端能否接受)
 	//               - 编码器帧字节数超整帧时自动截断, 保护链路
+	//     0x470B = V47 第 11 次构建: **JPEG 编码器真正接入**
+	//               0x470A 板上实测 0xA0~0xA2 恒 0 / 0xA8 bit0(busy) 恒 1
+	//               => 编码器从来没出过一帧。根因是源 64bit(4px/拍) 只接了
+	//               s_data[31:0](2px), 每拍丢一半 -> 行缓冲永远凑不满 8 行;
+	//               且编码器挂在 S_hs_rx_clk(≈31MHz), 光时钟就只够 13fps。
+	//               现在: jpeg_enc_if(异步FIFO拆字) -> 编码器(S_pclkx1 147.5MHz)
+	//                     -> jpeg_byte_bridge -> csi2_frame_tx_var
+	//               + 整帧门控(上一帧没编完就整帧丢) + 卡死看门狗(>54ms 复位)
+	//               新增诊断: 0xA3/0xA4=源FIFO溢出次数, 0xA5/0xA6=看门狗次数,
+	//                         0xA7=跨时钟桥背压低位
+	//     0x470C = V47 第 12 次构建: 编码器时钟回退到 S_hs_rx_clk(31.25MHz)
+	//               0x470B 把编码器挂到 S_pclkx1(147.5MHz), 时序报告实测
+	//               fmax 只有 45.06MHz (最差路径 X_jpeg_qt 异步读 -> u_quant
+	//               量化乘加 = 21.9ns, WNS -15.413ns / 2591 违例端点)
+	//               => 147.5MHz 下编码结果必然是错的。先退回 31.25MHz 保功能:
+	//                 150 clk/MCU x 16200 MCU / 31.25MHz = 77.8ms/帧 ≈ 13fps。
 	//    ★ 网页「版本」格悬停会按 QUICKSTART 的登记表显示含义, 加版本时同步登记。
 	//=========================================================================
-	parameter [15:0] CFG_VER  = 16'h470A
+	parameter [15:0] CFG_VER  = 16'h470C
 )(
 	// ---- 系统时钟域 (25MHz 常开) ----
 	input  wire        i_sys_clk,
@@ -128,6 +144,10 @@ module cfg_ctrl_top #(
 	output wire [7:0]  o_cam_trig,
 	input  wire [15:0] i_cam_wr_cnt,
 	input  wire        i_cam_busy,
+	// 2026-10-27: JPEG 支路诊断 —— 0xA3~0xA6 = {看门狗触发次数, 源FIFO溢出次数},
+	//   0xA7 = byte_bridge 写侧背压低 8 位。编码器从没出过帧时靠这几个数定位。
+	input  wire [31:0] i_dbg_jpeg,
+	input  wire [7:0]  i_dbg_jb,
 	// 2026-10-21 画面冻结定位 (已 2 级同步到 i_sys_clk)
 	input  wire [7:0]  i_diag_sof,
 	// 2026-10-21: FPGA 硬件 JPEG 编码器的状态回读
@@ -323,8 +343,8 @@ module cfg_ctrl_top #(
 		.O_cfg_predictor (cfg_predictor),
 		.O_soft_rst      (cfg_soft_rst),
 		.I_st_frame_bytes(i_jpeg_bytes),
-		.I_st_total_bytes(32'd0),
-		.I_st_scale      (8'd0),
+		.I_st_total_bytes(i_dbg_jpeg),
+		.I_st_scale      (i_dbg_jb  ),
 		.I_st_busy       (i_jpeg_busy),
 		.I_st_frame_done (i_jpeg_done),
 		.I_st_overflow   (1'b0),

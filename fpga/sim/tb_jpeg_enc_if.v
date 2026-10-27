@@ -63,6 +63,7 @@ module tb_jpeg_enc_if;
         .s_sof      (s_sof    ),
         .e_clk      (e_clk    ),
         .e_rst_n    (e_rst_n  ),
+        .i_flush    (1'b0     ),
         .e_valid    (e_valid  ),
         .e_data     (e_data   ),
         .e_ready    (e_ready  ),

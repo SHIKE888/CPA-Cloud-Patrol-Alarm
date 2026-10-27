@@ -732,6 +732,7 @@ module jpeg_enc_if #(
     // ---------------- 编码器侧: YUV422 2 像素/拍 ----------------
     input  wire         e_clk,
     input  wire         e_rst_n,
+    input  wire         i_flush,        // 2026-10-27: 看门狗用 —— 清 FIFO + 读侧状态
     output wire         e_valid,
     output wire [31:0]  e_data,
     input  wire         e_ready,
@@ -780,7 +781,7 @@ module jpeg_enc_if #(
         .DATA_WIDTH (DW),
         .ADDR_WIDTH (AW)
     ) u_fifo (
-        .rst          (~(s_rst_n & e_rst_n)),
+        .rst          (~(s_rst_n & e_rst_n) | i_flush),
         .wr_clk       (s_clk   ),
         .rd_clk       (e_clk   ),
         .din          ({s_sof, s_data}),
@@ -806,6 +807,11 @@ module jpeg_enc_if #(
             half      <= 1'b0;
             w_data    <= 64'd0;
             st_word_lo<= 16'd0;
+        end else if (i_flush) begin
+            d_v    <= 1'b0;
+            w_v    <= 1'b0;
+            half   <= 1'b0;
+            w_data <= 64'd0;
         end else begin
             d_v <= e_rd_en;
 

@@ -629,6 +629,12 @@ wire        S_jpeg_dt18;
 wire        S_jpeg_pad;
 wire [5:0]  S_jpeg_dt = S_jpeg_dt18 ? 6'h18 : 6'h1E;
 
+// 2026-10-27: JPEG 支路诊断 (ifdef 内外都要声明, cfg 例化在外面)
+//   0xA3~0xA6 = {看门狗触发次数, 源侧 FIFO 溢出次数}
+//   0xA7      = 跨时钟桥 写侧背压低 8 位
+wire [31:0] S_dbg_jpeg;
+wire [7:0]  S_dbg_jb;
+
 `ifdef JPEG_EN
 	wire        S_jpeg_s_ready;
 	wire [6:0]  S_jpeg_qt_a, S_jpeg_qt_b;
@@ -637,24 +643,138 @@ wire [5:0]  S_jpeg_dt = S_jpeg_dt18 ? 6'h18 : 6'h1E;
 	wire [7:0]  S_jpeg_m_data;
 	wire [31:0] S_jpeg_cnt;
 
+	//==========================================================================
+	//  2026-10-27: 编码器真正接入 (之前压根没接对)
+	//  ------------------------------------------------------------------
+	//  0x470A 实测: 0xA0~0xA2(帧字节数) 恒 0, 0xA8 bit0(busy) 恒 1
+	//  => 编码器**从来没出过一帧**。原因就是当年注释里写的第 ③ 条:
+	//  源是 64bit = 4 像素/拍, 只接了 s_data[31:0] = 2 像素, 每拍丢一半,
+	//  行缓冲永远凑不满 8 行 => 停在 T_WGRP 等数据, busy 永远为 1。
+	//  另外编码器原来挂在 S_hs_rx_clk(≈31MHz), 光时钟就只够 13fps。
+	//
+	//  现在: 源(S_hs_rx_clk, 4px/拍) -> jpeg_enc_if(异步FIFO+拆字)
+	//        -> 编码器(S_pclkx1 147.5MHz, 2px/拍) -> jpeg_byte_bridge
+	//        -> csi2_frame_tx_var(S_hs_rx_clk)
+	//  实测 150 clk/MCU(有损) => 147.5MHz 下 128px/16.5us ≈ 60fps 上限。
+	//
+	//  ★ 必须整帧门控: 编码器是**连续流定长消费** (每帧恰好 (W/2)*H 个 word),
+	//    一旦帧内丢一个 word 就永远等不到, 死锁。所以上一帧没编完时整帧丢掉,
+	//    保证进去的每一帧都是完整的。
+	//  ★ 还得有看门狗: FIFO 只有 1024 word(约 2 行), 极端情况下仍可能溢出,
+	//    溢出后编码器必死锁。busy 超过 ~54ms 就复位编码器 + 清 FIFO 并重开闸。
+	//==========================================================================
+	// ★ 2026-10-27 实测(0x470B 时序报告): 编码器内部的 fmax 只有 **45.06MHz**
+	//   (最差路径 X_jpeg_qt 异步读 -> u_quant 量化乘加 = 21.9ns,
+	//    147.5MHz 下 WNS -15.413ns / 2591 个违例端点)。
+	//   => 不能直接用 S_pclkx1。先用 S_hs_rx_clk(≈31.25MHz) 把功能跑通:
+	//   31.25MHz 下 150 clk/MCU => 16200 MCU x 4.8us = 77.8ms/帧 ≈ 13fps。
+	//   要上 30fps/60fps 必须先把量化/熵编码那一拍拆流水 (另开任务)。
+	wire        S_enc_clk   = S_hs_rx_clk;   // 31.25MHz (fmax 45MHz, 余量 44%)
+	wire        S_enc_rst_n = S_pll_lock;
+
+	wire        S_enc_v;                     // enc_if -> 编码器
+	wire [31:0] S_enc_d;
+	wire [15:0] S_enc_ovf;                   // 源侧 FIFO 溢出计数
+	wire [15:0] S_enc_words;
+	wire        S_enc_flush;                 // 看门狗: 复位 FIFO + 编码器
+	wire        S_enc_soft;
+	reg         S_enc_done_tgl = 1'b0;       // 完成标志跑回 s_clk 用 (翻转同步)
+	reg         S_enc_busy_f   = 1'b0;       // s_clk: 已放行一帧未完成
+	reg         S_enc_gate_r   = 1'b0;
+	reg  [2:0]  S_enc_done_s   = 3'b000;
+	wire        S_enc_done_pls = S_enc_done_s[2] ^ S_enc_done_s[1];
+	reg  [23:0] S_enc_wd       = 24'd0;      // 卡死看门狗计数
+	reg  [5:0]  S_enc_wdc      = 6'd0;       // 复位脉冲剩余拍数
+	reg  [15:0] S_enc_stall    = 16'd0;      // 看门狗触发次数
+	wire        S_jb_v, S_jb_l, S_jb_r;
+	wire [7:0]  S_jb_d;
+	wire [15:0] S_jb_bp;
+	wire [7:0]  S_jb_lvl;
+
+	// ---- 帧门控 + 完成标志回同步 (S_hs_rx_clk 域) ----
+	always @(posedge S_hs_rx_clk or negedge S_pll_lock) begin
+		if (!S_pll_lock) begin
+			S_enc_busy_f <= 1'b0;
+			S_enc_gate_r <= 1'b0;
+			S_enc_done_s <= 3'b000;
+		end else begin
+			S_enc_done_s <= {S_enc_done_s[1:0], S_enc_done_tgl};
+			if (S_yuv_de && S_yuv_sof) begin
+				S_enc_gate_r <= ~S_enc_busy_f;     // 上一帧没编完 -> 整帧丢
+				if (!S_enc_busy_f) S_enc_busy_f <= 1'b1;
+			end
+			if (S_enc_done_pls) S_enc_busy_f <= 1'b0;
+		end
+	end
+
+	// ---- 看门狗 (S_enc_clk 域): 一帧正常 16.5ms, 超 54ms 还 busy = 卡死 ----
+	localparam [23:0] ENC_WD_MAX = 24'd8_000_000;
+	always @(posedge S_enc_clk or negedge S_enc_rst_n) begin
+		if (!S_enc_rst_n) begin
+			S_enc_wd       <= 24'd0;
+			S_enc_wdc      <= 6'd0;
+			S_enc_stall    <= 16'd0;
+			S_enc_done_tgl <= 1'b0;
+		end else if (S_enc_wdc != 6'd0) begin
+			S_enc_wdc <= S_enc_wdc - 6'd1;
+			S_enc_wd  <= 24'd0;
+		end else if (S_jpeg_st_done) begin
+			S_enc_done_tgl <= ~S_enc_done_tgl;
+			S_enc_wd       <= 24'd0;
+		end else if (!S_jpeg_st_busy) begin
+			// 闲置时清零 —— 否则计数器一直累加, 下一帧刚 busy 就立即误触发
+			S_enc_wd       <= 24'd0;
+		end else if (S_enc_wd >= ENC_WD_MAX) begin
+			S_enc_wdc      <= 6'd31;
+			S_enc_wd       <= 24'd0;
+			S_enc_stall    <= S_enc_stall + 16'd1;
+			S_enc_done_tgl <= ~S_enc_done_tgl;   // 让上游放行下一帧
+		end else begin
+			S_enc_wd <= S_enc_wd + 24'd1;
+		end
+	end
+	assign S_enc_flush = (S_enc_wdc != 6'd0);
+	assign S_enc_soft  = (S_enc_wdc > 6'd16);
+
+	assign S_dbg_jpeg = {S_enc_stall, S_enc_ovf};
+	assign S_dbg_jb   = S_jb_bp[7:0];
+
+	jpeg_enc_if #(.AW(10)) X_jenc_if (
+		.s_clk      (S_hs_rx_clk            ),
+		.s_rst_n    (S_pll_lock             ),
+		.s_valid    (S_yuv_de & S_enc_gate_r),
+		.s_data     (S_yuv_data             ),
+		.s_sof      (S_yuv_sof              ),
+		.e_clk      (S_enc_clk              ),
+		.e_rst_n    (S_enc_rst_n            ),
+		.i_flush    (S_enc_flush            ),
+		.e_valid    (S_enc_v                ),
+		.e_data     (S_enc_d                ),
+		.e_ready    (S_jpeg_s_ready         ),
+		.st_ovf     (S_enc_ovf              ),
+		.st_word_lo (S_enc_words            ),
+		.st_sof     (                       ),
+		.o_level    (                       )
+	);
+
 	jpeg_qtable_ram X_jpeg_qt (
-		.I_clk       (S_hs_rx_clk ),
-		.I_rst_n     (S_pll_lock  ),
-		.I_wr_en     (1'b0        ),
-		.I_wr_addr   (8'd0        ),
-		.I_wr_data   (8'd0        ),
-		.I_rd_idx_a  (S_jpeg_qt_a ),
+		.I_clk       (S_enc_clk    ),
+		.I_rst_n     (S_enc_rst_n  ),
+		.I_wr_en     (1'b0         ),
+		.I_wr_addr   (8'd0         ),
+		.I_wr_data   (8'd0         ),
+		.I_rd_idx_a  (S_jpeg_qt_a  ),
 		.O_rd_data_a (             ),
 		.O_rd_data_a_asyn (S_jpeg_qta ),
-		.I_rd_idx_b  (S_jpeg_qt_b ),
-		.O_rd_data_b (S_jpeg_qtb  )
+		.I_rd_idx_b  (S_jpeg_qt_b  ),
+		.O_rd_data_b (S_jpeg_qtb   )
 	);
 
 	jpeg_encoder_top #(.W(1920), .H(1080)) X_jpeg (
-		.clk            (S_hs_rx_clk    ),
-		.rst_n          (S_pll_lock     ),
+		.clk            (S_enc_clk      ),
+		.rst_n          (S_enc_rst_n    ),
 		.i_en           (1'b1           ),
-		.i_soft_rst     (1'b0           ),
+		.i_soft_rst     (S_enc_soft     ),
 		.i_lossless     (1'b0           ),
 		.i_width        (12'd1920       ),
 		.i_height       (12'd1080       ),
@@ -662,8 +782,8 @@ wire [5:0]  S_jpeg_dt = S_jpeg_dt18 ? 6'h18 : 6'h1E;
 		.i_qt_data_a    (S_jpeg_qta     ),
 		.o_qt_idx_b     (S_jpeg_qt_b    ),
 		.i_qt_data_b    (S_jpeg_qtb     ),
-		.s_valid        (S_yuv_de       ),
-		.s_data         (S_yuv_data[31:0]),
+		.s_valid        (S_enc_v        ),
+		.s_data         (S_enc_d        ),
 		.s_ready        (S_jpeg_s_ready ),
 		.m_valid        (S_jpeg_m_valid ),
 		.m_data         (S_jpeg_m_data  ),
@@ -673,6 +793,24 @@ wire [5:0]  S_jpeg_dt = S_jpeg_dt18 ? 6'h18 : 6'h1E;
 		.st_busy        (S_jpeg_st_busy ),
 		.st_done        (S_jpeg_st_done ),
 		.st_frame_cnt   (S_jpeg_cnt     )
+	);
+
+	// 编码器字节流 (147.5MHz) -> 发送域 (S_hs_rx_clk)
+	jpeg_byte_bridge #(.AW(9)) X_jb (
+		.w_clk   (S_enc_clk      ),
+		.w_rst_n (S_enc_rst_n    ),
+		.w_valid (S_jpeg_m_valid ),
+		.w_data  (S_jpeg_m_data  ),
+		.w_last  (S_jpeg_m_last  ),
+		.w_ready (S_jpeg_m_ready ),
+		.r_clk   (S_hs_rx_clk    ),
+		.r_rst_n (S_pll_lock     ),
+		.r_valid (S_jb_v         ),
+		.r_data  (S_jb_d         ),
+		.r_last  (S_jb_l         ),
+		.r_ready (S_jb_r         ),
+		.st_bp   (S_jb_bp         ),
+		.o_level (S_jb_lvl        )
 	);
 
 	// CSI-2 可变长发送 (乒乓双缓冲): 编码器输出是连续字节流,
@@ -705,16 +843,17 @@ wire [5:0]  S_jpeg_dt = S_jpeg_dt18 ? 6'h18 : 6'h1E;
 	wire        S_jv_rx_ready;
 
 	wire        S_jv_v = (S_jl_st == JLS_PAD ) ? 1'b1 :
-	                     (S_jl_st == JLS_DATA) ? S_jpeg_m_valid : 1'b0;
-	wire [7:0]  S_jv_d = (S_jl_st == JLS_PAD ) ? 8'h00 : S_jpeg_m_data;
+	                     (S_jl_st == JLS_DATA) ? S_jb_v : 1'b0;
+	wire [7:0]  S_jv_d = (S_jl_st == JLS_PAD ) ? 8'h00 : S_jb_d;
 	// tlast: 补零阶段 = 补到最后一个字节; 数据阶段 = 编码器帧尾(pad 关时)
 	//        或本帧已满被截断
 	wire        S_jv_l = (S_jl_st == JLS_PAD ) ? (S_jl_cnt == JPAD_BYTES - 25'd1) :
-	                     (S_jl_st == JLS_DATA) && S_jpeg_m_valid &&
-	                       ( (S_jpeg_m_last && !S_jpeg_pad) ||
+	                     (S_jl_st == JLS_DATA) && S_jb_v &&
+	                       ( (S_jb_l && !S_jpeg_pad) ||
 	                         (S_jl_cnt >= JPAD_BYTES - 25'd2) );
 
-	assign S_jpeg_m_ready = (S_jl_st == JLS_DATA) ? S_jv_rx_ready : 1'b0;
+	// 编器字节流来自跨时钟桥 (S_hs_rx_clk 域)
+	assign S_jb_r = (S_jl_st == JLS_DATA) ? S_jv_rx_ready : 1'b0;
 
 	always @(posedge S_hs_rx_clk or negedge S_pll_lock) begin
 		if (!S_pll_lock) begin
@@ -723,10 +862,10 @@ wire [5:0]  S_jpeg_dt = S_jpeg_dt18 ? 6'h18 : 6'h1E;
 		end else if (S_jv_v && S_jv_rx_ready) begin
 			case (S_jl_st)
 			JLS_DATA: begin
-				if (S_jpeg_m_last && S_jpeg_pad) begin
+				if (S_jb_l && S_jpeg_pad) begin
 					S_jl_st  <= JLS_PAD;            // 转补零
 					S_jl_cnt <= S_jl_cnt + 25'd1;   // 本拍已发 1 字节
-				end else if (S_jpeg_m_last) begin
+				end else if (S_jb_l) begin
 					S_jl_cnt <= 25'd0;              // 短帧直通, 帧结束
 				end else if (S_jl_cnt >= JPAD_BYTES - 25'd2) begin
 					S_jl_st  <= JLS_DROP;           // 满帧截断
@@ -744,7 +883,7 @@ wire [5:0]  S_jpeg_dt = S_jpeg_dt18 ? 6'h18 : 6'h1E;
 				end
 			end
 			default: begin                          // JLS_DROP
-				if (S_jpeg_m_valid && S_jpeg_m_last) begin
+				if (S_jb_v && S_jb_l) begin
 					S_jl_st  <= S_jpeg_pad ? JLS_PAD : JLS_DATA;
 					S_jl_cnt <= 25'd0;
 				end
@@ -777,6 +916,8 @@ wire [5:0]  S_jpeg_dt = S_jpeg_dt18 ? 6'h18 : 6'h1E;
 
 `ifndef JPEG_EN
 	// 未启用时给 cfg 只读寄存器一个确定值 (否则读到 X)
+	assign S_dbg_jpeg = 32'd0;
+	assign S_dbg_jb   = 8'd0;
 	assign S_jpeg_st_bytes = 24'd0;
 	assign S_jpeg_st_busy  = 1'b0;
 	assign S_jpeg_st_done  = 1'b0;
@@ -1700,6 +1841,8 @@ cfg_ctrl_top #(
 	.i_jpeg_bytes (S_jpeg_st_bytes),
 	.i_jpeg_busy  (S_jpeg_st_busy ),
 	.i_jpeg_done  (S_jpeg_st_done ),
+	.i_dbg_jpeg   (S_dbg_jpeg     ),
+	.i_dbg_jb     (S_dbg_jb       ),
 	.o_jpeg_tx    (S_jpeg_tx_sel  ),
 	.o_jpeg_dt18  (S_jpeg_dt18    ),
 	.o_jpeg_pad   (S_jpeg_pad     ),
