@@ -1,30 +1,21 @@
 # 云端智联定点巡航安防预警系统
 
-> **异构平台**：安路 PH1A90SEG324（国产 FPGA） + 瑞芯微 RK3576J
-> **作品方向**：基于 FPGA 的图像采集压缩与智能预处理加速系统设计
-> **核心指标**：1080p@60FPS 双目采集 · 硬件预处理 · 硬件 JPEG 压缩 · NPU 分级安防
-> **分支**：`feature/dual-front-stitch` ｜ **FPGA 配置版本（CFG_VER）**：`0x470D`
+- **异构平台**：安路 PH1A90SEG324（国产 FPGA）+ 瑞芯微 RK3576J
+- **作品方向**：基于 FPGA 的图像采集压缩与智能预处理加速系统设计
+- **核心指标**：1080p@60FPS 双目采集 · 硬件预处理 · 硬件 JPEG 压缩 · NPU 分级安防
+- **分支**：`feature/dual-front-stitch` ｜ **FPGA 配置版本（CFG_VER）**：`0x470D`
 
 ---
 
 ## 摘要
 
-本系统面向园区/厂区的移动式智能巡检与分级安防，采用**分层异构**架构：安路
-PH1A90SEG324 承担全部**硬实时**图像通路（双目同步、拼接、预处理、JPEG 压缩），
-RK3576J 承担**非实时**智能与业务（NPU 推理、网页推流、云端交互），车载协处理单元
-负责建图/导航，STM32 管控底盘。
+本系统面向园区/厂区的移动式智能巡检与分级安防，采用**分层异构**架构：安路 PH1A90SEG324 承担全部**硬实时**图像通路（双目同步、拼接、预处理、JPEG 压缩），RK3576J 承担**非实时**智能与业务（NPU 推理、网页推流、云端交互），车载协处理单元负责建图/导航，STM32 管控底盘。
 
-设计要点有二。其一，**像素域单时钟收敛所有带宽**：像素时钟 70 MHz × 4 px/clk =
-280 Mpx/s，相对 248.8 Mpx/s 需求余量 12.6%，行缓冲与拼接全部在该域完成。其二，
-**把一张 3840×1080 的 JPEG 拆给两个并行引擎**：以 DRI（Define Restart Interval）把
-每个 MCU 半行做成独立熵编码段，两段在字节流层面直接背对背拼接，147.5 MHz 下
-2 × 16,200 MCU × 150 clk = 16.48 ms，即 60.6 fps。
+设计要点有二。其一，**像素域单时钟收敛所有带宽**：像素时钟 70 MHz × 4 px/clk = 280 Mpx/s，相对 248.8 Mpx/s 需求余量 12.6%，行缓冲与拼接全部在该域完成。其二，**把一张 3840×1080 的 JPEG 拆给两个并行引擎**：以 DRI（Define Restart Interval）把每个 MCU 半行做成独立熵编码段，两段在字节流层面直接背对背拼接，147.5 MHz 下 2 × 16,200 MCU × 150 clk = 16.48 ms，即 60.6 fps。
 
-压缩后的码流经单条 CSI-2 ×4 lane 送入 RK，**RK 侧不接收原始视频流**；网页直接透传
-JPEG，把 3 Mbps 的公网链路全部留给真正需要的内容。
+压缩后的码流经单条 CSI-2 ×4 lane 送入 RK，**RK 侧不接收原始视频流**；网页直接透传 JPEG，把 3 Mbps 的公网链路全部留给真正需要的内容。
 
-> **当前状态**：FPGA 功能链路打通并通过字节级等价验证；**编码器在 147.5 MHz 的时序
-> 尚未收敛**（Setup WNS −8.013 ns）。这是本项目阻塞 60 fps 的唯一问题，见 [§10](#10-已知问题与路线图)。
+> **当前状态**：FPGA 功能链路打通并通过字节级等价验证；**编码器在 147.5 MHz 的时序尚未收敛**（Setup WNS −8.013 ns）。这是本项目阻塞 60 fps 的唯一问题，见 [§10](#10-已知问题与路线图)。
 
 ---
 
@@ -186,16 +177,14 @@ flowchart TB
 | 重启间隔 | **DRI = 120 MCU**（半个行） |
 | 合并 | `L(r0) RST0 R(r0) RST1 L(r1) RST2 …`（段为单位交替） |
 
-DRI 使每个半行成为**独立熵编码段**，两段可直接背对背拼接，无需重做熵编码。两引擎
-RST 编号取奇偶交错（左 0,2,4… / 右 1,3,5…），拼好后全局恰为 `RST0…RST7` 循环。
+DRI 使每个半行成为**独立熵编码段**，两段可直接背对背拼接，无需重做熵编码。两引擎 RST 编号取奇偶交错（左 0,2,4… / 右 1,3,5…），拼好后全局恰为 `RST0…RST7` 循环。
 
 | 引擎 | `HDR_EN` | `EOI_EN` | `RST_INIT` | `RST_STEP` | `LAST_RST_EN` | `i_width` |
 |---|---|---|---|---|---|---|
 | 左（cam1） | 1 | 0 | 0 | 2 | **1** | 3840 |
 | 右（cam0） | 0 | 1 | 1 | 2 | 0 | 3840 |
 
-> `LAST_RST_EN=1` 只给左引擎：拼接后左引擎最后一段后面还跟着右引擎最后一段，
-> 那个边界**需要**重启标记。`i_width` 仅用于 SOF 头字段，引擎内部仍按 1920 编。
+> `LAST_RST_EN=1` 只给左引擎：拼接后左引擎最后一段后面还跟着右引擎最后一段，那个边界**需要**重启标记。`i_width` 仅用于 SOF 头字段，引擎内部仍按 1920 编。
 
 ### 3.3 厂商 IP（`fpga/uisrc/03_ip/`）
 
@@ -259,25 +248,18 @@ RST 编号取奇偶交错（左 0,2,4… / 右 1,3,5…），拼好后全局恰�
 | `0xF7` / `0xFA` | 已废弃（锐化移除 / HE 防频闪改内置） |
 | `0xFB` | `preproc_linefix` 行首 16 像素校正使能 |
 
-> **`0x47xx` 不是地址**，是 `CFG_VER` 版本号的演进链：
-> `0x3504 → 0x4301 → 0x450D → 0x4600 → 0x4601 → 0x4700 → 0x4704 → 0x4705 → 0x4706 →
-> 0x4707 → 0x4708 → 0x470A`（JPEG 直通）`→ 0x470B`（编码器接入）`→ 0x470C`（编码器
-> 时钟回退）`→ 0x470D`（按赛题硬指标裁剪预处理腾 DSP，**当前值**）。
+> **`0x47xx` 不是地址**，是 `CFG_VER` 版本号的演进链：`0x3504 → 0x4301 → 0x450D → 0x4600 → 0x4601 → 0x4700 → 0x4704 → 0x4705 → 0x4706 → 0x4707 → 0x4708 → 0x470A`（JPEG 直通）`→ 0x470B`（编码器接入）`→ 0x470C`（编码器时钟回退）`→ 0x470D`（按赛题硬指标裁剪预处理腾 DSP，**当前值**）。
 
 ### 3.5 约束
 
 `fpga/uisrc/04_pin/timing.sdc`：
 
 - `create_clock sys_clk 40 ns`（`I_sysclk_25m`）、`create_clock ddr_clk 10 ns`（`I_ddr_clk`）、`derive_clocks`
-- `rename_clock`：`S_clk_24m/S_pclkx1/S_clk_70m ← X_ui_pll/pll_inst.clkc[0]/[1]/[3]`；
-  `S_dsi_*  ← u_ui_pll_dsi/pll_inst.clkc[0..4]`
-- **1 条** `set_clock_groups -asynchronous`，6 组：`{sys_clk}` / `{ddr_clk}` /
-  `{dfi_clk mcu_clk}` / `{S_clk_24m S_pclkx1}` / `{S_clk_70m}` / `{S_dsi_*}`
-- **没有**任何 `set_input_delay` / `set_output_delay` / `set_false_path` /
-  `set_max_delay` / `set_multicycle_path`
+- `rename_clock`：`S_clk_24m/S_pclkx1/S_clk_70m ← X_ui_pll/pll_inst.clkc[0]/[1]/[3]`；`S_dsi_* ← u_ui_pll_dsi/pll_inst.clkc[0..4]`
+- **1 条** `set_clock_groups -asynchronous`，6 组：`{sys_clk}` / `{ddr_clk}` / `{dfi_clk mcu_clk}` / `{S_clk_24m S_pclkx1}` / `{S_clk_70m}` / `{S_dsi_*}`
+- **没有**任何 `set_input_delay` / `set_output_delay` / `set_false_path` / `set_max_delay` / `set_multicycle_path`
 
-`fpga_pin.adc` 中记录了子卡去 LP 抽头后 LP 4 对脚已悬空（恒定 LP 电平在 11/01/00 任一
-组合下都不可用），故恢复 PULLUP。
+`fpga_pin.adc` 中记录了子卡去 LP 抽头后 LP 4 对脚已悬空（恒定 LP 电平在 11/01/00 任一组合下都不可用），故恢复 PULLUP。
 
 ---
 
@@ -316,8 +298,7 @@ RST 编号取奇偶交错（左 0,2,4… / 右 1,3,5…），拼好后全局恰�
 };
 ```
 
-接收端链路：`csi2_dphy3` `port@0/endpoint@1`(`mipi_in_fpga3`) → `port@1/endpoint@0`
-(`csidcphy3_out`) → `mipi3_csi2`。节点内**没有** `clocks` / `clock-names` 属性。
+接收端链路：`csi2_dphy3` `port@0/endpoint@1`(`mipi_in_fpga3`) → `port@1/endpoint@0` (`csidcphy3_out`) → `mipi3_csi2`。节点内**没有** `clocks` / `clock-names` 属性。
 
 ### 4.3 Web 服务 `rk/web/mipi_webstream.py`（约 4,900 行，仅标准库）
 
@@ -351,15 +332,9 @@ RST 编号取奇偶交错（左 0,2,4… / 右 1,3,5…），拼好后全局恰�
 | 双目 | `dual`、`dual_demo`、`ai_src` |
 | FPGA JPEG | `jpeg_ll`、`jpeg_q`(75, 1..100)、`jpeg_kb`(120 KB)、`jpeg_rc`（对应寄存器 `0x00`/`0x01`/`0x02-0x04`/`0x05`） |
 
-**关键启动参数**：`--device /dev/video22`、`--port 9012`、`--width/--height 1920/1080`、
-`--fourcc NV16`、`--yuv-matrix 709`、`--yuv-range limited`、`--hw-jpeg`、
-**`--fpga-bus 9`**、**`--fpga-addr 0x40`**、`--ai`、`--ai-fps 30`、`--ai-zone`、
-`--gimbal-port /dev/ttyACM0`、`--gimbal-yaw-limit 170`、`--gimbal-pitch-limit 42`、
-`--gimbal-speed 25`、`--gimbal-kalman 1`、`--gimbal-loop vel|ff`、`--state-file`。
+**关键启动参数**：`--device /dev/video22`、`--port 9012`、`--width/--height 1920/1080`、`--fourcc NV16`、`--yuv-matrix 709`、`--yuv-range limited`、`--hw-jpeg`、**`--fpga-bus 9`**、**`--fpga-addr 0x40`**、`--ai`、`--ai-fps 30`、`--ai-zone`、`--gimbal-port /dev/ttyACM0`、`--gimbal-yaw-limit 170`、`--gimbal-pitch-limit 42`、`--gimbal-speed 25`、`--gimbal-kalman 1`、`--gimbal-loop vel|ff`、`--state-file`。
 
-**MJPEG**：编码线程 → `FrameHub.publish()` → `/stream` 以
-`multipart/x-mixed-replace; boundary=<BOUNDARY>` 逐帧写出；同 IP 有流数量限流
-（`MAX_STREAMS_PER_IP`）。`start_webstream.sh` 默认监听 `127.0.0.1`，对外只开 80 反代。
+**MJPEG**：编码线程 → `FrameHub.publish()` → `/stream` 以 `multipart/x-mixed-replace; boundary=<BOUNDARY>` 逐帧写出；同 IP 有流数量限流（`MAX_STREAMS_PER_IP`）。`start_webstream.sh` 默认监听 `127.0.0.1`，对外只开 80 反代。
 
 ### 4.4 NPU 视觉流水线（`rk/ai/`）
 
@@ -379,8 +354,7 @@ RST 编号取奇偶交错（左 0,2,4… / 右 1,3,5…），拼好后全局恰�
 
 实测（`yolov8n-slim` 640）：**双核 17 ms**，单核 24 ms。
 
-**帧率解耦**：采集与渲染按视频帧率跑，AI 按 `--ai-fps` 限频；真正天花板由单帧耗时
-`run_ms` 决定，限频只是闸门。AI 结果通过"最近值"共享给渲染线程，**叠加标注不拖慢视频帧率**。
+**帧率解耦**：采集与渲染按视频帧率跑，AI 按 `--ai-fps` 限频；真正天花板由单帧耗时 `run_ms` 决定，限频只是闸门。AI 结果通过"最近值"共享给渲染线程，**叠加标注不拖慢视频帧率**。
 
 | 文件 | 用途 |
 |---|---|
@@ -400,8 +374,7 @@ RST 编号取奇偶交错（左 0,2,4… / 右 1,3,5…），拼好后全局恰�
 
 ## 5. 云端平台（`cloud/`，14 文件）
 
-设计前提：服务器仅 **3 Mbps / 2 核 / 1.6 GB** —— 单文件后端（仅标准库）、无 ORM、
-无图像处理、**无 MJPEG 上云**、报警图固定 640 px / q55（约 25 KB）、图片滚动删除。
+设计前提：服务器仅 **3 Mbps / 2 核 / 1.6 GB** —— 单文件后端（仅标准库）、无 ORM、无图像处理、**无 MJPEG 上云**、报警图固定 640 px / q55（约 25 KB）、图片滚动删除。
 
 **`server.py` 路由**
 
@@ -410,12 +383,9 @@ RST 编号取奇偶交错（左 0,2,4… / 右 1,3,5…），拼好后全局恰�
 | GET | `/`、`/index.html`（静态 + ETag + gzip）、`/favicon.ico`、`/api/ping`、`/api/state`、`/api/history`、`/api/stats`、`/api/shot/<name>.jpg`、`/api/clip/<id>.mp4`（支持 Range）、`/api/live.jpg`、`/api/commands`（长轮询）、`/api/ext` |
 | POST | `/api/login`、`/api/logout`、`/api/settings`、`/api/ingest`、`/api/alarm`、`/api/alarm/<id>/snap`、`/api/alarm/<id>/clip`、`/api/live`、`/api/result`、`/api/cmd`、`/api/ack`、`/api/test`、`/api/ext/<name>` |
 
-**鉴权三路**：板端 `X-Token`（`hmac.compare_digest` 常量时间比较）；浏览器
-`POST /api/login` → HttpOnly Cookie `cd_sid`（30 天，SameSite=Lax）；脚本
-`curl -u admin:<ui_pass>` 或 `X-UI-Pass`。`ui_pass` 为空则免校验。
+**鉴权三路**：板端 `X-Token`（`hmac.compare_digest` 常量时间比较）；浏览器 `POST /api/login` → HttpOnly Cookie `cd_sid`（30 天，SameSite=Lax）；脚本 `curl -u admin:<ui_pass>` 或 `X-UI-Pass`。`ui_pass` 为空则免校验。
 
-**存储**：SQLite `data/dash.db`（表 `alarms` / `clips` / `meta`，WAL）+ `data/shots/` +
-`data/clips/` + `data/state.json`。
+**存储**：SQLite `data/dash.db`（表 `alarms` / `clips` / `meta`，WAL）+ `data/shots/` + `data/clips/` + `data/state.json`。
 
 | 目录 | 内容 |
 |---|---|
@@ -461,16 +431,14 @@ RST 编号取奇偶交错（左 0,2,4… / 右 1,3,5…），拼好后全局恰�
 | Setup WNS | **−8.013 ns**（`S_pclkx1` 域，4,661 / 23,167 端点违例） |
 | 其余 | 仅 DSI 时钟 lane ODDR 一条 −0.539 ns（厂商 PHY 原语，板级实测正常） |
 
-违例集中在熵编码器（`u_huff/o_code_reg`、`u_quant/qzz_reg`），单条约 14.8 ns
-（预算 6.78 ns）：
+违例集中在熵编码器（`u_huff/o_code_reg`、`u_quant/qzz_reg`），单条约 14.8 ns（预算 6.78 ns）：
 
 ```
 kk → qzz 双口异步读(~2ns) → 取绝对值 + ssss 优先级编码(~1.5)
    → 霍夫曼码表 ROM(~2) → 幅度整形(~1.5) → 32 位变量移位(~2.3) → o_code
 ```
 
-该编码器此前运行在由 toggle-FF 分频得到的 36.875 MHz 时钟上，**SDC 无法为其建立
-`create_clock`，长期处于"不受时序检查"状态**；迁到 PLL 直出的 `S_pclkx1` 后才首次暴露。
+该编码器此前运行在由 toggle-FF 分频得到的 36.875 MHz 时钟上，**SDC 无法为其建立 `create_clock`，长期处于"不受时序检查"状态**；迁到 PLL 直出的 `S_pclkx1` 后才首次暴露。
 
 ---
 
@@ -487,9 +455,7 @@ cd fpga/fpga_prj_Runs/syn_1 && td_commands_prompt.exe <TD>/scripts/DefaultFlow.t
 cd fpga/fpga_prj_Runs/phy_1 && td_commands_prompt.exe <TD>/scripts/DefaultFlow.tcl
 ```
 
-产物：`fpga_prj_Runs/best_result/`，烧写用 `fpga_prj_compress.bit`。
-启用官方策略包（syn `LogicLevelOptimize` / phy `TimingUltra`）后后端耗时显著增加，
-单次 ≫ 30 min 属正常。
+产物：`fpga_prj_Runs/best_result/`，烧写用 `fpga_prj_compress.bit`。启用官方策略包（syn `LogicLevelOptimize` / phy `TimingUltra`）后后端耗时显著增加，单次 ≫ 30 min 属正常。
 
 ### 8.2 仿真（OSS CAD Suite / iverilog 14.0）
 
@@ -542,9 +508,7 @@ rk/relay/deploy_relay.sh       # ROS Web 中继
 | `tb_dual_stitch` | 左右拼接对齐 + 相机掉线恢复 | 两阶段 PASS |
 | `run_jpeg_thru` | clk/MCU ≤ 151.7（60 fps 预算） | 有损 150.0；无损 320.2 |
 
-> ⚠️ `tb_jpeg_e2e` 的参考用例目前是 **64×16（8 MCU）**，覆盖度偏低；
-> 原始 320×40（100 MCU）仍在 git 历史中，恢复后可显著加强对
-> "两符号快路径 / ZRL / EOB" 等分支的覆盖。
+> ⚠️ `tb_jpeg_e2e` 的参考用例目前是 **64×16（8 MCU）**，覆盖度偏低；原始 320×40（100 MCU）仍在 git 历史中，恢复后可显著加强对 "两符号快路径 / ZRL / EOB" 等分支的覆盖。
 
 ---
 
@@ -573,8 +537,7 @@ rk/relay/deploy_relay.sh       # ROS Web 中继
 
 ### 板级待验证
 
-70 MHz 像素域实测、左右目顺序与 Bayer 相位（`0xDA`）、DDR 带宽（估算 996 MB/s）、
-rkcif 对 3840×1080@59.6 的接受度、端到端 60 fps 实测。
+70 MHz 像素域实测、左右目顺序与 Bayer 相位（`0xDA`）、DDR 带宽（估算 996 MB/s）、rkcif 对 3840×1080@59.6 的接受度、端到端 60 fps 实测。
 
 ---
 
@@ -655,12 +618,7 @@ rkcif 对 3840×1080@59.6 的接受度、端到端 60 fps 实测。
 
 ## 维护约定
 
-1. **数字必须可追溯**：资源 / 时序 / 吞吐均须标注来源（`route.qor`、`*_pr.timing`、
-   `*_phy.area`、`*_gate.area` 或测试台实测），不接受推算值。
-2. **优化必须自带不变量**：改动熵编码相关代码时，`tb_jpeg_e2e` 与 `tb_jpeg_merge`
-   的逐字节判据必须同时通过。
-3. **寄存器/接口变更必须同步**：改 `jpeg_regfile.v` 或 `mipi_webstream.py` 的路由，
-   同步更新 [§3.4](#34-配置寄存器映射jpeg_regfilev--cfg_ctrl_topv0x000xff) 与
-   [§4.3](#43-web-服务-rkwebmipi_webstreampy约-4900-行仅标准库)。
-4. **状态变更即更新**：完成 P0 / P1 任一项后，同步更新
-   [§7](#7-资源与时序fpga)、[§10](#10-已知问题与路线图)、[§9](#9-验证)、[§14](#14-更新记录)。
+1. **数字必须可追溯**：资源 / 时序 / 吞吐均须标注来源（`route.qor`、`*_pr.timing`、`*_phy.area`、`*_gate.area` 或测试台实测），不接受推算值。
+2. **优化必须自带不变量**：改动熵编码相关代码时，`tb_jpeg_e2e` 与 `tb_jpeg_merge` 的逐字节判据必须同时通过。
+3. **寄存器/接口变更必须同步**：改 `jpeg_regfile.v` 或 `mipi_webstream.py` 的路由，同步更新 [§3.4](#34-配置寄存器映射jpeg_regfilev--cfg_ctrl_topv0x000xff) 与 [§4.3](#43-web-服务-rkwebmipi_webstreampy约-4900-行仅标准库)。
+4. **状态变更即更新**：完成 P0 / P1 任一项后，同步更新 [§7](#7-资源与时序fpga)、[§10](#10-已知问题与路线图)、[§9](#9-验证)、[§14](#14-更新记录)。
