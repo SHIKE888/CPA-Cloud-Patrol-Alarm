@@ -645,64 +645,14 @@ module preproc_basic #(
 	//      (二项式 [1 2 1] 卷 3 次 = [1 6 15 20 15 6 1], 与高斯 sigma≈1.24 等价)
 	//      硬件恒在跑; 选 3x3/5x5 时只取前 1/2 遍的结果, 不影响"并行实现"。
 	//-------------------------------------------------------------------------
-	wire [127:0] g2_rgb = {
-		{8'h00, p2_pack[95:88], p2_pack[87:80], p2_pack[79:72]},
-		{8'h00, p2_pack[71:64], p2_pack[63:56], p2_pack[55:48]},
-		{8'h00, p2_pack[47:40], p2_pack[39:32], p2_pack[31:24]},
-		{8'h00, p2_pack[23:16], p2_pack[15:8],  p2_pack[7:0]}
-	};
-
-	wire         w3_tvalid, w3_tuser, w3_tlast;
-	wire [2:0]   w3_rowmask;
-	wire [143:0] w3_winA, w3_winB, w3_winC;
-	wire [127:0] w3_rgb;
-
-	preproc_win3x3_rgb #(
-		.PX_PER_CLK (PX_PER_CLK)
-	) u_win3 (
-		.clk       (clk),
-		.rst_n     (rst_n),
-		.I_nw      (nw16),
-		.i_tvalid  (w2_tvalid),
-		.i_tuser   (w2_tuser),
-		.i_tlast   (w2_tlast),
-		.i_rgb     (g2_rgb),
-		.o_tvalid  (w3_tvalid),
-		.o_tuser   (w3_tuser),
-		.o_tlast   (w3_tlast),
-		.o_rowmask (w3_rowmask),
-		.o_winA    (w3_winA),
-		.o_winB    (w3_winB),
-		.o_winC    (w3_winC),
-		.o_rgb     (w3_rgb)
-	);
-
-	wire [143:0] f3A = w3_rowmask[2] ? w3_winA : w3_winC;
-	wire [143:0] f3B = w3_rowmask[1] ? w3_winB : w3_winC;
-	wire [143:0] f3C = w3_winC;
-
-	wire [95:0] p3_pack;
-
-	generate
-	for (j = 0; j < 4; j = j + 1) begin : g_p3
-		for (c = 0; c < 3; c = c + 1) begin : g_p3c
-			wire [7:0] a0 = f3A[(24*j)     + 8*c +: 8];
-			wire [7:0] a1 = f3A[(24*(j+1)) + 8*c +: 8];
-			wire [7:0] a2 = f3A[(24*(j+2)) + 8*c +: 8];
-			wire [7:0] b0 = f3B[(24*j)     + 8*c +: 8];
-			wire [7:0] b1 = f3B[(24*(j+1)) + 8*c +: 8];
-			wire [7:0] b2 = f3B[(24*(j+2)) + 8*c +: 8];
-			wire [7:0] c0 = f3C[(24*j)     + 8*c +: 8];
-			wire [7:0] c1 = f3C[(24*(j+1)) + 8*c +: 8];
-			wire [7:0] c2 = f3C[(24*(j+2)) + 8*c +: 8];
-
-			wire [11:0] gsum3 = {4'b0, a0} + {3'b0, a1, 1'b0} + {4'b0, a2}
-			                  + {3'b0, b0, 1'b0} + {2'b0, b1, 2'b0} + {3'b0, b2, 1'b0}
-			                  + {4'b0, c0} + {3'b0, c1, 1'b0} + {4'b0, c2};
-			assign p3_pack[(24*j) + 8*c +: 8] = (gsum3 + 12'd8) >> 4;
-		end
-	end
-	endgenerate
+	//---------------------------------------------------------------------
+	// 2026-10-28: 7x7 高斯(第 3 遍 3x3)彻底删除 —— 不再支持 7x7 核。
+	//   原三级级联各占 10 块 ERAM(合计 30, 占全设计 13%), 而第三遍只为 7x7 服务,
+	//   注释原文即为"硬件恒在跑; 选 3x3/5x5 时只取前 1/2 遍的结果"。
+	//   删除后: 省 10 ERAM + ~134 LUT。高斯核只剩 0=3x3 / 1=5x5。
+	//   寄存器 0xF8 写 2 会被下面的 ker_eff 钳到 1(5x5), 老脚本不会黑屏。
+	//---------------------------------------------------------------------
+	wire [1:0] ker_eff = (i_gauss_ker == 2'd2) ? 2'd1 : i_gauss_ker;   // 7x7 -> 5x5
 
 	//-------------------------------------------------------------------------
 	// 11. 12 拍对齐: 3 遍窗口各 4 拍, 所以原始数据要延迟 8 拍(相对 w_* 已 +4)
@@ -768,27 +718,21 @@ module preproc_basic #(
 		wire [7:0]  cl  = cl_d8[(8*j) +: 8];      // 原始亮度 (BT.601, 与直方图同定义)
 		wire [7:0]  lqv = lq_d8[(8*j) +: 8];      // HE LUT 查表结果
 
-		// 三遍滤波结果(每像素 {R,G,B})与原图都在同一拍
+		// 2026-10-28: 7x7(第 3 遍)已删除, 只保留 3x3(p1) / 5x5(p2) 两遍结果
 		wire [7:0] f1_r = p1_d8[(24*j) + 16 +: 8];
 		wire [7:0] f1_g = p1_d8[(24*j) +  8 +: 8];
 		wire [7:0] f1_b = p1_d8[(24*j)      +: 8];
 		wire [7:0] f2_r = p2_d4[(24*j) + 16 +: 8];
 		wire [7:0] f2_g = p2_d4[(24*j) +  8 +: 8];
 		wire [7:0] f2_b = p2_d4[(24*j)      +: 8];
-		wire [7:0] f3_r = p3_pack[(24*j) + 16 +: 8];
-		wire [7:0] f3_g = p3_pack[(24*j) +  8 +: 8];
-		wire [7:0] f3_b = p3_pack[(24*j)      +: 8];
 
 		wire [7:0] rp = rgb_d8[(32*j) + 16 +: 8];
 		wire [7:0] gp = rgb_d8[(32*j) +  8 +: 8];
 		wire [7:0] bp = rgb_d8[(32*j)      +: 8];
 
-		wire [7:0] pr = (i_gauss_ker == 2'd0) ? f1_r :
-		                (i_gauss_ker == 2'd1) ? f2_r : f3_r;
-		wire [7:0] pg = (i_gauss_ker == 2'd0) ? f1_g :
-		                (i_gauss_ker == 2'd1) ? f2_g : f3_g;
-		wire [7:0] pb = (i_gauss_ker == 2'd0) ? f1_b :
-		                (i_gauss_ker == 2'd1) ? f2_b : f3_b;
+		wire [7:0] pr = (ker_eff == 2'd0) ? f1_r : f2_r;
+		wire [7:0] pg = (ker_eff == 2'd0) ? f1_g : f2_g;
+		wire [7:0] pb = (ker_eff == 2'd0) ? f1_b : f2_b;
 
 		// 逐通道混合 (0=原图, 8=完全用滤波结果)
 		wire [7:0] rg = i_en[1] ? mix8(rp, pr, i_gauss_str) : rp;
@@ -813,8 +757,8 @@ module preproc_basic #(
 	endgenerate
 
 	// 未使用信号占位 (保留便于波形观察)
-	wire unused_ok = &{1'b0, w2_rgb[0], w2_tvalid, w2_tuser, w2_tlast,
-	                   w3_rgb[0], w3_tvalid, w3_tuser, w3_tlast};
+	// 2026-10-28: w3_* 随 7x7 删除一并移除
+	wire unused_ok = &{1'b0, w2_rgb[0], w2_tvalid, w2_tuser, w2_tlast};
 
 	reg         vb, ub, tb;
 	reg [127:0] rgb_s;
