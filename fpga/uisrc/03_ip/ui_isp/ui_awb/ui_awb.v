@@ -160,24 +160,41 @@ module ui_awb #(
     wire [47:0] in_r_x1 = dout_R[47:0];
     wire [47:0] in_b_x1 = dout_B[47:0];
 
-    divider div_gen_G_R_r1 (
-        .clk        (I_clk),
-        .rst        (!I_rst_n),
-        .start      (I_tvalid_r1),
-        .denominator(sum_r),
-        .numerator  ({sum_g, 16'd0}),
-        .quotient   (dout_R),
-        .done       (done)
+    //========================================================================
+    // ★ 2026-10-28 资源优化: 用串行除法器替换 TD 的流水线除法器 IP
+    //
+    //   原实现例化两份 TD `divider` IP (divider_gate.v, 1.3MB 门级网表):
+    //       div_gen_G_R_r1 : 640 LUT + 1084 进位链 + 2803 FF
+    //       divide_G_B_r1  : 640 LUT + 1084 进位链 + 2718 FF
+    //   合计占全设计 15% 的寄存器 + 15% 的进位链 (syn_1/fpga_prj_gate.area)。
+    //
+    //   但这里的除法**每帧只需要一次**(增益只在 flag_frame_r 后更新),
+    //   原 IP 却把 start 接成 I_tvalid_r1(逐像素), 等于每个像素都在重算
+    //   一次 48/32 全流水除法 —— 这是典型的"用错了资源"。
+    //
+    //   换成 48 位 restoring 串行除法器: 一个减法器复用 48 拍,
+    //   约 130 FF + 150 LUT, 省下 ~5400 FF + 2168 进位链 + 1150 LUT。
+    //   结果语义与原 IP 一致(都是向下取整), 只有 done 的节拍从"逐像素"
+    //   变成"每 49 拍", 而增益每帧才更新一次, 对画面无影响。
+    //========================================================================
+    awb_div_serial div_gen_G_R_r1 (
+        .clk         (I_clk),
+        .rst         (!I_rst_n),
+        .start       (I_tvalid_r1),
+        .denominator (sum_r),
+        .numerator   ({sum_g, 16'd0}),
+        .quotient    (dout_R),
+        .done        (done)
     );
 
-    divider divide_G_B_r1 (
-        .clk        (I_clk),
-        .rst        (!I_rst_n),
-        .start      (I_tvalid_r1),
-        .denominator(sum_b),
-        .numerator  ({sum_g, 16'd0}),
-        .quotient   (dout_B),
-        .done       ()
+    awb_div_serial divide_G_B_r1 (
+        .clk         (I_clk),
+        .rst         (!I_rst_n),
+        .start       (I_tvalid_r1),
+        .denominator (sum_b),
+        .numerator   ({sum_g, 16'd0}),
+        .quotient    (dout_B),
+        .done        ()
     );
 
     ui_signal_delay #(
@@ -310,5 +327,77 @@ module ui_awb #(
                                  R_new_x1, G_new_x1, B_new_x1} : 96'd0;
 
     assign I_tready = O_tready;
+
+endmodule
+
+//=============================================================================
+//  awb_div_serial —— 48 位 restoring(逐位恢复) 串行除法器
+//
+//  用途: 替代 TD 的 `divider` IP(divider_gate.v, 1.3MB 全流水门级网表)。
+//  只算 q = numerator / denominator, 48 拍出一拍 done。
+//
+//  为什么可以串行: AWB 的增益**每帧只更新一次**(flag_frame_r 之后),
+//    原来把 start 接成逐像素的 I_tvalid_r1, 相当于每个像素都重算一次
+//    48/32 全流水除法 —— 5521 个 FF 全花在"重复劳动"上。
+//    串行化后一个减法器复用 48 拍, 资源降到 ~130 FF + ~150 LUT。
+//
+//  语义: 向下取整(与流水线 IP 一致)。denominator==0 时按 1 处理, 防锁死。
+//  ★ 放在 ui_awb.v 同一个文件里 —— TD 会把工程文件列表之外的新文件当 black box。
+//=============================================================================
+module awb_div_serial (
+    input                clk,
+    input                rst,            // 高有效
+    input                start,
+    input      [31:0]    denominator,
+    input      [47:0]    numerator,
+    output     [47:0]    quotient,
+    output reg           done
+);
+
+    localparam [5:0] NITER = 6'd48;
+
+    wire [31:0] den_eff = (denominator == 32'd0) ? 32'd1 : denominator;
+
+    reg  [47:0] qreg;      // 商(逐位移入)
+    reg  [47:0] rem;       // 余数
+    reg  [31:0] den_r;     // 启动时锁存的除数(输入可能一直在累加)
+    reg  [5:0]  cnt;
+    reg         busy;
+
+    wire [47:0] den_ext = {16'd0, den_r};
+    wire [47:0] rem_sh  = {rem[46:0], qreg[47]};          // 左移, 移入被除数高位
+    wire        ge      = (rem_sh >= den_ext);
+    wire [47:0] rem_nx  = ge ? (rem_sh - den_ext) : rem_sh;
+    wire [47:0] qreg_nx = {qreg[46:0], ge};
+
+    assign quotient = qreg;
+
+    always @(posedge clk) begin
+        if (rst) begin
+            qreg  <= 48'd0;
+            rem   <= 48'd0;
+            den_r <= 32'd1;
+            cnt   <= 6'd0;
+            busy  <= 1'b0;
+            done  <= 1'b0;
+        end else if (!busy) begin
+            done <= 1'b0;
+            if (start) begin
+                qreg  <= numerator;
+                rem   <= 48'd0;
+                den_r <= den_eff;
+                cnt   <= 6'd0;
+                busy  <= 1'b1;
+            end
+        end else begin
+            qreg <= qreg_nx;
+            rem  <= rem_nx;
+            cnt  <= cnt + 6'd1;
+            if (cnt == NITER - 6'd1) begin
+                busy <= 1'b0;
+                done <= 1'b1;
+            end
+        end
+    end
 
 endmodule
