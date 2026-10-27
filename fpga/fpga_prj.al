@@ -585,6 +585,22 @@
                     <Attr Name="CompileOrder" Val="88"/>
                 </FileInfo>
             </File>
+            <File Path="uisrc/01_rtl/jpeg/jpeg_recip_pipe.v">
+                <FileInfo>
+                    <Attr Name="UsedInSyn" Val="true"/>
+                    <Attr Name="UsedInP&R" Val="true"/>
+                    <Attr Name="BelongTo" Val="design_1"/>
+                    <Attr Name="CompileOrder" Val="201"/>
+                </FileInfo>
+            </File>
+            <File Path="uisrc/01_rtl/dual/dual_stitch.v">
+                <FileInfo>
+                    <Attr Name="UsedInSyn" Val="true"/>
+                    <Attr Name="UsedInP&R" Val="true"/>
+                    <Attr Name="BelongTo" Val="design_1"/>
+                    <Attr Name="CompileOrder" Val="200"/>
+                </FileInfo>
+            </File>
             <File Path="uisrc/01_rtl/jpeg/jpeg_bitpack.v">
                 <FileInfo>
                     <Attr Name="UsedInSyn" Val="true"/>

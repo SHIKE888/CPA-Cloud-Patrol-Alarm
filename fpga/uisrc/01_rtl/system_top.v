@@ -198,13 +198,17 @@ parameter CS_WIDTH        = 1
 	wire [15:0] S_line_groups;                       // V21 诊断: 每行像素组数
 
 	// 4K 模式 (2'd1/@30 与 2'd2/@25) 的图像尺寸完全相同, 只有 VTC 场周期不同
-	wire        S_is_4k        = (S_res_mode != 2'd0);
+	// ★ 2026-10-28: 双目拼接成为**唯一**工作模式 (作品只要求 1080p@60 双目), 4K 废弃。
+	//   图像宽 = 3840 = 左半(cam1) + 右半(cam0), 高 = 1080。
+	//   crop 模块仍按单目 1920 裁, 所以 S_cam_h 与 S_h_active 必须分开。
+	wire        S_is_4k        = 1'b0;
 
 	// ---- 图像宽高 ----
-	wire [12:0] S_h_active     = S_is_4k ? 13'd3840 : H_ACTIVE[12:0];
-	wire [11:0] S_v_active     = S_is_4k ? 12'd2160 : V_ACTIVE[11:0];
-	wire [15:0] S_w_beats      = S_is_4k ? 16'd960  : 16'd480;
-	wire [15:0] S_r_beats      = S_is_4k ? 16'd1920 : 16'd960;
+	wire [12:0] S_cam_h        = 13'd1920;          // 单目裁剪宽度 (ui_image_correction 用)
+	wire [12:0] S_h_active     = 13'd3840;          // 拼接后整行 (ISP/preproc/dbuf/编码器用)
+	wire [11:0] S_v_active     = 12'd1080;
+	wire [15:0] S_w_beats      = 16'd960;           // 64b/beat = 4px -> 3840/4
+	wire [15:0] S_r_beats      = 16'd1920;          // 32b/beat = 2px -> 3840/2
 	// V39: 传感器垂直裁剪起点。4K 录制区从第 36 行开始 (厂商 v_start=35)；
 	//      1080p 厂商参考 v_start=19。首行必须是偶数，否则 RGGB Bayer 相位错。
 	wire [12:0] S_v_start      = S_is_4k ? 13'd35  : 13'd19;
@@ -247,10 +251,8 @@ parameter CS_WIDTH        = 1
 	wire [11:0] S_vtc_v_active = S_is_4k ? 12'd2160 : V_ACTIVE[11:0];
 	wire [11:0] S_vtc_v_start  = S_is_4k ? 12'd2164 : (V_ACTIVE+V_FP);
 	wire [11:0] S_vtc_v_end    = S_is_4k ? 12'd2169 : (V_ACTIVE+V_FP+V_SA);
-	// 4K 场周期: 与 h_frame=2652 配套 -> 147.5MHz/(2652 x 2225) = 24.997fps
-	wire [11:0] S_vtc_v_frame  = (S_res_mode == 2'd2) ? 12'd2225
-	                           : (S_res_mode == 2'd1) ? 12'd2387
-	                                                  : (V_ACTIVE+V_FP+V_SA+V_BP);
+	// 4K 场周期: 已废弃 (拼接模式只用 1080 行时序)
+	wire [11:0] S_vtc_v_frame  = (V_ACTIVE+V_FP+V_SA+V_BP);   // 1125 -> 59.6fps
 	//===============================================================
                                       
 
@@ -371,10 +373,11 @@ wire 							S_ae_req		;
 //    0xDB[0]: 0=cam0 (上电默认)  1=cam1
 //    改动时 system_top 会给写侧一个 120ms 复位窗，让行/帧计数重新对齐。
 //=============================================================================
-wire          					S_hs_clk0		;   // cam0 RX 恢复时钟
-wire          					S_hs_clk1		;   // cam1 RX 恢复时钟 (仅作 mux 输入)
-wire          					S_hs_rx_clk_mux	;   // 二选一（LUT）
-wire          					S_hs_rx_clk		;   // BUFG 后的全局 byte clock (= HS clk / 4)
+wire          					S_hs_clk0		;   // cam0 RX 恢复时钟 (cam0 侧整条链用它)
+wire          					S_hs_clk1		;   // cam1 RX 恢复时钟 (cam1 侧整条链用它)
+wire          					S_st_clk		;   // ★ 拼接/下游像素域 = pclkx1/2 = 73.75MHz
+wire          					S_enc_clk		;   // ★ JPEG 编码器时钟 = pclkx1/4 = 36.875MHz
+wire          					S_hs_rx_clk		;   // 保留旧名: 下游像素域 (= S_st_clk)
 
 	//---- LP-free CSI-2 RX (03_ip/mipi_csi_lpfree) 的 AXIS 输出 ----
 	wire							S_rx_rstn		;
@@ -669,8 +672,25 @@ wire [7:0]  S_dbg_jb;
 	//   => 不能直接用 S_pclkx1。先用 S_hs_rx_clk(≈31.25MHz) 把功能跑通:
 	//   31.25MHz 下 150 clk/MCU => 16200 MCU x 4.8us = 77.8ms/帧 ≈ 13fps。
 	//   要上 30fps/60fps 必须先把量化/熵编码那一拍拆流水 (另开任务)。
-	wire        S_enc_clk   = S_hs_rx_clk;   // 31.25MHz (fmax 45MHz, 余量 44%)
 	wire        S_enc_rst_n = S_pll_lock;
+
+	// ★ 2026-10-28: 编码器时钟已改为独立的 pclkx1/4 = 36.875MHz (见时钟生成处)。
+	//   原来的 45MHz fmax 卡点 (量化倒数表组合除法器) 已换成流水长除法，
+	//   但要跑 146MHz 还差很远，所以这里不把它接到像素域 (=73.75MHz)。
+
+	// ---- 编码器只吃"左半幅" (cam1 的 1920px) ----
+	//   ★ 2026-10-28: 拼接后一行是 3840px (960 组), 而 jpeg_encoder_top 是
+	//     #(.W(1920)) —— 它的行缓冲按 1920 宽组织 (已经是 8192 个 LUT-RAM !)。
+	//     把整行 3840 灌进去会让"每帧 (W/2)*H 个 word"的定长消费算错 -> 整帧失步。
+	//     所以这里数一数行内组号, 只放前半行给编码器 (正好 480 组/行)*1080 行。
+	//   后续要做"整幅 3840 宽 JPEG": 必须先把行缓冲改 ERAM + 多引擎并行,
+	//     见 docs/DUAL_STITCH_2026-10-27.md。
+	reg [9:0] S_yuv_gcnt;
+	wire      S_yuv_left = (S_yuv_gcnt < 10'd480);
+	always @(posedge S_hs_rx_clk or negedge S_pll_lock) begin
+		if (!S_pll_lock)   S_yuv_gcnt <= 10'd0;
+		else if (S_yuv_de) S_yuv_gcnt <= S_yuv_last ? 10'd0 : (S_yuv_gcnt + 10'd1);
+	end
 
 	wire        S_enc_v;                     // enc_if -> 编码器
 	wire [31:0] S_enc_d;
@@ -742,7 +762,7 @@ wire [7:0]  S_dbg_jb;
 	jpeg_enc_if #(.AW(10)) X_jenc_if (
 		.s_clk      (S_hs_rx_clk            ),
 		.s_rst_n    (S_pll_lock             ),
-		.s_valid    (S_yuv_de & S_enc_gate_r),
+		.s_valid    (S_yuv_de & S_enc_gate_r & S_yuv_left),
 		.s_data     (S_yuv_data             ),
 		.s_sof      (S_yuv_sof              ),
 		.e_clk      (S_enc_clk              ),
@@ -1465,7 +1485,9 @@ mipi_csi_rx #(
 
 	.O_hs_div_clk          ( S_hs_clk0   ),
 
-	.m_axis_video_aclk     ( S_hs_rx_clk   ),
+	// ★ 2026-10-28: 各自接自己的恢复时钟 —— 双目同时采集后不再需要时钟 mux。
+	//   RX 内部有跨时钟 FIFO, aclk 就是它自己的 O_hs_div_clk 最干净。
+	.m_axis_video_aclk     ( S_hs_clk0    ),
 	.m_axis_video_aresetn  ( S_rx_rstn     ),
 	.m_axis_video_tready   ( 1'b1          ),
 	.m_axis_video_tuser    ( S_rx0_tuser   ),
@@ -1508,7 +1530,7 @@ mipi_csi_rx #(
 	// 2026-10-21: 两路 AXIS 输出时钟都用 S_hs_rx_clk (与 0x4601 一致)。
 	//   选中的那一路的恢复时钟就是 S_hs_rx_clk 的来源，所以下游全部同域；
 	//   没选中的那一路靠 RX 内部 FIFO 做 CDC，数据丢弃即可。
-	.m_axis_video_aclk     ( S_hs_rx_clk   ),
+	.m_axis_video_aclk     ( S_hs_clk1    ),
 	.m_axis_video_aresetn  ( S_rx_rstn     ),
 	.m_axis_video_tready   ( 1'b1          ),
 	.m_axis_video_tuser    ( S_rx1_tuser   ),
@@ -1545,20 +1567,41 @@ sensor_sync_start #(
 //    (0x450E 实测)。这里 S_rx_sel 是准静态寄存器，只有切换瞬间会毛刺，
 //    切换后立刻有 120ms 写侧复位窗兜住。
 //--------------------------------------------------------------------------
-// ⚠ 时钟 mux 的选择端必须是**寄存器**直接驱动, 否则 BUFG 前面多一级组合逻辑,
-//   时钟路径上会带出毛刺/偏斜。这里先把选择位打一拍再送 mux。
-//   位义: dual_eff=1 -> 看 cam0；否则看 sel (1=cam1, 0=cam0)
-//   (声明在文件前部信号区, 这里只放逻辑)
+// ★ 2026-10-28: 双目**同时**采集后不再有"选源"，两路 RX 各自跑自己的恢复时钟，
+//   拼接模块 (dual_stitch) 是唯一的跨时钟点。这里生成两个固定时钟:
+//     S_st_clk  = pclkx1/2 = 73.75MHz  -> 拼接 / ISP / preproc / dbuf 写侧
+//     S_enc_clk = pclkx1/4 = 36.875MHz -> JPEG 编码器 (旧 fmax 45MHz, 不能给更快)
+//   而 S_hs_rx_clk 这个名字继续指向 S_st_clk —— 文件里所有已经调好的下游代码一行不用改。
+reg S_st_clk_div;
+always @(posedge S_pclkx1 or negedge S_pll_lock) begin
+	if (!S_pll_lock) S_st_clk_div <= 1'b0;
+	else             S_st_clk_div <= ~S_st_clk_div;
+end
+
+reg [1:0] S_enc_div;
+always @(posedge S_pclkx1 or negedge S_pll_lock) begin
+	if (!S_pll_lock) S_enc_div <= 2'b00;
+	else             S_enc_div <= S_enc_div + 2'd1;
+end
+
+PH1_LOGIC_BUFG X_bufg_st_clk (
+	.i ( S_st_clk_div  ),
+	.o ( S_st_clk      )
+);
+
+PH1_LOGIC_BUFG X_bufg_enc_clk (
+	.i ( S_enc_div[1]  ),
+	.o ( S_enc_clk     )
+);
+
+// 已无选源: 保持为 0, 让旧的换源复位窗口逻辑永远不触发
 always @(posedge I_sysclk_25m or negedge S_pll_lock) begin
 	if (!S_pll_lock) S_clk_sel_r <= 1'b0;
-	else             S_clk_sel_r <= S_dual_eff ? 1'b0 : S_rx_sel;
+	else             S_clk_sel_r <= 1'b0;
 end
-assign S_hs_rx_clk_mux = S_clk_sel_r ? S_hs_clk1 : S_hs_clk0;
 
-PH1_LOGIC_BUFG X_bufg_rx_clk (
-	.i ( S_hs_rx_clk_mux ),
-	.o ( S_hs_rx_clk     )
-);
+// 下游像素域 = 拼接输出时钟 (73.75MHz)
+assign S_hs_rx_clk = S_st_clk;
 
 //--------------------------------------------------------------------------
 //  ⚠ 0x4700 曾经在这里给 cam1 额外插了一个 BUFG (S_hs_clk1_raw -> S_hs_clk1)，
@@ -1607,11 +1650,11 @@ ui_image_correction #(
 )X_ui_image_correction
 (
     .O_line_groups    (S_line_groups     ),  // V21 诊断: 每行像素组数
-    .I_clk            (S_hs_rx_clk		  ),
-    // V23: 裁剪边界跟 S_h_active/S_v_active 走, 模式一切换就必须复位重对齐
-    .I_rst_n          (S_pll_lock & S_res_rstn_rx		  ),
-    // V21: 运行时宽高
-    .I_img_width      (S_h_active		  ),
+    // ★ 2026-10-28: 本模块回到 cam0 自己的恢复时钟域 (不再共用 mux 时钟)
+    .I_clk            (S_hs_clk0		  ),
+    .I_rst_n          (S_pll_lock		  ),
+    // 单目裁剪宽度固定 1920 (与下游 S_h_active=3840 分开)
+    .I_img_width      (S_cam_h		  ),
     .I_img_height     (S_v_active		  ),
     // V39: 垂直起始裁剪 (4K=35, 1080p=19)
     .I_v_start        (S_v_start		  ),
@@ -1642,9 +1685,10 @@ ui_image_correction #(
 )X_ui_image_correction1
 (
     .O_line_groups    (S_line_groups1    ),
-    .I_clk            (S_hs_rx_clk		  ),
-    .I_rst_n          (S_pll_lock & S_res_rstn_rx1 ),
-    .I_img_width      (S_h_active		  ),
+    // ★ 2026-10-28: 本模块回到 cam1 自己的恢复时钟域
+    .I_clk            (S_hs_clk1		  ),
+    .I_rst_n          (S_pll_lock		  ),
+    .I_img_width      (S_cam_h		  ),
     .I_img_height     (S_v_active		  ),
     .I_v_start        (S_v_start		  ),
     .I_grp_per_line   (S_grp_per_line     ),
@@ -1659,44 +1703,56 @@ ui_image_correction #(
 );
 
 //=============================================================================
-//  双目交替帧调度 (2026-10-21)
+//  双目【同时】采集 + 整行乒乓 + 左右拼接 (2026-10-28)
 //
-//  单目 (S_dual_en=0): 按 0xDB[0] 二选一，全速推流 —— 与 0x4601 行为一致
-//  双目 (S_dual_en=1): cam0/cam1 逐帧交替，各 30fps，输出仍是 1080p60
-//                      （两路传感器仍按 60fps 采，FPGA 每路两帧取一帧）
+//  替换原来的 dual_frame_sched (逐帧交替, 每目 30fps)。现在两路每一行都同时
+//  进各自的 FIFO, 读侧拼成 "左半 = cam1 + 右半 = cam0" 的 3840 宽一行, 输出
+//  仍是 4px/clk / 40bit, 所以 ui_isp_top 以下全部不用改位宽。
 //
-//  ⚠ 4K 模式强制按单目处理（带宽装不下两路），见 S_dual_eff
+//  ⚠ 时钟: 两路写侧各用自己的恢复时钟 (S_hs_clk0/S_hs_clk1), 读侧是 S_hs_rx_clk
+//     (= S_st_clk = 73.75MHz)。这是整个工程唯一的跨时钟点。
+//  ⚠ 掉一路 (没插模组/RX 没锁) 时该半幅填黑, 另一半照常跑 —— 不会再整链死锁。
 //=============================================================================
-assign S_dual_eff = S_dual_en & ~S_is_4k;
+wire [15:0] S_st_l_ovf, S_st_r_ovf, S_st_l_starve, S_st_r_starve, S_st_lines;
+wire [23:0] S_st_frames;
 
-dual_frame_sched #(
-    .DATA_WIDTH (40),
-    .LINE_GRP   (480)          // 1080p: 1920px / 4
-) X_dual_sched (
-    .I_clk        (S_hs_rx_clk      ),
-    // ⚠ 和 I_clk 用同一个时钟: dual_frame_sched 内部 d1_r/v1_r/u1_r/l1_r
-    //    都用 I_clk 采样, I_clk1 只用作行组环形缓冲的写时钟。两者必须同域,
-    //    否则 cam1 的 tuser 会被漏採 -> dbuf 不轮转 -> 画面冻结。
-    .I_clk1       (S_hs_rx_clk      ),
-    .I_rst_n      (S_pll_lock       ),
-    .I_dual_en    (S_dual_eff       ),
-    .I_sel        (S_rx_sel_rx      ),
-    .I_d0         (S_crop0_tdata    ),
-    .I_v0         (S_crop0_tvalid   ),
-    .I_u0         (S_crop0_tuser    ),
-    .I_l0         (S_crop0_tlast    ),
-    .I_d1         (S_crop1_tdata    ),
-    .I_v1         (S_crop1_tvalid   ),
-    .I_u1         (S_crop1_tuser    ),
-    .I_l1         (S_crop1_tlast    ),
-    .O_d          (S_axis_tdata     ),
-    .O_v          (S_axis_tvalid    ),
-    .O_u          (S_axis_tuser     ),
-    .O_l          (S_axis_tlast     ),
-    .O_src        (S_out_src        ),
-    .O_ch1_lost   (S_ch1_lost       ),
-    .O_parity     (S_frame_parity   )
+dual_stitch #(
+    .HGRP       (480),      // 1920 px / 4 px + 4px/clk = 480 组
+    .V_ACTIVE   (1080),
+    .FIFO_AW    (11),       // 每源 2048 word ≈ 4.2 行
+    .SWAP       (0),        // ★ 左 = cam1, 右 = cam0 (用户指定)
+    .STARVE_MAX (2400)      // @73.75MHz ≈ 32.5us ≈ 2.2 行
+) X_dual_stitch (
+    .l_clk     (S_hs_clk1        ),
+    .l_rst_n   (S_pll_lock       ),
+    .l_valid   (S_crop1_tvalid   ),
+    .l_data    (S_crop1_tdata    ),
+    .l_user    (S_crop1_tuser    ),
+    .l_last    (S_crop1_tlast    ),
+    .r_clk     (S_hs_clk0        ),
+    .r_rst_n   (S_pll_lock       ),
+    .r_valid   (S_crop0_tvalid   ),
+    .r_data    (S_crop0_tdata    ),
+    .r_user    (S_crop0_tuser    ),
+    .r_last    (S_crop0_tlast    ),
+    .o_clk     (S_hs_rx_clk      ),
+    .o_rst_n   (S_pll_lock       ),
+    .o_valid   (S_axis_tvalid    ),
+    .o_data    (S_axis_tdata     ),
+    .o_user    (S_axis_tuser     ),
+    .o_last    (S_axis_tlast     ),
+    .st_l_ovf    (S_st_l_ovf     ),
+    .st_r_ovf    (S_st_r_ovf     ),
+    .st_l_starve (S_st_l_starve  ),
+    .st_r_starve (S_st_r_starve  ),
+    .st_lines    (S_st_lines     ),
+    .st_frames   (S_st_frames    )
 );
+
+// 已无"哪一目"的概念 (两目同时在流里), 帧标记固定按 0 打
+assign S_out_src = 1'b0;
+// 旧逐帧调度器的输出, 保留声明避免其它模块引用时悬空
+assign S_dual_eff = 1'b0;
 
 
 
