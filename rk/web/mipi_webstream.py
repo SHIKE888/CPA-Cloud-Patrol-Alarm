@@ -459,6 +459,20 @@ else:
 
 AI_OVERLAY = None        # 由 main() 创建; 编码线程只读
 
+# ------------------------------------------------------------------ 可选 云台
+# QGimbal 走 USB CDC-ACM (/dev/ttyACM0)。串口协议复用 rk/gimbal/gimbal_keyctrl.py,
+# 限幅 / 看门狗 / 追踪逻辑都在 gimbal_web.py 里（那边有完整的安全说明）。
+# 串口打不开 / 依赖缺失时静默降级 —— 网页面板上会显示原因, 不影响推流。
+try:
+    if SCRIPT_DIR not in sys.path:
+        sys.path.insert(0, SCRIPT_DIR)
+    from gimbal_web import GimbalWeb
+except Exception as _e:                                   # pragma: no cover
+    GimbalWeb = None
+    _GIMBAL_IMPORT_ERR = "%s: %s" % (type(_e).__name__, _e)
+else:
+    _GIMBAL_IMPORT_ERR = ""
+
 # ------------------------------------------------------------------ 默认参数
 DEFAULT_PARAMS = {
     "brightness": 0,      # -100 .. 100        (加减偏移)
@@ -3790,6 +3804,7 @@ class Handler(BaseHTTPRequestHandler):
     args = None
     capture = None
     fpga = None
+    gimbal = None           # GimbalWeb 实例 (--gimbal-port 为空 = None)
 
     # ---------- 工具 ----------
     def log_message(self, fmt, *a):
@@ -3892,6 +3907,19 @@ class Handler(BaseHTTPRequestHandler):
                         msg += " (导入 ai_overlay 失败: %s)" % _AI_IMPORT_ERR
                     return self._json({"ok": False, "error": msg}, 503)
                 return self._json(AI_OVERLAY.status())
+            if path == "/api/gimbal":
+                # 云台状态: 关节角 / 限幅 / 点动 / 追踪误差。只读，绝不发运动指令。
+                gz = getattr(Handler, "gimbal", None)
+                if gz is None:
+                    _err = "云台控制未启用"
+                    if _GIMBAL_IMPORT_ERR:
+                        _err += " (导入 gimbal_web 失败: %s)" % _GIMBAL_IMPORT_ERR
+                    else:
+                        _err += " (启动参数 --gimbal-port 为空)"
+                    return self._json({"ok": False, "available": False,
+                                       "error": _err,
+                                       "limits": {}, "track": {}}, 503)
+                return self._json(gz.status())
             if path == "/api/controls":
                 return self._json(list_v4l2_controls(self.args.device,
                                                      self.args.v4l2ctl))
@@ -4082,6 +4110,14 @@ class Handler(BaseHTTPRequestHandler):
                     out["pp_note"] = _pp_desc
                 _bump_rev("ai")             # 通知其它在线前端
                 return self._json({"ok": True, "ai": out})
+            if path == "/api/gimbal":
+                # 云台动作。这里只改状态 / 入队，串口 IO 全部在 gimbal-ctl 线程里做,
+                # 所以 HTTP 永远不会被一次 800ms 的串口超时拖住。
+                gz = getattr(Handler, "gimbal", None)
+                if gz is None:
+                    return self._json({"ok": False, "available": False,
+                                       "error": "云台控制未启用"}, 503)
+                return self._json(gz.apply(self._read_json()))
             if path == "/api/fpga":
                 if self.fpga is None:
                     return self._json(
@@ -4493,7 +4529,9 @@ FALLBACK_PAGE = """<!doctype html><html><head><meta charset="utf-8">
 <body style="background:#111;color:#eee;font-family:sans-serif;text-align:center">
 <h2>FPGA MIPI 画面</h2>
 <img src="/stream" style="max-width:96vw;border:1px solid #333;border-radius:8px">
-<p>完整控制台页面 mipi_viewer.html 未找到，请把它放到程序同目录。</p>
+<p>控制台已统一到 <code>console.html</code>（板子 80 端口，<code>http://&lt;板子IP&gt;/</code>）</p>
+<p style="opacity:.6;font-size:12px">本页仅作纯画面兜底：老版单页控制台 mipi_viewer.html 已移除，
+若要恢复请从 git 历史取回（提交 9323912 之前）。</p>
 </body></html>"""
 
 
@@ -4574,6 +4612,60 @@ def main():
                     help="推理前拷一份整帧(更干净但多 ~2.5ms/帧; 默认不拷)")
     ap.add_argument("--ai-zone", default="",
                     help="越界警戒区, 归一化坐标 例 '0.2,0.6;0.8,0.6;0.8,1;0.2,1'")
+    ap.add_argument("--ai-action-model", default="",
+                    help="动作识别 rknn 模型 (NPU)；不传则用 numpy 兜底或几何规则")
+    ap.add_argument("--ai-action-backend", default="demo",
+                    choices=["demo", "model", "rules"],
+                    help="动作识别后端：demo=演示页那套显式打分(默认, 不依赖训练数据)；"
+                         "model=rknn/numpy 模型；rules=旧几何规则")
+    ap.add_argument("--ai-action-npz", default="",
+                    help="动作识别 numpy 权重 action_net.npz (CPU 兜底, ~10ms/人)")
+    ap.add_argument("--ai-action-window", type=float, default=1.2,
+                    help="送模型的序列时长(秒)。必须与训练窗口(32帧@30fps≈1.07s)对齐；"
+                         "以前用满缓冲(≤12s)相当于把动作慢放十几倍，精度 0.99→0.84")
+    ap.add_argument("--gimbal-port", default="/dev/ttyACM0",
+                    help="云台 QGimbal 串口 (默认 /dev/ttyACM0; 传空字符串=关闭云台页签)")
+    ap.add_argument("--gimbal-yaw-limit", type=float, default=170.0,
+                    help="Yaw 相对零点的软件限位(度, 默认 170, 最大 178)。"
+                         "绝对关节角还另有一层 170° 限幅, 见 gimbal_web.py")
+    ap.add_argument("--gimbal-pitch-limit", type=float, default=42.0,
+                    help="Pitch 相对零点的软件限位(度, 默认 42, 上限 45)。"
+                         "实际还会再和固件 limit.pitch.deg 取小")
+    ap.add_argument("--gimbal-speed", type=float, default=25.0,
+                    help="云台最大角速度(度/秒, 默认 25), 同时是点动与追踪的上限")
+    ap.add_argument("--gimbal-yaw-sign", type=float, default=1.0,
+                    help="追踪/点动的 Yaw 方向系数(1/-1), 页面上也能实时翻")
+    ap.add_argument("--gimbal-pitch-sign", type=float, default=1.0,
+                    help="追踪/点动的 Pitch 方向系数(1/-1), 页面上也能实时翻")
+    ap.add_argument("--gimbal-accel", type=float, default=250.0,
+                    help="速度指令的加速度斜坡(度/秒², 默认 250)。"
+                         "调小更柔和、调大更跟手; 0=阶跃(会顿, 不建议)")
+    ap.add_argument("--gimbal-predict", type=float, default=0.15,
+                    help="卡尔曼前瞻时间(秒, 默认 0.15)。补偿 AI+串口流水线延迟, "
+                         "让人物走在画面中间而不是被追着跑")
+    ap.add_argument("--gimbal-kalman", type=int, default=1, choices=[0, 1],
+                    help="追踪是否用卡尔曼(位置+速度)滤波预测(默认 1 开)")
+    ap.add_argument("--gimbal-period", type=float, default=0.025,
+                    help="云台控制周期(秒, 默认 0.025)。0.06 太粗, 每拍要挪 1.5°, "
+                         "固件到点就停 -> 看起来一顿一顿")
+    ap.add_argument("--gimbal-loop", default="vel", choices=["vel", "ff"],
+                    help="云台闭环方式: vel=速度内环+位置外环(默认) / "
+                         "ff=只做速度前馈(旧行为)")
+    ap.add_argument("--gimbal-kp-vel", type=float, default=0.5,
+                    help="位置外环增益(默认 0.5)。只在慢速/静止时闭合, 修正速率限 2°/s;"
+                         " 调大收敛快但容易被编码器量化噪声推着抖, 0=关掉位置环")
+    ap.add_argument("--gimbal-lead-max", type=float, default=12.0,
+                    help="游转保护(默认 12°): 目标最多超前实测多少度。"
+                         "正常跟随只有零点几度, 超过它就不再推进目标(等云台跟上),"
+                         "避免被挡住时目标一直往前堆、放开后猛冲")
+    ap.add_argument("--gimbal-auto-open", type=int, default=1, choices=[0, 1],
+                    help="启动即占用串口(默认 1)。0=等页面上第一次点动/追踪再连;"
+                         " 需要留串口给官方上位机/键盘脚本时设 0")
+    ap.add_argument("--gimbal-drive", default="speed",
+                    choices=["speed", "angle"],
+                    help="云台驱动方式: speed=连续控制(默认, 每拍下发 ctrl speed,"
+                         " 云台连续转, 不会一顿一顿) / angle=步进控制(旧行为,"
+                         " 每拍下发绝对角, 固件到点停)")
     ap.add_argument("--verbose", action="store_true", help="打印每条 HTTP 日志")
     ap.add_argument("--state-file", default=STATE_FILE_DEFAULT,
                     help="参数存档路径 (默认 同目录 state.json; 传空字符串=不保存)")
@@ -4697,6 +4789,10 @@ def main():
                                    source=args.ai_source,
                                    zone=_zone,
                                    state_path=state_file,
+                                   action_model=getattr(args, "ai_action_model", ""),
+                                   action_npz=getattr(args, "ai_action_npz", ""),
+                                   action_window=getattr(args, "ai_action_window", 1.2),
+                                   action_backend=getattr(args, "ai_action_backend", "demo"),
                                    verbose=args.verbose)
             AI_OVERLAY.start()
             print("[ai] AI 叠加已启用: source=%s  %.1f fps  (网页上可切换画面源)"
@@ -4706,6 +4802,55 @@ def main():
             if AI_OVERLAY.active and args.fpga_bus is not None and args.fpga_bus >= 0:
                 _pp_on, _pp_desc = _fpga_pp_on(FpgaI2C(args.fpga_bus, args.fpga_addr))
                 print("[ai] FPGA 预处理: %s" % _pp_desc)
+
+    # ---- 云台 (QGimbal) ----
+    # 只实例化，不打开串口：第一次收到动作请求时才连（避免开机时和
+    # gimbal_keyctrl.py / 官方上位机抢 /dev/ttyACM0）。
+    gimbal = None
+    _gz_port = str(getattr(args, "gimbal_port", "") or "").strip()
+    if _gz_port:
+        if GimbalWeb is None:
+            print("[gimbal] 无法启用: %s" % (_GIMBAL_IMPORT_ERR or "gimbal_web 不可用"),
+                  file=sys.stderr)
+        else:
+            def _gz_ensure_ai():
+                """追踪需要 AI 在跑：没开就切到「仅推理」（画面不变）。"""
+                if AI_OVERLAY is None:
+                    return "AI 未启用（服务启动时没加 --ai）"
+                if getattr(AI_OVERLAY, "active", False):
+                    return ""
+                AI_OVERLAY.apply({"enabled": True, "source": "detect"})
+                return "已自动把 AI 切到「仅推理」"
+
+            gimbal = GimbalWeb(port=_gz_port,
+                               yaw_limit_deg=args.gimbal_yaw_limit,
+                               pitch_limit_deg=args.gimbal_pitch_limit,
+                               speed_max=args.gimbal_speed,
+                               yaw_sign=args.gimbal_yaw_sign,
+                               pitch_sign=args.gimbal_pitch_sign,
+                               accel_deg_s2=args.gimbal_accel,
+                               predict_s=args.gimbal_predict,
+                               kalman=bool(args.gimbal_kalman),
+                               period=args.gimbal_period,
+                               loop=args.gimbal_loop,
+                               kp_vel=args.gimbal_kp_vel,
+                               lead_max=args.gimbal_lead_max,
+                               auto_open=bool(args.gimbal_auto_open),
+                               drive=args.gimbal_drive,
+                               state_path=state_file,
+                               ai_status=lambda: (AI_OVERLAY.status()
+                                                  if AI_OVERLAY is not None else None),
+                               ai_ensure=_gz_ensure_ai,
+                               verbose=args.verbose)
+            gimbal.start()
+            print("[gimbal] 云台页签已就绪: %s  Yaw±%.0f°  Pitch±%.0f°(再与固件限位取小)"
+                  "  速度≤%.0f°/s  周期%.0fms  加速度%.0f°/s²  预测%.2fs  卡尔曼=%s%s"
+                  % (_gz_port, gimbal.yaw_limit, gimbal.pitch_limit,
+                     gimbal.speed_max, gimbal.period * 1000.0, gimbal.accel,
+                     gimbal.predict_s, "开" if gimbal.kalman else "关",
+                     "" if gimbal.available else " (不可用: %s)" % gimbal.msg))
+    else:
+        print("[gimbal] 云台控制已关闭 (--gimbal-port '')")
 
     # ---- 2026-10-25: 上电先把单目通道设对, 再打开采集设备 ----
     #   必须在 cap.start() 之前: 一旦以"没有模组的那一路"去 open /dev/video22,
@@ -4727,6 +4872,7 @@ def main():
     Handler.args = args
     Handler.capture = cap
     Handler.state_path = state_file
+    Handler.gimbal = gimbal
 
     # 如果这次是 start.sh 因为切分辨率重启起来的, 把用户原来的曝光补回去
     _restore_exp_after_switch()
@@ -4795,6 +4941,8 @@ def main():
         print("\n退出中 ...")
     finally:
         srv.server_close()
+        if gimbal is not None:
+            gimbal.stop()          # 只停控制线程；云台保持最后的角度目标
         if hasattr(cap, "stop"):
             cap.stop()
         cap.stop_flag.set()
