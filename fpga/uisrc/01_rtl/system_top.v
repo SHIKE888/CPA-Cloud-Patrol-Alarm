@@ -620,6 +620,15 @@ wire        S_jpeg_st_done;
 wire        S_jpeg_tx_sel;
 wire        S_jpeg_m_ready;
 
+// 2026-10-27: 0x0B[1]/[2] —— JPEG 长包 DT 与帧尾补零
+//   背景: 板上实测 DT=0x18 被 rkcif 拒收 (MIPI_CSI2 ERR "err id" + crc/ecc),
+//        因为 CSI-RX 按 NV16(YUV422, DT=0x1E) 配的。改成 DT=0x1E 后 JPEG 字节
+//        就能当"普通像素" DMA 进帧缓冲, RK 端搜 FF D8..FF D9 直接推流 —— 
+//        零解码零重编码。
+wire        S_jpeg_dt18;
+wire        S_jpeg_pad;
+wire [5:0]  S_jpeg_dt = S_jpeg_dt18 ? 6'h18 : 6'h1E;
+
 `ifdef JPEG_EN
 	wire        S_jpeg_s_ready;
 	wire [6:0]  S_jpeg_qt_a, S_jpeg_qt_b;
@@ -666,25 +675,97 @@ wire        S_jpeg_m_ready;
 		.st_frame_cnt   (S_jpeg_cnt     )
 	);
 
-	// CSI-2 可变长发送 (DT=0x18, 乒乓双缓冲): 编码器输出是连续字节流,
+	// CSI-2 可变长发送 (乒乓双缓冲): 编码器输出是连续字节流,
 	// 也不知道每包多大, 所以走 csi2_frame_tx_var。乒乓让攒包和发包并行,
 	// s_tready 基本一直为 1, 避免编码器的 block 流水被长停顿打乱。
 	wire        S_jv_hs_en, S_jv_hs_last;
 	wire [31:0] S_jv_hs_data;
 
+	//==========================================================================
+	//  2026-10-27  JPEG 帧尾补零 / 截断 (0x0B[2])
+	//  ---- 为什么需要 ----
+	//  rkcif 的 DMA 按媒体格式 w*h*bpp 往 DDR 写: 1920x1080 NV16 = 4147200
+	//  字节/帧。JPEG 一帧只有 ~120KB, 短帧会不会被当成完整帧由收端决定,
+	//  没验证前先用"补满整帧"这个与现有 NV16 通路完全一致的行为。
+	//  ---- 另一个作用 ----
+	//  编码器异常时帧字节数可能超过整帧 (0x4708 出现过 4694772 > 4147200),
+	//  这里超限即截断并吞掉本帧剩余字节, 顺便保护链路不被灌爆。
+	//  ---- 输出是组合的 ----
+	//  必须跟着 S_jv_r (var TX 的 s_tready) 走组合, 不能打拍 ——
+	//  打拍就成了"不看背压丢字节", JPEG 会花屏。
+	//==========================================================================
+	localparam [24:0] JPAD_BYTES = 25'd4_147_200;   // 1920*1080*2
+	localparam [1:0]  JLS_DATA = 2'd0;   // 转发编码器字节
+	localparam [1:0]  JLS_PAD  = 2'd1;   // 补零
+	localparam [1:0]  JLS_DROP = 2'd2;   // 本帧已超限, 吞掉剩余字节
+
+	reg  [1:0]  S_jl_st  = JLS_DATA;
+	reg  [24:0] S_jl_cnt = 25'd0;
+	// S_jv_rx_ready 由 X_jv 的 s_tready **输出**驱动, 不要在本文件里再 assign 它
+	wire        S_jv_rx_ready;
+
+	wire        S_jv_v = (S_jl_st == JLS_PAD ) ? 1'b1 :
+	                     (S_jl_st == JLS_DATA) ? S_jpeg_m_valid : 1'b0;
+	wire [7:0]  S_jv_d = (S_jl_st == JLS_PAD ) ? 8'h00 : S_jpeg_m_data;
+	// tlast: 补零阶段 = 补到最后一个字节; 数据阶段 = 编码器帧尾(pad 关时)
+	//        或本帧已满被截断
+	wire        S_jv_l = (S_jl_st == JLS_PAD ) ? (S_jl_cnt == JPAD_BYTES - 25'd1) :
+	                     (S_jl_st == JLS_DATA) && S_jpeg_m_valid &&
+	                       ( (S_jpeg_m_last && !S_jpeg_pad) ||
+	                         (S_jl_cnt >= JPAD_BYTES - 25'd2) );
+
+	assign S_jpeg_m_ready = (S_jl_st == JLS_DATA) ? S_jv_rx_ready : 1'b0;
+
+	always @(posedge S_hs_rx_clk or negedge S_pll_lock) begin
+		if (!S_pll_lock) begin
+			S_jl_st  <= JLS_DATA;
+			S_jl_cnt <= 25'd0;
+		end else if (S_jv_v && S_jv_rx_ready) begin
+			case (S_jl_st)
+			JLS_DATA: begin
+				if (S_jpeg_m_last && S_jpeg_pad) begin
+					S_jl_st  <= JLS_PAD;            // 转补零
+					S_jl_cnt <= S_jl_cnt + 25'd1;   // 本拍已发 1 字节
+				end else if (S_jpeg_m_last) begin
+					S_jl_cnt <= 25'd0;              // 短帧直通, 帧结束
+				end else if (S_jl_cnt >= JPAD_BYTES - 25'd2) begin
+					S_jl_st  <= JLS_DROP;           // 满帧截断
+					S_jl_cnt <= 25'd0;
+				end else begin
+					S_jl_cnt <= S_jl_cnt + 25'd1;
+				end
+			end
+			JLS_PAD: begin
+				if (S_jl_cnt >= JPAD_BYTES - 25'd1) begin
+					S_jl_st  <= JLS_DATA;           // 补满, 等下一帧
+					S_jl_cnt <= 25'd0;
+				end else begin
+					S_jl_cnt <= S_jl_cnt + 25'd1;
+				end
+			end
+			default: begin                          // JLS_DROP
+				if (S_jpeg_m_valid && S_jpeg_m_last) begin
+					S_jl_st  <= S_jpeg_pad ? JLS_PAD : JLS_DATA;
+					S_jl_cnt <= 25'd0;
+				end
+			end
+			endcase
+		end
+	end
+
 	csi2_frame_tx_var #(
 		.PKT_BYTES (1024),
 		.GAP_FRAME (200 ),
-		.DT        (6'h18),
 		.VC        (2'b00)
 	) X_jv (
 		.clk        (S_hs_rx_clk    ),
 		.rst_n      (S_pll_lock     ),
 		.enable     (S_jpeg_tx_sel  ),
-		.s_tvalid   (S_jpeg_m_valid ),
-		.s_tdata    (S_jpeg_m_data  ),
-		.s_tlast    (S_jpeg_m_last  ),
-		.s_tready   (S_jpeg_m_ready ),
+		.i_dt       (S_jpeg_dt      ),
+		.s_tvalid   (S_jv_v         ),
+		.s_tdata    (S_jv_d         ),
+		.s_tlast    (S_jv_l         ),
+		.s_tready   (S_jv_rx_ready  ),
 		.hs_en      (S_jv_hs_en     ),
 		.hs_data    (S_jv_hs_data   ),
 		.hs_last    (S_jv_hs_last   ),
@@ -1620,6 +1701,8 @@ cfg_ctrl_top #(
 	.i_jpeg_busy  (S_jpeg_st_busy ),
 	.i_jpeg_done  (S_jpeg_st_done ),
 	.o_jpeg_tx    (S_jpeg_tx_sel  ),
+	.o_jpeg_dt18  (S_jpeg_dt18    ),
+	.o_jpeg_pad   (S_jpeg_pad     ),
 	.i_diag_wbuf  (D_wb_s2),
 	.i_diag_vs    (D_vs_s2),
 	.i_diag_lg1   (D_lg1_s2),

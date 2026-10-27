@@ -523,12 +523,9 @@ html, body{overflow:hidden}
 
       <!-- ======== 摄像头 / 输出 ======== -->
       <div class="tabbody" id="tab-cam">
-        <!-- ======== FPGA 硬件 JPEG 编码 (jpeg_encoder_top / jpeg_regfile 0x00-0x05) ======== -->
-        <div class="row"><label>硬件编码</label>
-          <div style="flex:1;display:flex;gap:6px">
-            <button class="ghost" id="btnJpegHw" style="flex:1">关 (走软件 JPEG)</button>
-          </div>
-        </div>
+        <!-- ======== FPGA 硬件 JPEG 编码 (jpeg_encoder_top / jpeg_regfile 0x00-0x05) ========
+             2026-10-27: 「硬件编码」开关已移除 —— 赛题不允许软件压缩,
+             硬件编码是唯一通路, 留个开关只会让人误以为能退回软编。 -->
         <div class="row"><label>JPEG 编码</label>
           <div style="flex:1;display:flex;gap:6px">
             <button class="ghost on" data-jll="0" style="flex:1">有损 SOF0</button>
@@ -2101,10 +2098,7 @@ function syncToggles() {
     }
   }
   // FPGA 硬件 JPEG: 有损/无损、闭环码控
-  if ($("btnJpegHw")) {
-    $("btnJpegHw").classList.toggle("on", !!jpegHw);
-    $("btnJpegHw").textContent = jpegHw ? "开 (FPGA 硬件编码)" : "关 (走软件 JPEG)";
-  }
+  // (「硬件编码」开关已于 2026-10-27 移除: 硬件编码是唯一通路)
   document.querySelectorAll("#viewVideo [data-jll]").forEach(b =>
     b.classList.toggle("on", Number(b.dataset.jll) === Number(params.jpeg_ll || 0)));
   document.querySelectorAll("#viewVideo [data-jrc]").forEach(b =>
@@ -2148,16 +2142,9 @@ $("btnMirror").onclick = () => { params.mirror = params.mirror ? 0 : 1; syncTogg
 $("btnFlipv").onclick  = () => { params.flipv  = params.flipv  ? 0 : 1; syncToggles(); schedulePush(); };
 
 /* FPGA 硬件 JPEG 编码参数 (jpeg_regfile 0x00 / 0x01 / 0x02-0x04 / 0x05) */
-let jpegHw = 0;       // 后端 /api/jpeg 的 hw 开关 (硬件编码使能)
-$("btnJpegHw").onclick = async () => {
-  const want = jpegHw ? 0 : 1;
-  try {
-    const r = await api("/api/jpeg", { method: "POST", body: JSON.stringify({ hw: want }) });
-    jpegHw = r.hw ? 1 : 0;
-    toast(jpegHw ? "硬件 JPEG 已开启" : "已切回软件 JPEG");
-  } catch (e) { toast("切换失败: " + e.message, true); }
-  syncToggles();
-};
+// 2026-10-27: 硬件编码是唯一通路, 开关已从界面移除。
+//   这里保留 jpegHw 变量只为兼容 syncToggles() 里的显示逻辑, 恒为 1。
+let jpegHw = 1;
 (async () => {
   try {
     const r = await api("/api/jpeg");
@@ -2832,7 +2819,8 @@ async function sysPollOnce() {
   if (d.mipi) {
     // MIPI 格: 链路上真实码率 (JPEG 压缩后)
     const mp = d.mipi;
-    set("b_mipi", mp.used_mb_s + " MB/s");
+    // 2026-10-27: 直通模式下 RK 只搬字节(不解码不重编码), 直接写在数字后面
+    set("b_mipi", mp.used_mb_s + " MB/s" + (mp.jpeg_direct ? " 直通" : ""));
     bar("p_mipi", mp.pct);
     const el = $("b_mipi");
     if (el) {
@@ -2840,6 +2828,7 @@ async function sysPollOnce() {
       parts.push((mp.compressed ? "压缩后 " : "未压缩估算 ") + mp.used_mb_s + " / " +
                  mp.link_mb_s + " MB/s（" + mp.pct + "%）");
       if (mp.jpeg_bytes) parts.push("单帧 " + mp.jpeg_bytes + " 字节");
+      if (mp.jpeg_direct) parts.push("RK 直通: FPGA 码流直接转发, 零解码零重编码");
       if (mp.jpeg_invalid) parts.push("⚠ 帧字节数非法（编码器没真正输出码流）");
       el.title = parts.join(" · ");
     }
@@ -2853,7 +2842,8 @@ async function sysPollOnce() {
         bar("p_ratio", mp.pct);
         rEl.title = "压缩比 " + mp.ratio + ":1 · 压缩前 " + mp.raw_mb_s +
                     " MB/s → 压缩后 " + mp.used_mb_s + " MB/s · 单帧 " +
-                    (mp.jpeg_bytes || "—") + " 字节";
+                    (mp.jpeg_bytes || "—") + " 字节" +
+                    (mp.jpeg_direct ? " · RK 直通(零重编码)" : " · RK 重编码");
       } else {
         set("b_ratio", mp.jpeg_invalid ? "非法" : "—");
         bar("p_ratio", 0);

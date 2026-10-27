@@ -51,9 +51,20 @@ module cfg_ctrl_top #(
 	//                 纯 HE 的帧间抖动只有 0.36%, 不需要 IIR;
 	//                 噪点由 LUT 斜率限制(≤3)压住。
 	//                 实测: 10 帧均值极差 3536 -> 172 (改善 ~20 倍), 第1帧即锁定。
+	//     0x470A = V47 第 10 次构建: **JPEG 送 RK 的直通化 (0x0B[1]/[2])**
+	//               - 0x0B[0] JPG_TX : 1 = MIPI 发 FPGA 硬件 JPEG 码流
+	//               - 0x0B[1] DT18   : 长包 DT。0=0x1E (与 NV16 通道同 DT,
+	//                   rkcif 当前配置只认这个, JPEG 字节占帧缓冲前段 ——
+	//                   RK 端搜 FF D8..FF D9 直接推流, 零解码零重编码);
+	//                   1=0x18 (标准 JPEG, 板上实测被 rkcif 拒收:
+	//                   MIPI_CSI2 ERR2 0x10001100 "err id")
+	//               - 0x0B[2] JPAD   : 帧尾补 0 到整帧 4147200B。1=补满
+	//                   (rkcif 行为与 NV16 通路完全一致, 最稳妥, 占带宽);
+	//                   0=短帧 (省带宽, 待板上验证收端能否接受)
+	//               - 编码器帧字节数超整帧时自动截断, 保护链路
 	//    ★ 网页「版本」格悬停会按 QUICKSTART 的登记表显示含义, 加版本时同步登记。
 	//=========================================================================
-	parameter [15:0] CFG_VER  = 16'h4708
+	parameter [15:0] CFG_VER  = 16'h470A
 )(
 	// ---- 系统时钟域 (25MHz 常开) ----
 	input  wire        i_sys_clk,
@@ -125,6 +136,9 @@ module cfg_ctrl_top #(
 	input  wire        i_jpeg_done,
 	// 2026-10-21: MIPI 输出源选择 (0x0B) —— 0=原 NV16 直通, 1=JPEG 码流
 	output wire        o_jpeg_tx,
+	// 2026-10-27: 0x0B[1]=DT18 (JPEG 长包 DT), 0x0B[2]=JPAD (帧尾补零到整帧)
+	output wire        o_jpeg_dt18,
+	output wire        o_jpeg_pad,
 	input  wire [7:0]  i_diag_wbuf,
 	input  wire [7:0]  i_diag_vs,
 	input  wire [15:0] i_diag_lg1,
@@ -222,6 +236,12 @@ module cfg_ctrl_top #(
 	wire        cfg_res_chg;    // V21
 	wire        cfg_jpg_tx;     // 2026-10-21: 0x0B MIPI 输出源选择
 	assign o_jpeg_tx = cfg_jpg_tx;
+	// 2026-10-27: 0x0B[1]/[2]。★ 声明必须在使用点(X_jv 例化在 system_top)之前 ——
+	//   这两根线在 system_top 里被 ifdef 内部引用, 由本模块驱动。
+	wire        cfg_jpg_dt18;
+	wire        cfg_jpg_pad;
+	assign o_jpeg_dt18 = cfg_jpg_dt18;
+	assign o_jpeg_pad  = cfg_jpg_pad;
 
 	// 帧计数 (像素域), 同步回系统域供回读
 	// ★★ V37: 这些声明必须放在 jpeg_regfile 例化**之前**。
@@ -296,6 +316,8 @@ module cfg_ctrl_top #(
 		.O_cfg_rc_en     (cfg_rc_en),
 		.O_cfg_rc_speed  (cfg_rc_speed),
 		.O_cfg_jpg_tx    (cfg_jpg_tx),
+		.O_cfg_jpg_dt18  (cfg_jpg_dt18),
+		.O_cfg_jpg_pad   (cfg_jpg_pad),
 		.O_cfg_subsample (cfg_subsample),
 		.O_cfg_restart_int(cfg_restart),
 		.O_cfg_predictor (cfg_predictor),

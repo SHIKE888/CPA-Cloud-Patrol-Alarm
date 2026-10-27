@@ -93,6 +93,15 @@ module jpeg_regfile #(
     //   0 = 原 NV16 直通流 (默认, 保持现有 1080p/4K 显示不受影响)
     //   1 = FPGA 硬件 JPEG 码流 (DT=0x18, 走 csi2_frame_tx_var)
     output wire         O_cfg_jpg_tx,
+    // 2026-10-27 0x0B[1] DT18: JPEG 长包用哪个 DT
+    //   0 = DT=0x1E (与 NV16 通道同一个 DT, rkcif 当前配置只认这个;
+    //               JPEG 字节直接占帧缓冲前段, RK 端零重编码直通)
+    //   1 = DT=0x18 (标准 JPEG, 需要驱动/CSI-RX 侧也认, 板上实测被拒)
+    output wire         O_cfg_jpg_dt18,
+    // 2026-10-27 0x0B[2] JPAD: 帧尾补 0 到整帧 (1920*1080*2 = 4147200)
+    //   1 = 补满整帧, rkcif 行为与现有 NV16 通路完全一致 (稳妥, 但占带宽)
+    //   0 = 纯短帧, 用来验证 rkcif 能不能收不满一帧的 CSI-2 帧
+    output wire         O_cfg_jpg_pad,
     output wire [1:0]   O_cfg_subsample,
     output wire [7:0]   O_cfg_restart_int,
     output wire [2:0]   O_cfg_predictor,
@@ -228,6 +237,8 @@ module jpeg_regfile #(
     reg        r_rc_en;
     reg [3:0]  r_rc_speed;
     reg        r_jpg_tx;       // 2026-10-21: 0x0B MIPI 发 NV16(0) 还是 JPEG(1)
+    reg        r_jpg_dt18;     // 2026-10-27: 0x0B[1] JPEG 长包 DT 0=0x1E 1=0x18
+    reg        r_jpg_pad;      // 2026-10-27: 0x0B[2] 帧尾补零到整帧
     reg [1:0]  r_subsample;
     reg [7:0]  r_restart;
     reg [2:0]  r_predictor;
@@ -319,6 +330,8 @@ module jpeg_regfile #(
             r_rc_en      <= 1'b0;
             r_rc_speed   <= 4'd8;
             r_jpg_tx     <= 1'b0;      // 默认走原 NV16 通路
+            r_jpg_dt18   <= 1'b0;      // 2026-10-27: 默认 DT=0x1E (rkcif 当前只认这个)
+            r_jpg_pad    <= 1'b1;      // 2026-10-27: 默认补满整帧 (最稳妥)
             r_subsample  <= 2'd1;      // 默认 4:2:2
             r_restart    <= 8'd0;
             r_predictor  <= 3'd0;      // 0 = MED
@@ -398,7 +411,11 @@ module jpeg_regfile #(
                     8'h08: r_restart   <= I_wr_data;
                     8'h09: r_predictor <= I_wr_data[2:0];
                     8'h0A: r_soft_rst  <= I_wr_data[0];
-                    8'h0B: r_jpg_tx    <= I_wr_data[0];
+                    8'h0B: begin
+                        r_jpg_tx   <= I_wr_data[0];
+                        r_jpg_dt18 <= I_wr_data[1];
+                        r_jpg_pad  <= I_wr_data[2];
+                    end
                     // ---- 高级预处理 (单选) ----
                     8'hB0: r_pp_en      <= I_wr_data[0];
                     8'hB1: r_pp_mode    <= (I_wr_data[3:0] > 4'd8) ? 4'd8 : I_wr_data[3:0];
@@ -470,7 +487,9 @@ module jpeg_regfile #(
     assign O_dbg_btn = (r_dbg_btn_cnt == 16'd0);
 
     // 2026-10-21: MIPI 输出源选择 (0 = 原 NV16 直通, 1 = 硬件 JPEG 码流)
-    assign O_cfg_jpg_tx = r_jpg_tx;
+    assign O_cfg_jpg_tx   = r_jpg_tx;
+    assign O_cfg_jpg_dt18 = r_jpg_dt18;
+    assign O_cfg_jpg_pad  = r_jpg_pad;
 
     // ---------------------------------------------------------------- 读 (1 拍延迟)
     // 量化表整段占 0x10~0x8F (128 项 = 亮度 64 + 色度 64), 单独判断,
@@ -495,7 +514,7 @@ module jpeg_regfile #(
                 8'h08: O_rd_data <= r_restart;
                 8'h09: O_rd_data <= {5'b0, r_predictor};
                 8'h0A: O_rd_data <= 8'h00;
-                8'h0B: O_rd_data <= {7'b0, r_jpg_tx};
+                8'h0B: O_rd_data <= {5'b0, r_jpg_pad, r_jpg_dt18, r_jpg_tx};
 
                 8'hA0: O_rd_data <= s_frame_bytes[ 7:0];
                 8'hA1: O_rd_data <= s_frame_bytes[15:8];

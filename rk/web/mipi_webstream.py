@@ -1123,7 +1123,11 @@ class SysMonitor:
 
             m = {"link_mb_s": round(link / 1e6, 1),
                  "jpeg_w": jw, "jpeg_h": jh,
-                 "stream_scaled": (jw, jh) != (width, height)}
+                 "stream_scaled": (jw, jh) != (width, height),
+                 # 2026-10-27: 直通 = RK 端只搬字节, 不解码不重编码
+                 "jpeg_direct": bool(JPEG_STAT.get("direct_on")),
+                 "direct_frames": JPEG_STAT.get("direct", 0),
+                 "direct_bad": JPEG_STAT.get("direct_bad", 0)}
             if fps:
                 m["raw_mb_s"] = round(raw_bpf * fps / 1e6, 1)
 
@@ -1251,9 +1255,10 @@ class JpegMode:
             return self._hw
 
 
-HW_JPEG = JpegMode(False)
+HW_JPEG = JpegMode(True)   # 2026-10-27: 硬件编码是唯一通路(赛题不允许软件压缩)
 
-JPEG_STAT = {"hw_ok": 0, "hw_bad": 0, "sw_fallback": 0, "rebuild": 0}
+JPEG_STAT = {"hw_ok": 0, "hw_bad": 0, "sw_fallback": 0, "rebuild": 0,
+             "direct": 0, "direct_bad": 0, "direct_on": False}
 
 # ============================================================================
 #  双目拼接 (FPGA CFG_VER 0x4700)
@@ -1603,6 +1608,55 @@ class OpenCVCapture(threading.Thread):
             except queue.Full:
                 continue
 
+    # ========================================================================
+    #  2026-10-27: FPGA 直通 JPEG (FPGA 0x0B[0]=1, 固件 0x470A 及以上)
+    #  ------------------------------------------------------------------
+    #  FPGA 把硬件编码器的码流直接放在 MIPI 帧缓冲里发过来(长包 DT 0x1E,
+    #  rkcif 当成普通像素 DMA 进 DDR)。所以 RK 这边根本不需要解码/重编码:
+    #  帧首就是 FF D8, 找到 FF D9 就是一张完整 JPEG, 直接推给浏览器。
+    #  代价: 缩放/旋转/AI 叠加这些逐像素功能得回到"解码一次"的老路。
+    # ========================================================================
+    def _pace(self, t_start):
+        """限帧: 只补足"剩余"时间。默认 60 (链路上限), 可在网页上往下调。"""
+        target = max(1.0, float(self.params.get()["fps"]))
+        dt = 1.0 / target
+        rest = dt - (time.time() - t_start)
+        if rest > 0.0005:
+            time.sleep(rest)
+
+    def _jpeg_in_frame(self, frame):
+        """从一帧原始缓冲里取出 JPEG。返回 (是否 JPEG 帧, jpg bytes 或 None)。
+
+        FPGA 直通模式下帧缓冲内容 = 编码器输出的字节流:
+          前 ~100KB 是完整 JPEG, 后面是补零(0x0B[2]=1)或上一帧残留。
+        首字节不是 FFD8 => 说明还在 NV16 通路, 返回 (False, None)。
+        """
+        try:
+            buf = frame.reshape(-1)
+            if buf.size < 4 or buf[0] != 0xFF or buf[1] != 0xD8:
+                return False, None
+            b = buf.tobytes()
+        except Exception:                                          # noqa: BLE001
+            return False, None
+        # 熵编码数据里的 FF 都做了 0x00 填充, 所以第一个 FF D9 就是 EOI
+        e = b.find(b"\xff\xd9", 2)
+        if e < 1024:                # 没找到, 或小到不像一帧 JPEG
+            return True, None
+        return True, b[:e + 2]
+
+    def _publish_direct(self, seq, jpg, t_cap):
+        """零重编码发布。
+
+        ⚠ 必须把按序发布指针推过本帧: _results/_next_pub 是和 _enc_loop
+          共用的一套, 直通帧不进队列, _next_pub 会卡在旧序号上,
+          之后一旦回到队列通路就永远发不出去(整个推流卡死)。
+        """
+        with self._seq_cond:
+            while self._next_pub <= seq:
+                self._results.pop(self._next_pub, None)
+                self._next_pub += 1
+            self.hub.publish(jpg, ts=t_cap)
+
     def request_reopen(self):
         """请求采集线程释放并重开 V4L2 设备 (切换分辨率/帧率后用)。"""
         ev = getattr(self, "need_reopen", None)
@@ -1687,6 +1741,38 @@ class OpenCVCapture(threading.Thread):
             self._last_raw = (seq, frame)
             # t_cap: 这一帧从 V4L2 拿到的时刻, 一路传到发布, 用来算传输延时
 
+            # ---- 2026-10-27: FPGA 直通 JPEG (整条链路零解码零重编码) ----
+            #   FPGA 开了 0x0B[0]=1 后, MIPI 帧缓冲里装的就是编码器码流。
+            #   参数全默认 + 单目 + 没开 AI -> 直接把那几十 KB 推给浏览器,
+            #   CPU 占用接近 0, 延时只剩链路+DMA。
+            #   需要逐像素处理(缩放/旋转/几何/AI 叠加)时, 在这里解码一次再走原路。
+            _is_jpg, _jpg = self._jpeg_in_frame(frame)
+            if _is_jpg:
+                now_cap = time.time()
+                if _jpg is None:
+                    JPEG_STAT["direct_bad"] += 1
+                    self._pace(t_start)
+                    continue
+                _p = self.params.get()
+                _ai = AI_OVERLAY
+                if (_params_plain(_p) and not self._dual_now
+                        and abs(float(_p.get("scale", 1.0)) - 1.0) < 1e-3
+                        and not (_ai is not None and _ai.active)):
+                    JPEG_STAT["direct"] += 1
+                    JPEG_STAT["direct_on"] = True
+                    self._publish_direct(seq, _jpg, now_cap)
+                    self._pace(t_start)
+                    continue
+                # 效果模式: 解码一次, 交给原来的 BGR 队列(尺寸/几何/AI)
+                JPEG_STAT["direct_on"] = False
+                _bgr = cv2.imdecode(np.frombuffer(_jpg, np.uint8),
+                                    cv2.IMREAD_COLOR)
+                if _bgr is not None:
+                    self._put(self._bgr_q, (seq, _bgr, now_cap, "bgr", 0))
+                self._pace(t_start)
+                continue
+            JPEG_STAT["direct_on"] = False
+
             # ---- 双目: 先读帧标记, 决定这一帧来自哪一路 ----
             #     没有标记(单目 / 没开 mark_en) -> 一律当 cam0。
             src = self._peek_dual_src(frame)
@@ -1740,11 +1826,7 @@ class OpenCVCapture(threading.Thread):
             self._put(self._raw_q, (seq, frame, now_cap, src))
 
             # 限帧: 只补足"剩余"时间。默认 60 (链路上限), 可在网页上往下调。
-            target = max(1.0, float(self.params.get()["fps"]))
-            dt = 1.0 / target
-            rest = dt - (time.time() - t_start)
-            if rest > 0.0005:
-                time.sleep(rest)
+            self._pace(t_start)
 
         if cap is not None:
             cap.release()
@@ -3952,14 +4034,18 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if path == "/api/jpeg":
                 body = self._read_json()
-                HW_JPEG.set(bool(body.get("hw")))
+                # 2026-10-27: 赛题不允许软件压缩, 硬件编码已成**唯一通路**。
+                #   这里不再接受 hw=0(传了也忽略), 避免有人把链路退回软编。
+                _want = bool(body.get("hw", True))
+                if not _want:
+                    print("[jpeg] 忽略 hw=0: 硬件编码是唯一通路(赛题不允许软件压缩)")
+                HW_JPEG.set(True)
                 cap = Handler.capture
                 active = bool(cap is not None
                               and getattr(cap, "_hw", None) is not None
                               and cap._hw.ok)
-                print("[jpeg] 硬件编码 %s (当前生效=%s)"
-                      % ("开启" if HW_JPEG.get() else "关闭", active))
-                return self._json({"ok": True, "hw": bool(HW_JPEG.get()),
+                print("[jpeg] 硬件编码 强制开启 (当前生效=%s)" % active)
+                return self._json({"ok": True, "hw": True,
                                    "active": active,
                                    "stat": dict(JPEG_STAT)})
             if path == "/api/params":

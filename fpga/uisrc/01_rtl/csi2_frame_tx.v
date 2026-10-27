@@ -375,12 +375,17 @@ endmodule
 module csi2_frame_tx_var #(
     parameter integer PKT_BYTES = 1024,     // 每个 long packet 的目标载荷字节数 (2 的幂, >= 4)
     parameter integer GAP_FRAME = 200,      // FE 之后到下一帧 FS 的空闲拍数
-    parameter [5:0]   DT        = 6'h18,    // 0x18 = JPEG
     parameter [1:0]   VC        = 2'b00
 )(
     input  wire        clk,
     input  wire        rst_n,
     input  wire        enable,
+
+    // 2026-10-27: 长包 DT 从编译期参数改成**运行时端口**。
+    //   0x18 = 标准 JPEG (rkcif 当前配置拒收: 板上实测 MIPI_CSI2 ERR "err id"),
+    //   0x1E = YUV422 8bit —— 与 NV16 通道同 DT, rkcif 才收 (JPEG 字节占帧缓冲前段)。
+    //   FS/FE 短包固定 0x00/0x01, 不受本端口影响。
+    input  wire [5:0]  i_dt,
 
     // ---------------- JPEG 字节流 (接 jpeg_encoder_top 的 m_valid/m_data/m_last)
     input  wire        s_tvalid,
@@ -507,7 +512,7 @@ module csi2_frame_tx_var #(
 
     wire [31:0] fs_word = build_short_hdr(6'h00, frame_cnt[15:0]);
     wire [31:0] fe_word = build_short_hdr(6'h01, frame_cnt[15:0]);
-    wire [31:0] lp_hdr  = build_long_hdr(DT, t_wc);
+    wire [31:0] lp_hdr  = build_long_hdr(i_dt, t_wc);
 
     // ★ 队列最多排 1 个 (描述符只有一组), 所以写侧只能在 pend_v=0 时写。
     //   这不影响吞吐: 发侧在 S_IDLE 一拍就把描述符取走, 写侧只停 1~2 拍;
