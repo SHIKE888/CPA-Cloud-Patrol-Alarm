@@ -212,3 +212,94 @@ module jpeg_bitpack (
     end
 
 endmodule
+
+
+/*===========================================================================
+ * Filename     : jpeg_seg_merge.v  (本文件内合并, 避免 TD 把独立文件当黑盒)
+ * Description  : 双引擎"半行段"交替合并器
+ *
+ *  一张 3840x1080 的 JPEG 由两个引擎各编半行(120 MCU)拼成。因为设了
+ *  DRI=120, 每个半行是一个**独立熵编码段**, 所以可以直接背对背拼接:
+ *
+ *      头部(3840宽, DRI=120) | L(r0) RST0 | R(r0) RST1 | L(r1) RST2 | ...
+ *
+ *  两个引擎天然错开 ~55us (右目的像素本来就在一行后半段才到), 而合并器
+ *  1 字节/拍的输出速度远高于单个引擎 ~1 字节/3 拍 的产生速度, 所以左段的
+ *  字节在右段开始前就已经吐完 —— 不需要大 FIFO, 一个 2:1 mux 就够。
+ *
+ *  ★ 切换时机必须精确: 段结束那一拍对应的最后一个字节还没被下游接住时
+ *    不能切, 否则那个字节会被另一个引擎的数据顶掉。所以用 done_p 锁存,
+ *    等"最后一个字节被 o_ready 接走"或"已经没有有效字节"才切。
+ *==========================================================================*/
+module jpeg_seg_merge (
+    input  wire        clk,
+    input  wire        rst_n,
+    input  wire        i_start,      // 帧开始 (脉冲): 选择器回到左引擎
+
+    input  wire        l_valid,
+    input  wire [7:0]  l_data,
+    input  wire        l_last,
+    output wire        l_ready,
+    input  wire        l_seg_done,   // 左引擎一段吐完 (脉冲)
+
+    input  wire        r_valid,
+    input  wire [7:0]  r_data,
+    input  wire        r_last,
+    output wire        r_ready,
+    input  wire        r_seg_done,   // 右引擎一段吐完 (脉冲)
+
+    output reg         o_valid,
+    output reg  [7:0]  o_data,
+    output reg         o_last,
+    input  wire        o_ready,
+
+    output reg  [9:0]  o_seg_cnt     // 调试: 本帧已完成的段数
+);
+
+    reg  sel;          // 0 = 输出左引擎
+    reg  l_done_p, r_done_p;
+
+    assign l_ready = (sel == 1'b0) && o_ready;
+    assign r_ready = (sel == 1'b1) && o_ready;
+
+    always @(*) begin
+        if (sel == 1'b0) begin
+            o_valid = l_valid; o_data = l_data; o_last = l_last;
+        end else begin
+            o_valid = r_valid; o_data = r_data; o_last = r_last;
+        end
+    end
+
+    // 可以切换的条件: 本段已经吐完, 且(没有待发的字节 或 那个字节这拍被接走)
+    wire l_can_sw = l_done_p && (!l_valid || o_ready);
+    wire r_can_sw = r_done_p && (!r_valid || o_ready);
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            sel      <= 1'b0;
+            l_done_p <= 1'b0;
+            r_done_p <= 1'b0;
+            o_seg_cnt <= 10'd0;
+        end else if (i_start) begin
+            sel       <= 1'b0;
+            l_done_p  <= 1'b0;
+            r_done_p  <= 1'b0;
+            o_seg_cnt <= 10'd0;
+        end else begin
+            if (l_seg_done) l_done_p <= 1'b1;
+            if (r_seg_done) r_done_p <= 1'b1;
+
+            if ((sel == 1'b0) && l_can_sw) begin
+                sel      <= 1'b1;
+                l_done_p <= 1'b0;
+                o_seg_cnt <= o_seg_cnt + 10'd1;
+            end else if ((sel == 1'b1) && r_can_sw) begin
+                sel      <= 1'b0;
+                r_done_p <= 1'b0;
+                o_seg_cnt <= o_seg_cnt + 10'd1;
+            end
+        end
+    end
+
+endmodule
+

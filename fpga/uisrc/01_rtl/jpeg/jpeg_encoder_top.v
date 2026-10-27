@@ -38,7 +38,18 @@
 
 module jpeg_encoder_top #(
     parameter integer W = 1920,
-    parameter integer H = 1080
+    parameter integer H = 1080,
+    // ★ 2026-10-28 双引擎拼一张 3840 宽 JPEG 用的参数:
+    //   左引擎 HDR_EN=1/EOI_EN=0/RST_INIT=0/RST_STEP=2
+    //   右引擎 HDR_EN=0/EOI_EN=1/RST_INIT=1/RST_STEP=2
+    //   两引擎交替输出半行段, RST 序号奇偶交错 -> 全局就是 RST0,1,2,...,7,0,...
+    parameter integer HDR_EN   = 1,   // 1 = 本引擎输出帧头 (宽高由 i_width/i_height 给)
+    parameter integer EOI_EN   = 1,   // 1 = 本引擎输出结尾 FF D9
+    parameter integer RST_INIT = 0,   // 第一个 RST 的编号 (0..7)
+    parameter integer RST_STEP = 1,   // 每段结束后 RST 编号的步长 (1=单引擎, 2=双引擎)
+    // ★ 1 = 最后一段后面也插 RST。双引擎时左引擎必须为 1:
+    //   拼完后左引擎的最后一段后面还跟着右引擎的最后一段, 那个边界是需要标记的。
+    parameter integer LAST_RST_EN = 0
 ) (
     input  wire        clk,
     input  wire        rst_n,
@@ -78,7 +89,11 @@ module jpeg_encoder_top #(
     output reg  [23:0] st_frame_bytes,
     output reg         st_busy,
     output reg         st_done,
-    output reg  [31:0] st_frame_cnt
+    output reg  [31:0] st_frame_cnt,
+
+    // ★ 段结束指示 (给双引擎合并模块用): 一个半行段已经完整吐出去,
+    //   合并器看到这个脉冲就可以切到另一个引擎。帧末没 RST 的那段用 st_done 顶。
+    output wire        o_seg_done
 );
 
     // ★ 2026-10-26 (紧急回退): MCU 尺寸改回**编译期**。
@@ -270,6 +285,10 @@ module jpeg_encoder_top #(
     // 每编完 1 个 MCU (4 块) 且不是本帧最后一个 MCU 且需要重启 -> 插 RST
     wire        mcu_end = huff_done && (huff_blk == 2'd3);
     wire        huff_rst_pred = huff_start && (frame_first || rst_pred_pend);
+    // 段结束: RST 标记完全吐出, 或者整帧收尾
+    assign      o_seg_done = bp_rst_done | st_done;
+    // 本帧最后一个 MCU (enc_mcu 是“已完成”数, 所以在 mcu_end 那一拍 +1 前先比较)
+    wire        last_mcu   = (enc_mcu == (TOTAL_MCU - 1));
 
     jpeg_huff_enc u_huff (
         .clk          (clk),
@@ -379,7 +398,7 @@ module jpeg_encoder_top #(
             rd_buf        <= 1'b0;
             huff_blk      <= 2'd0;
             rst_cnt       <= 16'd0;
-            rst_idx       <= 3'd0;
+            rst_idx       <= RST_INIT[2:0];
             rst_busy      <= 1'b0;
             rst_pred_pend <= 1'b0;
             rst_req       <= 1'b0;
@@ -393,7 +412,7 @@ module jpeg_encoder_top #(
             rd_buf        <= 1'b0;
             huff_blk      <= 2'd0;
             rst_cnt       <= 16'd0;
-            rst_idx       <= 3'd0;
+            rst_idx       <= RST_INIT[2:0];
             rst_busy      <= 1'b0;
             rst_pred_pend <= 1'b0;
             rst_req       <= 1'b0;
@@ -428,7 +447,7 @@ module jpeg_encoder_top #(
             if (mcu_end) begin
                 enc_mcu <= enc_mcu + 16'd1;
                 if ((i_rst_int != 16'd0) && (rst_cnt == (i_rst_int - 16'd1))
-                    && (enc_mcu != (TOTAL_MCU - 1))) begin
+                    && (!last_mcu || (LAST_RST_EN != 0))) begin
                     rst_req  <= 1'b1;
                     rst_busy <= 1'b1;
                     rst_cnt  <= 16'd0;
@@ -445,7 +464,7 @@ module jpeg_encoder_top #(
             if (bp_rst_done) begin
                 rst_busy      <= 1'b0;
                 rst_pred_pend <= 1'b1;    // 重启段的第一块要清 DC 预测器
-                rst_idx       <= rst_idx + 3'd1;
+                rst_idx       <= rst_idx + RST_STEP[2:0];
             end
 
             // 有活就启动 (无损模式不走熵编码; RST 标记发送期间也不能启动)
@@ -494,7 +513,7 @@ module jpeg_encoder_top #(
     always @(*) begin
         if (hdr_valid) begin
             m_valid = 1'b1;  m_data = hdr_data;  m_last = 1'b0;
-        end else if (tstate == T_EOI) begin
+        end else if ((tstate == T_EOI) && (EOI_EN != 0)) begin
             m_valid = 1'b1;  m_data = eoi_ph ? 8'hD9 : 8'hFF;  m_last = eoi_ph;
         end else begin
             m_valid = bp_valid;  m_data = bp_data;  m_last = 1'b0;
@@ -587,8 +606,16 @@ module jpeg_encoder_top #(
             //----------------------------------------------------
             T_LOADQ: begin
                 if (q_load_done) begin
-                    hdr_start <= 1'b1;
-                    tstate    <= T_HDR;
+                    if (HDR_EN != 0) begin
+                        hdr_start <= 1'b1;
+                        tstate    <= T_HDR;
+                    end else begin
+                        // 右引擎不发帧头, 直接开始收数据 (与 T_HDR 里的初始化一致)
+                        mx_reg <= 8'd0;
+                        my     <= 9'd0;
+                        blk    <= 2'd0;
+                        tstate <= T_WGRP;
+                    end
                 end
             end
 
