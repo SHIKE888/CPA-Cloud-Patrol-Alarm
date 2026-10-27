@@ -36,6 +36,15 @@ module jpeg_huff_enc (
     output reg  [5:0]  o_len,
     input  wire        i_ready,         // 下游位打包器能接收 (放不下时会拉低)
 
+    // ★ 2026-10-28 (147.5MHz 时序): 一个时钟发两个符号时, **不再在这里拼成 32 位**。
+    //   原来 ac2_code = (ac_code << ac_len_n) | ac_code_n 是串行依赖的第二级
+    //   32 位变量移位(约 2ns), 而且拼完还要再过 bitpack 的移位器。
+    //   现在把第二个符号单独送出去(o_two 有效), 由 jpeg_bitpack 用**两条并行**
+    //   移位器同时落位。bitpack 侧本来就有时序余量(违例端点全在 o_code_reg)。
+    output reg  [31:0] o_code2,
+    output reg  [5:0]  o_len2,
+    output reg         o_two,
+
     // ★ 2026-10-21 为 60fps 加: zigzag 下一个位置的系数。
     //   原来 S_AC 是 1 拍/系数, 零系数也要占一拍 -> 一个全零 block 也要 64 拍,
     //   实测 421 clk/MCU, 而 1080p60 的预算是 151.7 clk/MCU。
@@ -148,8 +157,8 @@ module jpeg_huff_enc (
 
     // 两个符号拼成一个 32 bit 输出: ac_code 在高位, ac_code_n 接在后面。
     // ac2_len 必须 <= 32 才能一拍发完, 否则退回 1 符号/拍。
+    // ★ 拼接本身已移到 jpeg_bitpack 里做(并行移位), 这里只保留长度和用于判断。
     wire        [5:0]  ac2_len  = ac_len  + ac_len_n;
-    wire        [31:0] ac2_code = (ac_code << ac_len_n) | ac_code_n;
     wire               ac2_ok   = (ac_v   != 16'sd0) &&
                                   (ac_v_n != 16'sd0) &&
                                   (run    == 6'd0 ) &&
@@ -186,9 +195,13 @@ module jpeg_huff_enc (
             o_valid    <= 1'b0;
             o_code     <= 32'd0;
             o_len      <= 6'd0;
+            o_code2    <= 32'd0;
+            o_len2     <= 6'd0;
+            o_two      <= 1'b0;
             o_blk_done <= 1'b0;
         end else begin
             o_valid    <= 1'b0;
+            o_two      <= 1'b0;
             o_blk_done <= 1'b0;
 
             case (state)
@@ -227,9 +240,13 @@ module jpeg_huff_enc (
                     kk  <= nz_idx;
                 end else if (ac2_ok && i_ready) begin
                     // 两个非零系数一拍发完。处理完 kk 和 kk+1 两个位置。
+                    // ★ 两个符号**分别**输出, 由 bitpack 并行落位
                     o_valid <= 1'b1;
-                    o_code  <= ac2_code;
-                    o_len   <= ac2_len;
+                    o_code  <= ac_code;
+                    o_len   <= ac_len;
+                    o_code2 <= ac_code_n;
+                    o_len2  <= ac_len_n;
+                    o_two   <= 1'b1;
                     run     <= 6'd0;
                     if (kk == 6'd62) state <= S_END;   // kk+1 已经是 63
                     else             kk    <= kk + 6'd2;

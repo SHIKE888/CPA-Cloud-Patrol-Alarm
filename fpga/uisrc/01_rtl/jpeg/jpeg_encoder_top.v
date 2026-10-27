@@ -281,6 +281,9 @@ module jpeg_encoder_top #(
     wire        huff_valid;
     wire [31:0] huff_code;
     wire [5:0]  huff_len;
+    wire [31:0] huff_code2;
+    wire [5:0]  huff_len2;
+    wire        huff_two;
     wire        huff_done;
     // 每编完 1 个 MCU (4 块) 且不是本帧最后一个 MCU 且需要重启 -> 插 RST
     wire        mcu_end = huff_done && (huff_blk == 2'd3);
@@ -303,6 +306,9 @@ module jpeg_encoder_top #(
         .o_valid      (huff_valid),
         .o_code       (huff_code),
         .o_len        (huff_len),
+        .o_code2      (huff_code2),
+        .o_len2       (huff_len2),
+        .o_two        (huff_two),
         .i_ready      (bp_ready),
         .o_blk_done   (huff_done),
         .i_rst_pred   (huff_rst_pred)
@@ -324,6 +330,9 @@ module jpeg_encoder_top #(
         .i_valid    (use_ll ? ll_valid : huff_valid),
         .i_code     (use_ll ? ll_code  : huff_code),
         .i_len      (use_ll ? ll_len   : huff_len),
+        .i_code2    (use_ll ? 32'd0    : huff_code2),
+        .i_len2     (use_ll ? 6'd0     : huff_len2),
+        .i_two      (use_ll ? 1'b0     : huff_two),
         .i_ready    (bp_ok),
         .o_valid    (bp_valid),
         .o_data     (bp_data),

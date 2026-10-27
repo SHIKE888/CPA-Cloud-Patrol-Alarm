@@ -38,6 +38,11 @@ module jpeg_bitpack (
     input  wire        i_valid,
     input  wire [31:0] i_code,
     input  wire [5:0]  i_len,        // 1..32
+    // ★ 2026-10-28: 第二符号 (一拍发两个符号时有效)。不再在上游拼成 32 位,
+    //   改在这里用**两条并行**移位器同时落位, 去掉一串串行嵌套的 32 位变量移位。
+    input  wire [31:0] i_code2,
+    input  wire [5:0]  i_len2,
+    input  wire        i_two,
     output wire        i_ready,      // 累加器是否有余量接收本次 put
 
     // 字节流输出
@@ -74,11 +79,22 @@ module jpeg_bitpack (
     //   n 的上界有保证: huff 只在 i_ready=1 (即 n+i_len<=32) 时才发, 所以一次
     //   put 之后 n <= 32, 再一次 put 之后 n <= 64 —— 正好装满 64 位 acc,
     //   移位量 64-n-len >= 64-32-32 = 0, 不会下溢。
-    wire        do_put = i_valid && (i_len != 6'd0);
-    wire [63:0] acc_p  = do_put
-                       ? (acc | ({32'd0, i_code} << (7'd64 - n - {1'b0, i_len})))
-                       : acc;
-    wire [6:0]  n_p    = do_put ? (n + {1'b0, i_len}) : n;
+
+    // ★ 2026-10-28 (147.5MHz): 两个符号的并行落位版本
+    //   len_tot = 本次 put 一共要落多少位
+    //   ★ 符号1 在**高位**(先输出), 所以它移位少: 64 - n - len1
+    //     符号2 跟在符号1 后面:                 64 - n - len1 - len2
+    //   两条移位器是**并行**的, 不前后嵌套 —— 这是去掉那 ~2ns 的关键。
+    //   (原来在上游 huff 里做 (ac_code << ac_len_n) | ac_code_n, 串行依赖)
+    wire [6:0]  len_tot = i_two ? ({1'b0, i_len} + {1'b0, i_len2}) : {1'b0, i_len};
+    wire [63:0] put_two = ({32'd0, i_code}  << (7'd64 - n - {1'b0, i_len}))
+                        | ({32'd0, i_code2} << (7'd64 - n - len_tot));
+    wire        do_put  = i_valid && (len_tot != 7'd0);
+    wire [63:0] acc_p   = do_put
+                        ? (acc | (i_two ? put_two
+                                        : ({32'd0, i_code} << (7'd64 - n - {1'b0, i_len}))))
+                        : acc;
+    wire [6:0]  n_p     = do_put ? (n + len_tot) : n;
 
     // 背压: 只按累加器容量判断, 【不能】把 pend_00 算进去。
     //   原因: huff 在拍 N 用 i_ready(N) 决定是否发某个符号; 若拍 N+1 因为
