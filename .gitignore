@@ -61,3 +61,29 @@ rk/ai/dist/
 
 # ---- FPGA bitstream backups ----
 fpga/*.bit.bak*
+
+# ============================================================================
+#  2026-10-28 整理追加
+# ============================================================================
+
+# ---- 仿真输出产物: 每次跑测试台都会重新生成, 不应入库 ----
+fpga/sim/rtl.jpg
+fpga/sim/rtl_r2.jpg
+fpga/sim/merged.jpg
+fpga/sim/ref2.jpg
+fpga/sim/jwt_*.jpg
+fpga/sim/*.log
+fpga/sim/_o.txt
+
+# ---- 根目录散落的临时文件 ----
+/rtl.jpg
+/_c*.js
+
+# ---- 草稿 / 备份文件 (下划线前缀, _bak 目录) ----
+/_*.js
+rk/web/_*.html
+rk/web/_*.py
+rk/relay/web/_bak/
+tools/_*.py
+tools/_snap.jpg
+rk/web/action_net_weights.js
