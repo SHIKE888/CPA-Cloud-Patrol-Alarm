@@ -182,11 +182,31 @@ module jpeg_linebuf #(
     wire [YAW-1:0] raddr_y = {rd_buf, i_rd_row, i_rd_grp[GYW-1:0]};
     wire [CAW-1:0] raddr_c = {rd_buf, i_rd_row, i_rd_grp[GCW-1:0]};
 
+    // ★ 2026-10-28: 这里原来是"3 个 RAM 共用一个 o_rd_data 寄存器 + case 选择"，
+    //   TD 无法把它推断成 ERAM（块 RAM 的输出寄存器必须属于该 RAM 自己），
+    //   于是整个行缓冲退回分布式 LUT-RAM：实测 #dram lut = 9264，
+    //   白吃 14.4% 的 slice（LUT 只用了 43.6%，slice 却 65.8%）。
+    //   现在改成：每个阵列各自一个 DOUT 寄存器，之后再用组合 mux 选。
+    //   代价 = 2 个 64bit 寄存器（128 FF，FF 才用 23.9%，完全够），
+    //   收益 = 行缓冲变成 ERAM（约 27 块，ERAM 还剩 99 块）。
+    //   ⚠ 数据与延迟(1 拍)完全不变，逐字节回归必须仍然是 IDENTICAL。
+    reg [63:0] y_q, cb_q, cr_q;
+
     always @(posedge clk) begin
+        y_q  <= y_mem [raddr_y];
+    end
+    always @(posedge clk) begin
+        cb_q <= cb_mem[raddr_c];
+    end
+    always @(posedge clk) begin
+        cr_q <= cr_mem[raddr_c];
+    end
+
+    always @(*) begin
         case (i_rd_sel)
-        2'd0, 2'd1: o_rd_data <= y_mem [raddr_y];
-        2'd2:       o_rd_data <= cb_mem[raddr_c];
-        default:    o_rd_data <= cr_mem[raddr_c];
+        2'd0, 2'd1: o_rd_data = y_q;
+        2'd2:       o_rd_data = cb_q;
+        default:    o_rd_data = cr_q;
         endcase
     end
 
