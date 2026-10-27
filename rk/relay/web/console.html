@@ -301,6 +301,27 @@ body{
 }
 #viewVideo .sep{height:1px;background:var(--line);margin:14px 0}
 #viewVideo .hint{color:var(--dim); font-size:12px; margin:6px 0 0}
+/* ---- 云台页签：方向键盘 ----
+   长按方向键持续转，松手立即停。touch-action:none 必须写 —— 手机上
+   不写会被当成长按选中/滚动，pointerup 收不到，云台就会一直转。 */
+#viewVideo .gzpad{
+  display:grid; grid-template-columns:repeat(3,1fr);
+  grid-template-rows:repeat(3,46px); gap:8px; margin:8px 0 4px;
+  max-width:264px; margin-left:auto; margin-right:auto;
+  user-select:none; -webkit-user-select:none;
+}
+#viewVideo .gzbtn{
+  font-size:19px; line-height:1; padding:0; touch-action:none;
+  -webkit-tap-highlight-color:transparent; user-select:none;
+}
+#viewVideo .gzbtn[data-jog="up"]{grid-area:1/2}
+#viewVideo .gzbtn[data-jog="left"]{grid-area:2/1}
+#viewVideo .gzbtn[data-jog="right"]{grid-area:2/3}
+#viewVideo .gzbtn[data-jog="down"]{grid-area:3/2}
+#viewVideo #gzStop{grid-area:2/2; color:var(--warn)}
+#viewVideo .gzbtn.act{background:var(--acc2); border-color:var(--acc2);
+  color:#fff; font-weight:600}
+#viewVideo #tab-gz .kv b{font-variant-numeric:tabular-nums; font-weight:600}
 #viewVideo .kv{display:flex;justify-content:space-between;gap:8px}
 #viewVideo .mgroup{display:flex; align-items:center; gap:7px; font-size:10.5px;
     letter-spacing:.10em; color:var(--dim); margin:16px 0 7px}
@@ -427,7 +448,7 @@ html, body{overflow:hidden}
 
 <!-- 视频采集视图：iframe 懒加载板子 9012 的页面（不合并代码，避免 id/变量互相污染） -->
 <!-- 视频采集视图：原 mipi_viewer.html 的完整工作台，已并入本文件 -->
-<div id="viewVideo" class="view" hidden>
+<div id="viewVideo" class="view">
 <header>
   <h1>FPGA MIPI 画面控制台</h1>
   <input id="vAddr" type="text" value="" spellcheck="false"
@@ -518,7 +539,8 @@ html, body{overflow:hidden}
         <button class="tab on" data-tab="cam">摄像头</button>
         <button class="tab" data-tab="pp">预处理</button>
         <button class="tab" data-tab="sw">画面</button>
-        <button class="tab" data-tab="ai">AI 标注</button>
+        <button class="tab" data-tab="ai">标注</button>
+        <button class="tab" data-tab="gz">云台</button>
       </div>
 
       <!-- ======== 摄像头 / 输出 ======== -->
@@ -585,10 +607,16 @@ html, body{overflow:hidden}
 
         <div class="sep"></div>
 
-        <!-- 2026-10-27: 数字白平衡控件已下线 —— FPGA 侧那级乘法器已删(腾 DSP),
-             白平衡由 ISP 的 ui_awb 自动完成。 -->
+        <div class="row"><label>白平衡 R</label>
+          <input type="range" id="f_wb_r" min="0" max="200" step="1" value="100">
+          <span class="val" id="fv_wb_r">100%</span></div>
+
+        <div class="row"><label>白平衡 B</label>
+          <input type="range" id="f_wb_b" min="0" max="200" step="1" value="100">
+          <span class="val" id="fv_wb_b">100%</span></div>
 
         <div class="grid2" style="margin-top:6px">
+          <button class="ghost" id="btnWbReset">白平衡归零</button>
           <button id="btnCamPush">重新下发</button>
         </div>
 
@@ -658,7 +686,7 @@ html, body{overflow:hidden}
               <span class="val" id="fv_BASIC_CONTRAST">4</span></div>
           </div>
 
-          <!-- 2026-10-27: 反色已下线（不在赛题硬指标里，腾 DSP） -->
+          <button class="ghost ppbtn" data-basic="4">反色</button>
         </div>
 
         <div class="sep" style="margin:10px 0"></div>
@@ -693,8 +721,31 @@ html, body{overflow:hidden}
             </div>
           </div>
 
-          <!-- 2026-10-27: 中值/拉普拉斯/浮雕/Prewitt 已下线
-               （赛题硬指标只要求 高斯/直方图/灰度/对比度拉伸/阈值/形态学/Sobel） -->
+          <button class="ghost ppbtn" data-adv="4">中值滤波</button>
+
+          <button class="ghost ppbtn" data-adv="5">拉普拉斯</button>
+          <div class="ppparam" id="ap_5">
+            <div class="row"><label>增益</label>
+              <input type="range" id="f_ADV_LAP_SH" min="1" max="16" step="1" value="8">
+              <span class="val" id="fv_ADV_LAP_SH">8</span></div>
+          </div>
+
+          <button class="ghost ppbtn" data-adv="6">浮雕</button>
+          <div class="ppparam" id="ap_6">
+            <div class="row"><label>增益</label>
+              <input type="range" id="f_ADV_EMBOSS_GAIN" min="0" max="8" step="1" value="4">
+              <span class="val" id="fv_ADV_EMBOSS_GAIN">4</span></div>
+            <div class="row"><label>偏置</label>
+              <input type="range" id="f_ADV_EMBOSS_BIAS" min="0" max="255" step="1" value="128">
+              <span class="val" id="fv_ADV_EMBOSS_BIAS">128</span></div>
+          </div>
+
+          <button class="ghost ppbtn" data-adv="7">Prewitt</button>
+          <div class="ppparam" id="ap_7">
+            <div class="row"><label>增益</label>
+              <input type="range" id="f_ADV_PREW_SH" min="1" max="16" step="1" value="8">
+              <span class="val" id="fv_ADV_PREW_SH">8</span></div>
+          </div>
         </div>
 
         <p class="hint">每个算法一个按钮，参数滑条只在选中时显示。两级可同时生效；
@@ -842,6 +893,70 @@ html, body{overflow:hidden}
         </div>
     </div>
 
+    <!-- ======== 云台（QGimbal）：快捷控制 / 零点 / YOLO 目标追踪 ======== -->
+    <div class="tabbody" id="tab-gz" hidden>
+      <p class="hint" style="margin-top:0">
+        长按方向键持续转动，<b>松手立即停</b>（后端还有 0.8 s 看门狗）。
+        软件限位 <b>Yaw ±<span id="gzLimYaw">170</span>° / Pitch
+        ±<span id="gzLimPitch">42</span>°</b>，并且再与固件
+        <span id="gzLimFw">limit.pitch.deg</span> 取小 —— 目标值永远不会越界。
+      </p>
+
+      <div class="gzpad">
+        <button class="gzbtn" data-jog="up"    title="视线向上（Pitch +）">↑</button>
+        <button class="gzbtn" data-jog="left"  title="视线向左（Yaw +）">←</button>
+        <button class="gzbtn" id="gzStop"      title="停止（角度保持，不失能）">■</button>
+        <button class="gzbtn" data-jog="right" title="视线向右（Yaw −）">→</button>
+        <button class="gzbtn" data-jog="down"  title="视线向下（Pitch −）">↓</button>
+      </div>
+
+      <div class="row"><label>速度</label>
+        <input type="range" id="gz_speed" min="5" max="45" step="1" value="25">
+        <span class="val" id="gzv_speed" style="flex:0 0 62px">25 °/s</span></div>
+
+      <div class="row"><label title="速度指令的加速度上限：越小越柔和，越大越跟手">加速度</label>
+        <input type="range" id="gz_accel" min="50" max="800" step="10" value="250">
+        <span class="val" id="gzv_accel" style="flex:0 0 78px">250 °/s²</span></div>
+
+      <div class="row"><label title="卡尔曼前瞻时间：补偿 AI + 串口的流水线延迟，让人物走在画面中间而不是被追着跑；0=不预测">预测</label>
+        <input type="range" id="gz_pred" min="0" max="40" step="1" value="15">
+        <span class="val" id="gzv_pred" style="flex:0 0 62px">0.15 s</span></div>
+
+      <div class="sep"></div>
+
+      <div class="grid2">
+        <button id="gzZero" title="把当前姿态记为回零参考（软件零点，不写固件 Flash）">设置零点</button>
+        <button id="gzHome" title="转到零点位置（绝对角度模式，不会超限）">回到零点</button>
+      </div>
+      <div class="grid2" style="margin-top:8px">
+        <button class="ghost" id="gzTrack">开启追踪</button>
+        <button class="ghost" id="gzRelease"
+                title="关闭串口，把 /dev/ttyACM0 让给官方上位机 / gimbal_keyctrl.py">释放串口</button>
+      </div>
+
+      <div class="sep"></div>
+      <div style="font-size:12px;color:var(--dim);line-height:1.9">
+        <div class="kv"><span>Yaw 绝对/相对</span><b id="gzYaw">—</b></div>
+        <div class="kv"><span>Pitch 绝对/相对</span><b id="gzPitch">—</b></div>
+        <div class="kv"><span>目标</span><b id="gzTgt">—</b></div>
+        <div class="kv"><span>零点</span><b id="gzZeroPos">—</b></div>
+        <div class="kv"><span>追踪</span><b id="gzTrk">关闭</b></div>
+        <div class="kv"><span>追踪误差 x,y</span><b id="gzErr">—</b></div>
+        <div class="kv"><span>云台</span><b id="gzMsg">未连接</b></div>
+      </div>
+
+      <div class="sep"></div>
+      <p class="hint" style="margin:0 0 6px">
+        追踪方向反了就点下面翻一下（立即生效并保存，不用改代码/重启）：</p>
+      <div class="grid2">
+        <button class="ghost" id="gzYawInv">Yaw 反向</button>
+        <button class="ghost" id="gzPitchInv">Pitch 反向</button>
+      </div>
+      <p class="hint">追踪取 YOLO 检测框里<b>面积最大</b>的目标，把它的中心拉到画面中心；
+        开启时若 AI 没在跑，会自动切到「仅推理」（画面不变）。
+        手动按方向键会自动接管并关闭追踪。</p>
+    </div>
+
     <!-- ---------------- FPGA 通信状态（常显） ---------------- -->
     <div class="card" style="margin-top:14px">
       <h2>FPGA 通信状态</h2>
@@ -859,7 +974,7 @@ html, body{overflow:hidden}
 <div id="vToast"></div>
 </div>
 
-<div id="viewMap" class="view">
+<div id="viewMap" class="view" hidden>
 <header>
   <b class="ttl">ROS 控制台</b>
   <span id="dot"></span>
@@ -969,6 +1084,8 @@ html, body{overflow:hidden}
       videoLoaded = true;
       if (typeof window.relayVideoActivate === 'function') window.relayVideoActivate();
     } else {
+      // 离开视频视图：先把云台点动停住（按钮被隐藏后 pointerup 收不到）
+      if (typeof window.relayGzStop === 'function') window.relayGzStop();
       resize();          // canvas 在 hidden 时尺寸会变成 0，切回来必须重算
     }
   }
@@ -989,8 +1106,10 @@ html, body{overflow:hidden}
         showView(n);
       });
     }
-    // 记住上次停在哪个界面；首次进来默认建图导航
-    showView(localStorage.getItem('relay_view') || 'map');
+    // 2026-10-28: 默认落地页改为「视频采集」（用户要求：IP 进去先看画面）。
+    //   不再从 localStorage 恢复上次页签 —— 否则浏览器里存着 'map' 时
+    //   刷新/重进又会落到「调度控制」，与“首页即视频”的预期矛盾。
+    showView('video');
   }
 
   const cv = document.getElementById('cv');
@@ -2003,6 +2122,7 @@ function connect() {
   loadNet();
   aiLoad(true);
   fpgaPoll();
+  gzPoll();
   poll();
   sysPoll();
 }
@@ -2455,8 +2575,8 @@ function fpgaSyncUI() {
     const p = $("ap_" + v);
     if (p) p.classList.toggle("show", advOn && advMode === v);
   }
-  // 2026-10-27: 拉普拉斯/浮雕/Prewitt 已下线, 对应的滑块不再刷新
-  ["ADV_THRESH", "ADV_MORPH_TH", "ADV_SOBEL_SH"].forEach(k => {
+  ["ADV_THRESH", "ADV_MORPH_TH", "ADV_SOBEL_SH", "ADV_LAP_SH", "ADV_PREW_SH",
+   "ADV_EMBOSS_GAIN", "ADV_EMBOSS_BIAS"].forEach(k => {
     const el = $("f_" + k);
     if (el && r[k] !== undefined && document.activeElement !== el) el.value = r[k];
     if (el && $("fv_" + k)) $("fv_" + k).textContent = el.value;
@@ -3001,7 +3121,8 @@ document.querySelectorAll("#viewVideo [data-tab]").forEach(b => {
   b.onclick = () => {
     document.querySelectorAll("#viewVideo [data-tab]").forEach(x =>
       x.classList.toggle("on", x === b));
-    ["cam", "pp", "sw", "ai"].forEach(t => {
+    if (b.dataset.tab !== "gz") gzReleaseAll();
+    ["cam", "pp", "sw", "ai", "gz"].forEach(t => {
       const el = $("tab-" + t);
       if (el) el.hidden = (t !== b.dataset.tab);
     });
@@ -3034,13 +3155,14 @@ async function loadNet() {
 }
 
 /* ---------------- 摄像头 / 输出参数（物理量） ----------------
-   网页用物理量（曝光 ms / 增益 dB / 帧率 fps），后端再换算成
-   IMX415 的 SHR0 / GAIN —— 直接用裸寄存器值没法用。
-   2026-10-27: 白平衡两项已下线（FPGA 侧数字白平衡乘法器已删，改由 ISP 自动 AWB）。 */
+   网页用物理量（曝光 ms / 增益 dB / 白平衡 % / 帧率 fps），后端再换算成
+   IMX415 的 SHR0 / GAIN 和 FPGA 的数字增益 —— 直接用裸寄存器值没法用。 */
 const CAM_CTRL = [
   { id: "f_cam_exp",  key: "cam_exp_ms",  fmt: v => v.toFixed(2) + " ms"  },
   { id: "f_cam_gain", key: "cam_gain_db", fmt: v => v.toFixed(1) + " dB"  },
   { id: "f_cam_ev",   key: "ev",          fmt: v => v.toFixed(0) + " EV"  },
+  { id: "f_wb_r",     key: "wb_r_pct",    fmt: v => v.toFixed(0) + " %"   },
+  { id: "f_wb_b",     key: "wb_b_pct",    fmt: v => v.toFixed(0) + " %"   },
   { id: "f_roi",      key: "roi_pct",     fmt: v => v.toFixed(0) + " %"   },
 ];
 let camPushTimer = null;
@@ -3090,9 +3212,13 @@ CAM_CTRL.forEach(c => {
   });
 });
 
-// 2026-10-27: 白平衡控件已下线 —— FPGA 侧数字白平衡(R/B 增益乘法器)已删,
-//   白平衡由 ISP 的 ui_awb 自动完成。原来这里给 btnWbReset 绑 onclick,
-//   控件删掉后 $("btnWbReset") 是 null, 会抛异常把后面的绑定全部打断。
+$("btnWbReset").onclick = () => {
+  $("f_wb_r").value = 100; $("f_wb_b").value = 100;
+  $("fv_wb_r").textContent = "100 %"; $("fv_wb_b").textContent = "100 %";
+  camPush();
+};
+
+// 强制重发一次: 写 CAM_TRIG 任意值, FPGA 侧检测到变化就重下发全部摄像头参数
 $("btnCamPush").onclick = () => {
   api("/api/fpga", {
     method: "POST",
@@ -3307,6 +3433,235 @@ $("a_fall").addEventListener("input", e => {
 $("a_run").addEventListener("input", e => {
   $("av_run").textContent = Number(e.target.value).toFixed(2);
   aiPush({ tune: { run: Number(e.target.value) } });
+});
+
+/* ---------------- 云台（QGimbal） ----------------
+   安全要点（与 gimbal_web.py 的看门狗互补，两边都要有）：
+     * 按住期间每 200 ms 续一次 jog，后端 hold=0.8 s，超时自动归零速度；
+     * pointerup 绑在 window 上，另外 blur / visibilitychange / pagehide
+       也强制 stop —— 之前遥控小车就因为 pointerup 丢了、定时器残留，
+       指令一直发，车一路撞墙。云台同理，而且它撞的是排线。
+     * 只用角度模式，后端目标值已限幅；这里发错了最多是"不动"。
+---------------------------------------------------------- */
+let gz = null;                 // 最近一次 /api/gimbal 返回
+let gzTimer = null;
+let gzHoldTimer = null;        // 按住时续 jog 的定时器
+let gzJog = [0, 0];            // 当前方向（未乘速度/符号）
+let gzSpeedTimer = null;
+let gzAccelTimer = null;
+let gzPredTimer = null;
+
+// 当前实际速度（斜坡之后的），显示在「追踪误差」后面，方便看平滑效果
+function rateTxt(g) {
+  const a = (g && g.applied) || [0, 0];
+  const n = Math.max(Math.abs(Number(a[0]) || 0), Math.abs(Number(a[1]) || 0));
+  if (n < 0.15) return "  ·  0°/s";
+  return "  ·  ±" + n.toFixed(1) + "°/s";
+}
+
+// 方向 -> 关节速度方向（"视线往右" = Yaw 负速度，与 gimbal_keyctrl.py 的键位一致）
+const GZ_DIR = {
+  left:  { yaw: +1, pitch: 0 },
+  right: { yaw: -1, pitch: 0 },
+  up:    { yaw: 0,  pitch: +1 },
+  down:  { yaw: 0,  pitch: -1 },
+};
+
+async function gzPost(body) {
+  if (!base) return null;
+  try {
+    gz = await api("/api/gimbal", { method: "POST", body: JSON.stringify(body) });
+    gzSync();
+    return gz;
+  } catch (e) {
+    toast("云台: " + e.message, true);
+    return null;
+  }
+}
+
+async function gzLoad() {
+  if (!base) return;
+  try { gz = await api("/api/gimbal"); }
+  catch (e) { gz = { ok: false, available: false, error: e.message }; }
+  gzSync();
+}
+
+function gzPoll() {
+  clearInterval(gzTimer);
+  gzTimer = setInterval(() => { if (connected) gzLoad(); }, 800);
+  gzLoad();
+}
+
+function gzSync() {
+  const g = gz || {};
+  const lim = g.limits || {};
+  const sm = g.smooth || {};
+  const deg = v => (v == null ? "—" : (v >= 0 ? "+" : "") + Number(v).toFixed(1) + "°");
+  if ($("gzLimYaw"))   $("gzLimYaw").textContent   = (lim.yaw_rel ?? 170);
+  if ($("gzLimPitch")) $("gzLimPitch").textContent = (lim.pitch_rel ?? 42);
+  if ($("gzLimFw"))    $("gzLimFw").textContent    =
+      lim.pitch_fw ? ("limit.pitch.deg=" + lim.pitch_fw + "°")
+                   : "（读不到限位，已按 28° 保守处理）";
+  $("gzYaw").textContent     = deg(g.yaw_deg) + " / " + deg(g.yaw_rel_deg);
+  $("gzPitch").textContent   = deg(g.pitch_deg) + " / " + deg(g.pitch_rel_deg);
+  $("gzTgt").textContent     = g.target ? deg(g.target[0]) + ", " + deg(g.target[1]) : "—";
+  $("gzZeroPos").textContent = g.zero ? deg(g.zero[0]) + ", " + deg(g.zero[1]) : "—";
+  const trk = g.track || {};
+  $("gzTrk").textContent = g.tracking
+    ? ("开启 · " + (trk.state || "…") +
+       (trk.aim_mode ? " · " + trk.aim_mode : "") +
+       (trk.persons != null ? " · " + trk.persons + " 人" : ""))
+    : "关闭";
+  $("gzErr").textContent = (g.tracking && trk.err && trk.err.length === 2)
+    ? (Number(trk.err[0]).toFixed(3) + ", " + Number(trk.err[1]).toFixed(3)
+       + rateTxt(g))
+    : "—";
+  const msg = g.msg || g.error || "—";
+  $("gzMsg").textContent = msg;
+  $("gzMsg").style.color = g.ok ? "" : "var(--warn)";
+  $("gzTrack").classList.toggle("on", !!g.tracking);
+  $("gzTrack").textContent = g.tracking ? "关闭追踪" : "开启追踪";
+  const sg = g.signs || {};
+  $("gzYawInv").classList.toggle("on", Number(sg.yaw) < 0);
+  $("gzPitchInv").classList.toggle("on", Number(sg.pitch) < 0);
+  // 速度滑块：跟随后端（别的页面改过也能同步），但不打断本地拖动
+  if (g.speed_max && document.activeElement !== $("gz_speed")) {
+    $("gz_speed").value = Math.round(g.speed_max);
+    $("gzv_speed").textContent = Math.round(g.speed_max) + " °/s";
+  }
+  if (sm.accel && document.activeElement !== $("gz_accel")) {
+    $("gz_accel").value = Math.round(sm.accel);
+  }
+  if (sm.accel) $("gzv_accel").textContent = Math.round(sm.accel) + " °/s²";
+  if (sm.predict_s != null && document.activeElement !== $("gz_pred")) {
+    $("gz_pred").value = Math.round(sm.predict_s * 100);
+  }
+  if (sm.predict_s != null) $("gzv_pred").textContent =
+      Number(sm.predict_s).toFixed(2) + " s";
+  // 没连上/不可用 -> 方向键整块灰掉，避免"点了没反应"的误解
+  const off = !g.available || (g.error && !g.connected);
+  document.querySelectorAll("#tab-gz [data-jog]").forEach(b => { b.disabled = !!off; });
+  $("gzStop").disabled = !!off;
+}
+
+function gzSendJog() {
+  if (!gzJog[0] && !gzJog[1]) return;
+  const sp = Number($("gz_speed").value) || 25;
+  const sg = (gz && gz.signs) || {};
+  const ys = Number(sg.yaw) < 0 ? -1 : 1;
+  const ps = Number(sg.pitch) < 0 ? -1 : 1;
+  gzPost({
+    action: "jog",
+    yaw: gzJog[0] * sp * ys,
+    pitch: gzJog[1] * sp * ps,
+    hold: 0.8,
+  });
+}
+
+function gzReleaseAll() {
+  const was = (gzJog[0] || gzJog[1]);
+  clearInterval(gzHoldTimer);
+  gzHoldTimer = null;
+  gzJog = [0, 0];
+  document.querySelectorAll("#tab-gz [data-jog]").forEach(x => x.classList.remove("act"));
+  if (was) gzPost({ action: "stop" });
+}
+// 外层视图切换（视频 <-> 建图）时按钮会被隐藏、pointerup 收不到，
+// 所以把停手动作暴露出去，让 showView() 切走时叫一声。
+window.relayGzStop = function () { try { gzReleaseAll(); } catch (e) {} };
+
+document.querySelectorAll("#tab-gz [data-jog]").forEach(b => {
+  const dir = GZ_DIR[b.dataset.jog];
+  b.addEventListener("pointerdown", ev => {
+    if (ev.button !== undefined && ev.button !== 0) return;
+    ev.preventDefault();
+    gzJog = [dir.yaw, dir.pitch];
+    document.querySelectorAll("#tab-gz [data-jog]").forEach(x => x.classList.remove("act"));
+    b.classList.add("act");
+    clearInterval(gzHoldTimer);
+    gzSendJog();                                   // 第一下发要立刻，不能等 200 ms
+    gzHoldTimer = setInterval(gzSendJog, 200);
+    try { if (ev.pointerId != null) b.setPointerCapture(ev.pointerId); } catch (e) {}
+  });
+  b.addEventListener("contextmenu", e => e.preventDefault());
+});
+["pointerup", "pointercancel"].forEach(ev =>
+  window.addEventListener(ev, () => gzReleaseAll()));
+window.addEventListener("blur", () => gzReleaseAll());
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) gzReleaseAll();
+});
+window.addEventListener("pagehide", () => {
+  try {
+    navigator.sendBeacon(base + "/api/gimbal", JSON.stringify({ action: "stop" }));
+  } catch (e) {}
+});
+
+// 零点/回零/追踪这些动作是后端线程异步做的，POST 回来时只是"已下发"。
+// 等一会儿再拉一次状态，把真正的结果（成功/被拒/超时）弹出来。
+function gzToastSoon(ms) {
+  setTimeout(async () => {
+    await gzLoad();
+    if (gz && gz.msg) toast(gz.msg, /失败|拒绝|不可用|超时|未/.test(gz.msg));
+  }, ms || 1100);
+}
+
+$("gzStop").onclick = () => { gzReleaseAll(); gzPost({ action: "stop" }); };
+
+$("gzZero").onclick = async () => {
+  if (!confirm("把云台【当前姿态】设为「零点」？\n\n" +
+               "· 这是软件零点（存在 state.json），不写固件 Flash\n" +
+               "· 之后「回到零点」和追踪都以它为参考\n" +
+               "· 限位仍会用固件关节角的 ±170° 再兜一层，不会多转半圈")) return;
+  const g = await gzPost({ action: "zero", mode: "soft" });
+  if (g) { toast(g.msg || "已下发"); gzToastSoon(1200); }
+};
+
+$("gzHome").onclick = async () => {
+  const g = await gzPost({ action: "home" });
+  if (g) { toast(g.msg || "回零中…"); gzToastSoon(2500); }
+};
+
+$("gzTrack").onclick = async () => {
+  const on = !(gz && gz.tracking);
+  const g = await gzPost({ action: "track", on: on });
+  if (g) toast(g.msg || (on ? "追踪已开启" : "追踪已关闭"));
+};
+
+$("gzRelease").onclick = async () => {
+  gzReleaseAll();
+  const g = await gzPost({ action: "release" });
+  if (g) toast(g.msg || "串口已释放");
+};
+
+$("gzYawInv").onclick = () => {
+  const cur = Number(((gz && gz.signs) || {}).yaw || 1);
+  gzPost({ action: "config", yaw_sign: cur < 0 ? 1 : -1 });
+};
+$("gzPitchInv").onclick = () => {
+  const cur = Number(((gz && gz.signs) || {}).pitch || 1);
+  gzPost({ action: "config", pitch_sign: cur < 0 ? 1 : -1 });
+};
+
+$("gz_speed").addEventListener("input", e => {
+  $("gzv_speed").textContent = e.target.value + " °/s";
+  clearTimeout(gzSpeedTimer);
+  gzSpeedTimer = setTimeout(() =>
+    gzPost({ action: "config", speed_max: Number(e.target.value) }), 150);
+});
+
+$("gz_accel").addEventListener("input", e => {
+  $("gzv_accel").textContent = e.target.value + " °/s²";
+  clearTimeout(gzAccelTimer);
+  gzAccelTimer = setTimeout(() =>
+    gzPost({ action: "config", accel: Number(e.target.value) }), 150);
+});
+
+$("gz_pred").addEventListener("input", e => {
+  $("gzv_pred").textContent = (Number(e.target.value) / 100).toFixed(2) + " s";
+  clearTimeout(gzPredTimer);
+  gzPredTimer = setTimeout(() =>
+    gzPost({ action: "config", predict_s: Number(e.target.value) / 100 }), 150);
 });
 
 /* ---------------- 状态轮询 ---------------- */
