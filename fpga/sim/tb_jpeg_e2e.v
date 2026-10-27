@@ -105,7 +105,11 @@ module tb_jpeg_e2e;
         .I_wr_addr  (8'd0),
         .I_wr_data  (8'd0),
         .I_rd_idx_a (qt_idx_a),
-        .O_rd_data_a(qt_a),
+        // ★ 2026-10-27: 必须用**异步**读口 —— system_top 生产接法就是
+        //   .O_rd_data_a_asyn(S_jpeg_qta)。用寄存器口(Q_rd_data_a) 会滞后
+        //   1 拍, DQT 头第一个 Q 值被复制成两个字节, 跟参考对不上。
+        .O_rd_data_a(),
+        .O_rd_data_a_asyn(qt_a),
         .I_rd_idx_b (qt_idx_b),
         .O_rd_data_b(qt_b)
     );

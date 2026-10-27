@@ -58,8 +58,11 @@ module tb_jpeg_csi2_e2e;
     );
 
     //-------------------------------------------------------------- DUT: CSI-2 发送
-    csi2_frame_tx_var #(.PKT_BYTES(PKT), .GAP_FRAME(8), .DT(6'h18)) u_tx (
+    // 2026-10-27: DT 已从编译期参数改成运行时端口 i_dt
+    //   (0x0B[1] 可选 0x1E / 0x18; 板上实测 rkcif 只认 0x1E)
+    csi2_frame_tx_var #(.PKT_BYTES(PKT), .GAP_FRAME(8)) u_tx (
         .clk(clk), .rst_n(rst_n), .enable(1'b1),
+        .i_dt(6'h1E),
         .s_tvalid(m_valid), .s_tdata(m_data), .s_tlast(m_last), .s_tready(m_ready),
         .hs_en(hs_en), .hs_data(hs_data), .hs_last(hs_last),
         .frame_cnt(fc), .packet_cnt(pc), .byte_cnt(bc)

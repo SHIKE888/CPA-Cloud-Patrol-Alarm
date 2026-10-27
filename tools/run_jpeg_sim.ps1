@@ -24,11 +24,11 @@ $env:PATH = "$s\bin;$s\lib;" + $env:PATH
 $env:YOSYSHQ_ROOT = $s
 
 $src   = "fpga\uisrc\01_rtl\jpeg"
-$files = @(
-    "$src\jpeg_dct2d.v", "$src\jpeg_quant_zz.v", "$src\jpeg_bitpack.v",
-    "$src\jpeg_huff_enc.v", "$src\jpeg_headers.v", "$src\jpeg_linebuf.v",
-    "$src\jpeg_encoder_top.v", "$src\jpeg_qtable_ram.v"
-)
+# 2026-10-27: 不再手写文件清单 —— 手写的清单每次都漏文件
+#   (先是漏 fifo_32b_async_2 -> Unknown module type, 再是漏 jpeg_lossless_enc)。
+#   直接取 jpeg 目录下全部 .v, 再加一个异步 FIFO。
+$files = @(Get-ChildItem -Path "$src\*.v" | ForEach-Object { $_.FullName })
+$files += "fpga\uisrc\03_ip\al_fifo\fifo_32b_async_2.v"
 
 $fail = 0
 foreach ($sz in $Sizes) {

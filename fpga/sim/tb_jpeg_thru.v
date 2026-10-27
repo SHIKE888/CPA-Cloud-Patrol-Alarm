@@ -80,7 +80,9 @@ module tb_jpeg_thru;
         .I_wr_addr  (8'd0),
         .I_wr_data  (8'd0),
         .I_rd_idx_a (qt_idx_a),
-        .O_rd_data_a(qt_a),
+        // ★ 2026-10-27: 用异步读口 (与 system_top 生产接法一致, 见 tb_jpeg_e2e.v 注释)
+        .O_rd_data_a(),
+        .O_rd_data_a_asyn(qt_a),
         .I_rd_idx_b (qt_idx_b),
         .O_rd_data_b(qt_b)
     );
