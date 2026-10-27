@@ -225,7 +225,12 @@ module preproc_basic #(
 	reg [2:0]  st;
 	reg [5:0]  wait_cnt;
 	reg [7:0]  bin;
-	reg        phase;
+	// ★ 2026-10-28: 原来是 2 相位(phase 1 bit)，最长路径 hq* -> 4 路相加 -> 限幅 -> cdf2 加 -> 减 cdfmin
+	//   -> DSP 乘 -> 移位 -> 限斜率 -> ERAM 写 共 17.32ns@70MHz(需 14.24) —— 14 级 ADDER。
+	//   改成 **3 相位**，并在相位 1 把各路累加结果锁存 (hs_r)，相位 2 才用它算 CDF/LUT。
+	//   代价：每个 bin 2 -> 3 拍 (256*3=768 拍)，而 1080p 场消隐 ~99k 拍，余量巨大。
+	reg [1:0]  ph;
+	reg [25:0] hs_r;          // 本 bin 的 hsum_use，打一拍供相位 2 使用
 	reg [25:0] cdf, cdfmin, total;
 	reg [25:0] cdf2;
 	reg [24:0] scale;
@@ -246,9 +251,15 @@ module preproc_basic #(
 
 	wire [7:0] raddr = ((st == S_SUM) || (st == S_LUT)) ? bin : hsel_lum;
 
-	wire [25:0] cdf_n    = cdf + hsum_use;
-	wire [25:0] cdfmin_n = (cdf == 26'd0 && hsum_use != 26'd0) ? cdf_n : cdfmin;
-	wire [25:0] cdf2_n   = cdf2 + hsum_use;
+  // hs_r: 相位 1 锁存本 bin 的累加结果, 相位 2 才用它算 CDF/LUT (切断 17.3ns 加法链)
+  always @(posedge clk or negedge rst_n) begin
+      if (!rst_n) hs_r <= 26'd0;
+      else        hs_r <= hsum_use;
+  end
+
+	wire [25:0] cdf_n    = cdf + hs_r;
+	wire [25:0] cdfmin_n = (cdf == 26'd0 && hs_r != 26'd0) ? (cdf + hs_r) : cdfmin;
+	wire [25:0] cdf2_n   = cdf2 + hs_r;
 	wire [25:0] lut_rel  = (cdf2_n >= cdfmin) ? (cdf2_n - cdfmin) : 26'd0;
 	wire [51:0] lut_prod = lut_rel * scale + 52'd2048;   // +0.5 四舍五入
 	wire [25:0] lut_div  = lut_prod >> 12;
@@ -376,7 +387,7 @@ module preproc_basic #(
 				lut2[bin] <= bin;
 				lut3[bin] <= bin;
 				lutp[bin] <= bin;
-			end else if ((st == S_LUT) && phase) begin
+			end else if ((st == S_LUT) && (ph == 2'd2)) begin
 				lut0[bin] <= lutv_t;
 				lut1[bin] <= lutv_t;
 				lut2[bin] <= lutv_t;
@@ -394,7 +405,7 @@ module preproc_basic #(
 			st       <= S_INIT;
 			wait_cnt <= 6'd0;
 			bin      <= 8'd0;
-			phase    <= 1'b0;
+			ph       <= 2'd0;
 			cdf      <= 26'd0;
 			cdfmin   <= 26'd0;
 			total    <= 26'd0;
@@ -431,7 +442,7 @@ module preproc_basic #(
 					if (wait_cnt == 6'd15) begin
 						st     <= S_SUM;
 						bin    <= 8'd0;
-						phase  <= 1'b0;
+						ph     <= 2'd0;
 						cdf    <= 26'd0;
 						cdfmin <= 26'd0;
 						total  <= 26'd0;
@@ -441,8 +452,8 @@ module preproc_basic #(
 				end
 
 				S_SUM: begin
-					if (!phase) begin
-						phase <= 1'b1;
+					if (ph != 2'd2) begin
+						ph <= ph + 2'd1;
 					end else begin
 						if (bin == 8'd255) begin
 							total  <= cdf_n;
@@ -459,7 +470,7 @@ module preproc_basic #(
 							cdf    <= cdf_n;
 							cdfmin <= cdfmin_n;
 							bin    <= bin + 8'd1;
-							phase  <= 1'b0;
+							ph     <= 2'd0;
 						end
 					end
 				end
@@ -486,7 +497,7 @@ module preproc_basic #(
 							scale    <= nx_q[24:0];
 							st       <= S_LUT;
 							bin      <= 8'd0;
-							phase    <= 1'b0;
+							ph       <= 2'd0;
 							cdf2     <= 26'd0;
 							lut_last <= 9'd0;      // bin0 从 0 开始限制斜率
 						end
@@ -494,8 +505,8 @@ module preproc_basic #(
 				end
 
 				S_LUT: begin
-					if (!phase) begin
-						phase <= 1'b1;
+					if (ph != 2'd2) begin
+						ph <= ph + 2'd1;
 					end else begin
 						cdf2     <= cdf2_n;
 						lutv     <= lutv_n;
@@ -505,7 +516,7 @@ module preproc_basic #(
 							bin <= 8'd0;
 						end else begin
 							bin   <= bin + 8'd1;
-							phase <= 1'b0;
+							ph <= 2'd0;
 						end
 					end
 				end
