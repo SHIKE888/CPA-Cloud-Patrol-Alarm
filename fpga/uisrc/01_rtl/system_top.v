@@ -621,140 +621,54 @@ wire        S_jpeg_tx_sel;
 wire        S_jpeg_m_ready;
 
 `ifdef JPEG_EN
+	wire        S_jpeg_s_ready;
 	wire [6:0]  S_jpeg_qt_a, S_jpeg_qt_b;
 	wire [7:0]  S_jpeg_qta, S_jpeg_qtb;
 	wire        S_jpeg_m_valid, S_jpeg_m_last;
 	wire [7:0]  S_jpeg_m_data;
 	wire [31:0] S_jpeg_cnt;
 
-	//==========================================================================
-	// 2026-10-26  JPEG 支路重新接线
-	//
-	//  原来这条支路**从来没有出过一帧正确的图**, 三处结构性问题:
-	//   ① 编码器挂在 S_hs_rx_clk (单路 32.4MHz) —— 312/150 拍/MCU 下 1080p
-	//      只有 6.4fps; 实测该编码器是 150.0 clk/MCU(块级流水已实现),
-	//      @300MHz = 255.9 Mpx/s, 够双路1080p60 / 4K30 (248.8, 余量 2.7%)。
-	//   ② 输入只接了 S_yuv_data[31:0] (源是 64bit=4px), 且 s_ready 悬空没用
-	//      -> 每拍丢一半像素, 行缓冲永远凑不满 8 行。
-	//      现在经 jpeg_enc_if: 跨时钟 + 尊重 s_ready + 64bit 拆成 2×32bit。
-	//   ③ csi2_frame_tx_var 挂在 32.4MHz, 却直接喂 150MHz 域的 D-PHY TX
-	//      -> 最后一跳 CDC 没做。现在经 jpeg_byte_bridge 跨到 S_dsi_byte_clk。
-	//
-	//  ⚠ 分辨率改成运行时 (i_width/i_height), 一个 bit 通吃 1080p/4K/拼接;
-	//    W/H 参数取最大值 3840x2160, 只用于确定行缓冲深度。
-	//==========================================================================
-	//==========================================================================
-	//  ⚠⚠ 时钟选择（2026-10-26 踩坑后定论）⚠⚠
-	//
-	//  绝对**不能**把编码器挂到 S_dsi_hs_x4 上。它是 D-PHY 硬核的串化时钟,
-	//  TD 给它的约束是 **500MHz (2.000ns)** —— 那是硬核内部用的, 普通逻辑
-	//  根本收不了。实测把编码器挂上去之后:
-	//      clk0(S_dsi_hs_x4) 周期 2.000ns, 失败端点 14312 个, WNS = -26.388ns
-	//      => 布线 54 分钟 "opt_route terminated", Setup WNS 一直是 -19 ~ -26ns
-	//   而改动前这个域只有硬核连线, 只有 36 个端点。
-	//
-	//  现在改用 S_dsi_byte_clk (150MHz 实际 / 125MHz 约束) —— 就是 CSI-2 发送
-	//  所在的域, 本来就能收敛。于是编码器与 csi2_frame_tx_var 同域,
-	//  jpeg_byte_bridge 变成"同频异步 FIFO"(仍然保留, 以后换时钟不用改接线)。
-	//
-	//  吞吐: 有损 150.0 clk/MCU, 128 px/MCU
-	//      @150MHz -> 128 px/MCU / 150 clk x 150MHz = 128.0 Mpx/s
-	//      单路 1080p60 需要 124.4 Mpx/s -> **够, 余量 2.9%**
-	//      双路 1080p60 / 4K30 需要 248.8 Mpx/s (2x) -> 提时钟这条路走不通,
-	//      必须靠并行两套编码器(受 DSP 234/240 限制)或换更省的编码架构。
-	//==========================================================================
-	wire S_jpg_clk  = S_dsi_byte_clk;                 // 150MHz (与 CSI-2 TX 同域)
-	wire S_jpg_rstn = S_pll_lock & S_dsi_pll_lock & S_res_rstn_byte;
-
-	// --- 输入接口 (YUV 域 -> 编码器域) ---
-	wire        S_je_v, S_je_rdy;
-	wire [31:0] S_je_d;
-	wire [15:0] S_je_bp, S_je_wlo, S_je_sof;
-	wire [9:0]  S_je_lvl;
-
-	jpeg_enc_if #(.AW(10)) X_jenc_if (
-		.s_clk      (S_hs_rx_clk               ),
-		.s_rst_n    (S_pll_lock & S_res_rstn_rx),
-		.s_valid    (S_yuv_de                  ),
-		.s_data     (S_yuv_data                ),  // 用未打标记的那份: 标记会污染左上角
-		.s_sof      (S_yuv_sof                 ),
-		.e_clk      (S_jpg_clk                 ),
-		.e_rst_n    (S_jpg_rstn                ),
-		.e_valid    (S_je_v                    ),
-		.e_data     (S_je_d                    ),
-		.e_ready    (S_je_rdy                  ),
-		.st_ovf     (S_je_bp                   ),
-		.st_word_lo (S_je_wlo                  ),
-		.st_sof     (S_je_sof                  ),
-		.o_level    (S_je_lvl                  )
-	);
-
 	jpeg_qtable_ram X_jpeg_qt (
-		.I_clk       (S_jpg_clk  ),
-		.I_rst_n     (S_jpg_rstn ),
-		.I_wr_en     (1'b0       ),
-		.I_wr_addr   (8'd0       ),
-		.I_wr_data   (8'd0       ),
-		.I_rd_idx_a  (S_jpeg_qt_a),
-		.O_rd_data_a (           ),
-		.O_rd_data_a_asyn (S_jpeg_qta),
-		.I_rd_idx_b  (S_jpeg_qt_b),
-		.O_rd_data_b (S_jpeg_qtb )
+		.I_clk       (S_hs_rx_clk ),
+		.I_rst_n     (S_pll_lock  ),
+		.I_wr_en     (1'b0        ),
+		.I_wr_addr   (8'd0        ),
+		.I_wr_data   (8'd0        ),
+		.I_rd_idx_a  (S_jpeg_qt_a ),
+		.O_rd_data_a (             ),
+		.O_rd_data_a_asyn (S_jpeg_qta ),
+		.I_rd_idx_b  (S_jpeg_qt_b ),
+		.O_rd_data_b (S_jpeg_qtb  )
 	);
 
 	jpeg_encoder_top #(.W(1920), .H(1080)) X_jpeg (
-		.clk            (S_jpg_clk     ),
-		.rst_n          (S_jpg_rstn    ),
-		// ⚠ 4K 模式下必须关掉编码器: 行缓冲按 1920 定深, 尺寸不符会出废帧。
-		//   (曾把 W/H 提到 3840x2160 想支持 4K, 结果 y_mem 8192x64 TD 映射不到 ERAM,
-		//    回退成 17456 个 LUT-RAM, slice 68.4% -> 88.9%, 布线跑不完。
-		//    4K JPEG 得重新设计行缓冲再来。)
-		.i_en           (~S_is_4k      ),
-		.i_soft_rst     (1'b0          ),
-		.i_lossless     (1'b0          ),
-		.i_width        (S_h_active[11:0]  ),   // 运行时分辨率
-		.i_height       (S_v_active[11:0]  ),
-		.o_qt_idx_a     (S_jpeg_qt_a   ),
-		.i_qt_data_a    (S_jpeg_qta    ),
-		.o_qt_idx_b     (S_jpeg_qt_b   ),
-		.i_qt_data_b    (S_jpeg_qtb    ),
-		.s_valid        (S_je_v        ),
-		.s_data         (S_je_d        ),
-		.s_ready        (S_je_rdy      ),
-		.m_valid        (S_jpeg_m_valid),
-		.m_data         (S_jpeg_m_data ),
-		.m_last         (S_jpeg_m_last ),
-		.m_ready        (S_jpeg_m_ready),
+		.clk            (S_hs_rx_clk    ),
+		.rst_n          (S_pll_lock     ),
+		.i_en           (1'b1           ),
+		.i_soft_rst     (1'b0           ),
+		.i_lossless     (1'b0           ),
+		.i_width        (12'd1920       ),
+		.i_height       (12'd1080       ),
+		.o_qt_idx_a     (S_jpeg_qt_a    ),
+		.i_qt_data_a    (S_jpeg_qta     ),
+		.o_qt_idx_b     (S_jpeg_qt_b    ),
+		.i_qt_data_b    (S_jpeg_qtb     ),
+		.s_valid        (S_yuv_de       ),
+		.s_data         (S_yuv_data[31:0]),
+		.s_ready        (S_jpeg_s_ready ),
+		.m_valid        (S_jpeg_m_valid ),
+		.m_data         (S_jpeg_m_data  ),
+		.m_last         (S_jpeg_m_last  ),
+		.m_ready        (S_jpeg_m_ready ),
 		.st_frame_bytes (S_jpeg_st_bytes),
 		.st_busy        (S_jpeg_st_busy ),
 		.st_done        (S_jpeg_st_done ),
 		.st_frame_cnt   (S_jpeg_cnt     )
 	);
 
-	// --- 码流跨到 D-PHY 的 byte_clk 域 (150MHz) ---
-	wire        S_jv_valid, S_jv_last, S_jv_ready;
-	wire [7:0]  S_jv_data;
-	wire [15:0] S_jb_bp;
-	wire [7:0]  S_jb_lvl;
-
-	jpeg_byte_bridge #(.AW(8)) X_jbyte_br (
-		.w_clk   (S_jpg_clk        ),
-		.w_rst_n (S_jpg_rstn       ),
-		.w_valid (S_jpeg_m_valid   ),
-		.w_data  (S_jpeg_m_data    ),
-		.w_last  (S_jpeg_m_last    ),
-		.w_ready (S_jpeg_m_ready   ),
-		.r_clk   (S_dsi_byte_clk   ),
-		.r_rst_n (S_dphy_rst_n & S_res_rstn_byte),
-		.r_valid (S_jv_valid       ),
-		.r_data  (S_jv_data        ),
-		.r_last  (S_jv_last        ),
-		.r_ready (S_jv_ready       ),
-		.st_bp   (S_jb_bp          ),
-		.o_level (S_jb_lvl         )
-	);
-
-	// --- CSI-2 可变长发送 (DT=0x18, 乒乓双缓冲), 必须在 S_dsi_byte_clk 域 ---
+	// CSI-2 可变长发送 (DT=0x18, 乒乓双缓冲): 编码器输出是连续字节流,
+	// 也不知道每包多大, 所以走 csi2_frame_tx_var。乒乓让攒包和发包并行,
+	// s_tready 基本一直为 1, 避免编码器的 block 流水被长停顿打乱。
 	wire        S_jv_hs_en, S_jv_hs_last;
 	wire [31:0] S_jv_hs_data;
 
@@ -764,13 +678,13 @@ wire        S_jpeg_m_ready;
 		.DT        (6'h18),
 		.VC        (2'b00)
 	) X_jv (
-		.clk        (S_dsi_byte_clk),
-		.rst_n      (S_dphy_rst_n & S_res_rstn_byte),
+		.clk        (S_hs_rx_clk    ),
+		.rst_n      (S_pll_lock     ),
 		.enable     (S_jpeg_tx_sel  ),
-		.s_tvalid   (S_jv_valid     ),
-		.s_tdata    (S_jv_data      ),
-		.s_tlast    (S_jv_last      ),
-		.s_tready   (S_jv_ready     ),
+		.s_tvalid   (S_jpeg_m_valid ),
+		.s_tdata    (S_jpeg_m_data  ),
+		.s_tlast    (S_jpeg_m_last  ),
+		.s_tready   (S_jpeg_m_ready ),
 		.hs_en      (S_jv_hs_en     ),
 		.hs_data    (S_jv_hs_data   ),
 		.hs_last    (S_jv_hs_last   ),
@@ -778,10 +692,6 @@ wire        S_jpeg_m_ready;
 		.packet_cnt (               ),
 		.byte_cnt   (               )
 	);
-
-	// 诊断口暂未接只读寄存器, 先 silencer —— 否则 TD 会把整段逻辑优化掉,
-	// 资源数字会假性变小, 排查时又得怀疑人生。
-	wire _unused_jpeg_diag = |{S_je_bp, S_je_wlo, S_je_sof, S_je_lvl, S_jb_bp, S_jb_lvl};
 `endif
 
 `ifndef JPEG_EN
@@ -1527,25 +1437,44 @@ ui_image_correction #(
 );
 
 //=============================================================================
-//  2026-10-27 删除「双目交替帧调度」(dual_frame_sched)
+//  双目交替帧调度 (2026-10-21)
 //
-//  原因: 赛题要求传给 RK 的是 JPEG 压缩流, 两路要同时进来(拼接后一次编码),
-//        而不是"逐帧交替各 30fps"。交替调度被 jpeg 通路取代, 属冗余。
-//        而且它内部的 cam1 行组环形缓冲是之前"两格同一路"故障的嫌疑点。
+//  单目 (S_dual_en=0): 按 0xDB[0] 二选一，全速推流 —— 与 0x4601 行为一致
+//  双目 (S_dual_en=1): cam0/cam1 逐帧交替，各 30fps，输出仍是 1080p60
+//                      （两路传感器仍按 60fps 采，FPGA 每路两帧取一帧）
 //
-//  现在只保留最小功能: 按 0xDB[0] 在本域内二选一 (选中的那一路本来就与
-//  S_hs_rx_clk 同源, 所以这个 mux 不跨时钟)。双目拼接(dual_stitch)接进来时,
-//  这里会换成 stitch 的输出。
+//  ⚠ 4K 模式强制按单目处理（带宽装不下两路），见 S_dual_eff
 //=============================================================================
-assign S_dual_eff = S_dual_en & ~S_is_4k;   // 仅作寄存器回读/网页显示用
+assign S_dual_eff = S_dual_en & ~S_is_4k;
 
-assign S_axis_tdata  = S_rx_sel_rx ? S_crop1_tdata  : S_crop0_tdata;
-assign S_axis_tvalid = S_rx_sel_rx ? S_crop1_tvalid : S_crop0_tvalid;
-assign S_axis_tuser  = S_rx_sel_rx ? S_crop1_tuser  : S_crop0_tuser;
-assign S_axis_tlast  = S_rx_sel_rx ? S_crop1_tlast  : S_crop0_tlast;
-assign S_out_src     = S_rx_sel_rx;         // 供帧标记用 (raw 通路若关闭则无意义)
-assign S_ch1_lost    = 1'b0;
-assign S_frame_parity= 1'b0;
+dual_frame_sched #(
+    .DATA_WIDTH (40),
+    .LINE_GRP   (480)          // 1080p: 1920px / 4
+) X_dual_sched (
+    .I_clk        (S_hs_rx_clk      ),
+    // ⚠ 和 I_clk 用同一个时钟: dual_frame_sched 内部 d1_r/v1_r/u1_r/l1_r
+    //    都用 I_clk 采样, I_clk1 只用作行组环形缓冲的写时钟。两者必须同域,
+    //    否则 cam1 的 tuser 会被漏採 -> dbuf 不轮转 -> 画面冻结。
+    .I_clk1       (S_hs_rx_clk      ),
+    .I_rst_n      (S_pll_lock       ),
+    .I_dual_en    (S_dual_eff       ),
+    .I_sel        (S_rx_sel_rx      ),
+    .I_d0         (S_crop0_tdata    ),
+    .I_v0         (S_crop0_tvalid   ),
+    .I_u0         (S_crop0_tuser    ),
+    .I_l0         (S_crop0_tlast    ),
+    .I_d1         (S_crop1_tdata    ),
+    .I_v1         (S_crop1_tvalid   ),
+    .I_u1         (S_crop1_tuser    ),
+    .I_l1         (S_crop1_tlast    ),
+    .O_d          (S_axis_tdata     ),
+    .O_v          (S_axis_tvalid    ),
+    .O_u          (S_axis_tuser     ),
+    .O_l          (S_axis_tlast     ),
+    .O_src        (S_out_src        ),
+    .O_ch1_lost   (S_ch1_lost       ),
+    .O_parity     (S_frame_parity   )
+);
 
 
 
@@ -2320,15 +2249,16 @@ wire        S_hs_en;
 wire [31:0] S_hs_data;
 wire        S_hs_last;
 
-// 数据源: 只有 csi2_pack 一路
-//  ★ 2026-10-27: 原来的三选一 (TX_SRC_SEL: 0=packer / 1=dbuf直连 / 2=内置TPG)
-//    已删掉后两个 —— 它们只是 V32 时期二分定位"4K 撕裂"的临时诊断 tap,
-//    目的早已达到。断开后 TD 会把 csi2_test_src 整块优化掉, 不占资源。
-//    否则"改动后画面变了"和"TPG 还在跑"会混在一起, 排查时又要多一层怀疑。
-wire        S_tx_tvalid = S_pack_tvalid;
-wire [31:0] S_tx_tdata  = S_pack_tdata;
-wire        S_tx_tsof   = S_pack_tsof;
-wire        S_tx_tlast  = S_pack_tlast;
+// 数据源三选一 (常量选择, 综合时只保留一路)
+//   TX_SRC_SEL: 0=packer 正式通路  1=ui_dbuf.R 直连(跳过packer)  2=内置TPG
+wire        S_tx_tvalid = (TX_SRC_SEL == 2'd2) ? S_test_tvalid :
+                          (TX_SRC_SEL == 2'd1) ? S_dsi_R_tvalid : S_pack_tvalid;
+wire [31:0] S_tx_tdata  = (TX_SRC_SEL == 2'd2) ? S_test_tdata  :
+                          (TX_SRC_SEL == 2'd1) ? S_dsi_R_tdata32: S_pack_tdata;
+wire        S_tx_tsof   = (TX_SRC_SEL == 2'd2) ? S_test_tsof   :
+                          (TX_SRC_SEL == 2'd1) ? S_dsi_R_tuser  : S_pack_tsof;
+wire        S_tx_tlast  = (TX_SRC_SEL == 2'd2) ? S_test_tlast  :
+                          (TX_SRC_SEL == 2'd1) ? S_dsi_R_tlast  : S_pack_tlast;
 
 csi2_frame_tx #(
 	.DT			(6'h1E),	// YUV422-8bit  (必须与 RK 驱动 MEDIA_BUS_FMT_YUYV8_2X8 一致)

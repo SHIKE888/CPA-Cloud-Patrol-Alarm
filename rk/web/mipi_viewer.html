@@ -1737,11 +1737,20 @@ async function sysPollOnce() {
   const set = (id, v) => { const el = $(id); if (el) el.textContent = v; };
 
   if (d.mipi) {
-    set("b_mipi", d.mipi.used_mb_s + " MB/s");
-    bar("p_mipi", d.mipi.pct);
+    // 链路现在跑 JPEG 压缩流: 主数字 = 压缩后的真实码率, 后面直接跟压缩比
+    const mp = d.mipi;
+    const ratio = (mp.compressed && mp.ratio) ? mp.ratio : null;
+    set("b_mipi", mp.used_mb_s + " MB/s" + (ratio ? " · " + ratio + ":1" : ""));
+    bar("p_mipi", mp.pct);
     const el = $("b_mipi");
-    if (el) el.title = d.mipi.used_mb_s + " / " + d.mipi.link_mb_s +
-                       " MB/s（" + d.mipi.pct + "%）";
+    if (el) {
+      const parts = [];
+      parts.push((mp.compressed ? "压缩后 " : "未压缩估算 ") + mp.used_mb_s + " / " +
+                 mp.link_mb_s + " MB/s（" + mp.pct + "%）");
+      if (ratio) parts.push("压缩比 " + ratio + ":1（压缩前 " + mp.raw_mb_s + " MB/s）");
+      if (mp.jpeg_bytes) parts.push("单帧 " + mp.jpeg_bytes + " 字节");
+      el.title = parts.join(" · ");
+    }
   }
   if (d.cpu) {
     set("b_cpu", fmtPct(d.cpu.total));

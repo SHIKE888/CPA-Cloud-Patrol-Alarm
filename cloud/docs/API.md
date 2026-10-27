@@ -14,6 +14,16 @@
 首次启动会把旧的 `state.json` 里的报警**自动迁移**到 SQLite
 （日志会打 `migrated N alarms: state.json -> SQLite`）。
 
+> **看不到数据？先跑一眼**（服务器上，不用停服务）：
+>
+> ```bash
+> python3 /opt/csi-dashboard/db_check.py      # 表/行数/最近报警/视频总量/WAL
+> ```
+>
+> 用的是 **SQLite**（不是 aaPanel 里的 MySQL）。库是 WAL 模式，
+> 服务端每 10s 做一次 `PASSIVE` checkpoint、`-wal > 2MB` 时 `TRUNCATE`、
+> 退出时也 `TRUNCATE`，所以**单独拷 `dash.db` 一个文件就是完整数据**。
+
 ```sql
 -- alarms: id ts lvl label cn en tid score src note m img ack ack_ts n
 --         last_ts last_note recovered clip clip_bytes clip_sec

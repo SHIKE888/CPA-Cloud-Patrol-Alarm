@@ -29,6 +29,7 @@ import importlib.util
 import json
 import os
 import re
+import signal
 import sys
 import sqlite3
 import threading
@@ -62,6 +63,7 @@ DEF = {
     "max_alarm_kb": 600,             # 单张报警图上限
     "max_clip_mb": 8,                # 单个事件视频上限
     "max_clip_total_mb": 1024,       # 视频目录总上限（滚动删除，默认 1GB）
+    "accept_health": True,           # 是否接收/记录系统异常报警（可看板切换，存 meta 表）
     "demo": False,
     "allow_test": False,             # 允许看板触发“测试报警”
     "allow_reboot": False,           # 允许远程重启板卡（默认关）
@@ -190,7 +192,7 @@ S = {
     "seq": 0,
     "next_id": 0,
     "live": {"rev": 0, "ts": 0},
-    "stats": {"rx": 0, "alarms": 0, "dropped": 0},
+    "stats": {"rx": 0, "alarms": 0, "dropped": 0, "health_ignored": 0},
 }
 STARTED = now()
 _last_save = 0.0
@@ -265,9 +267,52 @@ def db():
         _DB.row_factory = sqlite3.Row
         _DB.execute("PRAGMA journal_mode=WAL")
         _DB.execute("PRAGMA synchronous=NORMAL")
+        # 默认 1000 页（≈4MB）才回写主库，外面直接把 dash.db 拷走会“看着像空的”。
+        # 缩小到 512 页，另加定期 PASSIVE checkpoint（见 _save_locked）。
+        _DB.execute("PRAGMA wal_autocheckpoint=512")
         _DB.executescript(_DDL)
         _DB.commit()
     return _DB
+
+
+def db_checkpoint(mode="PASSIVE"):
+    """把 WAL 刷回主库文件；mode=TRUNCATE 会把 -wal 清空（退出时用）。"""
+    if _DB is None:
+        return
+    try:
+        _DB.execute("PRAGMA wal_checkpoint(%s)" % mode)
+    except sqlite3.Error as e:
+        log("db checkpoint failed: %s" % e)
+
+
+def db_maybe_shrink():
+    """-wal 超过 2MB 就 TRUNCATE 一次，避免主库看着“没数据”、-wal 越挂越大。"""
+    try:
+        p = db_path() + "-wal"
+        if os.path.exists(p) and os.path.getsize(p) > 2 * 1024 * 1024:
+            db_checkpoint("TRUNCATE")
+    except OSError:
+        pass
+
+
+def meta_get(k, default=None):
+    """读一条持久设置（存在 SQLite meta 表里，重启不丢）。"""
+    try:
+        r = db().execute("SELECT v FROM meta WHERE k=?", (k,)).fetchone()
+        return json.loads(r["v"]) if r else default
+    except (sqlite3.Error, ValueError):
+        return default
+
+
+def meta_set(k, v):
+    try:
+        db().execute("INSERT OR REPLACE INTO meta(k,v) VALUES(?,?)",
+                     (k, json.dumps(v, ensure_ascii=False)))
+        db().commit()
+        return True
+    except sqlite3.Error as e:
+        log("meta write failed: %s" % e)
+        return False
 
 
 def db_put_alarm(a):
@@ -368,6 +413,9 @@ def _save_locked(force=False):
             json.dump(snap, f, ensure_ascii=False, separators=(",", ":"))
         os.replace(tmp, state_path())
         _last_save = now()
+        # 心跳每 10s 跑一次：顺手把 WAL 刷回主库，保证 dash.db 单文件可直接查看/拷走
+        db_checkpoint("PASSIVE")
+        db_maybe_shrink()
     except Exception as e:                                    # noqa: BLE001
         log("save failed: %s: %s" % (type(e).__name__, e))
 
@@ -451,6 +499,10 @@ def add_alarm(meta):
         label = str(meta.get("label") or "alarm")[:32]
         lvl = _int(meta.get("lvl", 2), 1, 3)
         src = str(meta.get("src") or "ai")[:16]
+        # 看板里的“系统报警”开关：关掉就完全不记录 health 类事件
+        if src == "health" and not CFG.get("accept_health", True):
+            S["stats"]["health_ignored"] = int(S["stats"].get("health_ignored") or 0) + 1
+            return None, False
         # 系统异常（health）：磁盘/温度/链路/无帧/FPGA 都是“持续状态”，
         # 一次异常只保留**最早那一条**，恢复前重复上报只累加 n，不新增记录。
         # 板端已改成边沿触发（正常→异常才报），这里兜住代理重启/网络抖动
@@ -1070,7 +1122,9 @@ class Handler(BaseHTTPRequestHandler):
                         "live": S["live"],
                         "stats": {"alarms": S["stats"]["alarms"],
                                   "dropped": S["stats"]["dropped"],
+                                  "health_ignored": S["stats"].get("health_ignored", 0),
                                   "uptime": int(now() - STARTED)},
+                        "settings": {"accept_health": bool(CFG.get("accept_health", True))},
                         "cfg": {"poll": 5, "allow_test": bool(CFG["demo"] or CFG["allow_test"]),
                                 "allow_reboot": bool(CFG["allow_reboot"])},
                     }
@@ -1220,6 +1274,20 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"ok": True},
                                   extra={"Set-Cookie":
                                          "cd_sid=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0"})
+            if path == "/api/settings":
+                if not self._need_ui():
+                    return
+                body = self._json_body(8 * 1024)
+                if body is None:
+                    return self._err(400, "bad json")
+                if "accept_health" in body:
+                    v = bool(body.get("accept_health"))
+                    CFG["accept_health"] = v
+                    meta_set("accept_health", v)
+                    log("setting accept_health=%s" % v)
+                return self._json({"ok": True,
+                                   "settings": {"accept_health":
+                                                bool(CFG.get("accept_health", True))}})
             if path == "/api/ingest":
                 if not self._need_board():
                     return
@@ -1563,6 +1631,8 @@ def main():
     load_config()
     ensure_dirs()
     load_state()
+    # 持久设置存 SQLite meta 表（load_state 里已经把 db 初始化了）
+    CFG["accept_health"] = bool(meta_get("accept_health", CFG.get("accept_health", True)))
     load_plugins()
     with LOCK:
         _prune_locked()
@@ -1586,10 +1656,25 @@ def main():
                 time.sleep(3)
         threading.Thread(target=_tick, daemon=True).start()
 
+    # systemd 停服务发 SIGTERM：转成 KeyboardInterrupt，好走到 finally 里合并 WAL
+    def _bye(_signum, _frame):
+        raise KeyboardInterrupt
+    try:
+        signal.signal(signal.SIGTERM, _bye)
+    except (ValueError, OSError):
+        pass
+
     try:
         srv.serve_forever(poll_interval=0.5)
     except KeyboardInterrupt:
         pass
+    finally:
+        db_checkpoint("TRUNCATE")     # 退出时合并 WAL，避免 -wal 残留
+        try:
+            db().close()
+        except sqlite3.Error:
+            pass
+        log("bye")
 
 
 if __name__ == "__main__":

@@ -250,6 +250,10 @@ button.play{padding:3px 8px;font-size:11.5px}
 .login-err{color:var(--bad);font-size:12.5px;min-height:18px}
 input[type=password]{background:#0c131b;border:1px solid var(--line);border-radius:8px;padding:8px 10px;width:100%}
 footer{color:#5a6b80;font-size:11.5px;text-align:center;margin-top:18px;line-height:1.9}
+.sw{display:inline-flex;align-items:center;gap:5px;margin-left:10px;font-size:11px;
+  opacity:.45;cursor:pointer;user-select:none;transition:opacity .2s}
+.sw:hover{opacity:1}
+.sw input{width:12px;height:12px;margin:0;accent-color:var(--acc);vertical-align:-2px}
 </style>
 </head>
 <body data-lamp="offline" data-online="0">
@@ -385,6 +389,11 @@ footer{color:#5a6b80;font-size:11.5px;text-align:center;margin-top:18px;line-hei
   云端智联定点巡航安防预警系统 · 管控平台<br>
   3Mbps 优化：单文件页面 · 无 CDN · 状态轮询 <b id="fPoll">5</b>s · 报警缩略图 640px · 抓拍 800px<br>
   <span id="fStats">—</span> · 预留接口：云台控制 / 录像回放 / 告警外推 / 多区域 / 远程升级
+  <label class="sw" id="swHealthWrap"
+    title="接收系统报警：链路断开 / 视频无帧 / FPGA 读失败 / 磁盘将满 / 温度过高。
+关闭后这些事件不再记录（不进事件列表、不进统计、不出视频），灯的实时状态照常显示。">
+    <input type="checkbox" id="swHealth">系统报警
+  </label>
 </footer>
 </div>
 
@@ -607,8 +616,13 @@ function render(s) {
 
   renderEvents(s.alarms || [], s.unacked || 0);
   renderSnapState(s);
-  $("#fStats").textContent = "云端累计报警 " + ((s.stats || {}).alarms || 0) +
-    " 条 · 限速丢弃 " + ((s.stats || {}).dropped || 0) + " 条";
+  const st = s.stats || {}, sett = s.settings || {};
+  const ign = st.health_ignored || 0;
+  $("#fStats").textContent = "云端累计报警 " + (st.alarms || 0) +
+    " 条 · 限速丢弃 " + (st.dropped || 0) + " 条" +
+    (ign ? " · 系统报警已忽略 " + ign + " 条" : "");
+  const sw = $("#swHealth");
+  if (sw && !sw.dataset.busy) sw.checked = sett.accept_health !== false;
 }
 
 function renderLamp(l) {
@@ -888,6 +902,27 @@ function init() {
   $("#evPrev").addEventListener("click", () => fetchPage(evPage - 1));
   $("#evNext").addEventListener("click", () => fetchPage(evPage + 1));
   $("#evAck").addEventListener("change", e => { evAck = e.target.value; fetchPage(1); });
+  // 页脚隐蔽开关：是否记录系统报警（存服务端 SQLite meta，重启不丢）
+  $("#swHealth").addEventListener("change", async e => {
+    const on = e.target.checked;
+    e.target.dataset.busy = "1";
+    try {
+      const r = await apiFetch("/api/settings", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ accept_health: on })
+      });
+      if (!r.ok) throw new Error("http " + r.status);
+      const j = await r.json();
+      e.target.checked = !!(j.settings || {}).accept_health;
+      toast(on ? "已开始记录系统报警" : "已停止记录系统报警", on ? "ok" : "warn");
+      if (!on) { evLastCount = -1; fetchPage(1, true); }
+    } catch (err) {
+      e.target.checked = !on;               // 失败回滚
+      toast("设置失败：" + err.message, "bad");
+    } finally {
+      delete e.target.dataset.busy;
+    }
+  });
   // 窗口宽度变化导致列数变化时，回到第一页重新取（每页条数 = 列数 × 5）
   let evResizeT = 0;
   window.addEventListener("resize", () => {
