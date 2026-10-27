@@ -376,7 +376,7 @@ wire 							S_ae_req		;
 wire          					S_hs_clk0		;   // cam0 RX 恢复时钟 (cam0 侧整条链用它)
 wire          					S_hs_clk1		;   // cam1 RX 恢复时钟 (cam1 侧整条链用它)
 wire          					S_st_clk		;   // ★ 拼接/下游像素域 = pclkx1/2 = 73.75MHz
-wire          					S_enc_clk		;   // ★ JPEG 编码器时钟 = pclkx1/4 = 36.875MHz
+wire          					S_enc_clk		;   // JPEG 编码器时钟 (V47.14 起 = S_hs_rx_clk 70MHz)
 wire          					S_hs_rx_clk		;   // 保留旧名: 下游像素域 (= S_st_clk)
 
 	//---- LP-free CSI-2 RX (03_ip/mipi_csi_lpfree) 的 AXIS 输出 ----
@@ -1702,14 +1702,22 @@ sensor_sync_start #(
 //     - 它是真 PLL 输出: derive_clocks 会自动建时钟、set_clock_groups 能引用。
 //       (toggle FF + BUFG 生成的时钟, TD 的 create_clock 按引脚名找不到 -> 整条
 //        set_clock_groups 命令失败 -> 所有 CDC 被当同步路径算 -> 假违例 −6.8ns)
-	// JPEG 编码器直接跑 S_pclkx1 (147.5MHz)
+	// JPEG 编码器时钟: V47.14 起回退到 S_hs_rx_clk(70MHz), 见下方说明
 //   ★ 2026-10-28: 双引擎的吞吐账 ——
 //     3840x1080 = (3840/16)x(1080/8) = 240x135 = 32400 MCU
 //     双引擎每个编 16200 MCU, 有损 150 clk/MCU
-//     16200 x 150 / 147.5MHz = 16.48ms  ->  60.6fps  (目标 60)
+//     @147.5MHz: 16200 x 150 / 147.5MHz = 16.48ms -> 60.6fps (目标 60, 但时序不收敛)
+//     @ 70MHz : 16200 x 150 / 70MHz    = 34.7ms  -> 28.8fps (本版可落地实测用)
 //   原来用 pclkx1/4 = 36.875MHz 的 toggle-FF 分频, 只能到 ~15fps;
 //   而且 toggle FF 生成的时钟 SDC 里 create_clock 按引脚名找不到, 等于不受时序检查。
-assign S_enc_clk = S_pclkx1;
+// 2026-10-28 V47.14: 编码器时钟回退到像素域 S_hs_rx_clk(70MHz)
+//   原因: 挂 S_pclkx1(147.5MHz) 时实测最差路径 ~14.8ns, 布线后 WNS -8 ~ -12ns,
+//   编码结果不可信。本版目标是“能落地实测 JPEG 直通”, 所以优先保证正裕量:
+//     16200 MCU x 150 clk / 70MHz = 34.7ms -> 28.8fps (双引擎并行)
+//   70MHz 下预算 14.29ns vs 路径 14.8ns, 只差 0.5ns —— 叠加本轮资源优化
+//   (AWB 串行除法 -5400FF / demosaic -12ERAM / 7x7 -10ERAM) 降拥塞后有望转正。
+//   后续把 huff 数值通路拆 2~3 级流水后, 再改回 S_pclkx1 冲 60fps。
+assign S_enc_clk = S_hs_rx_clk;
 
 // 已无选源: 保持为 0, 让旧的换源复位窗口逻辑永远不触发
 always @(posedge I_sysclk_25m or negedge S_pll_lock) begin
