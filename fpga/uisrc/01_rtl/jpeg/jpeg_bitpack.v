@@ -27,6 +27,13 @@ module jpeg_bitpack (
     // 一帧结束: 用 1 补齐剩余位并输出
     input  wire        i_flush,
 
+    // ★ 2026-10-28: DRI(重启间隔) 支持。一帧内每 N 个 MCU 在熵编码流里插一个
+    //   RST 标记 (FF D0~D7)。插入前必须把不满一字节的位用 1 补齐(和 flush 一样)，
+    //   而 FF/Dn 这两个字节是**标记，不做 0xFF->00 字节填充**。
+    input  wire        i_rst_req,    // 脉冲: 请求插入一个 RST 标记
+    input  wire [2:0]  i_rst_idx,    // RST0..RST7
+    output reg         o_rst_done,   // 脉冲: 标记已完全吐出
+
     // 一次 put (码字 + 附加位已在上游合并)
     input  wire        i_valid,
     input  wire [31:0] i_code,
@@ -107,6 +114,11 @@ module jpeg_bitpack (
     wire        out_go = (!o_valid || o_ready);
     reg         flush_pend;
 
+    // ---- RST 标记插入子状态机: 0=空闲 1=发 FF 2=发 Dn ----
+    reg         rst_pend;
+    reg  [1:0]  rst_st;
+    reg  [2:0]  rst_idx_r;
+
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             acc        <= 64'd0;
@@ -116,6 +128,10 @@ module jpeg_bitpack (
             o_valid    <= 1'b0;
             o_data     <= 8'd0;
             o_byte_cnt <= 32'd0;
+            rst_pend   <= 1'b0;
+            rst_st     <= 2'd0;
+            rst_idx_r  <= 3'd0;
+            o_rst_done <= 1'b0;
         end else begin
             // ---------------- put: 与输出是否冻结无关 ----------------
             if (do_put) begin
@@ -123,10 +139,15 @@ module jpeg_bitpack (
                 n   <= n_p;
             end
             if (i_flush) flush_pend <= 1'b1;
+            if (i_rst_req) begin
+                rst_pend  <= 1'b1;
+                rst_idx_r <= i_rst_idx;
+            end
 
             // ---------------- 输出: 只有真能吐出去才动 ----------------
             if (out_go) begin
-                o_valid <= 1'b0;
+                o_valid    <= 1'b0;
+                o_rst_done <= 1'b0;
 
                 if (pend_00) begin
                     o_data     <= 8'h00;
@@ -145,6 +166,35 @@ module jpeg_bitpack (
                     pend_00    <= (o_byte == 8'hFF);
                     acc        <= acc_p << 8;       // 消耗最高 8 位
                     n          <= n_p - 7'd8;
+                end
+                else if (rst_pend) begin
+                    // 走到这里 has_byte 已为 0, 即 acc 里的完整字节都吐完了
+                    // -> 先把不满一字节的位用 1 补齐输出 (和 flush 一致)
+                    rst_pend <= 1'b0;
+                    if (n_p != 7'd0) begin
+                        o_data     <= fl_byte;
+                        o_valid    <= 1'b1;
+                        o_byte_cnt <= o_byte_cnt + 32'd1;
+                        // 填充字节本身若是 0xFF, 仍然要遵守字节填充规则
+                        pend_00    <= (fl_byte == 8'hFF);
+                    end
+                    acc    <= 64'd0;
+                    n      <= 7'd0;
+                    rst_st <= 2'd1;
+                end
+                else if (rst_st == 2'd1) begin
+                    // 标记的 FF —— 原样输出, 不补 00 (pend_00 在这里必须为 0)
+                    o_data     <= 8'hFF;
+                    o_valid    <= 1'b1;
+                    o_byte_cnt <= o_byte_cnt + 32'd1;
+                    rst_st     <= 2'd2;
+                end
+                else if (rst_st == 2'd2) begin
+                    o_data     <= 8'hD0 | {5'd0, rst_idx_r};
+                    o_valid    <= 1'b1;
+                    o_byte_cnt <= o_byte_cnt + 32'd1;
+                    rst_st     <= 2'd0;
+                    o_rst_done <= 1'b1;
                 end
                 else if (flush_pend) begin
                     flush_pend <= 1'b0;

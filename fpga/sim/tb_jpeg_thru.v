@@ -56,6 +56,7 @@ module tb_jpeg_thru;
         .i_lossless   (LL[0]),
         .i_width      (W[11:0]),
         .i_height     (H[11:0]),
+        .i_rst_int (16'd0      ),
         .o_qt_idx_a   (qt_idx_a),
         .i_qt_data_a  (qt_a),
         .o_qt_idx_b   (qt_idx_b),

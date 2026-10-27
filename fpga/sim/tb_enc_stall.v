@@ -38,7 +38,7 @@ module tb_enc_stall;
     jpeg_encoder_top #(.W(W), .H(H)) dut (
         .clk(clk), .rst_n(rst_n),
         .i_en(1'b1), .i_soft_rst(1'b0), .i_lossless(1'b0),
-        .i_width(W[11:0]), .i_height(H[11:0]),
+        .i_width(W[11:0]), .i_height(H[11:0]), .i_rst_int(16'd0),
         .o_qt_idx_a(qt_a), .i_qt_data_a(qta),
         .o_qt_idx_b(qt_b), .i_qt_data_b(qtb),
         .s_valid(s_valid), .s_data(s_data), .s_ready(s_ready),

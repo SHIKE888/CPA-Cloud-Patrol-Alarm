@@ -798,6 +798,7 @@ wire [7:0]  S_dbg_jb;
 		.i_lossless     (1'b0           ),
 		.i_width        (12'd1920       ),
 		.i_height       (12'd1080       ),
+		.i_rst_int      (16'd0          ),   // ★ DRI 暂关(0)。双引擎拼接时改成 16'd120
 		.o_qt_idx_a     (S_jpeg_qt_a    ),
 		.i_qt_data_a    (S_jpeg_qta     ),
 		.o_qt_idx_b     (S_jpeg_qt_b    ),

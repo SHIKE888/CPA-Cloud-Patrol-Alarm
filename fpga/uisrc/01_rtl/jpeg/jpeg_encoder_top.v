@@ -50,6 +50,11 @@ module jpeg_encoder_top #(
     input  wire [11:0] i_width,
     input  wire [11:0] i_height,
 
+    // ★ 2026-10-28: DRI 重启间隔 (MCU 数)。0 = 不插 RST (完全旧行为)。
+    //   为了把两个引擎各编出的"半行"拼成一张 3840 宽的 JPEG:
+    //   每编完 i_rst_int(=120) 个 MCU 就 bit 对齐 + 发 RST0..7 + 清 DC 预测器。
+    input  wire [15:0] i_rst_int,
+
     // ---------------- 量化表读口 ----------------
     output wire [6:0]  o_qt_idx_a,      // headers 用 (读口 A)
     input  wire [7:0]  i_qt_data_a,
@@ -104,6 +109,16 @@ module jpeg_encoder_top #(
     reg        frame_first;  // 帧内第一个块还没开始编码
     reg [2:0]  pend_nx;
     reg [3:0]  tstate;       // 控制状态机 (也要在使用点之前)
+
+    // ---------------- DRI 重启间隔 (2026-10-28) ----------------
+    reg  [15:0] rst_cnt;       // 距上次重启已编完的 MCU 数
+    reg  [2:0]  rst_idx;       // 下一个 RST 编号
+    reg         rst_busy;      // 标记还没吐完 -> 禁止启动下一块
+    reg         rst_pred_pend; // 下一块编码时要清 DC 预测器
+    reg         rst_req;       // 给 bitpack 的插入脉冲
+    reg  [15:0] enc_mcu;       // 本帧已编完的 MCU 总数
+    wire        bp_rst_done;
+    localparam integer TOTAL_MCU = MCU_X * MCU_Y;
 
     //=============================================================== linebuf
     wire        lb_ready;
@@ -252,7 +267,9 @@ module jpeg_encoder_top #(
     wire [31:0] huff_code;
     wire [5:0]  huff_len;
     wire        huff_done;
-    wire        huff_rst_pred = huff_start && frame_first;
+    // 每编完 1 个 MCU (4 块) 且不是本帧最后一个 MCU 且需要重启 -> 插 RST
+    wire        mcu_end = huff_done && (huff_blk == 2'd3);
+    wire        huff_rst_pred = huff_start && (frame_first || rst_pred_pend);
 
     jpeg_huff_enc u_huff (
         .clk          (clk),
@@ -282,6 +299,9 @@ module jpeg_encoder_top #(
         .clk        (clk),
         .rst_n      (rst_n),
         .i_flush    (bp_flush),
+        .i_rst_req  (rst_req),
+        .i_rst_idx  (rst_idx),
+        .o_rst_done (bp_rst_done),
         .i_valid    (use_ll ? ll_valid : huff_valid),
         .i_code     (use_ll ? ll_code  : huff_code),
         .i_len      (use_ll ? ll_len   : huff_len),
@@ -305,6 +325,7 @@ module jpeg_encoder_top #(
         .i_lossless(i_lossless),
         .i_width  (i_width),
         .i_height (i_height),
+        .i_rst_int(i_rst_int),
         .o_qt_idx (o_qt_idx_a),
         .i_qt_data(i_qt_data_a),
         .o_valid  (hdr_valid),
@@ -357,6 +378,12 @@ module jpeg_encoder_top #(
             wr_buf        <= 1'b0;
             rd_buf        <= 1'b0;
             huff_blk      <= 2'd0;
+            rst_cnt       <= 16'd0;
+            rst_idx       <= 3'd0;
+            rst_busy      <= 1'b0;
+            rst_pred_pend <= 1'b0;
+            rst_req       <= 1'b0;
+            enc_mcu       <= 16'd0;
         end else if (tstate == 4'd0 && i_en) begin   // 4'd0 = T_IDLE (局部参数在后面声明)
             huff_start    <= 1'b0;
             huff_run      <= 1'b0;
@@ -365,8 +392,15 @@ module jpeg_encoder_top #(
             wr_buf        <= 1'b0;
             rd_buf        <= 1'b0;
             huff_blk      <= 2'd0;
+            rst_cnt       <= 16'd0;
+            rst_idx       <= 3'd0;
+            rst_busy      <= 1'b0;
+            rst_pred_pend <= 1'b0;
+            rst_req       <= 1'b0;
+            enc_mcu       <= 16'd0;
         end else begin
             huff_start <= 1'b0;
+            rst_req    <= 1'b0;
             pend       <= pend_nx[1:0];
 
             if (q_blk_done) wr_buf <= ~wr_buf;
@@ -377,8 +411,9 @@ module jpeg_encoder_top #(
             //   而正确值是 zz1[0]-zz0[0]。实测症状: 第一个块末尾起全错位。
             //   huff_start 的下一拍正好是 S_DC, 所以这里延迟一拍给。
             if (huff_start) begin
-                huff_run    <= 1'b1;
-                frame_first <= 1'b0;
+                huff_run      <= 1'b1;
+                frame_first   <= 1'b0;
+                rst_pred_pend <= 1'b0;
             end
 
             if (huff_done) begin
@@ -387,8 +422,35 @@ module jpeg_encoder_top #(
                 huff_blk      <= (huff_blk == 2'd3) ? 2'd0 : (huff_blk + 2'd1);
             end
 
-            // 有活就启动 (无损模式不走熵编码)
-            if ((pend != 2'd0) && !huff_run && !huff_start && !huff_done && !use_ll)
+            // ---- DRI: 每编完 i_rst_int 个 MCU 插一个 RST 标记 ----
+            //   ★ 本帧最后一个 MCU 之后**不能**再插 (否则 JPUF 解码器报错)。
+            //   ★ 插标记期间必须禁止启动新块, 否则下一个 MCU 的符号会挤到标记前面。
+            if (mcu_end) begin
+                enc_mcu <= enc_mcu + 16'd1;
+                if ((i_rst_int != 16'd0) && (rst_cnt == (i_rst_int - 16'd1))
+                    && (enc_mcu != (TOTAL_MCU - 1))) begin
+                    rst_req  <= 1'b1;
+                    rst_busy <= 1'b1;
+                    rst_cnt  <= 16'd0;
+                    // ★ 这里**不**自增 rst_idx: bitpack 是在 rst_req 之后一拍才锁存
+                    //   i_rst_idx 的, 现在自增会让第一个标记变成 RST1 (实测 D1 D2 D3)。
+                    //   改成 bp_rst_done 时再自增, 保证从 RST0 开始。
+                end else if (i_rst_int != 16'd0) begin
+                    rst_cnt <= rst_cnt + 16'd1;
+                end else begin
+                    rst_cnt <= 16'd0;
+                end
+            end
+
+            if (bp_rst_done) begin
+                rst_busy      <= 1'b0;
+                rst_pred_pend <= 1'b1;    // 重启段的第一块要清 DC 预测器
+                rst_idx       <= rst_idx + 3'd1;
+            end
+
+            // 有活就启动 (无损模式不走熵编码; RST 标记发送期间也不能启动)
+            if ((pend != 2'd0) && !huff_run && !huff_start && !huff_done && !use_ll
+                && !rst_busy && !rst_req)
                 huff_start <= 1'b1;
         end
     end

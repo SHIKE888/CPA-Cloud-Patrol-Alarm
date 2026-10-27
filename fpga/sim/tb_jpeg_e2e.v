@@ -21,6 +21,7 @@ module tb_jpeg_e2e;
     `define SIM_LL 1'b0
 `endif
 
+    parameter integer RSTI = 0;      // DRI 重启间隔 (MCU), 0=关
     parameter integer W = `SIM_W;
     parameter integer H = `SIM_H;
 
@@ -81,6 +82,7 @@ module tb_jpeg_e2e;
         .i_lossless   (`SIM_LL),
         .i_width      (W[11:0]),
         .i_height     (H[11:0]),
+        .i_rst_int (RSTI[15:0]  ),
         .o_qt_idx_a   (qt_idx_a),
         .i_qt_data_a  (qt_a),
         .o_qt_idx_b   (qt_idx_b),

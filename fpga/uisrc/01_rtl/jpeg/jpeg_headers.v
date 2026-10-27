@@ -29,6 +29,11 @@ module jpeg_headers (
     input  wire [11:0]  i_width,
     input  wire [11:0]  i_height,
 
+    // ★ 2026-10-28: DRI 重启间隔 (MCU 数)。0 = 不插 (旧行为, 完全不变)。
+    //   为什么要 DRI: 3840x1080 的一张 JPEG 由两个引擎各编半行(120 MCU)拼成，
+    //   只有每个半行是独立的熵编码段(restart interval)才能直接背对背拼。
+    input  wire [15:0]  i_rst_int,
+
     // 量化表读口 (与 jpeg_qtable_ram 读口 A 共用; 或单独一个口)
     output reg  [6:0]   o_qt_idx,
     input  wire [7:0]   i_qt_data,
@@ -60,13 +65,36 @@ module jpeg_headers (
     localparam integer OFF_W_LL   = 27;
 
     wire        ll = i_lossless;
-    wire [9:0]  hdr_len = ll ? HDR_LEN_LL[9:0] : HDR_LEN_L[9:0];
-    wire [9:0]  off_h   = ll ? OFF_H_LL[9:0]   : OFF_H_L[9:0];
-    wire [9:0]  off_w   = ll ? OFF_W_LL[9:0]   : OFF_W_L[9:0];
 
+    // ★ 声明必须在使用之前 (Verilog 隐式声明陷阱: cnt 原来在下面才声明,
+    //   ridx 直接用会报 Unable to bind wire/reg `cnt`)
     //---------------------------------------------------------------- 计数
     reg [9:0] cnt;
     reg       run;
+
+    // DRI 段插在 SOI 之后 (cnt=2)。DRI 只要在 SOS 之前即可，插在这里不用动 ROM 内容：
+    // 前面 2 字节照旧，中间 6 字节是 DRI，后面整体用 ridx=cnt-6 去索引原 ROM。
+    localparam [9:0] DRI_POS = 10'd2;
+    wire        has_dri = (i_rst_int != 16'd0);
+    wire [9:0]  ridx    = (has_dri && (cnt > (DRI_POS + 10'd5))) ? (cnt - 10'd6) : cnt;
+    function [7:0] dri_rom;
+        input [2:0] k;              // 0..5
+        begin
+            case (k)
+            3'd0: dri_rom = 8'hFF;
+            3'd1: dri_rom = 8'hDD;
+            3'd2: dri_rom = 8'h00;
+            3'd3: dri_rom = 8'h04;
+            3'd4: dri_rom = i_rst_int[15:8];
+            default: dri_rom = i_rst_int[7:0];
+            endcase
+        end
+    endfunction
+
+    wire [9:0]  base_len = ll ? HDR_LEN_LL[9:0] : HDR_LEN_L[9:0];
+    wire [9:0]  hdr_len  = base_len + (has_dri ? 10'd6 : 10'd0);
+    wire [9:0]  off_h   = ll ? OFF_H_LL[9:0]   : OFF_H_L[9:0];
+    wire [9:0]  off_w   = ll ? OFF_W_LL[9:0]   : OFF_W_L[9:0];
 
     //---------------------------------------------------------------- 地址
     //  ★ 这里必须用【同拍异步读】的 qtable: I_rd_idx_a(O_rd_data_a_asyn 那个口)。
@@ -76,14 +104,14 @@ module jpeg_headers (
     //    cnt 冻多久都没关系。
     //      cnt 25..88  -> 亮 Q (zigzag 0..63)
     //      cnt 90..153 -> 色 Q (zigzag 0..63)
-    wire [5:0] qk_l = cnt[5:0] - 6'd25;    // 25..88  -> 0..63
-    wire [5:0] qk_c = cnt[5:0] - 6'd26;    // 90..153 -> 0..63
+    wire [5:0] qk_l = ridx[5:0] - 6'd25;    // 25..88  -> 0..63
+    wire [5:0] qk_c = ridx[5:0] - 6'd26;    // 90..153 -> 0..63
 
     always @(*) begin
         if (!run)                                     o_qt_idx = 7'd0;
         else if (ll)                                  o_qt_idx = 7'd0;
-        else if (cnt >= 10'd25 && cnt <= 10'd88)      o_qt_idx = {1'b0, jpeg_zigzag(qk_l)};
-        else if (cnt >= 10'd90 && cnt <= 10'd153)     o_qt_idx = 7'd64 + {1'b0, jpeg_zigzag(qk_c)};
+        else if (ridx >= 10'd25 && ridx <= 10'd88)    o_qt_idx = {1'b0, jpeg_zigzag(qk_l)};
+        else if (ridx >= 10'd90 && ridx <= 10'd153)   o_qt_idx = 7'd64 + {1'b0, jpeg_zigzag(qk_c)};
         else                                          o_qt_idx = 7'd0;
     end
 
@@ -93,22 +121,24 @@ module jpeg_headers (
     always @(*) begin
         if (!run) begin
             d2 = 8'd0;
+        end else if (has_dri && cnt >= DRI_POS && cnt <= (DRI_POS + 10'd5)) begin
+            d2 = dri_rom(cnt[2:0] - DRI_POS[2:0]);
         end else if (!ll) begin
             // ---- 有损 SOF0: 607 字节, 含两段 Q 表 ----
-            if      (cnt >= 10'd25  && cnt <= 10'd88)  d2 = i_qt_data;   // 亮度 Q (zigzag 序)
-            else if (cnt >= 10'd90  && cnt <= 10'd153) d2 = i_qt_data;   // 色度 Q
-            else if (cnt == 10'd159)                   d2 = {4'h0, i_height[11:8]};
-            else if (cnt == 10'd160)                   d2 = i_height[7:0];
-            else if (cnt == 10'd161)                   d2 = {4'h0, i_width[11:8]};
-            else if (cnt == 10'd162)                   d2 = i_width[7:0];
-            else                                       d2 = jpeg_hdr_rom(cnt);
+            if      (ridx >= 10'd25  && ridx <= 10'd88)  d2 = i_qt_data;   // 亮度 Q (zigzag 序)
+            else if (ridx >= 10'd90  && ridx <= 10'd153) d2 = i_qt_data;   // 色度 Q
+            else if (ridx == 10'd159)                    d2 = {4'h0, i_height[11:8]};
+            else if (ridx == 10'd160)                    d2 = i_height[7:0];
+            else if (ridx == 10'd161)                    d2 = {4'h0, i_width[11:8]};
+            else if (ridx == 10'd162)                    d2 = i_width[7:0];
+            else                                         d2 = jpeg_hdr_rom(ridx);
         end else begin
             // ---- 无损 SOF3: 91 字节, 无 DQT ----
-            if      (cnt == 10'd25)                    d2 = {4'h0, i_height[11:8]};
-            else if (cnt == 10'd26)                    d2 = i_height[7:0];
-            else if (cnt == 10'd27)                    d2 = {4'h0, i_width[11:8]};
-            else if (cnt == 10'd28)                    d2 = i_width[7:0];
-            else                                       d2 = jpeg_hdr_ll(cnt);
+            if      (ridx == 10'd25)                     d2 = {4'h0, i_height[11:8]};
+            else if (ridx == 10'd26)                     d2 = i_height[7:0];
+            else if (ridx == 10'd27)                     d2 = {4'h0, i_width[11:8]};
+            else if (ridx == 10'd28)                     d2 = i_width[7:0];
+            else                                         d2 = jpeg_hdr_ll(ridx);
         end
     end
 
