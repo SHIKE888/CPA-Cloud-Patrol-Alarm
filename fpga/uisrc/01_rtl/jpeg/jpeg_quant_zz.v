@@ -87,15 +87,20 @@ module jpeg_quant_zz (
     //=============================================================== 装载状态机
     localparam [1:0] L_IDLE = 2'd0;
     localparam [1:0] L_RUN  = 2'd1;
-    localparam [1:0] L_TAIL = 2'd2;
+    localparam [1:0] L_DRAIN= 2'd2;   // ★ 等倒数流水排空 (23 拍)
+    localparam [1:0] L_TAIL = 2'd3;
+
+    localparam integer RCP_LAT = 23;  // jpeg_recip_pipe 的延迟 (拍)
 
     reg [1:0] lstate;
     reg [7:0] lidx;
+    reg [4:0] drain;
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             lstate      <= L_IDLE;
             lidx        <= 8'd0;
+            drain       <= 5'd0;
             o_qt_idx    <= 7'd0;
             o_load_done <= 1'b0;
         end else begin
@@ -104,20 +109,27 @@ module jpeg_quant_zz (
             L_IDLE: begin
                 if (i_load) begin
                     lidx     <= 8'd0;
+                    drain    <= 5'd0;
                     o_qt_idx <= 7'd0;
                     lstate   <= L_RUN;
                 end
             end
             L_RUN: begin
                 if (lidx == 8'd127) begin
-                    lstate <= L_TAIL;
+                    lstate <= L_DRAIN;      // 最后一个数据已进流水, 等排空
                 end else begin
                     lidx     <= lidx + 8'd1;
                     o_qt_idx <= lidx[6:0] + 7'd1;
                 end
             end
+            L_DRAIN: begin
+                if (drain >= (RCP_LAT)) begin
+                    lstate <= L_TAIL;
+                end else begin
+                    drain <= drain + 5'd1;
+                end
+            end
             L_TAIL: begin
-                // 收最后一个数据 (i_qt_data 仍对应 idx=127)
                 o_load_done <= 1'b1;
                 lstate      <= L_IDLE;
             end
@@ -134,13 +146,45 @@ module jpeg_quant_zz (
         else        widx <= o_qt_idx;
     end
 
-    wire [20:0] rc = recip_of(i_qt_data);
-    wire        wr_y = (lstate == L_RUN) && (widx <= 7'd63);
-    wire        wr_c = (lstate == L_RUN) && (widx >  7'd63) && (widx <= 7'd127);
+    //=========================================================================
+    //  倒数表装载: ★ 不再用组合除法器 (它是编码器的最差路径 21.9ns => fmax
+    //  45MHz)。现在走 jpeg_recip_pipe 的 22 级流水长除法:
+    //      1 项/拍吞吐 (装载仍是 ~150 拍), 延迟 RCP_LAT 拍
+    //  数值与原来的 recip_of 逐位一致 (tb_jpeg_recip 已穷举 256 个 Q 验证)。
+    //=========================================================================
+    wire        rc_vld;
+    wire [20:0] rc;
+
+    jpeg_recip_pipe u_recip (
+        .clk     (clk),
+        .rst_n   (rst_n),
+        .i_valid (lstate == L_RUN),   // i_qt_data 在本拍有效
+        .i_q     (i_qt_data),
+        .o_valid (rc_vld),
+        .o_recip (rc)
+    );
+
+    // 写地址要跟着 rc 一起延后 RCP_LAT 拍
+    reg [6:0] widx_pipe [0:RCP_LAT-1];
+    integer wi;
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            for (wi = 0; wi < RCP_LAT; wi = wi + 1) widx_pipe[wi] <= 7'd0;
+        end else begin
+            widx_pipe[0] <= widx;
+            for (wi = 1; wi < RCP_LAT; wi = wi + 1) widx_pipe[wi] <= widx_pipe[wi-1];
+        end
+    end
+
+    wire [6:0] widx_d = widx_pipe[RCP_LAT-1];
+    // ⚠ 与改造前行为一致: 只有 L_RUN 期间的 127 项会写入 (rc_vld 已编码该条件),
+    //   idx=127 那一项依旧不写 —— 这是历史行为, 改变会破坏逐字节回归。
+    wire        wr_y = rc_vld && (widx_d <= 7'd63);
+    wire        wr_c = rc_vld && (widx_d >  7'd63);
 
     always @(posedge clk) begin
-        if (wr_y) rz_y[widx[5:0]] <= rc;
-        if (wr_c) rz_c[widx[5:0]] <= rc;
+        if (wr_y) rz_y[widx_d[5:0]] <= rc;
+        if (wr_c) rz_c[widx_d[5:0]] <= rc;
     end
 
     //=============================================================== 量化

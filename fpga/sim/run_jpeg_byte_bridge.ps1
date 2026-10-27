@@ -13,7 +13,8 @@ $common = @(
     "$j/jpeg_linebuf.v",
     "$j/jpeg_dct2d.v",
     "$j/jpeg_quant_zz.v",
-    "$j/jpeg_huff_enc.v",
+    
+    "$j/jpeg_recip_pipe.v", "$j/jpeg_huff_enc.v",
     "$j/jpeg_bitpack.v",
     "$j/jpeg_headers.v",
     "$j/jpeg_lossless_enc.v",
