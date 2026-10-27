@@ -661,11 +661,10 @@ html, body{overflow:hidden}
             <div class="row"><label>强度</label>
               <input type="range" id="f_BASIC_GAUSS" min="0" max="8" step="1" value="8">
               <span class="val" id="fv_BASIC_GAUSS">8</span></div>
-            <div class="row"><label title="3x3 轻、5x5 中、7x7 重（级联二项式核，≈高斯 σ 0.85 / 1.0 / 1.24）">核尺寸</label>
-              <div class="grid3" style="flex:1">
+            <div class="row"><label title="3x3 轻、5x5 中（级联二项式核，≈高斯 σ 0.85 / 1.0）。7x7 已于 RTL 删除，0xF8 写 2 会退到 5x5">核尺寸</label>
+              <div class="grid2" style="flex:1">
                 <button class="ghost" id="btnKer0">3×3</button>
                 <button class="ghost" id="btnKer1">5×5</button>
-                <button class="ghost" id="btnKer2">7×7</button>
               </div></div>
           </div>
 
@@ -2556,7 +2555,7 @@ function fpgaSyncUI() {
     if (el && $("fv_" + k)) $("fv_" + k).textContent = el.value;
   });
   // 高斯核尺寸三选一
-  const ker = Number(r.BASIC_KER || 0);
+  const ker = Math.min(Number(r.BASIC_KER || 0), 1);   // 7x7 已在 RTL 删除, 显示钳到 5x5
   ["btnKer0", "btnKer1", "btnKer2"].forEach((id, i) => {
     const b = $(id);
     if (b) b.classList.toggle("on", Number(r.BASIC_EN || 0) & 2 && i === ker);
@@ -2681,7 +2680,7 @@ document.querySelectorAll("#viewVideo [data-basic]").forEach(b => {
 $("s_gray_mode").onchange = () =>
   scheduleFpgaPush({ BASIC_GRAY: parseInt($("s_gray_mode").value, 10) });
 
-/* 高斯核尺寸: 3x3 / 5x5 / 7x7 (0xF8 BASIC_KER) */
+/* 高斯核尺寸: 3x3 / 5x5 (0xF8 BASIC_KER; 7x7 已在 RTL 删除) */
 ["btnKer0", "btnKer1", "btnKer2"].forEach((id, i) => {
   const b = $(id);
   if (!b) return;
