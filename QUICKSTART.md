@@ -71,7 +71,7 @@ ssh afc03 "/root/rk/deploy/flash_boot.sh /root/boot.img --yes"
 # ① 链路自检（先跑这个，确认 FPGA→MIPI→RK 数据通路是通的）
 ssh afc03 "cd /root/rk/deploy && ./rk_mipi_selftest.sh"
 
-# ② 网页推流（PC 浏览器开 mipi_viewer.html，地址填 192.168.137.100:9012）
+# ② 网页推流（浏览器开 http://192.168.137.100/ ，页面就是 console.html）
 ssh afc03 "cd /root/rk/web && ./start_webstream.sh"
 
 # ③ HDMI 全屏出图
@@ -97,8 +97,8 @@ ssh afc03 "cd /root/rk/web && PYTHON=python3 ./start_webstream.sh /dev/video22 9
 ssh afc03 "cd /root/rk/deploy && ./restart_web.sh"
 ```
 
-PC 侧观看：双击 `rk/web/mipi_viewer.html`，地址框填 `192.168.137.100:9012`；
-或直接开 `http://192.168.137.100:9012/`；VLC 可放 `http://192.168.137.100:9012/stream`。
+PC 侧观看：直接开 `http://192.168.137.100/`（80 端口，nginx 反代到 console.html
+与 9012）；VLC 可放 `http://192.168.137.100:9012/stream`。
 
 **手机 / 平板（无线局域网）**：板子 USB WiFi 由 NetworkManager 管理，连 `509`（5GHz），
 开机自动 DHCP，当前地址 `http://192.168.1.136:9012/`。页头「局域网」芯片会显示

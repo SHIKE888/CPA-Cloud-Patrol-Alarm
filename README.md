@@ -478,7 +478,7 @@ rk/driver/build_module.sh        # 可选：独立编 .ko
 
 cd rk/deploy && ./start.sh       # 全栈起停
 systemctl status mipi-webstream  # 或走 systemd（ExecStart=/root/rk/deploy/boot_start.sh）
-# 浏览器打开 http://<RK_IP>:9012/
+# 浏览器打开 http://<RK_IP>/      ← 对外只开 80（nginx 反代 /api/ /stream /snapshot.jpg 到 9012）
 
 cd rk/web && ./start_webstream.sh
 AI=1 AI_FPS=8 AI_ZONE="0.2,0.6;0.8,0.6;0.8,1;0.2,1" ./start_webstream.sh
@@ -531,7 +531,7 @@ rk/relay/deploy_relay.sh       # ROS Web 中继
 
 ### P2 · 清理与加固
 
-- 删除 NV16 直通通路（约 5.2k LUT / 34 ERAM），JPEG 稳定后执行
+- 删除 NV16 直通通路（`csi2_pack_yuv422_stream` + `csi2_frame_tx` + 帧标记逻辑，估算约 5.2k LUT / 约 14 ERAM —— 由 `csi2_pack` 的 33b×4096 + 34b×4096 两个异步 FIFO 参数推算，**未做删除 A/B，数字仅供参考**），JPEG 稳定后执行
 - 清理 `preproc/*.bak*`、`*.orig`（与现役文件重复定义 module）
 - DSI 时钟 lane ODDR 一条 −0.539 ns 违例（厂商 PHY 原语，暂不修）
 
@@ -563,7 +563,7 @@ rk/relay/deploy_relay.sh       # ROS Web 中继
 ├── rk/
 │   ├── driver/                  # milianke_mipi.c / build_module.sh / Kconfig / Makefile(片段)
 │   ├── dts/rockchip/            # 主 dts + rk03/ 24 个 dtsi（含 csi-imx415-2.dtsi）
-│   ├── web/                     # 41 文件：主程序 / 页面 / bench_* / diag_*
+│   ├── web/                     # 主程序 mipi_webstream.py + bench_* / diag_*（页面不在此，见 relay/web/console.html）
 │   ├── ai/                      # board/ convert/(29) models/(8) dist/
 │   ├── gimbal/                  # 6 文件，QGimbal 串口
 │   ├── relay/                   # 8 + jetson/(31) + web/(3)
@@ -581,7 +581,7 @@ rk/relay/deploy_relay.sh       # ROS Web 中继
 
 | 类别 | 值 |
 |---|---|
-| **端口** | `9012` RK 推流/API ｜ `9080` cloud server（仅 127.0.0.1）｜ `80`/`443` nginx ｜ `9090` rosbridge ｜ `8765` foxglove ｜ `11311` ROS master ｜ `9100` fake_board ｜ `9013` 旧版独立 AI 服务（已并入 9012） |
+| **端口** | `80` nginx 对外唯一入口（`/`→`console.html`，`/api/` `/stream` `/snapshot.jpg`→127.0.0.1:9012）｜ `9012` RK 推流/API（**仅监听 127.0.0.1**）｜ `9080` cloud server（仅 127.0.0.1）｜ `443` HTTPS ｜ `9090` rosbridge ｜ `8765` foxglove ｜ `11311` ROS master ｜ `9100` fake_board ｜ `9013` 旧版独立 AI 服务（已并入 9012） |
 | **systemd 服务** | `mipi-webstream`（`ExecStart=/root/rk/deploy/boot_start.sh`，`Port=9012`，`/dev/video22`）｜ `csi-dashboard` ｜ `cloud-agent` |
 | **I²C** | `/dev/i2c-9` + `0x40`（FPGA 参数通道）｜ IMX415 `0x1a`（FPGA 内部 SCCB）｜ DTS `fpga@1a` 仅虚拟占位 |
 | **设备节点** | `/dev/video22`（rkcif 产生）、`/dev/ttyACM0`（云台）、`/dev/i2c-9` |

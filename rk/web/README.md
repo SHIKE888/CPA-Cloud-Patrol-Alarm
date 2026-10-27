@@ -1,12 +1,12 @@
 # MIPI 网页推流 + 远程调参
 
-把 RK3576 上采集到的画面推到 **`<RK的IP>:9012`**，PC 上用 `mipi_viewer.html`
-即可看画面并在线调节画面参数。
+把 RK3576 上采集到的画面推到 **`<RK的IP>:9012`**，用浏览器打开
+**`http://<RK的IP>/`**（nginx 反代 → `rk/relay/web/console.html`）即可看画面并在线调节参数。
 
 ```
 ┌──────────────┐  MIPI x4   ┌──────────┐   HTTP MJPEG :9012   ┌────────────────────┐
 │ FPGA 采集    │ ─────────► │ RK3576   │ ───────────────────► │ PC 浏览器          │
-│ MIPI → ISP   │            │ mipi_web │ ◄─────────────────── │ mipi_viewer.html   │
+│ MIPI → ISP   │            │ mipi_web │ ◄─────────────────── │ console.html       │
 └──────────────┘            │ stream.py│   /api/params (调参)  └────────────────────┘
                             └──────────┘
 ```
@@ -195,8 +195,12 @@ PYTHON=/opt/miniforge3/envs/mlk-ov/bin/python ./start_webstream.sh
 | 文件 | 说明 |
 |------|------|
 | `mipi_webstream.py` | RK 端服务：抓流 → JPEG → HTTP MJPEG 推流 + 调参 API（**默认端口 9012**）|
-| `mipi_viewer.html` | PC 端本地网页：看画面 + 调参（纯静态，双击即可打开）|
 | `start_webstream.sh` | 一键启动脚本 |
+
+> **页面只有一份**：`rk/relay/web/console.html`（视频工作台 + 建图导航，部署到板上
+> `/var/www/ros-relay/console.html`，用 `http://<板子>/` 打开）。
+> 原先独立的单页 `mipi_viewer.html` 已于 2026-10-28 移除，需要时从 git 提交
+> `9323912`（留档提交）取回。
 
 ---
 
@@ -222,28 +226,32 @@ cd /root/rk/web && chmod +x *.sh
  MIPI 网页推流
    Python : /opt/miniforge3/envs/mlk-ov/bin/python
    设备   : /dev/video22
-   端口   : 9012
-   地址   : http://192.168.137.100:9012/
+   监听   : 127.0.0.1:9012  (对外请走 nginx 80 端口)
+   对外   : http://192.168.137.100/   (nginx 反代 /api/ /stream)
 ```
 
 > **关于 `192.168.137.100`**：这是 **RK3576 的 IP**（图里是服务端）。
 > 如果你的板子拿到的是别的地址，以启动时打印的为准。
+>
+> **2026-10-27 起：9012 只监听 `127.0.0.1`（用户要求对外只开 80）。**
+> 外部一律走 nginx：`/`、`/api/`、`/stream`、`/snapshot.jpg` 全部反代到本机 9012。
+> 想恢复全端口监听（调试 / 没装 nginx 时）：`HOST=0.0.0.0 ./start_webstream.sh`。
 
 ---
 
 ## 3. PC 上查看
 
-### 方式 A（推荐）：本地网页 `mipi_viewer.html`
-1. 把 `mipi_viewer.html` 拷到 PC，**双击打开**（`file://` 直接可用，不需要起服务器）
-2. 顶部地址框填 **`192.168.137.100:9012`**（RK 的 IP:端口），点「连接」
-3. 左侧出画面，右侧调参
+### 方式 A（推荐）：浏览器打开 `http://<RK的IP>/`
+1. 直接在浏览器输入 **`http://192.168.137.100/`**（80 端口，nginx 反代 `/api/`、`/stream`）
+2. 页面即 `console.html`：左侧画面 + 右侧「摄像头 / 预处理 / 画面 / 标注 / 云台」页签
+3. 地址会记在 `localStorage`，下次自动填
 
-> 也可以用 `mipi_viewer.html#192.168.137.100:9012` 直接带上地址打开。
-> 地址会记在 `localStorage`，下次自动填。
+> 只有一个页面要维护（`rk/relay/web/console.html`），不存在“改了一个端口不生效”的问题。
 
 ### 方式 B：直接开 RK 上的页面
 ```
-http://192.168.137.100:9012/
+http://192.168.137.100/          # 80 端口（nginx → console.html，视频/建图两个视图）
+http://127.0.0.1:9012/           # 只能板子本机开（9012 已绑定回环）
 ```
 
 ### 方式 C：只有一行 gst（不需要 Python，但没有在线调参）
@@ -275,7 +283,7 @@ PC 上需要先起一个接收端（例如装了 GStreamer 的话）：
 gst-launch-1.0 tcpserversrc port=9012 ! multipartdemux ! jpegdec ! autovideosink
 ```
 
-这种模式 **浏览器无法直接接收**（没有 HTTP 头），所以 `mipi_viewer.html`
+这种模式 **浏览器无法直接接收**（没有 HTTP 头），所以控制台
 默认走的是第 3 节的「RK 当服务端」模式 —— 效果一样，而且更通用。
 
 ---
@@ -331,7 +339,7 @@ PYTHON=python3 ./start_webstream.sh /dev/video22 9012 --backend gstlive   # 走�
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET | `/` | 内置页面（若同目录有 `mipi_viewer.html` 则直接返回它）|
+| GET | `/` | 纯画面兜底页（完整控制台在 80 端口的 `console.html`）|
 | GET | `/stream` | `multipart/x-mixed-replace` MJPEG 流 |
 | GET | `/snapshot.jpg` | 取当前一帧 JPEG |
 | GET | `/api/params` | 读取当前软件参数 |
@@ -339,20 +347,122 @@ PYTHON=python3 ./start_webstream.sh /dev/video22 9012 --backend gstlive   # 走�
 | GET | `/api/controls` | 列出 V4L2 硬件可控参数 |
 | POST | `/api/ctrl` | `{"name":"brightness","value":128}` |
 | GET | `/api/status` | 后端 / 设备 / 分辨率 / 实际帧率 / 客户端数 |
+| GET | `/api/gimbal` | 云台状态：关节角 / 限幅 / 点动 / 追踪误差（只读，不发运动指令）|
+| POST | `/api/gimbal` | 云台动作：`jog` / `stop` / `home` / `zero` / `track` / `enable` / `disable` / `release` / `config` |
 
 所有 API 都带 `Access-Control-Allow-Origin: *`，所以 `file://` 打开的本地 HTML
 也能直接调用。
 
-命令行验证：
+命令行验证（**9012 现在只监听 127.0.0.1**：在板子上用 127.0.0.1，在 PC 上把 `:9012` 去掉走 80 端口）：
 
 ```bash
-curl http://192.168.137.100:9012/api/status
+curl http://192.168.137.100/api/status
 curl -X POST http://192.168.137.100:9012/api/params \
      -H 'Content-Type: application/json' -d '{"brightness":20,"saturation":1.4}'
 curl http://192.168.137.100:9012/api/controls
+# 云台：读状态 / 点动 2 秒 / 停 / 回零 / 开追踪
+curl http://192.168.137.100:9012/api/gimbal
+curl -X POST http://192.168.137.100:9012/api/gimbal \
+     -H 'Content-Type: application/json' -d '{"action":"jog","yaw":-20,"pitch":0,"hold":1.5}'
+curl -X POST http://192.168.137.100:9012/api/gimbal -d '{"action":"stop"}'
+curl -X POST http://192.168.137.100:9012/api/gimbal -d '{"action":"home"}'
+curl -X POST http://192.168.137.100:9012/api/gimbal -d '{"action":"track","on":true}'
 # VLC 直接放流
 vlc http://192.168.137.100:9012/stream
 ```
+
+### 7.1 云台（QGimbal）
+
+页面「云台」页签 + `gimbal_web.py`（串口协议复用 `rk/gimbal/gimbal_keyctrl.py`）。
+
+* 串口 `/dev/ttyACM0`，可用 `--gimbal-port ''` 整体关闭；
+  默认启动即占用串口（`--gimbal-auto-open 0` 可关掉，留给官方上位机/键盘脚本）；
+  点「释放串口」可把 `ttyACM0` 让给官方上位机 / `gimbal_keyctrl.py`。
+* **连续控制**（`--gimbal-drive speed`，默认）：每拍下发 `ctrl speed`（rpm =
+  °/s ÷ 6），云台**连续转**，不会像角度模式那样“到点停一下再等下一拍”。
+  速度模式的三道保险（缺一不可）：
+  1. **软限位刹车**：固件在速度模式下不替你停限位，所以按 `刹车距离 = v²/2a`
+     提前收速，贴限位（12° 内）时把编码器回读加快到 0.15 s（推算误差 = v×age）；
+  2. **心跳重发**：速度指令变化 >0.02 rpm 就发，另外每 100 ms 无条件重发一次
+     （丢命令 / 固件复位后能自愈）；
+  3. **看门狗线程**：控制线程超过 0.6 s 没更新速度，独立线程直接往 tty 写
+     `ctrl speed 0 0`（不抢锁、不等回复——控制线程卡死时往往正抱着锁）。
+     回零/设零点/释放串口/失能之前都会先发速度 0。
+4. **串口掉线自恢复**：`/dev/ttyACM0` 消失（USB 断开/供电不足）或读写报
+     EIO 时，立刻 `_close()` 并置 `connected=false`，由控制线程每 5 s 重试重连；
+     `_send_rate` 里遇到 EIO 会先发一次 0 再断开（否则会永远卡在
+     connected=true 什么都发不出去）。
+* `--gimbal-drive angle` 可回到**步进控制**（每拍下发 `ctrl angle` 绝对角，
+  固件到点停，精度好但有 25 ms 一步的顿挫），用于对照/回退。
+* **两层限幅**：绝对（固件关节角 ±170°，Pitch 取 `limit.pitch.deg` −1°，
+  读不到时按 28° 保守处理）+ 相对软件零点（默认 ±170° / ±42°，上限 178°/45°），
+  两者取交集。目的是**绝不越过零点 ±180° / 俯仰 ±45°**，否则会扯断排线。
+* **看门狗**：点动必须每 `hold`（默认 0.8 s）续一次；页面在
+  `pointerup` / `blur` / `visibilitychange` / `pagehide` 时也会主动 `stop`。
+* 「设置零点」默认是**软件零点**（存 `state.json` 的 `gimbal` 段，不写固件 Flash）。
+  真要写固件零点必须显式 `{"action":"zero","mode":"hw","confirm":"hw-zero"}`，
+  命令会先 `disable`（Pitch 可能下垂）再 `config zero_pos`，然后重试 `enable`。
+* **追踪**：取 `/api/ai` 里**面积最大**的检测框，中心偏离画面中心的量归一化后
+  进**一维匀速卡尔曼**（位置+速度），再按速度外推 `predict` 秒（默认 0.15 s，
+  另外自动加上这一帧结果已经过时的 `age_ms`，封顶 0.6 s）做前瞻 —— 相机领着人走，
+  而不是一步一超。速度指令统一走**加速度斜坡**（默认 250 °/s²），不再阶跃。
+  死区 0.015（原来 0.07，加上框抖动就是"走一下停一下"）；|误差|≥0.35 给满速。
+  控制周期 25 ms；`status` 只在**空闲**时 0.3 s 读一次，运动中降到 1 s
+  （每次 status 占 15~40 ms 总线，0.3 s 一读就是 3 Hz 的卡顿）。
+  目标丢失时卡尔曼停止外推、速度按斜坡降下来。
+* **瞄准点（试探位移 → 能否全包）**：`ai_overlay` 先从**已有关节比例**反推
+  **完整身高**（躯干 0.29H / 大腿 0.25H / 小腿 0.23H / 头中心-踝 0.88H 取中位数，
+  再与检测框高取大 —— 框可能被裁，框高只是下界），然后**试探**：假设云台把瞄准点
+  送到画面中心，头顶/脚底会落在哪，上下各留 3% 边距看是否还都在画面内。
+  - **能全包** → 锁**人体几何中心**（头脚中点，脚被裁时按比例补出来）；
+  - **装不下**（人比画面还高 / 太近 / 关键点不够算不出身高）→ **优先锁头**；
+  - 头被上边框裁掉（瞄头没意义）→ 退回框中心。
+
+  临界尺寸上 head ↔ 几何中心 会来回切，所以做了两层去抖：
+  `ai_overlay` 侧滞回 —— **切入宽松（span ≤ 画面高 − 2×边距）、维持更宽松
+  （span ≤ 画面高 − 1×边距）**，⚠ 方向不能写反，写反会"明明放得下也一直锁头、
+  人不居中"；`gimbal_web` 侧对 aim 点做一阶低通（40Hz 下 k=0.5 ≈ 30ms）。
+  `/api/ai` 的每个检测框带 `aim` / `aim_mode`（头部|几何中心|框中心）/ `can_full` /
+  `est_h` / `shift`；`/api/gimbal` 的 `track.aim_mode` 直接显示在页面「追踪」一行。
+* **位置环只在“静止”时介入**（`--gimbal-loop vel`，默认）：
+  - 运动/追踪时：`v = 纯前馈`，位置环**不参与**。
+  - 静止时（无前馈 + 两轴实测速度 <3°/s）：`v += kp_vel × (目标 − 推算位置)`，
+    限幅 ±2°/s，只用来消长期漂移。
+  - ‼ 为什么不能全程闭环（2026-10-28 实测）：`status` 运动中 1 s 才回读一次，
+    `angle + vel_meas × age` 的外推误差跟运动状态强相关，“目标 − 推算位置”
+    **每一秒翻一次符号** → 云台 1 Hz 来回摆，实测摆幅 27°。追踪本身就是
+    视觉闭环，再叠一层 1 s 延迟的位置环就是自己跟自己打架。
+    外推现在最多只用 0.4 s（`POS_EXTRAP_MAX`），只给限位/堵转判断用。
+  - 堵转保护仍保留：目标超前实测超过 `--gimbal-lead-max`（默认 12°）就不再推进
+    目标（防止被挡住时目标一直往前堆、放开后猛冲）；追踪时只有“实测速度 <0.5°/s”
+    才判为真堵转，避免打断视觉闭环。
+  - `--gimbal-loop ff` 可退回"纯速度前馈"的旧行为便于对比。
+  追踪开启时若 AI 没在跑会自动切到「仅推理」（画面不变）。
+  方向反了在页面上点「Yaw/Pitch 反向」（`yaw_sign` / `pitch_sign`，存 `state.json`）。
+  手感三件套（页面上都能实时拖，存 `state.json`）：
+  `速度`(上限) / `加速度`(越小越柔) / `预测`(人物走得越快越要加大)。
+  命令行等价：`--gimbal-speed` / `--gimbal-accel` / `--gimbal-predict` /
+  `--gimbal-kalman 0`(关掉滤波) / `--gimbal-period`。
+* 命令被固件拒绝（超限 / 失能 / STALE）时自动回滚目标并停追踪，不会一直重试。
+
+离线自测：`python tools/test_gimbal_web.py`（假串口，验证限幅/看门狗/追踪收敛；
+第 11 段专门测连续控制：速度指令、软限位不越界、关追踪归零、看门狗补 0）。
+
+### 7.2 ★ 只有一份页面：`console.html`
+
+| 页面 | 谁在用 | 维护方式 |
+|---|---|---|
+| `rk/relay/web/console.html` → 板上 `/var/www/ros-relay/console.html` | **`http://<板子>/`（80 端口）** | 直接改；覆盖板上那份前先备份（`cp console.html console.html.bak_$(date +%s)`）|
+
+它是视频工作台 + 建图导航的**合并版**。原先并存的单页 `mipi_viewer.html` 已于
+2026-10-28 移除（留档在 git 提交 `9323912`），所以“改了一处、另一个端口不生效”
+这个坑不会再出现。
+
+> **板上那份可能比仓库里的新**（历史上多过白平衡/反色/中值滤波等）。需要合并时用
+> `python tools/patch_console_gimbal.py --src <仓库版> <板上版> [out.html]` 按锚点插入，
+> 整文件覆盖会冲掉板上的独有改动。该脚本现已默认从 `console.html` 自身抽取，正常改页面不需要它。
+
+改完 80 端口记得让浏览器硬刷新（Ctrl+F5）：这个站点没给 HTML 加 `no-store`。
 
 ---
 
@@ -367,7 +477,7 @@ vlc http://192.168.137.100:9012/stream
 | `<img>` 一直黑 | 用 `curl -I http://<RK>:9012/stream` 确认返回 200 + `multipart/x-mixed-replace` |
 | 抓到的帧全黑（但有噪点）| 图像数据是通的，通常是**镜头对着暗处/被挡住**，或 IMX415 曝光偏低。可先把「亮度/对比度」拉高确认；网页有画面后即可判断 |
 | 提示打开 `/dev/video22` 失败 | 先跑 `../deploy/rk_mipi_selftest.sh` 确认节点；或 `../deploy/env_check.sh` 看环境 |
-| 想让 PC 开机自动看 | 浏览器快捷键 / 用 `mipi_viewer.html#<RK_IP>:9012` 做快捷方式 |
+| 想让 PC 开机自动看 | 浏览器快捷键 / 用 `http://<RK_IP>/` 做快捷方式 |
 
 ---
 

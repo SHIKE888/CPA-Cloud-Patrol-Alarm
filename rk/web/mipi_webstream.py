@@ -4449,20 +4449,8 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---------- 具体响应 ----------
     def _serve_viewer(self):
-        for p in (os.path.join(SCRIPT_DIR, "mipi_viewer.html"),
-                  "/root/mipi_viewer.html",
-                  "/home/rock/mipi_viewer.html"):
-            if os.path.isfile(p):
-                with open(p, "rb") as f:
-                    body = f.read()
-                self.send_response(200)
-                self.send_header("Content-Type", "text/html; charset=utf-8")
-                self.send_header("Content-Length", str(len(body)))
-                self.send_header("Cache-Control", "no-store")
-                self._cors()
-                self.end_headers()
-                self.wfile.write(body)
-                return
+        # 2026-10-28: 页面已统一到 rk/relay/web/console.html（nginx 80 端口），
+        #   本端口不再提供完整控制台，只给一个纯画面兜底页。
         body = FALLBACK_PAGE.encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -4924,8 +4912,7 @@ def main():
     print("   地址     :")
     print("       http://%s:%d/          浏览器直接看画面" % (ip, args.port))
     print("       http://%s:%d/stream    MJPEG 流" % (ip, args.port))
-    print("   本地 HTML 请在 PC 上打开 mipi_viewer.html,")
-    print("   把服务器地址填成  %s:%d" % (ip, args.port))
+    print("   完整控制台在 nginx 80 端口的 console.html；本端口只给纯画面兜底页")
     print("=" * 66)
 
     _log_trim_watch()          # 运行日志超过 200KB 自动截断

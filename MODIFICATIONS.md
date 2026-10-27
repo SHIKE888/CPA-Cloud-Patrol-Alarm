@@ -65,7 +65,7 @@ limited 数据 → 黑电平抬高、白点只到 235、色度欠饱和（画面
 | `rk/deploy/README.md` | RK 端完整部署步骤（刷机、刷 boot 分区三种方式、跳线帽、上电顺序、常见问题表、驱动参数说明）|
 | `rk/driver/build_module.sh` | 可选：把 `milianke_mipi.c` 独立编译成 `.ko`（当内核未内置该驱动时使用），自动处理 kernel headers |
 | `rk/web/mipi_webstream.py` | RK 端 HTTP MJPEG 推流服务 + 调参 API（默认 9012）；四种采集后端 `gstlive`(gi/GStreamer 原生，参数在线生效) / `opencv`(cv2 逐帧处理) / `gst`(gst-launch 兜底) / `test`(videotestsrc 测试图案) |
-| `rk/web/mipi_viewer.html` | PC 端本地网页：拉流看画面 + 滑块调参 + 抓拍下载，纯静态、双击即可打开（带 CORS 支持）|
+| `rk/relay/web/console.html` | **唯一控制台页面**：视频工作台（拉流看画面 + 滑块调参 + 抓拍下载）+ 建图导航，部署到板上 `/var/www/ros-relay/console.html`，用 `http://<板子>/` 打开 |
 | `rk/web/start_webstream.sh` | 一键启动；**自动挑选“能 import cv2 的解释器”**（本板为 conda 环境 `mlk-ov`）|
 | `rk/web/cv2_probe.py` | 探测指定解释器下 OpenCV 能否打开各 `/dev/video*`，并实测 3 秒帧率 |
 | `rk/web/color_diag.py` | 颜色诊断：把「U/V 顺序 × 601/709 × limited/full」全部渲染出来对比，并打印 Y/Cb/Cr 统计 |
