@@ -11,7 +11,7 @@ $f = "../uisrc/03_ip/al_fifo"
 
 iverilog -g2005 -o tb_dual_stitch.vvp `
     tb_dual_stitch.v `
-    "$d/dual_stitch.v" `
+    "$d/sensor_sync_start.v" `
     "$f/fifo_32b_async_2.v"
 if ($LASTEXITCODE -ne 0) { Write-Host "COMPILE FAILED"; exit 1 }
 

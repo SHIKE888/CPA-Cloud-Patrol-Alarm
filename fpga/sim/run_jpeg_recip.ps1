@@ -10,7 +10,7 @@ $j = "../uisrc/01_rtl/jpeg"
 
 iverilog -g2005 -o tb_jpeg_recip.vvp `
     tb_jpeg_recip.v `
-    "$j/jpeg_recip_pipe.v"
+    "$j/jpeg_quant_zz.v"
 if ($LASTEXITCODE -ne 0) { Write-Host "COMPILE FAILED"; exit 1 }
 
 vvp tb_jpeg_recip.vvp

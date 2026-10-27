@@ -57,3 +57,8 @@ cam0 ─ RX0 @S_hs_clk0 ─ crop(cam_h=1920) ─┘
 - **可变码率**：`jpeg_qtable_ram` 的写口被接成 `I_wr_en(1'b0)`（只有固定表），要开写口 + 寄存器下发。
 - **删 NV16 通路**：`ui_ddr+ui_dbuf+ui_vtc+csi2_pack+csi2_frame_tx ≈ 5.2k LUT + 34 ERAM`
   可在 JPEG 达标后删除；现在保留是因为 JPEG 还喂不了 3840×1080@60。
+
+
+## 5. 新模块放哪(TD GUI 会覆盖 .al)
+- 实体并入 `dual/sensor_sync_start.v`(dual_stitch) 与 `jpeg/jpeg_quant_zz.v`(jpeg_recip_pipe)。
+- 独立文件只留占位注释，不要再放 module。综合前不需在 GUI 加文件。
