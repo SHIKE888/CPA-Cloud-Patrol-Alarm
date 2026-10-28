@@ -839,7 +839,16 @@ endmodule
  *===========================================================================*/
 module jpeg_enc_if #(
     parameter integer AW = 10,          // FIFO 深度 = 2^AW 个 65bit word
-    parameter integer DW = 65
+    parameter integer DW = 65,
+    // ★ 2026-10-28: 起送门限 (单位 = 64bit word)
+    //   背景: 四引擎方案里每个引擎只拿到一行 1/4 的像素, 送过来是"突发 32 个
+    //   word + 空 3/4 行"。仿真证明 **jpeg_encoder_top 无法容忍 s_valid 断流**:
+    //   突发送法下引擎吃掉 768/1024 个 word 后就卡死, 而且熵编码器持续吐垃圾
+    //   (~1 byte/clk, o_seg_done 永不置位)。连续送法则 1024/1024 全部吃完。
+    //   所以: FIFO 里攒够 START_LEVEL 个 word 再开始读 —— 之后源侧速率远高于
+    //   引擎消耗速率, FIFO 不会见底, 引擎就能一直读到连续流。
+    //   0 = 旧行为 (攒到非空就读), 不改变原有例化。
+    parameter integer START_LEVEL = 0
 ) (
     // ---------------- 源侧: YUV422 4 像素/拍 ----------------
     input  wire         s_clk,
@@ -882,8 +891,17 @@ module jpeg_enc_if #(
     reg         w_v;          // 手上有一个 64bit word 待拆
     reg         half;         // 0 = 送低 32bit, 1 = 送高 32bit
     reg  [63:0] w_data;
+    reg         rd_go;        // 起送门限已满足 (见 START_LEVEL 说明)
 
-    wire e_rd_en = ~w_v & ~d_v & ~f_empty;
+    // 起送: START_LEVEL=0 时直接放行; 否则等 FIFO 攒够 (一次置位后不再撤销,
+    // 因为源侧持续供数, 撤了反而会在帧间隙重新攒)
+    always @(posedge e_clk or negedge e_rst_n) begin
+        if (!e_rst_n)                        rd_go <= (START_LEVEL == 0);
+        else if (i_flush)                    rd_go <= (START_LEVEL == 0);
+        else if (!rd_go && (f_rcnt >= START_LEVEL))       rd_go <= 1'b1;
+    end
+
+    wire e_rd_en = rd_go & ~w_v & ~d_v & ~f_empty;
 
     always @(posedge s_clk or negedge s_rst_n) begin
         if (!s_rst_n) begin

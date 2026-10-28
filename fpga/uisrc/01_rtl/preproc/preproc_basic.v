@@ -120,26 +120,42 @@ module preproc_basic #(
 		end
 	endfunction
 
+	// ★ 2026-10-28 压 DSP: 乘数 (g+8) 只有 5 位 (8..23), 用移位加法替代乘法器。
+	//   等价性: 移位加法是模 2^16 精确运算; x 范围 -128..127, x*23 = -2944..2921,
+	//   16 位有符号容器不溢出, 与原式逐位相同。
 	function [7:0] contrast8;
 		input [7:0] c;
 		input [3:0] g;
-		reg signed [15:0] t;
+		reg signed [15:0] t, x;
+		reg [4:0] m;
+		integer k;
 		begin
-			t = ($signed({8'd0, c}) - 16'sd128) * $signed({12'd0, g} + 16'sd8);
+			x = $signed({8'd0, c}) - 16'sd128;
+			m = {1'b0, g} + 5'd8;
+			t = 16'sd0;
+			for (k = 0; k < 5; k = k + 1)
+				if (m[k]) t = t + (x <<< k);
 			t = (t >>> 3) + 16'sd128;
 			contrast8 = clamp8(t);
 		end
 	endfunction
 
 	// 逐通道混合: s=0 -> 原图, s=8 -> 完全用滤波结果 (单调, 不会过冲)
-	function [7:0] mix8;
-		input [7:0] orig;
-		input [7:0] filt;
-		input [3:0] s;
-		reg signed [15:0] d;
-		begin
-			d = $signed({8'd0, filt}) - $signed({8'd0, orig});
-			d = (d * $signed({12'd0, s})) >>> 3;
+// ★ 2026-10-28 压 DSP: 乘数 s 只有 4 位 (0..8), 用移位加法替代乘法器。
+        //   d 范围 -255..255, d*8 = -2040..2040, 16 位有符号容器不溢出。
+        //   注意是 (d <<< k) 不是 (d >>> k) —— s 的第 k 位代表 2^k。
+        function [7:0] mix8;
+                input [7:0] orig;
+                input [7:0] filt;
+                input [3:0] s;
+                reg signed [15:0] d, acc;
+                integer k;
+                begin
+                        d = $signed({8'd0, filt}) - $signed({8'd0, orig});
+                        acc = 16'sd0;
+                        for (k = 0; k < 4; k = k + 1)
+                                if (s[k]) acc = acc + (d <<< k);
+                        d = acc >>> 3;
 			mix8 = clamp8($signed({8'd0, orig}) + d);
 		end
 	endfunction

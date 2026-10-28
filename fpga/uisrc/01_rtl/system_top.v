@@ -683,6 +683,47 @@ wire [7:0]  S_dbg_jb;
 	//   由 jpeg_seg_merge 交替拼成一张 3840x1080 的标准 JPEG。
 	//   RST 编号用奇偶交错: 左 0,2,4.. 右 1,3,5.. -> 全局正好 0,1,2,...,7,0...
 	//   ★ 左引擎 LAST_RST_EN=1: 它最后一段后面还跟着右引擎最后一段, 那个边界要标记。
+	//==========================================================================
+	// ★ 2026-10-28 V49: JPEG 直通源改为 dbuf 读侧 (DDR 三帧缓存)
+	//   dbuf 读侧 32b=2px @147.5MHz -> yuv32_to_quad -> 64b=4px @70MHz
+	//   283 Mpx/s 够 280 Mpx/s 需求, 且 FIFO 反压让 dbuf 停读 -> 数据留 DDR
+	//==========================================================================
+	wire        S_jcfg_valid;
+	wire [63:0] S_jcfg_data;
+	wire        S_jcfg_sof;
+	wire        S_jcfg_last;
+
+	yuv32_to_quad X_jcfg (
+		.r_clk   (S_pclkx1          ),
+		.r_rst_n (S_pll_lock        ),
+		.r_valid (S_dsi_R_tvalid    ),
+		.r_data  (S_ud_rtdata       ),
+		.r_sof   (S_dsi_R_tuser     ),
+		.r_last  (S_dsi_R_tlast     ),
+		.r_ready (S_jcfg_r_ready    ),
+		.c_clk   (S_hs_rx_clk       ),
+		.c_rst_n (S_pll_lock        ),
+		.c_valid (S_jcfg_valid      ),
+		.c_data  (S_jcfg_data       ),
+		.c_sof   (S_jcfg_sof        ),
+		.c_last  (S_jcfg_last       ),
+		.c_ready (S_enc_gate_r      )   // 编码门控: gate=0 时 FIFO 停止消费
+	);
+
+	// 读侧 group 计数 (每拍 4px, 一行 960 拍, 4 段各 240 拍)
+	reg  [9:0] S_jg_gcnt;
+	wire [3:0] S_jg_vld = { (S_jg_gcnt >= 10'd720),
+	                        (S_jg_gcnt >= 10'd480) && (S_jg_gcnt < 10'd720),
+	                        (S_jg_gcnt >= 10'd240) && (S_jg_gcnt < 10'd480),
+	                        (S_jg_gcnt <  10'd240) };
+	always @(posedge S_hs_rx_clk or negedge S_pll_lock) begin
+		if (!S_pll_lock)   S_jg_gcnt <= 10'd0;
+		// ★ 必须带 S_enc_gate_r: gate=0 时 c_valid 会一直挂着, 若只用 S_jcfg_valid
+		//   计数, 分组边界会被冲飞 (仿真已验证此坑)。
+		else if (S_jcfg_valid && S_enc_gate_r)
+			S_jg_gcnt <= S_jcfg_last ? 10'd0 : (S_jg_gcnt + 10'd1);
+	end
+
 	reg [9:0] S_yuv_gcnt;
 	// 2026-10-28 V48: 一行 960 group 切成 4 段, 每段 240 group = 960 像素 = 60 MCU
 	//   group k 段: [0,240) [240,480) [480,720) [720,960)
@@ -812,16 +853,28 @@ wire [7:0]  S_dbg_jb;
 	//==========================================================================
 	//  双引擎: 左引擎吃 group 0..479 (cam1), 右引擎吃 480..959 (cam0)
 	//==========================================================================
-	// 2026-10-28 V48: 4 引擎, 每引擎吃一行的 1/4 (240 group = 960 像素 = 60 MCU)
+	// 2026-10-28 V48: 4 引擎, 每引擎吃一行的 1/4 (240 word = 960 像素 = 60 MCU)
+	//
+	// ★★ V50 (仿真定调, 必须看) ★★
+	//   jpeg_encoder_top **无法容忍 s_valid 断流**: 它的行缓冲一次要预取 8 行,
+	//   若在预取途中断粮, 引擎会永久卡死 (吃 768/1024 后停), 而且熵编码器
+	//   会持续吐垃圾 (~1 byte/clk, o_seg_done 永不置位)。
+	//   仿真实测 (tb_eng_eif): 门限 6 行 FAIL / 7 行 PASS。
+	//   每引擎每行 240 word, 所以缓冲需 ≥7*240=1680 -> FIFO 深度上到 2048,
+	//   起送门限取 8 行 = 1920 word (留余量)。
+	//   改完后 tb_jpeg_ddr4 与基准 merged4.jpg **逐字节完全相同 (6007 B)**。
+	//
+	//   s_valid 必须带 S_enc_gate_r: yuv32_to_quad 在 gate=0 时保持 c_valid 不变,
+	//   不带的话同一个 word 会被重复写进 FIFO (仿真已复现)。
 	genvar gi_encif;
 	generate
 	for (gi_encif = 0; gi_encif < 4; gi_encif = gi_encif + 1) begin : g_encif
-		jpeg_enc_if #(.AW(10)) u_enc_if (
+		jpeg_enc_if #(.AW(11), .START_LEVEL(1920)) u_enc_if (
 			.s_clk      (S_hs_rx_clk            ),
 			.s_rst_n    (S_pll_lock             ),
-			.s_valid    (S_yuv_de & S_enc_gate_r & S_eng_vld[gi_encif]),
-			.s_data     (S_yuv_data             ),
-			.s_sof      (S_yuv_sof              ),
+			.s_valid    (S_jcfg_valid & S_enc_gate_r & S_jg_vld[gi_encif]),
+			.s_data     (S_jcfg_data            ),
+			.s_sof      (S_jcfg_sof             ),   // ★ 必须用读侧帧首, 不能用写侧 S_yuv_sof
 			.e_clk      (S_enc_clk              ),
 			.e_rst_n    (S_enc_rst_n            ),
 			.i_flush    (S_enc_flush            ),
@@ -2204,6 +2257,14 @@ X_ui_setvbuf
 
 
 //例化uidbuf 控制器
+// ★ 2026-10-28 V49: JPEG 模式独占 dbuf 读侧 (NV16 498MB/s 已把 MIPI 吃满)
+//   NV16: tready 仍按 VTC 消隐 + packer 反压
+//   JPEG: tready 交给 yuv32_to_quad 的 FIFO —— 编码器慢就撑住当前帧,
+//         写侧继续用另外两帧 -> 丢整帧不丢行
+wire        S_jcfg_r_ready;
+wire        S_ud_rtready = S_jpeg_tx_sel ? S_jcfg_r_ready
+                                        : (S_vtc_de_valid & S_dsi_pack_tready);
+
 ui_dbuf# (  
 	.AXI_DATA_WIDTH	(AXI_DATA_WIDTH		),//AXI总线数据位宽
 	.AXI_ADDR_WIDTH	(AXI_ADDR_WIDTH		),//AXI总线地址位宽
@@ -2246,7 +2307,7 @@ X_ui_dbuf
 	
 	.I_R_en      	(S_vtc_vs			),
 	.I_R_rclk    	(S_pclkx1			),
-	.I_R_tready  	(S_vtc_de_valid & S_dsi_pack_tready),
+	.I_R_tready  	(S_ud_rtready),
 	.O_R_tuser   	(S_dsi_R_tuser		),
 	.O_R_tvalid  	(S_dsi_R_tvalid		),
 	.O_R_tdata   	(S_ud_rtdata		),

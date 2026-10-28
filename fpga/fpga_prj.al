@@ -643,7 +643,7 @@
                     <Attr Name="UsedInSyn" Val="true"/>
                     <Attr Name="UsedInP&R" Val="true"/>
                     <Attr Name="BelongTo" Val="design_1"/>
-                    <Attr Name="CompileOrder" Val="101"/>
+                    <Attr Name="CompileOrder" Val="102"/>
                 </FileInfo>
             </File>
             <File Path="uisrc/01_rtl/jpeg/jpeg_encoder_top.v">
@@ -651,7 +651,7 @@
                     <Attr Name="UsedInSyn" Val="true"/>
                     <Attr Name="UsedInP&R" Val="true"/>
                     <Attr Name="BelongTo" Val="design_1"/>
-                    <Attr Name="CompileOrder" Val="102"/>
+                    <Attr Name="CompileOrder" Val="103"/>
                 </FileInfo>
             </File>
             <File Path="uisrc/01_rtl/ctrl/i2c_slave.v">
@@ -790,7 +790,7 @@
                     <Attr Name="UsedInSyn" Val="true"/>
                     <Attr Name="UsedInP&R" Val="true"/>
                     <Attr Name="BelongTo" Val="design_1"/>
-                    <Attr Name="CompileOrder" Val="103"/>
+                    <Attr Name="CompileOrder" Val="104"/>
                 </FileInfo>
             </File>
         </Verilog>
