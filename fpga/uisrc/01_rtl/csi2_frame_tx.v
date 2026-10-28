@@ -596,7 +596,17 @@ module csi2_frame_tx_var #(
             hs_en   <= 1'b0;
             hs_last <= 1'b0;
             tx_busy <= 1'b0;
-            d_rd    <= 1'b0;
+            // ★★ 2026-10-28 上板死锁修复
+            //   原来这里写的是 `d_rd <= 1'b0;` —— 而写侧在 !enable 时把 `d_wr` 也清 0。
+            //   看着对称, 但写侧**仍然在写**: 攒满一个 PKT_BYTES bank 后会把 d_wr 翻成 1,
+            //   而 d_rd 被钉在 0 ⇒ pend_v = (d_wr != d_rd) 永久为 1
+            //   ⇒ s_tready = !pend_v 永久为 0
+            //   ⇒ jpeg_byte_bridge 再也不会排水 ⇒ 段合并器 l_ready/r_ready 恒 0
+            //   ⇒ 两个 jpeg 引擎永久卡在 T_HDR / T_NEXT。
+            //   更严重的是: 卡死的编码器会让 S_enc_busy_f 一直为 1,
+            //   把**共享的** S_enc_gate_r 关死 —— NV16 主通路也跟着没图。
+            //   改成让 d_rd 跟 d_wr 走(丢弃数据但保持 pend_v=0), 排水永远不会停。
+            d_rd    <= d_wr;
         end else begin
             hs_en   <= 1'b0;
             hs_last <= 1'b0;

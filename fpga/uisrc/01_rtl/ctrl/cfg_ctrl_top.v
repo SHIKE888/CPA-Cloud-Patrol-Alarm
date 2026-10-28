@@ -104,7 +104,14 @@ module cfg_ctrl_top #(
 	//                 0xEE    = 帧门控链状态
 	//               位定义见 jpeg_encoder_top.v 的 o_diag 注释。
 	//               本版只用于定位, 不用于验收。
-	parameter [15:0] CFG_VER  = 16'h4710
+	//     0x4711 = V47 第 17 次构建: **修上板死锁 + 加排水状态抽头 (仍 70MHz)**
+	//               根因: csi2_frame_tx_var 在 !enable (即 0x0B[0]=0 的 NV16 模式) 分支
+	//                     把 d_rd 清 0, 而写侧仍在攒包 -> pend_v 永久 1 -> s_tready 永久 0
+	//                     -> 字节桥不排水 -> 段合并器卡死 -> 两个编码器卡死
+	//                     -> S_enc_busy_f 卡住 -> 共享的 S_enc_gate_r 关死 -> NV16 也没图。
+	//               修法: !enable 时改 d_rd <= d_wr (丢数据但保持 pend_v=0)。
+	//               新增 0xEF: [1:0]S_jl_st [3]pad [4]S_jb_r [5]S_jv_rx_ready [6]S_jb_v [7]S_jb_l
+	parameter [15:0] CFG_VER  = 16'h4711
 )(
 	// ---- 系统时钟域 (25MHz 常开) ----
 	input  wire        i_sys_clk,
@@ -194,6 +201,7 @@ module cfg_ctrl_top #(
 	input  wire [15:0] i_diag_enc_l,
 	input  wire [15:0] i_diag_enc_r,
 	input  wire [7:0]  i_diag_enc_t,
+	input  wire [7:0]  i_diag_jv,
 
 	// ---- 画质参数 (同步到像素域) ----
 	output wire [7:0]  o_wb_r,
@@ -426,6 +434,7 @@ module cfg_ctrl_top #(
 		.I_diag_enc_l    (i_diag_enc_l),
 		.I_diag_enc_r    (i_diag_enc_r),
 		.I_diag_enc_t    (i_diag_enc_t),
+		.I_diag_jv       (i_diag_jv),
           .I_st_line_groups(lg_max),
           // 2026-10-20: RX 调试总线 (已 2 级同步到 i_sys_clk)
           // 2026-10-21: 0xD6/D7/D8 固定是 cam0, cam1 固定走 0xDD/DE/DF

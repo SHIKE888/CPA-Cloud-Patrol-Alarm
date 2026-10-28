@@ -214,6 +214,7 @@ module jpeg_regfile #(
     input  wire [15:0]  I_diag_enc_l,
     input  wire [15:0]  I_diag_enc_r,
     input  wire [7:0]   I_diag_enc_t,
+    input  wire [7:0]   I_diag_jv,
 
     // 2026-10-20: LP-free RX 调试总线 (只读)
     //   0xD6 = dbg_mipi  : [3:0]各lane字节对齐 [4]word对齐 [5]in_frame
@@ -594,6 +595,7 @@ module jpeg_regfile #(
                 8'hEC: O_rd_data <= I_diag_enc_r[ 7:0];
                 8'hED: O_rd_data <= I_diag_enc_r[15:8];
                 8'hEE: O_rd_data <= I_diag_enc_t;
+                8'hEF: O_rd_data <= I_diag_jv;
                 8'hD0: O_rd_data <= s_cam_wr_cnt[ 7:0];
                 8'hD1: O_rd_data <= s_cam_wr_cnt[15:8];
                 8'hD2: O_rd_data <= {7'b0, s_cam_busy};

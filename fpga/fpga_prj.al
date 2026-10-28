@@ -9,6 +9,10 @@
         <Device>PH1A90SEG324</Device>
         <Speed>-2</Speed>
     </HardWare>
+    <MiscSettings>
+        <Setting Key="account" Val="" />
+        <Setting Key="farm" Val="disable" />
+    </MiscSettings>
     <Source_Files>
         <Verilog>
             <File Path="uisrc/01_rtl/system_top.v">
@@ -481,6 +485,7 @@
             </File>
             <File Path="uisrc/03_ip/ui_isp/ui_awb/divider_gate.v">
                 <FileInfo>
+                    <Attr Name="AutoExcluded" Val="true"/>
                     <Attr Name="UsedInSyn" Val="true"/>
                     <Attr Name="UsedInP&R" Val="true"/>
                     <Attr Name="BelongTo" Val="design_1"/>
@@ -583,22 +588,6 @@
                     <Attr Name="UsedInP&R" Val="true"/>
                     <Attr Name="BelongTo" Val="design_1"/>
                     <Attr Name="CompileOrder" Val="88"/>
-                </FileInfo>
-            </File>
-            <File Path="uisrc/01_rtl/jpeg/jpeg_recip_pipe.v">
-                <FileInfo>
-                    <Attr Name="UsedInSyn" Val="true"/>
-                    <Attr Name="UsedInP&R" Val="true"/>
-                    <Attr Name="BelongTo" Val="design_1"/>
-                    <Attr Name="CompileOrder" Val="201"/>
-                </FileInfo>
-            </File>
-            <File Path="uisrc/01_rtl/dual/dual_stitch.v">
-                <FileInfo>
-                    <Attr Name="UsedInSyn" Val="true"/>
-                    <Attr Name="UsedInP&R" Val="true"/>
-                    <Attr Name="BelongTo" Val="design_1"/>
-                    <Attr Name="CompileOrder" Val="200"/>
                 </FileInfo>
             </File>
             <File Path="uisrc/01_rtl/jpeg/jpeg_bitpack.v">
@@ -922,19 +911,24 @@
     </Configurations>
     <Runs>
         <Run Name="syn_1" Type="Synthesis" ConstraintSet="constraint_1" Description="" Active="true">
-            <Strategy Name="Default_Synthesis_Strategy">
+            <Strategy Name="LogicLevelOptimize">
+                <GateProperty>
+                    <map_mode>balance_explore</map_mode>
+                    <mapper_lut_delay>2200</mapper_lut_delay>
+                </GateProperty>
+                <RtlProperty>
+                    <infer_fsm>one_hot</infer_fsm>
+                    <min_ripple_len>18</min_ripple_len>
+                </RtlProperty>
             </Strategy>
             <UserParams>
+                <param>set_param gate merge_tiny_lut on</param>
             </UserParams>
         </Run>
         <Run Name="phy_1" Type="PhysicalDesign" ConstraintSet="constraint_1" Description="" SynRun="syn_1" Active="true">
             <Strategy Name="Default_PhysicalDesign_Strategy">
-                <BitgenProperty::GeneralOption>
-                    <compress>on</compress>
-                </BitgenProperty::GeneralOption>
             </Strategy>
             <UserParams>
-                <param>set_param flow bad_qor_check off</param>
             </UserParams>
         </Run>
     </Runs>

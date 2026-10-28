@@ -736,6 +736,7 @@ wire [7:0]  S_dbg_jb;
 	//   位定义见 jpeg_encoder_top.v 的 o_diag 注释
 	wire [15:0] S_diag_enc_l, S_diag_enc_r;
 	wire [7:0]  S_diag_enc_t;
+	wire [7:0]  S_diag_jv;
 
 	// ---- 帧门控 + 完成标志回同步 (S_hs_rx_clk 域) ----
 	always @(posedge S_hs_rx_clk or negedge S_pll_lock) begin
@@ -791,7 +792,6 @@ wire [7:0]  S_dbg_jb;
 	assign S_diag_enc_t = { S_jpeg_tx_sel, (S_enc_wdc != 6'd0), S_enc_soft,
 	                        S_enc_flush, S_jpeg_st_done, S_jpeg_st_busy,
 	                        S_enc_busy_f, S_enc_gate_r };
-
 	//==========================================================================
 	//  双引擎: 左引擎吃 group 0..479 (cam1), 右引擎吃 480..959 (cam0)
 	//==========================================================================
@@ -1015,6 +1015,13 @@ wire [7:0]  S_dbg_jb;
 
 	// 编器字节流来自跨时钟桥 (S_hs_rx_clk 域)
 	assign S_jb_r = (S_jl_st == JLS_DATA) ? S_jv_rx_ready : 1'b0;
+
+	// ★ 2026-10-28 诊断 (0xEF): JPEG 字节排水链状态
+	//   [1:0] S_jl_st (0=DATA 1=PAD 2=DROP)  [2] 保留  [3] S_jpeg_pad
+	//   [4] S_jb_r (桥读完成)  [5] S_jv_rx_ready (发送器收)  [6] S_jb_v  [7] S_jb_l
+	//   ⚠ 必须放在 S_jl_st / S_jv_rx_ready 声明之后, 否则会被推成隐式 1bit wire
+	assign S_diag_jv = { S_jb_l, S_jb_v, S_jv_rx_ready, S_jb_r,
+	                     S_jpeg_pad, 1'b0, S_jl_st };
 
 	always @(posedge S_hs_rx_clk or negedge S_pll_lock) begin
 		if (!S_pll_lock) begin
@@ -2054,6 +2061,7 @@ cfg_ctrl_top #(
 	.i_diag_enc_l (S_diag_enc_l),
 	.i_diag_enc_r (S_diag_enc_r),
 	.i_diag_enc_t (S_diag_enc_t),
+	.i_diag_jv    (S_diag_jv),
 	.i_fs_corr    (S_axis_tuser),        // 裁剪模块输出帧首
 	.i_last_corr  (S_axis_tlast),        // 裁剪模块输出行尾
 	// 2026-10-20: LP-free RX 调试总线 (只读 0xD6/0xD7/0xD8) = 固定 cam0
