@@ -1011,6 +1011,7 @@ html, body{overflow:hidden}
         </div>
         <div class="btnrow wide">
           <button id="btnCancelGoal" class="danger">清除目标</button>
+          <button id="btnClearTrail">清除轨迹</button>
           <button id="btnStopAll">停止全部</button>
         </div>
       </section>
@@ -1031,6 +1032,7 @@ html, body{overflow:hidden}
           <div class="m"><i>机器人</i><b id="stPose">—</b></div>
           <div class="m"><i>目标</i><b id="stGoal">—</b></div>
           <div class="m"><i>路径</i><b id="stPath">—</b></div>
+          <div class="m"><i>轨迹</i><b id="stTrail">—</b></div>
           <div class="m"><i>缩放</i><b id="stZoom">—</b></div>
         </div>
       </section>
@@ -1133,6 +1135,8 @@ html, body{overflow:hidden}
     baseLaser: { x: 0.12, y: 0.0, yaw: -Math.PI / 2 }, // 兜底：本车实测值
     bounds: null,                                   // 已建图区域（格坐标）
     follow: false,
+    // 2026-10-28: 实时轨迹（建图/导航两个视图都画）
+    traj: [], trajLast: null, trajLen: 0,
     sceneRev: 0                                     // 静态层失效计数（地图/路径/视图变更时 ++）
   };
 
@@ -1325,6 +1329,24 @@ html, body{overflow:hidden}
 
     // 静态层整块拷贝（GPU 纹理 blit），不再逐格重绘
     ctx.drawImage(sceneCv, 0, 0, W, H);
+
+    // 2026-10-28: 实时轨迹（画在点云下面，不挡激光）
+    //   brk=true 的点表示“这里断了”（AMCL 重定位/换地图），要 moveTo 而不是 lineTo，
+    //   否则地图上会多出一条凭空出现的直线。
+    if (S.traj && S.traj.length > 1) {
+      ctx.strokeStyle = 'rgba(57,211,83,0.85)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      let started = false;
+      for (let i = 0; i < S.traj.length; i++) {
+        const t = S.traj[i];
+        const sx = S.ox + t.x * S.scale;
+        const sy = H - (S.oy + t.y * S.scale);
+        if (!started || t.brk) { ctx.moveTo(sx, sy); started = true; }
+        else ctx.lineTo(sx, sy);
+      }
+      ctx.stroke();
+    }
 
     if (S.scan) {
       const sc = S.scan;
@@ -1532,35 +1554,92 @@ html, body{overflow:hidden}
       S.pose = { x: p.x, y: p.y, yaw: yaw };
       $('stPose').textContent = p.x.toFixed(2) + ', ' + p.y.toFixed(2) +
         ' @ ' + (yaw * 57.2958).toFixed(0) + '°';
+
+      // 2026-10-28: 实时轨迹（走过的路）。建图时看车走过哪些地方很有用。
+      //   每移动 5cm 记一个点；单次跳变 >1m（AMCL 重定位/切换地图）就断一笔，
+      //   不能把那一段直接连起来，否则地图上会多一条完全不在实地的直线。
+      const tl = S.trajLast;
+      const d = tl ? Math.hypot(p.x - tl.x, p.y - tl.y) : 1e9;
+      if (d >= 0.05) {
+        S.traj.push({ x: p.x, y: p.y, brk: d > 1.0 });
+        S.trajLast = { x: p.x, y: p.y };
+        if (d <= 1.0) S.trajLen += d;
+        // 点太多就抽稀一半（保留形状），避免长时间跑车后拖慢绘制
+        if (S.traj.length > 3000) {
+          const nt = [];
+          for (let i = 0; i < S.traj.length; i += 2) nt.push(S.traj[i]);
+          S.traj = nt;
+        }
+        $('stTrail').textContent = S.trajLen.toFixed(1) + ' m';
+      }
       draw();
     });
 
-    topics.gplan = new ROSLIB.Topic({
-      ros: ros, name: '/move_base/NavfnROS/plan', messageType: 'nav_msgs/Path',
-      throttle_rate: 300, queue_length: 1
-    });
-    topics.gplan.subscribe(function (m) {
-      S.gplan = m.poses.map(function (p) { return { x: p.pose.position.x, y: p.pose.position.y }; });
-      $('stPath').textContent = '全局 ' + S.gplan.length + ' 点';
-      S.sceneRev++;
-      draw();
-    });
+    // ────────────────────────────────────────────────────────────────
+    //  规划路径：不同 WHEELTEC 版本的规划器把 plan 发到不同话题名上，
+    //  写死一个就有一半的车看不到路径。这里把常见名字全订阅，
+    //  谁在发就用谁（取最新的那一路），并把来源显示在「路径」格里。
+    //  2026-10-28: 建图界面也要看得到 —— 只要 move_base 在跑（WHEELTEC 的
+    //    mapping.launch 里 navigation:=true 时会起），就会有规划输出。
+    // ────────────────────────────────────────────────────────────────
+    const GLOBAL_PLAN_TOPICS = [
+      '/move_base/NavfnROS/plan',        // navfn（WHEELTEC 默认）
+      '/move_base/GlobalPlanner/plan',   // global_planner
+      '/move_base/planner/plan',
+      '/move_base/global_plan',
+      '/plan'                            // 很多包直接 remap 成 /plan
+    ];
+    const LOCAL_PLAN_TOPICS = [
+      '/move_base/local_plan',           // move_base 自己在 private_nh 下转发
+      '/move_base/TebLocalPlannerROS/local_plan',
+      '/move_base/DWAPlannerROS/local_plan',
+      '/move_base/BaseLocalPlanner/local_plan'
+    ];
+    S.plansG = {};     // topic -> {t, pts}
+    S.plansL = {};
 
-    // 局部路径必须订阅 /move_base/local_plan（move_base 自己在 private_nh 下转发，
-    // 与实际用 DWA 还是 TEB 无关）。
-    // 以前写的是 /move_base/DWAPlannerROS/local_plan —— 但 WHEELTEC 的
-    // turn_on_wheeltec_robot.launch 在 navigation=true 时启的是
-    // teb_local_planner（DWA 那行是注释掉的），于是这个话题永远没人发布，
-    // 页面上局部路径一直画不出来。全局路径保持 NavfnROS（默认全局规划器）。
-    topics.lplan = new ROSLIB.Topic({
-      ros: ros, name: '/move_base/local_plan', messageType: 'nav_msgs/Path',
-      throttle_rate: 200, queue_length: 1
-    });
-    topics.lplan.subscribe(function (m) {
-      S.lplan = m.poses.map(function (p) { return { x: p.pose.position.x, y: p.pose.position.y }; });
+    function freshestPlan(map, ttl) {
+      let best = null, bt = 0;
+      Object.keys(map).forEach(function (k) {
+        const e = map[k];
+        if (ttl && Date.now() - e.t > ttl) return;
+        if (e.t >= bt) { best = e; bt = e.t; }
+      });
+      return best;
+    }
+    function refreshPlanDisplay() {
+      // 全局路径**不能过期**：navfn 每个目标只发一次，之后 move_base 照着走
+      // 不再重发；设 TTL 的话路径 3 秒就消失了。
+      // 局部路径是持续重发的，停 5s 就当它没了（车停了/规划器退出）。
+      const g = freshestPlan(S.plansG, 0), l = freshestPlan(S.plansL, 5000);
+      S.gplan = g ? g.pts : [];
+      S.lplan = l ? l.pts : [];
+      const parts = [];
+      if (g) parts.push('全局 ' + g.pts.length + ' 点 (' + g.name + ')');
+      if (l) parts.push('局部 ' + l.pts.length + ' 点 (' + l.name + ')');
+      $('stPath').textContent = parts.length ? parts.join(' / ') : '—';
       S.sceneRev++;
       draw();
-    });
+    }
+
+    function subPlan(name, isGlobal) {
+      const t = new ROSLIB.Topic({
+        ros: ros, name: name, messageType: 'nav_msgs/Path',
+        throttle_rate: 200, queue_length: 1
+      });
+      t.subscribe(function (m) {
+        const pts = m.poses.map(function (p) {
+          return { x: p.pose.position.x, y: p.pose.position.y };
+        });
+        const dst = isGlobal ? S.plansG : S.plansL;
+        dst[name] = { t: Date.now(), pts: pts, name: name.split('/').slice(-2).join('/') };
+        refreshPlanDisplay();
+      });
+    }
+    GLOBAL_PLAN_TOPICS.forEach(function (n) { subPlan(n, true); });
+    LOCAL_PLAN_TOPICS.forEach(function (n) { subPlan(n, false); });
+    // 路径保鲜：局部路径停了就消失；全局路径保留到新目标/取消为止
+    setInterval(refreshPlanDisplay, 1000);
 
     topics.goalPub = new ROSLIB.Topic({ ros: ros, name: '/goal_pose', messageType: 'geometry_msgs/PoseStamped' });
     topics.simpleGoalPub = new ROSLIB.Topic({ ros: ros, name: '/move_base_simple/goal', messageType: 'geometry_msgs/PoseStamped' });
@@ -1752,11 +1831,27 @@ html, body{overflow:hidden}
     }, function () { toast('/relay/' + name + ' 调用失败（relay_ctl 在跑吗？）', true); });
   }
 
+  // 2026-10-28: 实时轨迹的清除（按钮 / 重新建图 / 断开连接时用）
+  function clearTrail() {
+    S.traj = [];
+    S.trajLast = null;
+    S.trajLen = 0;
+    const el = $('stTrail');
+    if (el) el.textContent = '—';
+    draw();
+  }
+
+  $('btnClearTrail').addEventListener('click', function () {
+    clearTrail();
+    toast('轨迹已清除');
+  });
+
   $('btnMapping').addEventListener('click', function () {
     // 「开始建图」= 不管现在有没有图，一律重新开始。
     // 先就地清屏，不等车端回包：旧图留在屏幕上会让人以为按钮没生效。
     S.map = null; S.bounds = null;
     S.mapHz = 0; S.mapT = 0; S.mapCount = 0;
+    clearTrail();              // 新的一轮建图，走之前的轨迹已无意义
     S.sceneRev++;
     $('stMap').textContent = '重新建图中…';
     drawNow();
@@ -1912,8 +2007,12 @@ html, body{overflow:hidden}
       topics.cancel.publish(new ROSLIB.Message({ stamp: { secs: 0, nsecs: 0 }, id: '' }));
     }
     S.goal = null; S.gplan = []; S.lplan = [];
+    // 2026-10-28: 规划路径的缓存也要清 —— 全局路径不过期，不清的话取消目标后
+    // 那条蓝线会一直挂在图上（还会被 1s 的刷新定时器一直画回来）。
+    S.plansG = {}; S.plansL = {};
     $('stGoal').textContent = '—';
     $('stPath').textContent = '—';
+    S.sceneRev++;
     draw();
     toast('已取消导航目标');
   });
