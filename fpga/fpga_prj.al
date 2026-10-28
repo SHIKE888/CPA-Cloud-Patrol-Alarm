@@ -638,6 +638,14 @@
                     <Attr Name="CompileOrder" Val="100"/>
                 </FileInfo>
             </File>
+            <File Path="uisrc/01_rtl/jpeg/jpeg_seg_merge4.v">
+                <FileInfo>
+                    <Attr Name="UsedInSyn" Val="true"/>
+                    <Attr Name="UsedInP&R" Val="true"/>
+                    <Attr Name="BelongTo" Val="design_1"/>
+                    <Attr Name="CompileOrder" Val="101"/>
+                </FileInfo>
+            </File>
             <File Path="uisrc/01_rtl/jpeg/jpeg_encoder_top.v">
                 <FileInfo>
                     <Attr Name="UsedInSyn" Val="true"/>

@@ -639,9 +639,9 @@ wire [31:0] S_dbg_jpeg;
 wire [7:0]  S_dbg_jb;
 
 `ifdef JPEG_EN
-	wire        S_jpeg_s_ready;
-	wire [6:0]  S_jpeg_qt_a, S_jpeg_qt_b;
-	wire [7:0]  S_jpeg_qta, S_jpeg_qtb;
+	// V48: 原先这里的 S_jpeg_s_ready / S_jpeg_qt_a,b / S_jpeg_qta,qtb 单数声明已删
+	//      —— 4 引擎改成 [0:3] 数组 (见下方 "四引擎各自的连线")。
+	//      同名重复声明会让数组被后面的单数覆盖, 报 HDL-8007 cannot index non-array。
 	wire        S_jpeg_m_valid, S_jpeg_m_last;
 	wire [7:0]  S_jpeg_m_data;
 	wire [31:0] S_jpeg_cnt;
@@ -684,38 +684,56 @@ wire [7:0]  S_dbg_jb;
 	//   RST 编号用奇偶交错: 左 0,2,4.. 右 1,3,5.. -> 全局正好 0,1,2,...,7,0...
 	//   ★ 左引擎 LAST_RST_EN=1: 它最后一段后面还跟着右引擎最后一段, 那个边界要标记。
 	reg [9:0] S_yuv_gcnt;
-	wire      S_yuv_lhalf = (S_yuv_gcnt < 10'd480);
-	wire      S_yuv_rhalf = ~S_yuv_lhalf;
-	wire      S_yuv_left  = S_yuv_lhalf;             // 保留旧名, 仅调试观察用
+	// 2026-10-28 V48: 一行 960 group 切成 4 段, 每段 240 group = 960 像素 = 60 MCU
+	//   group k 段: [0,240) [240,480) [480,720) [720,960)
+	wire [3:0] S_eng_vld = { (S_yuv_gcnt >= 10'd720),
+	                         (S_yuv_gcnt >= 10'd480) && (S_yuv_gcnt < 10'd720),
+	                         (S_yuv_gcnt >= 10'd240) && (S_yuv_gcnt < 10'd480),
+	                         (S_yuv_gcnt <  10'd240) };   // bit0 = 引擎0
+	wire      S_yuv_left  = (S_yuv_gcnt < 10'd480);   // 保留旧名, 仅调试观察用
 	always @(posedge S_hs_rx_clk or negedge S_pll_lock) begin
 		if (!S_pll_lock)   S_yuv_gcnt <= 10'd0;
 		else if (S_yuv_de) S_yuv_gcnt <= S_yuv_last ? 10'd0 : (S_yuv_gcnt + 10'd1);
 	end
 
-	// ---- 双引擎各自的连线 ----
-	wire        S_enc_v_l,  S_enc_v_r;
-	wire [31:0] S_enc_d_l,  S_enc_d_r;
-	wire [15:0] S_enc_ovf_l, S_enc_ovf_r;
-	wire [15:0] S_enc_words_l, S_enc_words_r;
-	wire        S_jpeg_s_ready_l, S_jpeg_s_ready_r;
-	wire [6:0]  S_qt_a_l, S_qt_a_r, S_qt_b_l, S_qt_b_r;
-	wire [7:0]  S_qta_l,  S_qta_r,  S_qtb_l,  S_qtb_r;
-	wire        S_jm_v_l, S_jm_v_r, S_jm_l_l, S_jm_l_r;
-	wire [7:0]  S_jm_d_l, S_jm_d_r;
-	wire        S_jm_rdy_l, S_jm_rdy_r;
-	wire        S_jseg_l, S_jseg_r;
-	wire        S_jpeg_busy_l, S_jpeg_busy_r;
-	wire        S_jpeg_done_l, S_jpeg_done_r;
-	wire [23:0] S_jpeg_bytes_l, S_jpeg_bytes_r;
-	wire [31:0] S_jpeg_fcnt_l, S_jpeg_fcnt_r;
+	// ---- 四引擎各自的连线 (2026-10-28 V48: 2 -> 4 引擎冲 60fps) ----
+	//   每引擎 960 宽 => MCU_X = 960/16 = 60, MCU_Y = 135 => 8100 MCU/引擎
+		//   4 引擎并行: 8100 x 151.3 clk / 70.24MHz = 17.4ms -> 57.4fps
+		//   两路各 1920 宽再拆 2 段:  引擎0/1 吃 cam1(group 0..239/240..479)
+		//                            引擎2/3 吃 cam0(group 480..719/720..959)
+	wire        S_enc_v  [0:3];
+	wire [31:0] S_enc_d  [0:3];
+	wire [15:0] S_enc_ovf [0:3];
+	wire [15:0] S_enc_words [0:3];
+	wire        S_jpeg_s_ready [0:3];
+	wire [6:0]  S_qt_a [0:3];
+	wire [6:0]  S_qt_b [0:3];
+	wire [7:0]  S_qta  [0:3];
+	wire [7:0]  S_qtb  [0:3];
+	wire [7:0]  S_jm_d [0:3];
+	wire [15:0] S_diag_enc [0:3];
+	wire [23:0] S_jpeg_bytes [0:3];
+	wire [31:0] S_jpeg_fcnt  [0:3];
+	// ★ 每路一个数组元素(由对应引擎驱动), 再拼成只读总线给合并器
+	//   (不能直接对拼接 wire 的位赋驱动 -> multi-driver)
+	wire        S_jm_v  [0:3];
+	wire        S_jm_l  [0:3];
+	wire        S_jm_rdy[0:3];
+	wire        S_jseg  [0:3];
+	wire        S_jpeg_busy [0:3];
+	wire        S_jpeg_done [0:3];
+
+	wire [3:0]  S_jm_v_p   = { S_jm_v[3],   S_jm_v[2],   S_jm_v[1],   S_jm_v[0]   };
+	wire [3:0]  S_jm_l_p   = { S_jm_l[3],   S_jm_l[2],   S_jm_l[1],   S_jm_l[0]   };
+	wire [3:0]  S_jm_rdy_p = { S_jm_rdy[3], S_jm_rdy[2], S_jm_rdy[1], S_jm_rdy[0] };
+	wire [3:0]  S_jseg_p   = { S_jseg[3],   S_jseg[2],   S_jseg[1],   S_jseg[0]   };
+	wire [3:0]  S_jpeg_busy_p = { S_jpeg_busy[3], S_jpeg_busy[2], S_jpeg_busy[1], S_jpeg_busy[0] };
+	wire [3:0]  S_jpeg_done_p = { S_jpeg_done[3], S_jpeg_done[2], S_jpeg_done[1], S_jpeg_done[0] };
+	wire [31:0] S_jm_d_pack = { S_jm_d[3], S_jm_d[2], S_jm_d[1], S_jm_d[0] };
 	wire [9:0]  S_mrg_segc;
 	reg         S_mrg_busy_d = 1'b0;
-	wire        S_mrg_start  = S_jpeg_busy_l & ~S_mrg_busy_d;   // 帧开始脉冲 (编码域)
+	wire        S_mrg_start  = S_jpeg_busy[0] & ~S_mrg_busy_d;   // 帧开始脉冲 (引擎0 进帧)
 
-	wire        S_enc_v;                     // enc_if -> 编码器
-	wire [31:0] S_enc_d;
-	wire [15:0] S_enc_ovf;                   // 源侧 FIFO 溢出计数
-	wire [15:0] S_enc_words;
 	wire        S_enc_flush;                 // 看门狗: 复位 FIFO + 编码器
 	wire        S_enc_soft;
 	reg         S_enc_done_tgl = 1'b0;       // 完成标志跑回 s_clk 用 (翻转同步)
@@ -734,7 +752,6 @@ wire [7:0]  S_dbg_jb;
 	// ★ 2026-10-28 诊断 (临时调试版): 两个编码器引擎的内部状态抽头
 	//   → cfg_ctrl_top → 读寄存器 0xEA~0xED; 顶层门控状态 → 0xEE
 	//   位定义见 jpeg_encoder_top.v 的 o_diag 注释
-	wire [15:0] S_diag_enc_l, S_diag_enc_r;
 	wire [7:0]  S_diag_enc_t;
 	wire [7:0]  S_diag_jv;
 
@@ -783,7 +800,7 @@ wire [7:0]  S_dbg_jb;
 	assign S_enc_flush = (S_enc_wdc != 6'd0);
 	assign S_enc_soft  = (S_enc_wdc > 6'd16);
 
-	assign S_dbg_jpeg = {S_enc_stall, (S_enc_ovf_l | S_enc_ovf_r)};
+	assign S_dbg_jpeg = {S_enc_stall, (|(S_enc_ovf[0] | S_enc_ovf[1] | S_enc_ovf[2] | S_enc_ovf[3]))};
 	assign S_dbg_jb   = S_jb_bp[7:0];
 
 	// ★ 2026-10-28 诊断 (0xEE): 帧门控链状态
@@ -795,166 +812,120 @@ wire [7:0]  S_dbg_jb;
 	//==========================================================================
 	//  双引擎: 左引擎吃 group 0..479 (cam1), 右引擎吃 480..959 (cam0)
 	//==========================================================================
-	jpeg_enc_if #(.AW(10)) X_jenc_if_l (
-		.s_clk      (S_hs_rx_clk            ),
-		.s_rst_n    (S_pll_lock             ),
-		.s_valid    (S_yuv_de & S_enc_gate_r & S_yuv_lhalf),
-		.s_data     (S_yuv_data             ),
-		.s_sof      (S_yuv_sof              ),
-		.e_clk      (S_enc_clk              ),
-		.e_rst_n    (S_enc_rst_n            ),
-		.i_flush    (S_enc_flush            ),
-		.e_valid    (S_enc_v_l              ),
-		.e_data     (S_enc_d_l              ),
-		.e_ready    (S_jpeg_s_ready_l       ),
-		.st_ovf     (S_enc_ovf_l            ),
-		.st_word_lo (S_enc_words_l          ),
-		.st_sof     (                       ),
-		.o_level    (                       )
-	);
+	// 2026-10-28 V48: 4 引擎, 每引擎吃一行的 1/4 (240 group = 960 像素 = 60 MCU)
+	genvar gi_encif;
+	generate
+	for (gi_encif = 0; gi_encif < 4; gi_encif = gi_encif + 1) begin : g_encif
+		jpeg_enc_if #(.AW(10)) u_enc_if (
+			.s_clk      (S_hs_rx_clk            ),
+			.s_rst_n    (S_pll_lock             ),
+			.s_valid    (S_yuv_de & S_enc_gate_r & S_eng_vld[gi_encif]),
+			.s_data     (S_yuv_data             ),
+			.s_sof      (S_yuv_sof              ),
+			.e_clk      (S_enc_clk              ),
+			.e_rst_n    (S_enc_rst_n            ),
+			.i_flush    (S_enc_flush            ),
+			.e_valid    (S_enc_v[gi_encif]       ),
+			.e_data     (S_enc_d[gi_encif]       ),
+			.e_ready    (S_jpeg_s_ready[gi_encif]),
+			.st_ovf     (S_enc_ovf[gi_encif]     ),
+			.st_word_lo (S_enc_words[gi_encif]   ),
+			.st_sof     (                       ),
+			.o_level    (                       )
+		);
+	end
+	endgenerate
 
-	jpeg_enc_if #(.AW(10)) X_jenc_if_r (
-		.s_clk      (S_hs_rx_clk            ),
-		.s_rst_n    (S_pll_lock             ),
-		.s_valid    (S_yuv_de & S_enc_gate_r & S_yuv_rhalf),
-		.s_data     (S_yuv_data             ),
-		.s_sof      (S_yuv_sof              ),
-		.e_clk      (S_enc_clk              ),
-		.e_rst_n    (S_enc_rst_n            ),
-		.i_flush    (S_enc_flush            ),
-		.e_valid    (S_enc_v_r              ),
-		.e_data     (S_enc_d_r              ),
-		.e_ready    (S_jpeg_s_ready_r       ),
-		.st_ovf     (S_enc_ovf_r            ),
-		.st_word_lo (S_enc_words_r          ),
-		.st_sof     (                       ),
-		.o_level    (                       )
-	);
+	genvar gi_qt;
+	generate
+	for (gi_qt = 0; gi_qt < 4; gi_qt = gi_qt + 1) begin : g_qt
+		jpeg_qtable_ram u_qt (
+			.I_clk       (S_enc_clk       ),
+			.I_rst_n     (S_enc_rst_n     ),
+			.I_wr_en     (1'b0            ),
+			.I_wr_addr   (8'd0            ),
+			.I_wr_data   (8'd0            ),
+			.I_rd_idx_a  (S_qt_a[gi_qt]   ),
+			.O_rd_data_a (                ),
+			.O_rd_data_a_asyn (S_qta[gi_qt]),
+			.I_rd_idx_b  (S_qt_b[gi_qt]   ),
+			.O_rd_data_b (S_qtb[gi_qt]    )
+		);
+	end
+	endgenerate
 
-	jpeg_qtable_ram X_jpeg_qt_l (
-		.I_clk       (S_enc_clk    ),
-		.I_rst_n     (S_enc_rst_n  ),
-		.I_wr_en     (1'b0         ),
-		.I_wr_addr   (8'd0         ),
-		.I_wr_data   (8'd0         ),
-		.I_rd_idx_a  (S_qt_a_l     ),
-		.O_rd_data_a (             ),
-		.O_rd_data_a_asyn (S_qta_l ),
-		.I_rd_idx_b  (S_qt_b_l     ),
-		.O_rd_data_b (S_qtb_l      )
-	);
+	// ---- 4 引擎: 每引擎 960 宽 = 60 MCU/行, 共 60x135 = 8100 MCU ----
+	//   引擎0: 出帧头(宽 3840) + 熵段, 不出 EOI; 引擎3: 不出帧头, 出 EOI
+	//   RST 编号 0,1,2,3 交错 -> RST_INIT=gi, RST_STEP=4 (rst_idx 是 3bit, 自动回绕)
+	//   每行 60 MCU 一个重启段 (i_rst_int=60)
+	genvar gi_enc;
+	generate
+	for (gi_enc = 0; gi_enc < 4; gi_enc = gi_enc + 1) begin : g_enc
+		jpeg_encoder_top #(.W(960), .H(1080),
+		                   .HDR_EN(gi_enc == 0 ? 1 : 0),
+		                   .EOI_EN(gi_enc == 3 ? 1 : 0),
+		                   .RST_INIT(gi_enc),
+		                   .RST_STEP(4),
+		                   .LAST_RST_EN(gi_enc == 3 ? 0 : 1)) u_enc (
+			.clk            (S_enc_clk            ),
+			.rst_n          (S_enc_rst_n          ),
+			.i_en           (1'b1                 ),
+			.i_soft_rst     (S_enc_soft           ),
+			.i_lossless     (1'b0                 ),
+			.i_width        (12'd3840             ),   // 整幅宽, 而 W 参数是 960
+			.i_height       (12'd1080             ),
+			.i_rst_int      (16'd60               ),   // 1/4 行 = 60 MCU 一个重启段
+			.o_qt_idx_a     (S_qt_a[gi_enc]       ),
+			.i_qt_data_a    (S_qta[gi_enc]        ),
+			.o_qt_idx_b     (S_qt_b[gi_enc]       ),
+			.i_qt_data_b    (S_qtb[gi_enc]        ),
+			.s_valid        (S_enc_v[gi_enc]      ),
+			.s_data         (S_enc_d[gi_enc]      ),
+			.s_ready        (S_jpeg_s_ready[gi_enc]),
+			.m_valid        (S_jm_v[gi_enc]       ),
+			.m_data         (S_jm_d[gi_enc]       ),
+			.m_last         (S_jm_l[gi_enc]       ),
+			.m_ready        (S_jm_rdy[gi_enc]     ),
+			.st_frame_bytes (S_jpeg_bytes[gi_enc] ),
+			.st_busy        (S_jpeg_busy[gi_enc]  ),
+			.st_done        (S_jpeg_done[gi_enc]  ),
+			.st_frame_cnt   (S_jpeg_fcnt[gi_enc]  ),
+			.o_seg_done     (S_jseg[gi_enc]       ),
+			.o_diag         (S_diag_enc[gi_enc]   )
+		);
+	end
+	endgenerate
 
-	jpeg_qtable_ram X_jpeg_qt_r (
-		.I_clk       (S_enc_clk    ),
-		.I_rst_n     (S_enc_rst_n  ),
-		.I_wr_en     (1'b0         ),
-		.I_wr_addr   (8'd0         ),
-		.I_wr_data   (8'd0         ),
-		.I_rd_idx_a  (S_qt_a_r     ),
-		.O_rd_data_a (             ),
-		.O_rd_data_a_asyn (S_qta_r ),
-		.I_rd_idx_b  (S_qt_b_r     ),
-		.O_rd_data_b (S_qtb_r      )
-	);
-
-	// ---- 左引擎: 出帧头(宽度写 3840) + 熵段, 不出 EOI, 最后一段后仍出 RST ----
-	jpeg_encoder_top #(.W(1920), .H(1080),
-	                   .HDR_EN(1), .EOI_EN(0), .RST_INIT(0), .RST_STEP(2),
-	                   .LAST_RST_EN(1)) X_jpeg_l (
-		.clk            (S_enc_clk      ),
-		.rst_n          (S_enc_rst_n    ),
-		.i_en           (1'b1           ),
-		.i_soft_rst     (S_enc_soft     ),
-		.i_lossless     (1'b0           ),
-		.i_width        (12'd3840       ),   // 拼完整幅的宽度, 而 W 参数仍是 1920
-		.i_height       (12'd1080       ),
-		.i_rst_int      (16'd120        ),   // 半行 = 120 MCU 一个重启段
-		.o_qt_idx_a     (S_qt_a_l       ),
-		.i_qt_data_a    (S_qta_l        ),
-		.o_qt_idx_b     (S_qt_b_l       ),
-		.i_qt_data_b    (S_qtb_l        ),
-		.s_valid        (S_enc_v_l      ),
-		.s_data         (S_enc_d_l      ),
-		.s_ready        (S_jpeg_s_ready_l),
-		.m_valid        (S_jm_v_l       ),
-		.m_data         (S_jm_d_l       ),
-		.m_last         (S_jm_l_l       ),
-		.m_ready        (S_jm_rdy_l     ),
-		.st_frame_bytes (S_jpeg_bytes_l ),
-		.st_busy        (S_jpeg_busy_l  ),
-		.st_done        (S_jpeg_done_l  ),
-		.st_frame_cnt   (S_jpeg_fcnt_l  ),
-		.o_seg_done     (S_jseg_l       ),
-		.o_diag         (S_diag_enc_l   )
-	);
-
-	// ---- 右引擎: 不出帧头, 出 EOI, 最后一段后不出 RST ----
-	jpeg_encoder_top #(.W(1920), .H(1080),
-	                   .HDR_EN(0), .EOI_EN(1), .RST_INIT(1), .RST_STEP(2),
-	                   .LAST_RST_EN(0)) X_jpeg_r (
-		.clk            (S_enc_clk      ),
-		.rst_n          (S_enc_rst_n    ),
-		.i_en           (1'b1           ),
-		.i_soft_rst     (S_enc_soft     ),
-		.i_lossless     (1'b0           ),
-		.i_width        (12'd3840       ),
-		.i_height       (12'd1080       ),
-		.i_rst_int      (16'd120        ),
-		.o_qt_idx_a     (S_qt_a_r       ),
-		.i_qt_data_a    (S_qta_r        ),
-		.o_qt_idx_b     (S_qt_b_r       ),
-		.i_qt_data_b    (S_qtb_r        ),
-		.s_valid        (S_enc_v_r      ),
-		.s_data         (S_enc_d_r      ),
-		.s_ready        (S_jpeg_s_ready_r),
-		.m_valid        (S_jm_v_r       ),
-		.m_data         (S_jm_d_r       ),
-		.m_last         (S_jm_l_r       ),
-		.m_ready        (S_jm_rdy_r     ),
-		.st_frame_bytes (S_jpeg_bytes_r ),
-		.st_busy        (S_jpeg_busy_r  ),
-		.st_done        (S_jpeg_done_r  ),
-		.st_frame_cnt   (S_jpeg_fcnt_r  ),
-		.o_seg_done     (S_jseg_r       ),
-		.o_diag         (S_diag_enc_r   )
-	);
-
-	// ---- 段合并: L(行n) RST0, R(行n) RST1, L(行n+1) RST2 ... ----
-	jpeg_seg_merge X_jmrg (
-		.clk        (S_enc_clk      ),
-		.rst_n      (S_enc_rst_n    ),
-		.i_start    (S_mrg_start    ),
-		.l_valid    (S_jm_v_l       ),
-		.l_data     (S_jm_d_l       ),
-		.l_last     (S_jm_l_l       ),
-		.l_ready    (S_jm_rdy_l     ),
-		.l_seg_done (S_jseg_l       ),
-		.r_valid    (S_jm_v_r       ),
-		.r_data     (S_jm_d_r       ),
-		.r_last     (S_jm_l_r       ),
-		.r_ready    (S_jm_rdy_r     ),
-		.r_seg_done (S_jseg_r       ),
-		.o_valid    (S_jpeg_m_valid ),
-		.o_data     (S_jpeg_m_data  ),
-		.o_last     (S_jpeg_m_last  ),
-		.o_ready    (S_jpeg_m_ready ),
-		.o_seg_cnt  (S_mrg_segc     )
+	// ---- 段合并 (4:1): 引擎0 RST0, 1 RST1, 2 RST2, 3 RST3, 下一行再 0,1,2,3 ----
+	jpeg_seg_merge4 X_jmrg (
+		.clk          (S_enc_clk      ),
+		.rst_n        (S_enc_rst_n    ),
+		.i_start      (S_mrg_start    ),
+		.i_valid      (S_jm_v_p       ),
+		.i_data       (S_jm_d_pack    ),
+		.i_last       (S_jm_l_p       ),
+		.o_ready      (S_jm_rdy_p     ),
+		.i_seg_done   (S_jseg_p       ),
+		.o_valid      (S_jpeg_m_valid ),
+		.o_data       (S_jpeg_m_data  ),
+		.o_last       (S_jpeg_m_last  ),
+		.o_ready_down (S_jpeg_m_ready ),
+		.o_seg_cnt    (S_mrg_segc     )
 	);
 
 	// 合并器帧起始脉冲的延迟寄存器 (编码域)
 	always @(posedge S_enc_clk or negedge S_enc_rst_n) begin
 		if (!S_enc_rst_n) S_mrg_busy_d <= 1'b0;
-		else              S_mrg_busy_d <= S_jpeg_busy_l;
+		else              S_mrg_busy_d <= S_jpeg_busy[0];
 	end
 
 	// ---- 两引擎的合成状态 ----
 	//   ★ busy 用"或": 任一引擎没编完就不能开下一帧。
 	//   ★ done 只在**两个都空闲**的那一拍脉冲一次, 否则上游会提前放行下一帧。
-	assign S_jpeg_st_busy = S_jpeg_busy_l | S_jpeg_busy_r;
-	assign S_jpeg_st_done = (S_jpeg_done_l | S_jpeg_done_r) &
-	                        ~S_jpeg_busy_l & ~S_jpeg_busy_r;
-	assign S_jpeg_st_bytes = S_jpeg_bytes_l + S_jpeg_bytes_r;
-	assign S_jpeg_cnt      = S_jpeg_fcnt_l;
+	assign S_jpeg_st_busy = |S_jpeg_busy_p;
+	assign S_jpeg_st_done = (|S_jpeg_done_p) & ~(|S_jpeg_busy_p);
+	assign S_jpeg_st_bytes = S_jpeg_bytes[0] + S_jpeg_bytes[1] + S_jpeg_bytes[2] + S_jpeg_bytes[3];
+	assign S_jpeg_cnt      = S_jpeg_fcnt[0];
 
 	// 编码器字节流 (147.5MHz) -> 发送域 (S_hs_rx_clk)
 	jpeg_byte_bridge #(.AW(9)) X_jb (
@@ -1766,6 +1737,22 @@ sensor_sync_start #(
 //   70MHz 下预算 14.29ns vs 路径 14.8ns, 只差 0.5ns —— 叠加本轮资源优化
 //   (AWB 串行除法 -5400FF / demosaic -12ERAM / 7x7 -10ERAM) 降拥塞后有望转正。
 //   后续把 huff 数值通路拆 2~3 级流水后, 再改回 S_pclkx1 冲 60fps。
+//
+// ★ 2026-10-28 V47.15: 切回 S_pclkx1 (147.5MHz) 冲 60fps 验证
+//   16200 MCU x 151.3 clk / 147.5MHz = 16.62ms -> 60.19fps (双引擎并行)
+//   顺带解决 gate 断粮: 147.5MHz 下编码速度追平 60fps 输入, 不会再出现
+//   "编到一半下个 SOF 把 gate 关掉 -> linebuf 断粮 -> 卡在 T_WGRP" 的死锁。
+//   70MHz 版实测 0xA0(上一帧字节数) 恒 0 = 一帧都没完成, 就是这个原因。
+//   时序关键: V47.14 那次最差路径 13.45ns 里 net 占 10.21ns (76%),
+//   纯粹是布线绕远 —— 本轮配 place/route 高 effort 压拥堵, 不拆流水。
+//
+// ★★★ 2026-10-28 V47.15 结论: 147.5MHz 已验证不可行, 回退 70MHz ★★★
+//   syn 后 S_pclkx1->S_pclkx1: Min Period 16.503ns, Fmax 60.595MHz, SWNS -9.724ns,
+//   3997/22579 个端点违例(17.7%), 瓶颈 X_jpeg_l/u_huff/state_reg[1] -> kk_reg[1]。
+//   拆流水只提频率不提吞吐(同一份工作摊到更多拍), 对帧率无益。
+//   业界参照: ultraembedded/core_jpeg 商品核在 Xilinx 7 系也只有 75MHz ——
+//   JPEG 熵编码天生串行, 147.5MHz 不是"再优化一下"能到的。
+//   => 60fps 只能靠**增加并行度(4 引擎)**, 频率维持 70MHz。
 assign S_enc_clk = S_hs_rx_clk;
 
 // 已无选源: 保持为 0, 让旧的换源复位窗口逻辑永远不触发
@@ -2085,8 +2072,9 @@ cfg_ctrl_top #(
 	.i_diag_c1ck  (D_c1ck_s2),
 	.i_diag_rtv   (D_rtv_s2),
 	// 2026-10-28 诊断: JPEG 编码器内部状态 (0xEA~0xEE)
-	.i_diag_enc_l (S_diag_enc_l),
-	.i_diag_enc_r (S_diag_enc_r),
+	//   V48: 4 引擎 -> 只接首段(引擎0)和末段(引擎3), 便于对比
+	.i_diag_enc_l (S_diag_enc[0]),
+	.i_diag_enc_r (S_diag_enc[3]),
 	.i_diag_enc_t (S_diag_enc_t),
 	.i_diag_jv    (S_diag_jv),
 	.i_fs_corr    (S_axis_tuser),        // 裁剪模块输出帧首
