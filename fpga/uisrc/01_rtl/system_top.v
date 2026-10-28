@@ -1014,20 +1014,48 @@ wire [7:0]  S_dbg_jb;
 	                         (S_jl_cnt >= JPAD_BYTES - 25'd2) );
 
 	// 编器字节流来自跨时钟桥 (S_hs_rx_clk 域)
-	assign S_jb_r = (S_jl_st == JLS_DATA) ? S_jv_rx_ready : 1'b0;
+	// ★ 2026-10-28 二次修复: DATA 转发 / DROP 抽走丢弃 / PAD 期间必须停
+	//   (PAD 是插补零, 排桥会把编码器下帧的字节混进补零段)
+	assign S_jb_r = (S_jl_st != JLS_PAD) ? S_jv_rx_ready : 1'b0;
 
 	// ★ 2026-10-28 诊断 (0xEF): JPEG 字节排水链状态
 	//   [1:0] S_jl_st (0=DATA 1=PAD 2=DROP)  [2] 保留  [3] S_jpeg_pad
 	//   [4] S_jb_r (桥读完成)  [5] S_jv_rx_ready (发送器收)  [6] S_jb_v  [7] S_jb_l
 	//   ⚠ 必须放在 S_jl_st / S_jv_rx_ready 声明之后, 否则会被推成隐式 1bit wire
 	assign S_diag_jv = { S_jb_l, S_jb_v, S_jv_rx_ready, S_jb_r,
-	                     S_jpeg_pad, 1'b0, S_jl_st };
+	                     S_jpeg_pad, (S_jl_cnt > 25'd4_194_304), S_jl_st };
+
+	// ★★ 2026-10-28 二次死锁修复 (0x4712)
+	//   原实现把整条 case 包在 `else if (S_jv_v && S_jv_rx_ready)` 里, 而 JLS_DROP
+	//   状态本身就让 S_jv_v=0 —— 于是 DROP 的退出条件 (S_jb_v && S_jb_l)
+	//   **永远不可能被求值**。一进 DROP 就是永久死锁 (板上实测 S_jl_st 恒 = DROP)。
+	//   改成:
+	//     1) DROP 单独在发送门之外处理;
+	//     2) DROP 期间照样把桥里的字节抽走丢弃 (S_jb_r 在 DROP 也为 1),
+	//        否则桥会写满 -> 合并器 o_ready=0 -> 两个编码器又被反压卡死;
+	//     3) 加 4096 拍超时兜底, 帧尾永远不来也不能死锁。
+	reg [11:0] S_jl_to = 12'd0;
 
 	always @(posedge S_hs_rx_clk or negedge S_pll_lock) begin
 		if (!S_pll_lock) begin
 			S_jl_st  <= JLS_DATA;
 			S_jl_cnt <= 25'd0;
+			S_jl_to  <= 12'd0;
+		end else if (S_jl_st == JLS_DROP) begin
+			// ---- 丢弃阶段: 不发送, 但必须把桥抽空; 帧尾来了或超时就恢复 ----
+			if (S_jb_v && S_jb_l) begin
+				S_jl_st  <= S_jpeg_pad ? JLS_PAD : JLS_DATA;
+				S_jl_cnt <= 25'd0;
+				S_jl_to  <= 12'd0;
+			end else if (S_jl_to == 12'hFFF) begin
+				S_jl_st  <= JLS_DATA;          // 强制恢复, 不允许再死锁
+				S_jl_cnt <= 25'd0;
+				S_jl_to  <= 12'd0;
+			end else begin
+				S_jl_to <= S_jl_to + 12'd1;
+			end
 		end else if (S_jv_v && S_jv_rx_ready) begin
+			S_jl_to <= 12'd0;
 			case (S_jl_st)
 			JLS_DATA: begin
 				if (S_jb_l && S_jpeg_pad) begin
@@ -1051,10 +1079,9 @@ wire [7:0]  S_dbg_jb;
 				end
 			end
 			default: begin                          // JLS_DROP
-				if (S_jb_v && S_jb_l) begin
-					S_jl_st  <= S_jpeg_pad ? JLS_PAD : JLS_DATA;
-					S_jl_cnt <= 25'd0;
-				end
+				// 不可达: DROP 已在 case 外单独处理
+				S_jl_st  <= JLS_DATA;
+				S_jl_cnt <= 25'd0;
 			end
 			endcase
 		end

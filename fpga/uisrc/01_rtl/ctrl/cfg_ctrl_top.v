@@ -111,7 +111,13 @@ module cfg_ctrl_top #(
 	//                     -> S_enc_busy_f 卡住 -> 共享的 S_enc_gate_r 关死 -> NV16 也没图。
 	//               修法: !enable 时改 d_rd <= d_wr (丢数据但保持 pend_v=0)。
 	//               新增 0xEF: [1:0]S_jl_st [3]pad [4]S_jb_r [5]S_jv_rx_ready [6]S_jb_v [7]S_jb_l
-	parameter [15:0] CFG_VER  = 16'h4711
+	//     0x4712 = V47 第 18 次构建: **修 JLS_DROP 构造性死锁 (仍 70MHz)**
+	//               现象: 0x4711 上板实测 S_jv_rx_ready=1 (上一处修复生效), 但 S_jl_st 恒=DROP。
+	//               根因: 整条 case 包在 `else if (S_jv_v && S_jv_rx_ready)` 里, 而 DROP 让
+	//                     S_jv_v=0 -> DROP 的退出条件永远不可能被求值。
+	//               修法: DROP 移到发送门之外 + DROP 也抽排水桥 + 4096 拍超时兜底。
+	//               0xEF bit2 改成 (S_jl_cnt > 4194304) 诊断位。
+	parameter [15:0] CFG_VER  = 16'h4712
 )(
 	// ---- 系统时钟域 (25MHz 常开) ----
 	input  wire        i_sys_clk,
