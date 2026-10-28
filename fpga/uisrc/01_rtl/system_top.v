@@ -2740,7 +2740,15 @@ csi2_pack_yuv422_stream u_csi2_pack (
 //    不受 YUYV 字节序影响), 重得/镜像/上下绕回一眼可见。
 //    测完把本常量置回 1'b0 即恢复正式通路。
 //=============================================================================
-localparam JPEG_TEST_SRC = 1'b0;   // V33: 内置 TPG 关(下面 TX_SRC_SEL 直接选源)
+// ★★★ 2026-10-28 V50b: 临时切为【固定图案链路自测】★★★
+//   当前板上现象: MIPI_CSI2 在 vc2/vc3 上疯狂报 CRC, RK 侧 frame_id 冻结,
+//   NV16 和 JPEG 一样坏 => 要先判定 "FPGA->MIPI->RK" 这一段本身是否干净。
+//   做法: TX 源直接换成内置测试图案, 绕开 IMX415 / ISP / preproc / dbuf / packer,
+//   只保留 csi2_frame_tx + D-PHY TX (与正式通路同一份 RTL、同一套时序约束)。
+//   判定: RK 能收到干净满帧 -> 链路/TX 没问题, 问题在上游(dbuf/摄像机)
+//         仍然 CRC/收不到  -> TX/D-PHY/链路/硬件
+//   测完把 JPEG_TEST_SRC 置 0、TX_SRC_SEL 置 2'd0 即恢复正式通路。
+localparam JPEG_TEST_SRC = 1'b1;   // ★ V50b: 打开内置 TPG
 
 // ★ V33 (2026-10-17) TX 数据源三选一 —— 二分定位 4K 撕裂的上游归属
 //   已确定(V32 demo, 用户亲眼确认): 内置4K棋盘 -> frame_tx -> D-PHY -> RK 干净满帧,
@@ -2759,7 +2767,7 @@ localparam JPEG_TEST_SRC = 1'b0;   // V33: 内置 TPG 关(下面 TX_SRC_SEL 直�
 //        而 csi2_frame_tx 在 S_dsi_byte_clk 域, csi2_pack 本来就在兼做 CDC。
 //        直接跨域灌进去的结果是 "csi size err, size 0x0" (一个包都没有)。
 //        => 这个 tap 点不成立, 改回正式通路。要测 csi2_pack 必须穿透一个 CDC。
-localparam [1:0] TX_SRC_SEL = 2'd0;
+localparam [1:0] TX_SRC_SEL = 2'd2;   // ★ V50b: 2 = 内置 TPG (固定图案)
 
 wire        S_test_tvalid;
 wire [31:0] S_test_tdata;
@@ -2767,11 +2775,11 @@ wire        S_test_tsof;
 wire        S_test_tlast;
 
 csi2_test_src #(
-	.H_ACTIVE	(3840),         // V32: 4K demo (必须是常呈, 与 V31 的 RES_MODE=2 一致)
-	.V_ACTIVE	(2160),
+	.H_ACTIVE	(1920),         // ★ V50b: 与当前 1080p 模式对齐 (原 3840 是 4K demo)
+	.V_ACTIVE	(1080),
 	.BPP_NUM	(2),
 	.BPP_DEN	(1),
-	.MODE		(2),            // V32: 2 = 4K 几何诊断图案(模盘+网格+行号斜坡)
+	.MODE		(2),            // 2 = 几何诊断图案(模盘+网格+行号斜坡), 全灰度不受字节序影响
 	.LFSR_SEED	(32'hDEAD_BEEF)
 ) u_csi2_test_src (
 	.clk			(S_dsi_byte_clk		),

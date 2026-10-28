@@ -130,7 +130,13 @@ module cfg_ctrl_top #(
 	//               资源: ERAM 215/272, DSP 182/240, SLICE 70.1%; S_clk_70m SWNS +0.584ns
 	//               ★ 关键约束: 编码器行缓冲预取 8 行不得断粮, 所以 enc_if FIFO 加大到
 	//                 2048 深且攒够 1920 word (8行) 才开始送 (START_LEVEL 参数)。
-	parameter [15:0] CFG_VER  = 16'h5000
+	//     0x5001 = V50b 临时构建 (2026-10-28): **固定图案链路自测**
+	//               TX 源切到内置 TPG (1920x1080 模盘+网格+行号斜坡), 绕开
+	//               IMX415/ISP/preproc/dbuf/packer, 只留 csi2_frame_tx + D-PHY TX。
+	//               用途: 判定板上 MIPI_CSI2 的 CRC 满屏到底是 TX 链路问题还是上游。
+	//               ★ 本版不用于验收, 测完必须把
+	//                 system_top.v 的 JPEG_TEST_SRC 置 0 / TX_SRC_SEL 置 2'd0 恢复。
+	parameter [15:0] CFG_VER  = 16'h5001
 )(
 	// ---- 系统时钟域 (25MHz 常开) ----
 	input  wire        i_sys_clk,
