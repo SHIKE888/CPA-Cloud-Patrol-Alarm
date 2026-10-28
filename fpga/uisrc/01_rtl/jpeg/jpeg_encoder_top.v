@@ -869,7 +869,10 @@ module jpeg_enc_if #(
     output reg  [15:0]  st_ovf,
     output reg  [15:0]  st_word_lo,
     output reg  [15:0]  st_sof,
-    output wire [AW-1:0] o_level
+    output wire [AW-1:0] o_level,
+    // ★ 2026-10-28: 源侧满标志。给上游做反压用 ——
+    //   yuv32_to_quad 的 c_ready 必须接"下游装不装得下", 而不是帧门控。
+    output wire         o_full
 );
 
     //=============================================================== 源侧写
@@ -878,6 +881,7 @@ module jpeg_enc_if #(
     wire [DW-1:0] f_dout;
 
     assign o_level = f_rcnt;
+    assign o_full  = f_full;
 
     wire f_wr = s_valid & ~f_full;
 

@@ -705,6 +705,11 @@ wire [7:0]  S_dbg_jb;
 	wire        S_jcfg_last;
 	wire        S_jcfg_r_ready;      // ★ 也要前置声明 (原声明在 dbuf 段, 会隐式声明成 1bit)
 
+	// ★ V50a: 源侧反压只看"四个 enc_if 的 FIFO 装不装得下", 不再用帧门控。
+	//   任何一个满了就停读 dbuf —— 数据留在 DDR 里, 这才是三帧缓存该起的作用。
+	wire [3:0]  S_encif_full;
+	wire        S_jcfg_consume = ~(|S_encif_full);
+
 	yuv32_to_quad X_jcfg (
 		.r_clk   (S_pclkx1          ),
 		.r_rst_n (S_pll_lock        ),
@@ -719,7 +724,7 @@ wire [7:0]  S_dbg_jb;
 		.c_data  (S_jcfg_data       ),
 		.c_sof   (S_jcfg_sof        ),
 		.c_last  (S_jcfg_last       ),
-		.c_ready (S_enc_gate_r      )   // 编码门控: gate=0 时 FIFO 停止消费
+		.c_ready (S_jcfg_consume    )   // 只受 FIFO 满反压, 不受帧门控
 	);
 
 	// 读侧 group 计数 (每拍 4px, 一行 960 拍, 4 段各 240 拍)
@@ -732,7 +737,7 @@ wire [7:0]  S_dbg_jb;
 		if (!S_pll_lock)   S_jg_gcnt <= 10'd0;
 		// ★ 必须带 S_enc_gate_r: gate=0 时 c_valid 会一直挂着, 若只用 S_jcfg_valid
 		//   计数, 分组边界会被冲飞 (仿真已验证此坑)。
-		else if (S_jcfg_valid && S_enc_gate_r)
+		else if (S_jcfg_valid && S_jcfg_consume)
 			S_jg_gcnt <= S_jcfg_last ? 10'd0 : (S_jg_gcnt + 10'd1);
 	end
 
@@ -805,7 +810,13 @@ wire [7:0]  S_dbg_jb;
 	wire [7:0]  S_diag_enc_t;
 	wire [7:0]  S_diag_jv;
 
-	// ---- 帧门控 + 完成标志回同步 (S_hs_rx_clk 域) ----
+	// ---- 帧门控 (保留仅供诊断, 已不参与数据通路) ----
+	// ★ 2026-10-28 V50a: 板上实测 0xA0~A2=0 而 0xA3~A6(累计字节)=4031 且在涨,
+	//   0xA8 s_ovf=0 (没丢数据), 0xEE 的 gate_r 在 0/1 之间跳。
+	//   根因: 编码一帧 17.45ms > 帧周期 16.67ms, 所以一帧永远编不完 ->
+	//   busy_f 恒 1 -> 下个 SOF 把 gate 关掉 -> 源断流 -> 引擎卡在半帧 -> 死锁。
+	//   这正是搬到 DDR 读侧要解决的问题, 却又用一个帧门控接回去了。
+	//   => JPEG 源通路彻底不用 gate, 只用 enc_if 的 FIFO 满反压。
 	always @(posedge S_hs_rx_clk or negedge S_pll_lock) begin
 		if (!S_pll_lock) begin
 			S_enc_busy_f <= 1'b0;
@@ -814,35 +825,44 @@ wire [7:0]  S_dbg_jb;
 		end else begin
 			S_enc_done_s <= {S_enc_done_s[1:0], S_enc_done_tgl};
 			if (S_yuv_de && S_yuv_sof) begin
-				S_enc_gate_r <= ~S_enc_busy_f;     // 上一帧没编完 -> 整帧丢
+				S_enc_gate_r <= ~S_enc_busy_f;     // 仅作诊断观測
 				if (!S_enc_busy_f) S_enc_busy_f <= 1'b1;
 			end
 			if (S_enc_done_pls) S_enc_busy_f <= 1'b0;
 		end
 	end
 
-	// ---- 看门狗 (S_enc_clk 域): 一帧正常 16.5ms, 超 54ms 还 busy = 卡死 ----
+	// ---- 看门狗 (S_enc_clk 域) ----
+	// ★ 改成按"引擎真的在前进"复位: 以 enc_if 的 st_word_lo 之和作为进度。
+	//   原来的条件是 st_busy 持续 114ms —— 连续编码时 st_busy 永远为 1,
+	//   那样看门狗会每 114ms 无条件 flush 一次, 把帧打碎。
 	localparam [23:0] ENC_WD_MAX = 24'd8_000_000;
+	wire [15:0] S_enc_prog = S_enc_words[0] + S_enc_words[1] + S_enc_words[2] + S_enc_words[3];
+	reg  [15:0] S_enc_prog_d = 16'd0;
 	always @(posedge S_enc_clk or negedge S_enc_rst_n) begin
 		if (!S_enc_rst_n) begin
 			S_enc_wd       <= 24'd0;
 			S_enc_wdc      <= 6'd0;
 			S_enc_stall    <= 16'd0;
 			S_enc_done_tgl <= 1'b0;
+			S_enc_prog_d   <= 16'd0;
 		end else if (S_enc_wdc != 6'd0) begin
 			S_enc_wdc <= S_enc_wdc - 6'd1;
 			S_enc_wd  <= 24'd0;
+		end else if (S_enc_prog != S_enc_prog_d) begin
+			// 引擎在前进 -> 清计数
+			S_enc_prog_d <= S_enc_prog;
+			S_enc_wd     <= 24'd0;
 		end else if (S_jpeg_st_done) begin
 			S_enc_done_tgl <= ~S_enc_done_tgl;
 			S_enc_wd       <= 24'd0;
 		end else if (!S_jpeg_st_busy) begin
-			// 闲置时清零 —— 否则计数器一直累加, 下一帧刚 busy 就立即误触发
 			S_enc_wd       <= 24'd0;
 		end else if (S_enc_wd >= ENC_WD_MAX) begin
 			S_enc_wdc      <= 6'd31;
 			S_enc_wd       <= 24'd0;
 			S_enc_stall    <= S_enc_stall + 16'd1;
-			S_enc_done_tgl <= ~S_enc_done_tgl;   // 让上游放行下一帧
+			S_enc_done_tgl <= ~S_enc_done_tgl;
 		end else begin
 			S_enc_wd <= S_enc_wd + 24'd1;
 		end
@@ -881,7 +901,7 @@ wire [7:0]  S_dbg_jb;
 		jpeg_enc_if #(.AW(11), .START_LEVEL(1920)) u_enc_if (
 			.s_clk      (S_hs_rx_clk            ),
 			.s_rst_n    (S_pll_lock             ),
-			.s_valid    (S_jcfg_valid & S_enc_gate_r & S_jg_vld[gi_encif]),
+			.s_valid    (S_jcfg_valid & S_jg_vld[gi_encif]),   // V50a: 不再带帧门控
 			.s_data     (S_jcfg_data            ),
 			.s_sof      (S_jcfg_sof             ),   // ★ 必须用读侧帧首, 不能用写侧 S_yuv_sof
 			.e_clk      (S_enc_clk              ),
@@ -893,7 +913,8 @@ wire [7:0]  S_dbg_jb;
 			.st_ovf     (S_enc_ovf[gi_encif]     ),
 			.st_word_lo (S_enc_words[gi_encif]   ),
 			.st_sof     (                       ),
-			.o_level    (                       )
+			.o_level    (                       ),
+			.o_full     (S_encif_full[gi_encif] )
 		);
 	end
 	endgenerate

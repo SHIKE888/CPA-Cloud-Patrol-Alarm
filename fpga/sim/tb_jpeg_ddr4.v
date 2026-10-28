@@ -56,8 +56,11 @@ module tb_jpeg_ddr4;
 
     wire        c_v, c_sof, c_last;
     wire [63:0] c_d;
-    reg         c_rdy;
-    initial c_rdy = 1'b0;
+    // ★ 与 RTL 一致: 源只受 enc_if 的 FIFO 满反压, 不受帧门控
+    reg         c_rdy_en;
+    wire [3:0]  x_full;
+    wire        c_rdy = c_rdy_en & ~(|x_full);
+    initial c_rdy_en = 1'b0;
 
     yuv32_to_quad u_conv (
         .r_clk(r_clk), .r_rst_n(rst_n),
@@ -107,7 +110,8 @@ module tb_jpeg_ddr4;
             .st_ovf     (x_ovf[gi]      ),
             .st_word_lo (x_wl[gi]       ),
             .st_sof     (               ),
-            .o_level    (               )
+            .o_level    (               ),
+            .o_full     (x_full[gi]     )
         );
     end
     endgenerate
@@ -283,7 +287,7 @@ module tb_jpeg_ddr4;
         m_start = 1'b1;
         @(negedge c_clk); m_start = 1'b0;
         repeat (30) @(negedge c_clk);
-        c_rdy = 1'b1;
+        c_rdy_en = 1'b1;
         $display("[TB] gate open at %0t", $time);
     end
 
