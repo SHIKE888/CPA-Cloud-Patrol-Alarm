@@ -142,7 +142,16 @@ module cfg_ctrl_top #(
 	//               本版把 TPG 改成 32 位 LFSR 伪随机 (最坏跳变), 用来区分:
 	//                 出现 CRC  -> 数据相关的信号完整性余量不足 (降速率/加预加重/查硬件)
 	//                 仍然干净  -> 链路对任意数据都 OK, 问题在 csi2_pack
-	parameter [15:0] CFG_VER  = 16'h5002
+	//     0x5003 = V50d (2026-10-28): **修 csi2_pack 丢失的整行预取门控**
+	//               0x5001(TPG) 证明 TX/D-PHY/链路完全干净 (fps=50.4, CRC=0);
+	//               走 packer 就 CRC 满屏 => 问题在 packer 的 m_tvalid 会掉拍。
+	//               根因: V43 把 m_tvalid=line_active(带整行预取) 换成 4 深队列时
+	//                     删掉了预取, 变成 m_tvalid=(q_cnt!=0);
+	//                     而 TX 发一行 7.68us, VTC 源一行 18.5us, TX 快 2.4 倍,
+	//                     一发包就饿死 -> s_tvalid 掉拍 -> packet 被截断 -> CRC。
+	//               修法: 一行攒满(WORDS_PAYLOAD)才起发, 一旦开始放到行尾。
+	//               恢复正式通路: JPEG_TEST_SRC=0, TX_SRC_SEL=0。
+	parameter [15:0] CFG_VER  = 16'h5003
 )(
 	// ---- 系统时钟域 (25MHz 常开) ----
 	input  wire        i_sys_clk,

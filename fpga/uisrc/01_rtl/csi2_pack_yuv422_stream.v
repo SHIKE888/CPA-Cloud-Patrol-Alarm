@@ -241,7 +241,35 @@ module csi2_pack_yuv422_stream (
     // ~b_empty 必须一起看: FIFO 的写指针对称化滞后 2 拍, 刚写入的 word 可能还
     // 没“看得到”, 那一拍 rd_en 会被 FIFO 忽略; 若仅按 b_occ 记账就会与真实
     // 读操作失配(启动时凭空多出 1~2 个旧 word)。
-    wire do_pop = (b_occ != 13'd0) && ~b_empty &&
+    //==========================================================================
+    // ★★ V50d (2026-10-28): 恢复【整行预取】门控 —— V43 把它弄丢了 ★★
+    //
+    //  现场: TPG 直灌 csi2_frame_tx 时链路完全干净 (fps=50.4, CRC=0, PageFault=0);
+    //        一改走本 packer 就 1.6fps + MIPI_CSI2 CRC 满屏。
+    //
+    //  根因: csi2_frame_tx 在 payload 期间【只要 s_tvalid 掉一拍就把 hs_en 拉低】,
+    //        那等于把这个 packet 提前截断 -> 必然 CRC/ECC 错。
+    //        V43 把 `m_tvalid = line_active`(带 line_priming) 换成 4 深队列时,
+    //        把预取门控一起删掉了, 变成 `m_tvalid = (q_cnt != 0)` —— 队列里只要
+    //        有 1 个 word 就拉高。
+    //        但 TX 发一行只要 7.68us (960word@125MHz), 而 VTC 源一行是 ~18.5us,
+    //        TX 比源快 2.4 倍 => 一发包就必然在中途饿死 => 每行都被截断。
+    //
+    //  修法: 一行开头发包前先攒满整行; 一旦开始就一直放行到本行最后一个 word。
+    //        4 深队列保留不动 (它解决的是"FIFO 晚 1 拍 dout"和 4K 重复 word,
+    //        那是另一个真 bug, 不能退回去)。
+    //==========================================================================
+    reg         line_go;        // 1 = 本行已开始发送 (不再允许中途停)
+    wire        line_ready = (b_occ >= WORDS_PAYLOAD[12:0]);   // 整行已到齐
+    wire        line_end   = q_rd & m_tlast;                    // 本行最后一个 word 被取走
+
+    always @(posedge dst_clk or negedge dst_rst_n) begin
+        if (!dst_rst_n)      line_go <= 1'b0;
+        else if (line_ready) line_go <= 1'b1;     // 整行到齐才允许起发
+        else if (line_end)   line_go <= 1'b0;     // 行尾收工, 下一行重新攒
+    end
+
+    wire do_pop = line_go && (b_occ != 13'd0) && ~b_empty &&
                   ((q_cnt + {2'd0, rd_inflight}) < 3'd4);
 
     always @(posedge dst_clk or negedge dst_rst_n) begin

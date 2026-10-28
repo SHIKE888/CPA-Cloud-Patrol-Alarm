@@ -2748,7 +2748,7 @@ csi2_pack_yuv422_stream u_csi2_pack (
 //   判定: RK 能收到干净满帧 -> 链路/TX 没问题, 问题在上游(dbuf/摄像机)
 //         仍然 CRC/收不到  -> TX/D-PHY/链路/硬件
 //   测完把 JPEG_TEST_SRC 置 0、TX_SRC_SEL 置 2'd0 即恢复正式通路。
-localparam JPEG_TEST_SRC = 1'b1;   // ★ V50b: 打开内置 TPG
+localparam JPEG_TEST_SRC = 1'b0;   // ★ V50d: 恢复正式通路 (TPG 链路验证已完成)
 
 // ★ V33 (2026-10-17) TX 数据源三选一 —— 二分定位 4K 撕裂的上游归属
 //   已确定(V32 demo, 用户亲眼确认): 内置4K棋盘 -> frame_tx -> D-PHY -> RK 干净满帧,
@@ -2767,7 +2767,7 @@ localparam JPEG_TEST_SRC = 1'b1;   // ★ V50b: 打开内置 TPG
 //        而 csi2_frame_tx 在 S_dsi_byte_clk 域, csi2_pack 本来就在兼做 CDC。
 //        直接跨域灌进去的结果是 "csi size err, size 0x0" (一个包都没有)。
 //        => 这个 tap 点不成立, 改回正式通路。要测 csi2_pack 必须穿透一个 CDC。
-localparam [1:0] TX_SRC_SEL = 2'd2;   // ★ V50b: 2 = 内置 TPG (固定图案)
+localparam [1:0] TX_SRC_SEL = 2'd0;   // ★ V50d: 0 = packer 正式通路
 
 wire        S_test_tvalid;
 wire [31:0] S_test_tdata;
@@ -2779,8 +2779,8 @@ csi2_test_src #(
 	.V_ACTIVE	(1080),
 	.BPP_NUM	(2),
 	.BPP_DEN	(1),
-	.MODE		(1),            // ★ V50c: 1 = 32 位 LFSR 伪随机 (最坏跳变, 压 D-PHY 信号完整性)
-		                        //   棋盘(MODE=2)太规整, 测不出数据相关的 ISI 问题
+	.MODE           (2),            // 2 = 几何诊断图案 (TPG 关闭时被优化掉; 1 = LFSR 压链路)
+	                                //   需要压信号完整性时把 MODE 改 1
 	.LFSR_SEED	(32'hDEAD_BEEF)
 ) u_csi2_test_src (
 	.clk			(S_dsi_byte_clk		),
