@@ -151,7 +151,18 @@ module cfg_ctrl_top #(
 	//                     一发包就饿死 -> s_tvalid 掉拍 -> packet 被截断 -> CRC。
 	//               修法: 一行攒满(WORDS_PAYLOAD)才起发, 一旦开始放到行尾。
 	//               恢复正式通路: JPEG_TEST_SRC=0, TX_SRC_SEL=0。
-	parameter [15:0] CFG_VER  = 16'h5003
+	//     0x5100 = V51 (2026-10-28): **移除 NV16, MIPI 只发 JPEG**
+	//               背景: NV16 3840x1080@60 需要 498MB/s, 而 4lane 1000Mbps
+	//                     只有 500MB/s (99.6% 利用率), 且每行 2123 byte_clk
+	//                     @125MHz = 16.96us 超过 VTC 的 14.91us 行预算 13.7%
+	//                     => 结构上不可能, TPG 实测上限就是 50.4fps。
+	//               删除: csi2_pack_yuv422_stream / csi2_frame_tx(定长) /
+	//                     csi2_test_src / 读侧帧标记注入 / TX_SRC_SEL mux。
+	//               保留: ui_dbuf.R -> yuv32_to_quad -> 4x编码器 -> 段合并 ->
+	//                     jpeg_byte_bridge -> csi2_frame_tx_var -> D-PHY TX。
+	//               寄存器: 0x0B[0] 锁死 1 (JPEG), 0x0B[1] 锁死 0 (DT 仍为
+	//                       0x1E, rkcif 没有 JPEG 支持), 0x0B[2] JPAD 默认 0。
+	parameter [15:0] CFG_VER  = 16'h5100
 )(
 	// ---- 系统时钟域 (25MHz 常开) ----
 	input  wire        i_sys_clk,

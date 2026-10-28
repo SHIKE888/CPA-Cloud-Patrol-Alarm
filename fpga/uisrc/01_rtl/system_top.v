@@ -41,21 +41,32 @@
 --     -> RGB888 转 YUV422 (4 像素/拍)      : rgb_to_yuv422_quad
 --     -> DDR 三帧缓存 (16bpp 写 / 32b 读)  : ui_dbuf + ui_FDMA + DDR3
 --     -> 读侧按 VTC 时序读出              : ui_vtc
---     -> YUV422 跨时钟域打包              : csi2_pack_yuv422_stream
---     -> CSI-2 帧/包组包 (DT=0x1E)        : csi2_frame_tx
+--     -> 32b/2px -> 64b/4px 跨时钟域      : yuv32_to_quad
+--     -> 4 引擎并行 JPEG (16x8 MCU)        : jpeg_enc_if x4 + jpeg_encoder_top x4
+--     -> 4 段码流 4:1 合并                 : jpeg_seg_merge4
+--     -> 字节流跨时钟桥                    : jpeg_byte_bridge
+--     -> CSI-2 变长帧/包组包 (DT=0x1E)     : csi2_frame_tx_var
 --     -> D-PHY TX (4 lane HS + LP)        : mipi_dphy_tx_wrapper
 --     -> RK3576 CSI3 (csi2_dphy3 / mipi3_csi2)
---     -> RK 端 milianke_mipi 驱动 -> CIF/ISP -> VPSS
---     -> HDMI 2.1 输出 1080P60 画面
+--     -> RK 端 milianke_mipi 驱动 -> CIF -> 用户态直接推流
+--     -> HDMI 2.1 / 网页显示
+--
+-- ★★★ 2026-10-28 V51: NV16 已移除, MIPI 只输出 JPEG ★★★
+--   为什么: NV16 3840x1080@60 = 498MB/s, 4lane@1000Mbps 只有 500MB/s
+--   (99.6%), 且每行 2123 byte_clk @125MHz = 16.96us 超过 VTC 的 14.91us
+--   行预算 13.7% -> 必然截包 -> CRC 满屏。结构上不可能, 不是 bug。
+--   所以:
+--     - csi2_pack_yuv422_stream / csi2_frame_tx(定长) / csi2_test_src
+--       / 读侧帧标记注入 / TX_SRC_SEL mux 全部删除;
+--     - 0x0B[0] JPG_TX 锁死 1, 0x0B[1] DT18 锁死 0, 0x0B[2] JPAD 默认 0。
 --
 -- 关键点:
---   1) 输出格式固定 YUV422-8bit (DT=0x1E), 分辨率 1920x1080@60,
---      必须与 RK 端驱动 milianke_mipi.c 中上报的
---      MEDIA_BUS_FMT_YUYV8_2X8 / 1920x1080 / 4 lane 完全一致。
+--   1) 内容固定是硬件 JPEG 码流 (变长帧), 但 CSI-2 的 DT 仍是 0x1E ——
+--      rkcif 没有 JPEG 支持, 只能当 YUV422 字节流收。驱动继续上报
+--      MEDIA_BUS_FMT_YUYV8_2X8, 应用层扫 FF D8..FF D9 取帧。
 --   2) I_dsi_en 由 RK 侧 (dts 里 mipi-en-gpios = gpio1 RK_PD0) 驱动,
 --      高电平才使能 D-PHY 发送; 驱动的 s_stream() 打开流时置高。
---   3) 无摄像头自检: 见同目录 system_top_tx_tpg.v + fpga_pin_tx_tpg.adc,
---      用内部测试图案替代 IMX415, 可用于先验证 FPGA->RK->HDMI 通路。
+--      它同时是 csi2_frame_tx_var 的 enable —— D-PHY 复位期间不往乒乓里塞包。
 *********************************************************************/
 
 `define DRAM_BYTE_NUM 2   	   // 1 = x8, 2 = x16,4 = x32,8=x64
@@ -341,8 +352,8 @@ wire        					S_pll_lock		;
 	wire							S_dsi_R_tuser	;
 	wire							S_dsi_R_tvalid	;
 	wire							S_dsi_R_tlast	;
-	wire	[31:0]					S_dsi_R_tdata32	;	// RGBX8888 (1 像素/cyc) 出 dbuf.R
-	wire							S_dsi_pack_tready;
+	// ★ V51: S_dsi_R_tdata32 (NV16 用的 32bit word + 帧标记注入) 和
+	//   S_dsi_pack_tready 已随 NV16 通路删除。dbuf 读侧现在只喂 yuv32_to_quad。
 
 	//---- DSI 握手同步 + 复位 ----
 	reg  [1:0]						S_dsi_en_sync	= 2'b00;
@@ -619,18 +630,43 @@ wire [23:0] S_jpeg_st_bytes;
 wire        S_jpeg_st_busy;
 wire        S_jpeg_st_done;
 
-// 2026-10-21: 0x0B JPG_TX —— MIPI 输出源选择 (0=原 NV16, 1=硬件 JPEG 码流)
-wire        S_jpeg_tx_sel;
+//=============================================================================
+//  ★ 2026-10-28 V51: 移除 NV16 —— MIPI 输出只剩 JPEG 一条路
+//
+//  删除的东西 (全部是 NV16 专用):
+//    - csi2_pack_yuv422_stream    YUV422 字节打包 + CDC
+//    - csi2_frame_tx (定长)        每行一个定长长包 (DT=0x1E)
+//    - csi2_test_src              内置测试图案 (它只能从定长 TX 出去)
+//    - S_mark_* 读侧标记注入       往 NV16 的 Y 平面里塞 A5 5A, 对 JPEG 是污染
+//    - TX_SRC_SEL / JPEG_TEST_SRC  三选一 mux
+//
+//  留下的唯一通路:
+//    ui_dbuf.R -> yuv32_to_quad -> 4x jpeg_enc_if -> 4x jpeg_encoder_top
+//      -> jpeg_seg_merge4 -> jpeg_byte_bridge -> csi2_frame_tx_var (变长)
+//      -> mipi_dphy_tx_wrapper
+//
+//  寄存器语义随之固定:
+//    0x0B[0] JPG_TX  锁死 1  (原来 0=NV16)
+//    0x0B[1] DT18    锁死 0  (DT 必须是 0x1E, 见下)
+//    0x0B[2] JPAD    保留为运行时开关, 默认 0 = 变长帧 (JPEG 本来的形态)
+//
+//  ⚠ 为什么 DT 仍然是 0x1E 而不是 JPEG 标准值 0x18:
+//    这是**传输容器**, 不是数据格式。rkcif 完全没有 JPEG 支持
+//    (CIF_FMT_TYPE 只有 YUV/RAW, capture.c 里自己写着 "JPEG, TODO"),
+//    上报的 mbus code 只能是 MEDIA_BUS_FMT_YUYV8_2X8 => CSI-RX 按 DT=0x1E 收。
+//    板上实测(0x470A): DT=0x18 直接被拒收, 报 MIPI_CSI2 err id + crc/ecc。
+//    改成 0x1E 后 JPEG 字节就能当"普通像素"DMA 进帧缓冲, 应用层再扫
+//    FF D8..FF D9 直接推流 —— 零解码零重编码 (见 docs/VARLEN_CSI2_JPEG_2026-10-28.md)。
+//
+//  为什么 3840 宽必须走 JPEG: NV16 3840x1080@60 需要 498MB/s, 而 4lane
+//  1000Mbps 只有 500MB/s (99.6%), 且每行 2123 byte_clk @125MHz = 16.96us
+//  超过 VTC 的 14.91us 行预算 13.7% -> 必然截包 -> CRC 满屏。
+//=============================================================================
+localparam      S_jpeg_tx_sel = 1'b1;
+localparam      S_jpeg_dt18   = 1'b0;
+localparam [5:0] S_jpeg_dt    = 6'h1E;
 wire        S_jpeg_m_ready;
-
-// 2026-10-27: 0x0B[1]/[2] —— JPEG 长包 DT 与帧尾补零
-//   背景: 板上实测 DT=0x18 被 rkcif 拒收 (MIPI_CSI2 ERR "err id" + crc/ecc),
-//        因为 CSI-RX 按 NV16(YUV422, DT=0x1E) 配的。改成 DT=0x1E 后 JPEG 字节
-//        就能当"普通像素" DMA 进帧缓冲, RK 端搜 FF D8..FF D9 直接推流 —— 
-//        零解码零重编码。
-wire        S_jpeg_dt18;
-wire        S_jpeg_pad;
-wire [5:0]  S_jpeg_dt = S_jpeg_dt18 ? 6'h18 : 6'h1E;
+wire        S_jpeg_pad;         // 由 0x0B[2] 驱动, 默认 0 = 变长帧
 
 // 2026-10-27: JPEG 支路诊断 (ifdef 内外都要声明, cfg 例化在外面)
 //   0xA3~0xA6 = {看门狗触发次数, 源侧 FIFO 溢出次数}
@@ -1148,7 +1184,10 @@ wire [7:0]  S_dbg_jb;
 	) X_jv (
 		.clk        (S_hs_rx_clk    ),
 		.rst_n      (S_pll_lock     ),
-		.enable     (S_jpeg_tx_sel  ),
+		// ★ V51: 原来接 0x0B[0] (NV16 时要置 0 才关掉 JPEG)。现在 NV16 没了,
+		//   改接 RK 的 stream-on 信号 —— enable=0 会清空乒乓缓冲, 所以不能让
+		//   D-PHY 还在复位时就把整包塞进去, 否则 RK 开流后第一帧是残帧。
+		.enable     (S_dsi_en_int   ),
 		.i_dt       (S_jpeg_dt      ),
 		.s_tvalid   (S_jv_v         ),
 		.s_tdata    (S_jv_d         ),
@@ -2144,8 +2183,10 @@ cfg_ctrl_top #(
 	.i_jpeg_done  (S_jpeg_st_done ),
 	.i_dbg_jpeg   (S_dbg_jpeg     ),
 	.i_dbg_jb     (S_dbg_jb       ),
-	.o_jpeg_tx    (S_jpeg_tx_sel  ),
-	.o_jpeg_dt18  (S_jpeg_dt18    ),
+	// ★ V51: 移除 NV16 —— o_jpeg_tx / o_jpeg_dt18 不再使用 (MIPI 恒定发 JPEG,
+	//   DT 恒定 0x18), 只留 0x0B[2] JPAD 作为帧长策略开关。
+	.o_jpeg_tx    (               ),
+	.o_jpeg_dt18  (               ),
 	.o_jpeg_pad   (S_jpeg_pad     ),
 	.i_diag_wbuf  (D_wb_s2),
 	.i_diag_vs    (D_vs_s2),
@@ -2287,12 +2328,11 @@ X_ui_setvbuf
 
 
 //例化uidbuf 控制器
-// ★ 2026-10-28 V49: JPEG 模式独占 dbuf 读侧 (NV16 498MB/s 已把 MIPI 吃满)
-//   NV16: tready 仍按 VTC 消隐 + packer 反压
-//   JPEG: tready 交给 yuv32_to_quad 的 FIFO —— 编码器慢就撑住当前帧,
-//         写侧继续用另外两帧 -> 丢整帧不丢行
-wire        S_ud_rtready = S_jpeg_tx_sel ? S_jcfg_r_ready
-                                        : (S_vtc_de_valid & S_dsi_pack_tready);
+// ★ 2026-10-28 V51: 移除 NV16 —— dbuf 读侧只服务 JPEG 编码器
+//   tready 直接交给 yuv32_to_quad 的 FIFO: 编码器慢就撑住当前帧,
+//   写侧继续用另外两帧 -> 丢整帧不丢行。
+//   (原来 NV16 那条 S_vtc_de_valid & S_dsi_pack_tready 已随打包器一起删掉)
+wire        S_ud_rtready = S_jcfg_r_ready;
 
 ui_dbuf# (  
 	.AXI_DATA_WIDTH	(AXI_DATA_WIDTH		),//AXI总线数据位宽
@@ -2636,214 +2676,59 @@ always @(posedge I_sysclk_25m) begin
 end
 
 //=============================================================================
-//  2026-10-21 修正: 帧标记改到 dbuf **读侧**打
+//  ★ 2026-10-28 V51: 移除 NV16 —— 下面整段 (读侧帧标记注入 + YUV422 打包器)
+//  全部删除。
 //
-//  写侧那个做法 (S_mark_en && S_yuv_sof) 实测**完全没生效**:
-//  板上抓帧整帧搜不到 0xA5 / 0xFF, UV 平面也没有 0x80 —— 一个字节都没写进去。
-//  根因是 S_yuv_sof (rgb_to_yuv422_quad 的 o_user_sof) 在本机基本不来:
-//  uidbuf 的 wfifo_rst_done 只要上电时见过一次 I_W_tuser 就永久锁存,
-//  之后没有 tuser 也照常写 DDR, 所以**画面一直是好的**, 这个坑极其隐蔽。
-//  (写侧那段先留着不删 —— sof 若真不来它就是死代码, 来了也只是重复打标记。)
+//  这些代码的用途是给 NV16 通路做"上板可见性"验证: 往 NV16 的 Y 平面里
+//  塞 A5 5A src FF, 让网页能确认"数据是 FPGA 发的、不是 RK 缓存的旧帧"。
+//  NV16 通路已经不存在, 而且这几个标记字节对 JPEG 码流是纯粹的污染。
 //
-//  读侧的 O_R_tuser 是 dbuf 读状态机自己按"读地址回 0"产生的, 打包器靠它
-//  分行, 一定可靠。所以在这里覆盖:
-//    第 1 拍 -> Y0=0xA5  Cb0=0x80  Y1=0x5A  Cr1=0x80
-//    第 2..4 拍 -> Y=src/0xFF 交替, 见下面 S_mark_wA / S_mark_wB
-//  RK 侧落成 NV16 后 Y 平面头 4 字节就是  A5 5A src FF。
-//
-//  ★ 为什么要连打 4 拍: dbuf 读口受 S_dsi_pack_tready 背压, tuser 后一拍
-//    可能是空拍, 只打一拍很容易丢。web 端是"在前 64 字节里搜 A5 5A"的,
-//    多打几拍不增加任何解析难度, 只多损失 8 个像素。
+//  历史留档 (别再踩):
+//    写侧 (S_mark_en && S_yuv_sof) 的做法实测完全没生效 —— S_yuv_sof 在本机
+//    基本不来, 因为 uidbuf 的 wfifo_rst_done 只要上电见过一次 I_W_tuser 就
+//    永久锁存, 之后没有 tuser 也照常写 DDR, 画面一直是好的, 极隐蔽。
+//    读侧的 O_R_tuser 才可靠 (dbuf 读状态机自己按"读地址回 0"产生)。
 //=============================================================================
-reg  S_rtuser_d1, S_rtuser_d2, S_rtuser_d3;
-// 与打包器的 src_rst_n 用同一根复位, 保证标记窗口和打包器对齐
-wire S_mark_rst_n = S_pll_lock & S_res_rstn;
-always @(posedge S_pclkx1 or negedge S_mark_rst_n) begin
-	if (!S_mark_rst_n) begin
-		S_rtuser_d1 <= 1'b0;
-		S_rtuser_d2 <= 1'b0;
-		S_rtuser_d3 <= 1'b0;
-	end else begin
-		S_rtuser_d1 <= S_dsi_R_tuser;
-		S_rtuser_d2 <= S_rtuser_d1;
-		S_rtuser_d3 <= S_rtuser_d2;
-	end
-end
 
-wire [7:0]  S_mark_src_b = S_out_src ? 8'h11 : 8'h00;
-// 第 1 拍: Y0=0xA5 Cb0=0x80 Y1=0x5A Cr1=0x80  ->  NV16 的 Y[0],Y[1] = A5 5A
-wire [31:0] S_mark_w0 = { 8'h80, 8'h5A, 8'h80, 8'hA5 };
-// 后面几拍: Y=src,FF 交替          ->  NV16 的 Y[2],Y[3] = src FF
-wire [31:0] S_mark_wA = { 8'h80, 8'hFF, 8'h80, S_mark_src_b };
-wire [31:0] S_mark_wB = { 8'h80, S_mark_src_b, 8'h80, 8'hFF };
-
-assign S_dsi_R_tdata32 = !S_mark_en            ? S_ud_rtdata :
-                         S_dsi_R_tuser         ? S_mark_w0 :
-                         S_rtuser_d1           ? S_mark_wA :
-                         S_rtuser_d2           ? S_mark_wB :
-                         S_rtuser_d3           ? S_mark_wA :
-                                                 S_ud_rtdata;
-
-wire        S_pack_tvalid;
-wire        S_pack_tready;
-wire [31:0] S_pack_tdata;
-wire        S_pack_tsof;
-wire        S_pack_tlast;
-
-csi2_pack_yuv422_stream u_csi2_pack (
-	// V21: 运行时尺寸
-	.I_h_active		(S_h_active			),
-	.I_v_active		(S_v_active			),
-	// source: ui_dbuf.R (S_pclkx1 域)
-	.src_clk		(S_pclkx1			),
-	// V22: 模式切换复位窗也要给打包器 —— 否则它的字节计数/行状态机
-	// 会跟新的行/帧边界错位而卡死(实测只复位 VTC 时 TX 彻底不出帧)
-	.src_rst_n		(S_pll_lock & S_res_rstn),
-	.s_tvalid		(S_dsi_R_tvalid		),
-	.s_tready		(S_dsi_pack_tready	),
-	.s_tdata		(S_dsi_R_tdata32	),
-	.s_tuser_sof	(S_dsi_R_tuser		),
-	.s_tlast		(S_dsi_R_tlast		),
-	// sink: byte_clk 域 YUV422 AXIS
-	.dst_clk		(S_dsi_byte_clk		),
-	// V23: 用 byte_clk 域自己同步出来的复位 (原来借用 S_pclkx1 域的, 跨域不干净)
-	.dst_rst_n		(S_dphy_rst_n & S_res_rstn_byte),
-	.enable			(S_dsi_en_int		),
-	.m_tvalid		(S_pack_tvalid		),
-	.m_tready		(S_pack_tready		),
-	.m_tdata		(S_pack_tdata		),
-	.m_tuser_sof	(S_pack_tsof		),
-	.m_tlast		(S_pack_tlast		)
-);
 
 //=============================================================================
-//  传输链路自测源 (JPEG_TEST_SRC = 1 时启用)
+//  ★ 2026-10-28 V51: 移除 NV16 —— 内置测试图案源 (csi2_test_src) 一并删除
 //
-//  发"逐字节可校验"的线性递增序列, 用来在 JPEG 编码器写出来之前, 先把
-//  "FPGA -> MIPI x4 -> RK -> 用户态"这条链路验掉 —— 这是目前风险最高的环节。
-//  RK 端抓一帧后逐字节比对 (帧内第 k 字节 == k & 0xFF), 只要全对就证明
-//  CSI-2 传输是比特精确的 (没有丢字节/重复/错位)。
-//  帧结构与现有 YUV422 通路完全一致 (1920x1080, 2 字节/像素), RK 侧不用改。
+//  它是 NV16 通路的链路自测工具: TPG -> csi2_frame_tx(定长, DT=0x1E) -> D-PHY,
+//  用来二分"CRC 到底出在 TX 还是上游"。现在定长 TX 已经不存在, TPG 也就
+//  无处可去 (它输出 32bit YUV422 word, 而 csi2_frame_tx_var 吃 8bit 字节流,
+//  硬接还得再加一级字节化)。
 //
-//  测完把 JPEG_TEST_SRC 置回 0 即可恢复正式通路; 它是常量, 综合时
-//  没用到的那一路会被直接优化掉, 不占资源。
+//  历史结论留档 (V50b 实测, 别重复做):
+//    切到 TPG 后 fps 稳定 50.4, frame_id 5 秒涨 252, MIPI_CSI2 错误 0,
+//    IOMMU page fault 0 => "FPGA->MIPI->RK" 这一段本身是干净的,
+//    当时的 CRC 全在 csi2_pack_yuv422_stream 的整行预取丢失上。
+//  ⚠ 50.4 fps 就是 3840 宽 NV16 在这个 byte_clk 下的物理上限, 不是故障。
 //
-//  2026-10-15: 链路验证已通过 (3 帧 12,441,600 字节 零误差), 置 0 恢复正式通路。
-//
-//  ★ 2026-10-17 V32: 置 1 做【单 4K MIPI 纯传输 demo】
-//    目的: 把 "4K 撕裂" 到底出在 TX/CSI-2/RK 这一段, 还是出在 RX/ISP/DDR/packer
-//    这一段彻底分开。打开后整条输出通路变成:
-//        内置 4K 测试图案 -> csi2_frame_tx -> D-PHY TX -> RK
-//    完全绕开 IMX415 RX / ui_isp / preproc / ui_dbuf / csi2_pack。
-//    配合 V31 (FPGA 上电即 4K25), 默认就是 3840x2160 的 checker 图案。
-//    图案 = 64x64 模盘 + 每 64 行/列的亮网格线 + 行号斜坡 (全灰度,
-//    不受 YUYV 字节序影响), 重得/镜像/上下绕回一眼可见。
-//    测完把本常量置回 1'b0 即恢复正式通路。
+//  csi2_test_src.v 文件保留在工程里 (不例化就不参与综合), 以后要压链路
+//  可以给它加一层 32->8 字节化再接到 X_jv 上。
 //=============================================================================
-// ★★★ 2026-10-28 V50b: 临时切为【固定图案链路自测】★★★
-//   当前板上现象: MIPI_CSI2 在 vc2/vc3 上疯狂报 CRC, RK 侧 frame_id 冻结,
-//   NV16 和 JPEG 一样坏 => 要先判定 "FPGA->MIPI->RK" 这一段本身是否干净。
-//   做法: TX 源直接换成内置测试图案, 绕开 IMX415 / ISP / preproc / dbuf / packer,
-//   只保留 csi2_frame_tx + D-PHY TX (与正式通路同一份 RTL、同一套时序约束)。
-//   判定: RK 能收到干净满帧 -> 链路/TX 没问题, 问题在上游(dbuf/摄像机)
-//         仍然 CRC/收不到  -> TX/D-PHY/链路/硬件
-//   测完把 JPEG_TEST_SRC 置 0、TX_SRC_SEL 置 2'd0 即恢复正式通路。
-localparam JPEG_TEST_SRC = 1'b0;   // ★ V50d: 恢复正式通路 (TPG 链路验证已完成)
 
-// ★ V33 (2026-10-17) TX 数据源三选一 —— 二分定位 4K 撕裂的上游归属
-//   已确定(V32 demo, 用户亲眼确认): 内置4K棋盘 -> frame_tx -> D-PHY -> RK 干净满帧,
-//     绿紫相间(与我算的 YUYV 解释一致) => TX/CSI-2/D-PHY/rkcif 接收段正常
-//   已排除: ui_image_correction (4K 下 h_cnt 1..960=3840px, 966->960 裁剪正确)
-//   已排除: 链路速率档 / 模式切换 / rkcif 不支持 3840 宽
-//   本参数把 csi2_frame_tx 的输入在三个点之间切:
-//     2'd0 = csi2_pack 输出      (正式通路)
-//     2'd1 = ui_dbuf.R 直连, 跳过 csi2_pack  <-- 本次隔离测试
-//     2'd2 = 内置 TPG            (已证明干净的基准)
-//   ui_dbuf 的读输出本身就是 32bit YUV422 word, O_R_tuser/O_R_tlast 与
-//   packer 的 m_tuser_sof/m_tlast 语义一致(帧首/行尾), 可以直连。
-//   判定: 直连后画面干净 => 元凶是 csi2_pack (4K 一行 1920 word, A-FIFO 仅 2048)
-//         仍撕裂          => 在 ui_dbuf / ui_isp / preproc / RX解包, 继续前二分
-// V33a: 2'd1 (dbuf 直连) 实测失败 —— ui_dbuf 的读输出在 S_pclkx1 域,
-//        而 csi2_frame_tx 在 S_dsi_byte_clk 域, csi2_pack 本来就在兼做 CDC。
-//        直接跨域灌进去的结果是 "csi size err, size 0x0" (一个包都没有)。
-//        => 这个 tap 点不成立, 改回正式通路。要测 csi2_pack 必须穿透一个 CDC。
-localparam [1:0] TX_SRC_SEL = 2'd0;   // ★ V50d: 0 = packer 正式通路
 
-wire        S_test_tvalid;
-wire [31:0] S_test_tdata;
-wire        S_test_tsof;
-wire        S_test_tlast;
+//=============================================================================
+//  ★ 2026-10-28 V51: 移除 NV16 —— 定长 CSI-2 组包器 (csi2_frame_tx) 删除
+//
+//  它就是 NV16 的组包器: 每行一个定长长包 (DT=0x1E, 1920 word),
+//  GAP_LINE=200 / GAP_FRAME=4000。JPEG 走的是变长组包器 csi2_frame_tx_var
+//  (X_jv, 在本文件更早的位置), 所以这里整块不再需要。
+//
+//  连同它一起删掉的还有 TX_SRC_SEL 三选一 mux 和 S_hs_en/S_hs_data/S_hs_last。
+//
+//  历史留档 (这条链路的 GAP 已经被调死, 别在新通路上照抄):
+//    GAP_LINE=200 (1.6us) 是实测验证过的: 4K25 下 rkcif 25.00fps, ECC=0, CRC=0。
+//    V38f 改成 100 想"增加每行余量", 结果 4K 掉到 0.99fps 并爆 e2/crc;
+//    GAP_LINE=40 在 V38b 也试过, 同样报 CRC/ECC。
+//    原因: 减小 GAP 是把 TX 对上游的吞吐要求提高了, 并不会给出任何余量;
+//    而且定长 TX 在 payload 期间只要 s_tvalid 掉一拍就会把 hs_en 拉低,
+//    那等于把这个 packet 提前截断 -> 必然报错。
+//=============================================================================
 
-csi2_test_src #(
-	.H_ACTIVE	(1920),         // ★ V50b: 与当前 1080p 模式对齐 (原 3840 是 4K demo)
-	.V_ACTIVE	(1080),
-	.BPP_NUM	(2),
-	.BPP_DEN	(1),
-	.MODE           (2),            // 2 = 几何诊断图案 (TPG 关闭时被优化掉; 1 = LFSR 压链路)
-	                                //   需要压信号完整性时把 MODE 改 1
-	.LFSR_SEED	(32'hDEAD_BEEF)
-) u_csi2_test_src (
-	.clk			(S_dsi_byte_clk		),
-	.rst_n			(S_dphy_rst_n		),
-	.enable			(S_dsi_en_int & JPEG_TEST_SRC),
-	.m_tvalid		(S_test_tvalid		),
-	.m_tready		(S_pack_tready		),
-	.m_tdata		(S_test_tdata		),
-	.m_tuser_sof	(S_test_tsof		),
-	.m_tlast		(S_test_tlast		)
-);
-
-//---- Layer-1: CSI-2 帧 FSM (DT=0x1E YUV422-8bit) ----
-wire        S_hs_en;
-wire [31:0] S_hs_data;
-wire        S_hs_last;
-
-// 数据源三选一 (常量选择, 综合时只保留一路)
-//   TX_SRC_SEL: 0=packer 正式通路  1=ui_dbuf.R 直连(跳过packer)  2=内置TPG
-wire        S_tx_tvalid = (TX_SRC_SEL == 2'd2) ? S_test_tvalid :
-                          (TX_SRC_SEL == 2'd1) ? S_dsi_R_tvalid : S_pack_tvalid;
-wire [31:0] S_tx_tdata  = (TX_SRC_SEL == 2'd2) ? S_test_tdata  :
-                          (TX_SRC_SEL == 2'd1) ? S_dsi_R_tdata32: S_pack_tdata;
-wire        S_tx_tsof   = (TX_SRC_SEL == 2'd2) ? S_test_tsof   :
-                          (TX_SRC_SEL == 2'd1) ? S_dsi_R_tuser  : S_pack_tsof;
-wire        S_tx_tlast  = (TX_SRC_SEL == 2'd2) ? S_test_tlast  :
-                          (TX_SRC_SEL == 2'd1) ? S_dsi_R_tlast  : S_pack_tlast;
-
-csi2_frame_tx #(
-	.DT			(6'h1E),	// YUV422-8bit  (必须与 RK 驱动 MEDIA_BUS_FMT_YUYV8_2X8 一致)
-	.VC			(2'd0 ),
-	.BPP_NUM	(2    ),
-	.BPP_DEN	(1    ),
-	// ★★★ 不要动这两个参数 ★★★
-	//   GAP_LINE=200 (1.6us) 是实测验证过的: 4K25 下 rkcif 25.00 fps, ECC=0, CRC=0。
-	//   V38f 曾把它改成 100 想"增加每行余量", 结果 4K 直接掉到 0.99 fps,
-	//   并爆出 MIPI_CSI2 ERR1:0x10000000 (ecc2) / ERR1:0x18000000 (crc,vc:3)。
-	//   原因: 减小 GAP 是把 TX 对上游 packer 的吞吐要求提高了(每行 16.98us->16.18us),
-	//         并不会给出任何余量; 而且 csi2_frame_tx 在 payload 期间只要 s_tvalid 掉一拍
-	//         就会把 hs_en 拉低, 那等于把这个 packet 提前截断 -> 必然报错。
-	//   GAP_LINE=40 (320ns) 在 V38b 也试过, 同样报 CRC/ECC。
-	//   => 这条链路的 GAP 已经调好了, 逐行偏移要另找原因。
-	.GAP_LINE	(32'd200 ),
-	.GAP_FRAME	(32'd4000)
-) u_csi2_frame_tx (
-	.clk			(S_dsi_byte_clk	),
-	// V22: 同 csi2_pack —— 包/帧状态机必须在模式切换时一起复位,
-	// 否则它与新的行/帧边界错位后会卡死(实测: RX 计数在涨但 TX 不出帧)
-	.rst_n			(S_dphy_rst_n & S_res_rstn_byte),
-	.enable			(S_dsi_en_int	),
-	.I_h_active		(S_h_active		),
-	.I_v_active		(S_v_active		),
-	.s_tvalid		(S_tx_tvalid	),
-	.s_tready		(S_pack_tready	),
-	.s_tdata		(S_tx_tdata		),
-	.s_tuser_sof	(S_tx_tsof		),
-	.s_tlast		(S_tx_tlast		),
-	.hs_en			(S_hs_en		),
-	.hs_data		(S_hs_data		),
-	.hs_last		(S_hs_last		),
-	.frame_cnt		(				),
-	.packet_cnt		(				)
-);
+//---- Layer-1 只有 JPEG 变长组包 X_jv (见本文件 "CSI-2 可变长发送" 一节) ----
 
 //---- Layer-0: Anlogic D-PHY TX wrapper (LP init + HS 串化) ----
 mipi_dphy_tx_wrapper #(
@@ -2870,10 +2755,10 @@ mipi_dphy_tx_wrapper #(
 	.I_lpdt_clk		(S_dsi_lp_clk			),
 	.I_rst			(~S_dphy_rst_n			),
 
-	// HS TX from Layer-1
-	.I_hs_tx_valid	(S_jpeg_tx_sel ? S_jv_hs_en : S_hs_en),
-	.I_hs_tx_data	(S_jpeg_tx_sel ? S_jv_hs_data : S_hs_data),
-	.I_hs_tx_last	(S_jpeg_tx_sel ? S_jv_hs_last : S_hs_last),
+	// HS TX: ★ V51 移除 NV16 后只有 JPEG 变长组包这一路, 不再有 mux
+	.I_hs_tx_valid	(S_jv_hs_en				),
+	.I_hs_tx_data	(S_jv_hs_data			),
+	.I_hs_tx_last	(S_jv_hs_last			),
 	.O_hs_tx_ready	(						),
 
 	// LP TX: 不发 LP 配置 (CSI-2 host 不需)

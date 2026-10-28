@@ -2614,9 +2614,14 @@ function fpgaShowSt(d) {
     0x470A: "V47.10 JPEG 直通（0x0B[0] 码流 / [1] DT18 / [2] 帧尾补零）",
     0x470B: "V47.11 JPEG 编码器真正接入（异步 FIFO 拆字 + 147.5MHz + 看门狗）",
     0x470C: "V47.12 编码器时钟回退 31.25MHz（147.5MHz 时序不收敛，fmax≈45MHz）",
-    0x470D: "V47.13 按赛题裁剪预处理腾 DSP（删反色/中值/拉普拉斯/浮雕/Prewitt/数字白平衡）"
+    0x470D: "V47.13 按赛题裁剪预处理腾 DSP（删反色/中值/拉普拉斯/浮雕/Prewitt/数字白平衡）",
+    0x5000: "V50 DDR 读侧 JPEG 源 + 4 引擎并行（段合并 4:1）",
+    0x5001: "V50b 内置 TPG 链路自测（证明 TX/D-PHY/链路干净，CRC=0）",
+    0x5002: "V50c TPG 改 LFSR 压链路",
+    0x5003: "V50d 修 csi2_pack 丢失的整行预取（NV16 通路 CRC 根因）",
+    0x5100: "V51 移除 NV16，MIPI 只发 JPEG（0x0B[0]/[1] 固定，JPAD 默认 0 变长帧）"
   };
-  const VER_NEWEST = 0x470D;
+  const VER_NEWEST = 0x5100;
   const _ver = (st.VER !== undefined) ? Number(st.VER) : null;
   if (_ver !== null && $("fsVer")) {
     let t = "板上 bit 版本 0x" + _ver.toString(16).toUpperCase().padStart(4, "0") +

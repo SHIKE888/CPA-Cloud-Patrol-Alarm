@@ -341,9 +341,17 @@ module jpeg_regfile #(
             r_target     <= 24'd0;     // 0 = 不限码率
             r_rc_en      <= 1'b0;
             r_rc_speed   <= 4'd8;
-            r_jpg_tx     <= 1'b0;      // 默认走原 NV16 通路
-            r_jpg_dt18   <= 1'b0;      // 2026-10-27: 默认 DT=0x1E (rkcif 当前只认这个)
-            r_jpg_pad    <= 1'b1;      // 2026-10-27: 默认补满整帧 (最稳妥)
+            // ★ 2026-10-28 V51: 移除 NV16 —— MIPI 只发 JPEG 码流
+            //   jpg_tx 的硬件端已锁死为常量 (NV16 的打包器和定长 TX 都删了),
+            //   这里把复位值改成 1 只是让回读所见即所得。
+            //   dt18 必须保持 0: rkcif 没有 JPEG 支持, 只能按 DT=0x1E 当
+            //   YUV422 字节流收 (板上实测 0x18 被拒收 -> err id + crc/ecc)。
+            //   jpg_pad 默认 0: JPEG 是变长帧, 不再补零到 8294400 字节
+            //   (补一帧要 118ms@70MHz, 是 60fps 的硬阻塞, 见
+            //    docs/VARLEN_CSI2_JPEG_2026-10-28.md)。
+            r_jpg_tx     <= 1'b1;      // 1 = 硬件 JPEG 码流 (固定)
+            r_jpg_dt18   <= 1'b0;      // 0 = DT 0x1E (固定, rkcif 只认这个)
+            r_jpg_pad    <= 1'b0;      // 0 = 变长帧 (JPEG 本来的形态)
             r_subsample  <= 2'd1;      // 默认 4:2:2
             r_restart    <= 8'd0;
             r_predictor  <= 3'd0;      // 0 = MED
