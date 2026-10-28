@@ -1,0 +1,53 @@
+Subject: [PATCH] media: rockchip: cif: allow variable-length CSI-2 frames
+
+The rkcif driver assumes every CSI-2 frame carries exactly
+width * height * bpp bytes.  When a frame is shorter (which is the
+normal case for a JPEG byte stream tunneled over CSI-2), two things
+go wrong:
+
+  1. CSI_SIZE_ERR fires.  Its ISR branch increments csi_size_err_cnt,
+     sets RKCIF_ERR_SIZE and then *returns*, so the FRAME_END handling
+     for the same interrupt is skipped and the buffer is never queued.
+  2. That same ISR branch writes CIF_REG_MIPI_LVDS_CTRL |= 0x000A0000,
+     which soft-resets the CSI host, tearing down the stream.
+
+There is a second guard right after it:
+
+  if (intstat & CSI_ALL_ERROR_INTEN_V1) { all_err_cnt++; return; }
+
+and CSI_SIZE_ERR is a subset of CSI_ALL_ERROR_INTEN_V1
+(CSI_SIZE_ERR = bits 24..27, CSI_ALL_ERROR_INTEN_V1 = 0xf0f << 16),
+so masking only the first branch would not be enough.
+
+FRAME_END is triggered by the CSI-2 FE short packet, not by the byte
+count, so it still arrives for a short frame.  Masking CSI_SIZE_ERR out
+of the INTEN write therefore lets variable-length frames complete
+normally, while every other error interrupt stays enabled.
+
+Payload bytes beyond the actual transfer length are left as whatever
+the buffer held before (stale frame data).  Consumers are expected to
+locate the real payload themselves (e.g. scan for FF D8 .. FF D9).
+
+Target: RK3576, kernel 6.1.99, SDK mlk-sdk-3576-v1.1.0.
+
+---
+diff --git a/drivers/media/platform/rockchip/cif/capture.c b/drivers/media/platform/rockchip/cif/capture.c
+--- a/drivers/media/platform/rockchip/cif/capture.c
++++ b/drivers/media/platform/rockchip/cif/capture.c
+@@ -4615,8 +4615,15 @@
+                        rkcif_write_register(dev, CIF_REG_MIPI_LVDS_CTRL, val);
+                }
+ 
++               /* Anlogic: allow variable-length CSI-2 frames (JPEG byte stream).
++                * CSI_SIZE_ERR not only drops the frame, its ISR branch also
++                * soft-resets the CSI host, so a payload shorter than
++                * width*height can never complete.  FRAME_END is a packet,
++                * so it still fires without a size match.  Keep every other
++                * error interrupt enabled.
++                */
+                rkcif_write_register_or(dev, CIF_REG_MIPI_LVDS_INTEN,
+-                                       CSI_ALL_ERROR_INTEN_V1);
++                                       CSI_ALL_ERROR_INTEN_V1 & ~CSI_SIZE_ERR);
+        }
+ #if IS_ENABLED(CONFIG_CPU_RV1106)
+        if (channel->id == 1)
