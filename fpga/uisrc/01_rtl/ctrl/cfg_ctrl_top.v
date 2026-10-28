@@ -117,7 +117,20 @@ module cfg_ctrl_top #(
 	//                     S_jv_v=0 -> DROP 的退出条件永远不可能被求值。
 	//               修法: DROP 移到发送门之外 + DROP 也抽排水桥 + 4096 拍超时兜底。
 	//               0xEF bit2 改成 (S_jl_cnt > 4194304) 诊断位。
-	parameter [15:0] CFG_VER  = 16'h4712
+	//     0x5000 = V50 第 0 次构建 (2026-10-28): **JPEG 源改到 dbuf 读侧 + 四引擎**
+	//               为什么必须改: 编码器速度(17.45ms/帧) 比输入(16.67ms) 慢 4.6%,
+	//               接在 dbuf 写侧(实时流, 零缓冲)时帧编到 94% 就被下一个 SOF 关断
+	//               -> 行缓冲断粮 -> 永久死锁 (板上 0xA0 恒 0 的真正原因)。
+	//               改法: 源改接 dbuf 读侧 (DDR 三帧缓存) ->
+	//                     yuv32_to_quad (32b/2px@147.5MHz -> 64b/4px@70MHz)
+	//                     -> 行内 1/4 分组 -> 4x jpeg_enc_if -> 4x 编码器
+	//                     -> jpeg_seg_merge4 -> 原有字节桥
+	//               同时修 6 个仿真暴露的 bug (详见 docs/WORKLOG_2026-10-28_V50_*.md)
+	//               仿真验收: 与基准 merged4.jpg **逐字节一致 (6007B)**
+	//               资源: ERAM 215/272, DSP 182/240, SLICE 70.1%; S_clk_70m SWNS +0.584ns
+	//               ★ 关键约束: 编码器行缓冲预取 8 行不得断粮, 所以 enc_if FIFO 加大到
+	//                 2048 深且攒够 1920 word (8行) 才开始送 (START_LEVEL 参数)。
+	parameter [15:0] CFG_VER  = 16'h5000
 )(
 	// ---- 系统时钟域 (25MHz 常开) ----
 	input  wire        i_sys_clk,
