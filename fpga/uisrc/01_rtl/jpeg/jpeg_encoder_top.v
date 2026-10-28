@@ -93,7 +93,23 @@ module jpeg_encoder_top #(
 
     // ★ 段结束指示 (给双引擎合并模块用): 一个半行段已经完整吐出去,
     //   合并器看到这个脉冲就可以切到另一个引擎。帧末没 RST 的那段用 st_done 顶。
-    output wire        o_seg_done
+    output wire        o_seg_done,
+
+    // ★ 2026-10-28 诊断 (临时调试版): 编码器内部状态抽头, 接到 0xEA~0xED。
+    //   目的: 定位"永久 busy + 帧字节恒 0"到底卡在哪一步。
+    //     [3:0]  tstate        控制状态机 (T_IDLE/T_LOADQ/T_HDR/T_WGRP/T_RD/
+    //                          T_WDCT/T_HUFF/T_NEXT/T_FIN/T_EOI/T_DRAIN)
+    //     [5:4]  pend          已 DCT 完、未编码完的块数 (0..2)
+    //     [6]    lb_avail      行缓冲里有完整 8 行
+    //     [7]    q_load_done   量化表 recip 装载完成
+    //     [8]    huff_run      熵编码忙
+    //     [9]    huff_start    启动一个块的脉冲
+    //     [10]   bp_ok         位打包器有余量
+    //     [11]   m_ready       下游能否接住字节
+    //     [12]   st_busy       [13] st_done
+    //     [14]   huff_done     一个块编码完成
+    //     [15]   bp_flush      帧尾 flush
+    output wire [15:0] o_diag
 );
 
     // ★ 2026-10-26 (紧急回退): MCU 尺寸改回**编译期**。
@@ -339,6 +355,11 @@ module jpeg_encoder_top #(
         .o_ready    (m_ready),
         .o_byte_cnt (bp_cnt)
     );
+
+    // ★ 2026-10-28 诊断抽头 (只读, 不影响任何逻辑)。位定义见文件头的 o_diag 说明。
+    assign o_diag = { bp_flush, huff_done, st_done, st_busy,
+                      m_ready,  bp_ok,     huff_start, huff_run,
+                      q_load_done, lb_avail, pend, tstate };
 
     //=============================================================== 头部
     reg         hdr_start;

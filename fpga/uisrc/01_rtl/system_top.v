@@ -731,6 +731,12 @@ wire [7:0]  S_dbg_jb;
 	wire [15:0] S_jb_bp;
 	wire [7:0]  S_jb_lvl;
 
+	// ★ 2026-10-28 诊断 (临时调试版): 两个编码器引擎的内部状态抽头
+	//   → cfg_ctrl_top → 读寄存器 0xEA~0xED; 顶层门控状态 → 0xEE
+	//   位定义见 jpeg_encoder_top.v 的 o_diag 注释
+	wire [15:0] S_diag_enc_l, S_diag_enc_r;
+	wire [7:0]  S_diag_enc_t;
+
 	// ---- 帧门控 + 完成标志回同步 (S_hs_rx_clk 域) ----
 	always @(posedge S_hs_rx_clk or negedge S_pll_lock) begin
 		if (!S_pll_lock) begin
@@ -778,6 +784,13 @@ wire [7:0]  S_dbg_jb;
 
 	assign S_dbg_jpeg = {S_enc_stall, (S_enc_ovf_l | S_enc_ovf_r)};
 	assign S_dbg_jb   = S_jb_bp[7:0];
+
+	// ★ 2026-10-28 诊断 (0xEE): 帧门控链状态
+	//   [0] S_enc_gate_r  [1] S_enc_busy_f  [2] S_jpeg_st_busy  [3] S_jpeg_st_done
+	//   [4] S_enc_flush   [5] S_enc_soft    [6] 看门狗复位中  [7] S_jpeg_tx_sel
+	assign S_diag_enc_t = { S_jpeg_tx_sel, (S_enc_wdc != 6'd0), S_enc_soft,
+	                        S_enc_flush, S_jpeg_st_done, S_jpeg_st_busy,
+	                        S_enc_busy_f, S_enc_gate_r };
 
 	//==========================================================================
 	//  双引擎: 左引擎吃 group 0..479 (cam1), 右引擎吃 480..959 (cam0)
@@ -871,7 +884,8 @@ wire [7:0]  S_dbg_jb;
 		.st_busy        (S_jpeg_busy_l  ),
 		.st_done        (S_jpeg_done_l  ),
 		.st_frame_cnt   (S_jpeg_fcnt_l  ),
-		.o_seg_done     (S_jseg_l       )
+		.o_seg_done     (S_jseg_l       ),
+		.o_diag         (S_diag_enc_l   )
 	);
 
 	// ---- 右引擎: 不出帧头, 出 EOI, 最后一段后不出 RST ----
@@ -901,7 +915,8 @@ wire [7:0]  S_dbg_jb;
 		.st_busy        (S_jpeg_busy_r  ),
 		.st_done        (S_jpeg_done_r  ),
 		.st_frame_cnt   (S_jpeg_fcnt_r  ),
-		.o_seg_done     (S_jseg_r       )
+		.o_seg_done     (S_jseg_r       ),
+		.o_diag         (S_diag_enc_r   )
 	);
 
 	// ---- 段合并: L(行n) RST0, R(行n) RST1, L(行n+1) RST2 ... ----
@@ -2035,6 +2050,10 @@ cfg_ctrl_top #(
 	.i_diag_rxck  (D_rxck_s2),
 	.i_diag_c1ck  (D_c1ck_s2),
 	.i_diag_rtv   (D_rtv_s2),
+	// 2026-10-28 诊断: JPEG 编码器内部状态 (0xEA~0xEE)
+	.i_diag_enc_l (S_diag_enc_l),
+	.i_diag_enc_r (S_diag_enc_r),
+	.i_diag_enc_t (S_diag_enc_t),
 	.i_fs_corr    (S_axis_tuser),        // 裁剪模块输出帧首
 	.i_last_corr  (S_axis_tlast),        // 裁剪模块输出行尾
 	// 2026-10-20: LP-free RX 调试总线 (只读 0xD6/0xD7/0xD8) = 固定 cam0

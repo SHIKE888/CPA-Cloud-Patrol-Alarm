@@ -95,7 +95,16 @@ module cfg_ctrl_top #(
 	//                 - AWB 除法器改 48 位串行      (-~5400 FF, -2168 进位链)
 	//                 - 删除 7x7 高斯(第 3 遍 3x3)   (-10 ERAM); 0xF8 写 2 自动退到 5x5
 	//               用 0x0B 控制: [0]=1 发 JPEG 码流, [1]=0 用 DT 0x1E, [2]=1 帧尾补零
-	parameter [15:0] CFG_VER  = 16'h470E
+	//     0x4710 = V47 第 16 次构建: **编码器状态诊断版 (临时调试, 仍 70MHz)**
+	//               起因: 板上 0x470E 永远 st_busy=1、帧字节恒 0、看门狗 8.2 次/秒,
+	//                     NV16 模式也拿不到数据（S_enc_busy_f 卡住把 S_enc_gate_r 关死）。
+	//               新增只读抽头（不影响任何逻辑）:
+	//                 0xEA/EB = 左引擎 o_diag 低/高
+	//                 0xEC/ED = 右引擎 o_diag 低/高
+	//                 0xEE    = 帧门控链状态
+	//               位定义见 jpeg_encoder_top.v 的 o_diag 注释。
+	//               本版只用于定位, 不用于验收。
+	parameter [15:0] CFG_VER  = 16'h4710
 )(
 	// ---- 系统时钟域 (25MHz 常开) ----
 	input  wire        i_sys_clk,
@@ -181,6 +190,10 @@ module cfg_ctrl_top #(
 	input  wire [7:0]  i_diag_rxck,
 	input  wire [7:0]  i_diag_c1ck,
 	input  wire [7:0]  i_diag_rtv,
+	// 2026-10-28 诊断 (临时调试版): JPEG 编码器内部状态 (0xEA~0xEE)
+	input  wire [15:0] i_diag_enc_l,
+	input  wire [15:0] i_diag_enc_r,
+	input  wire [7:0]  i_diag_enc_t,
 
 	// ---- 画质参数 (同步到像素域) ----
 	output wire [7:0]  o_wb_r,
@@ -410,6 +423,9 @@ module cfg_ctrl_top #(
 		.I_diag_rxck     (i_diag_rxck),
 		.I_diag_c1ck     (i_diag_c1ck),
 		.I_diag_rtv      (i_diag_rtv),
+		.I_diag_enc_l    (i_diag_enc_l),
+		.I_diag_enc_r    (i_diag_enc_r),
+		.I_diag_enc_t    (i_diag_enc_t),
           .I_st_line_groups(lg_max),
           // 2026-10-20: RX 调试总线 (已 2 级同步到 i_sys_clk)
           // 2026-10-21: 0xD6/D7/D8 固定是 cam0, cam1 固定走 0xDD/DE/DF

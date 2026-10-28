@@ -204,6 +204,17 @@ module jpeg_regfile #(
     input  wire [7:0]   I_diag_c1ck,
     input  wire [7:0]   I_diag_rtv,
 
+    // ★ 2026-10-28 诊断 (临时调试版): JPEG 编码器内部状态
+    //   背景: 板上 0x470E 永远 st_busy=1 / 帧字节=0, 看门狗 8.2 次/秒,
+    //   而 0xA8 只暴露 busy/done, 看不出卡在哪。
+    //   0xEA/0xEB = 左引擎 o_diag 低/高
+    //   0xEC/0xED = 右引擎 o_diag 低/高
+    //   0xEE      = 顶层门控状态
+    //   o_diag 位定义见 jpeg_encoder_top.v
+    input  wire [15:0]  I_diag_enc_l,
+    input  wire [15:0]  I_diag_enc_r,
+    input  wire [7:0]   I_diag_enc_t,
+
     // 2026-10-20: LP-free RX 调试总线 (只读)
     //   0xD6 = dbg_mipi  : [3:0]各lane字节对齐 [4]word对齐 [5]in_frame
     //                      [6]payload_valid [7]10bit解包有效
@@ -577,6 +588,12 @@ module jpeg_regfile #(
                 8'hE7: O_rd_data <= I_diag_rxck;
                 8'hE8: O_rd_data <= I_diag_c1ck;
                 8'hE9: O_rd_data <= I_diag_rtv;
+                // 2026-10-28 诊断: JPEG 编码器内部状态 (位定义见 jpeg_encoder_top.v)
+                8'hEA: O_rd_data <= I_diag_enc_l[ 7:0];
+                8'hEB: O_rd_data <= I_diag_enc_l[15:8];
+                8'hEC: O_rd_data <= I_diag_enc_r[ 7:0];
+                8'hED: O_rd_data <= I_diag_enc_r[15:8];
+                8'hEE: O_rd_data <= I_diag_enc_t;
                 8'hD0: O_rd_data <= s_cam_wr_cnt[ 7:0];
                 8'hD1: O_rd_data <= s_cam_wr_cnt[15:8];
                 8'hD2: O_rd_data <= {7'b0, s_cam_busy};
