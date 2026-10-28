@@ -20,7 +20,7 @@ $src = @(
     "$j/jpeg_qtable_ram.v",
     "$j/jpeg_range.v",
     "$j/jpeg_seg_merge4.v",
-    "$j/yuv32_to_quad.v",
+    # yuv32_to_quad 已并入 jpeg_encoder_top.v 末尾 (TD 会冲掉工程文件列表条目)
     "../uisrc/03_ip/al_fifo/fifo_32b_async_2.v"
 )
 

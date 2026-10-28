@@ -101,3 +101,40 @@ powershell -File .\run_jpeg_ddr4.ps1
 2. 板测：`0xA0~0xA2`（编码字节数）必须 >0；`/api/sys` 的 `direct_frames` / `fps`
 3. IOMMU page fault（300 次）仍未解决 —— 是屏蔽 `CSI_SIZE_ERR` 的副作用
 4. 画质指标（Q/4:2:2）尚未测过
+
+---
+
+## 附：上板编译阶段踩到的两个坑（2026-10-28 晚）
+
+### 坑 1：`HDL-8007 yuv32_to_quad is a black box`
+
+**根因**：TD 退出/保存时会重写 `fpga/fpga_prj.al` 与 `fpga/fpga_prj_Runs/syn_1/fpga_prj.prj`
+里的 `<File>` 列表，**手工加进去的条目会被冲掉**（实测两个文件里条目数又变回 0）。
+
+**修法**：不再依赖工程文件列表 —— 把 `yuv32_to_quad` 模块**并入**
+`jpeg_encoder_top.v` 末尾。这不是风格选择，是本工程的既有约定：
+`jpeg_enc_if`、`jpeg_byte_bridge` 当初也是因为这个才放在那里的。
+
+```
+jpeg_encoder_top.v
+  39   module jpeg_encoder_top
+ 840   module jpeg_enc_if
+1001   module jpeg_byte_bridge
+1101   module yuv32_to_quad   ← 新增
+```
+
+独立文件 `yuv32_to_quad.v` 已删除，`run_jpeg_ddr4.ps1` 的文件清单同步更新。
+并入后回归仿真仍为 `PIXEL PATH OK` / `6007 B` / **逐字节一致**。
+
+### 坑 2：`HDL-7225 'S_enc_gate_r' is already implicitly declared`
+
+**根因**：声明在使用点之后 → Verilog 先把它隐式声明成 1bit wire，功能静默出错
+（本工程已踩过多次）。
+
+| 信号 | 原声明行 | 现位置 |
+|---|---|---|
+| `S_enc_gate_r` / `S_enc_busy_f` / `S_enc_done_tgl` / `S_enc_flush` / `S_enc_soft` | 780~782 | `S_enc_rst_n` 后（≈675） |
+| `S_jcfg_r_ready` | 2272 | `yuv32_to_quad` 例化前（≈696） |
+
+**教训**：`yuv32_to_quad` 的 `c_ready` 和 `S_jg_gcnt` 都依赖 `S_enc_gate_r`，
+把新逻辑插在文件前部时，一定要把被引用的信号一起前置声明。

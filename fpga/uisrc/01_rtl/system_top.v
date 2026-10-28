@@ -674,6 +674,17 @@ wire [7:0]  S_dbg_jb;
 	//   要上 30fps/60fps 必须先把量化/熵编码那一拍拆流水 (另开任务)。
 	wire        S_enc_rst_n = S_pll_lock;
 
+	// ★★ 帧门控状态：必须声明在【所有使用点之前】★★
+	//   yuv32_to_quad 的 c_ready 和 S_jg_gcnt 都要用 S_enc_gate_r。
+	//   如果声明在文件后部，Verilog 会先把它隐式声明成 1bit wire
+	//   （TD 报 HDL-7225 "already implicitly declared"），功能静默出错。
+	//   本工程已踩过多次，见 memory。
+	wire        S_enc_flush;                 // 看门狗: 复位 FIFO + 编码器
+	wire        S_enc_soft;
+	reg         S_enc_done_tgl = 1'b0;       // 完成标志跑回 s_clk 用 (翻转同步)
+	reg         S_enc_busy_f   = 1'b0;       // s_clk: 已放行一帧未完成
+	reg         S_enc_gate_r   = 1'b0;
+
 	// ★ 2026-10-28: 编码器时钟已改为独立的 pclkx1/4 = 36.875MHz (见时钟生成处)。
 	//   原来的 45MHz fmax 卡点 (量化倒数表组合除法器) 已换成流水长除法，
 	//   但要跑 146MHz 还差很远，所以这里不把它接到像素域 (=73.75MHz)。
@@ -692,6 +703,7 @@ wire [7:0]  S_dbg_jb;
 	wire [63:0] S_jcfg_data;
 	wire        S_jcfg_sof;
 	wire        S_jcfg_last;
+	wire        S_jcfg_r_ready;      // ★ 也要前置声明 (原声明在 dbuf 段, 会隐式声明成 1bit)
 
 	yuv32_to_quad X_jcfg (
 		.r_clk   (S_pclkx1          ),
@@ -775,11 +787,8 @@ wire [7:0]  S_dbg_jb;
 	reg         S_mrg_busy_d = 1'b0;
 	wire        S_mrg_start  = S_jpeg_busy[0] & ~S_mrg_busy_d;   // 帧开始脉冲 (引擎0 进帧)
 
-	wire        S_enc_flush;                 // 看门狗: 复位 FIFO + 编码器
-	wire        S_enc_soft;
-	reg         S_enc_done_tgl = 1'b0;       // 完成标志跑回 s_clk 用 (翻转同步)
-	reg         S_enc_busy_f   = 1'b0;       // s_clk: 已放行一帧未完成
-	reg         S_enc_gate_r   = 1'b0;
+	// (S_enc_flush / S_enc_soft / S_enc_done_tgl / S_enc_busy_f / S_enc_gate_r
+	//  已前置声明在编码器时钟段之前, 勿重复声明)
 	reg  [2:0]  S_enc_done_s   = 3'b000;
 	wire        S_enc_done_pls = S_enc_done_s[2] ^ S_enc_done_s[1];
 	reg  [23:0] S_enc_wd       = 24'd0;      // 卡死看门狗计数
@@ -2261,7 +2270,6 @@ X_ui_setvbuf
 //   NV16: tready 仍按 VTC 消隐 + packer 反压
 //   JPEG: tready 交给 yuv32_to_quad 的 FIFO —— 编码器慢就撑住当前帧,
 //         写侧继续用另外两帧 -> 丢整帧不丢行
-wire        S_jcfg_r_ready;
 wire        S_ud_rtready = S_jpeg_tx_sel ? S_jcfg_r_ready
                                         : (S_vtc_de_valid & S_dsi_pack_tready);
 
