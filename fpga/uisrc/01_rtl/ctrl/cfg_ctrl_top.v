@@ -162,7 +162,16 @@ module cfg_ctrl_top #(
 	//                     jpeg_byte_bridge -> csi2_frame_tx_var -> D-PHY TX。
 	//               寄存器: 0x0B[0] 锁死 1 (JPEG), 0x0B[1] 锁死 0 (DT 仍为
 	//                       0x1E, rkcif 没有 JPEG 支持), 0x0B[2] JPAD 默认 0。
-	parameter [15:0] CFG_VER  = 16'h5100
+	//     0x5101 = V51b (2026-10-28): **修段合并选择器的单向锁存**
+	//               板上 0x5100 实测: 引擎0 diag=0x1442 (T_HDR, m_ready=0)、
+	//               引擎3 diag=0x1167 (T_NEXT, huff_run=1, bp_ok=0),
+	//               6 次采样 3 秒内完全一致 = 硬冻结; 看门狗 9/s 响但救不活。
+	//               根因: jpeg_seg_merge4.sel 只在引擎0 busy 上升沿归零,
+	//                     看门狗软复位后 busy 没有下降沿 -> sel 卡在 1/2 永不归零
+	//                     -> 引擎0 没被选中 -> 帧头吐不出 -> 段完不成 -> 死锁。
+	//               修法: 软复位释放那一拍也强制 i_start (sel 归零 + done_p 清空)。
+	//               诊断: 0xA5/0xA6 改为 {encif_full[3:0], jcfg_consume, mrg_segc[9:0]}。
+	parameter [15:0] CFG_VER  = 16'h5101
 )(
 	// ---- 系统时钟域 (25MHz 常开) ----
 	input  wire        i_sys_clk,

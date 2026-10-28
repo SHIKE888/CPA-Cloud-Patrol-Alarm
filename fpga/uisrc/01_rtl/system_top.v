@@ -826,7 +826,30 @@ wire [7:0]  S_dbg_jb;
 	wire [31:0] S_jm_d_pack = { S_jm_d[3], S_jm_d[2], S_jm_d[1], S_jm_d[0] };
 	wire [9:0]  S_mrg_segc;
 	reg         S_mrg_busy_d = 1'b0;
-	wire        S_mrg_start  = S_jpeg_busy[0] & ~S_mrg_busy_d;   // 帧开始脉冲 (引擎0 进帧)
+	reg         S_enc_soft_d = 1'b0;   // V51b: 软复位释放沿检测
+	//==========================================================================
+	//  ★★ 2026-10-28 V51b: 修段合并选择器的单向锁存 (板上硬冻结的根因)
+	//
+	//  板上现象 (0x5100, 6 次采样 3 秒内完全一致):
+	//    引擎0 diag = 0x1442  -> tstate=T_HDR(2), lb_avail=1, bp_ok=1, m_ready=0
+	//    引擎3 diag = 0x1167  -> tstate=T_NEXT(7), pend=2, huff_run=1, bp_ok=0
+	//    两路 m_ready 都是 0 => sel 既不是 0 也不是 3 (卡在 1 或 2)
+	//    S_enc_stall 每 ~114ms +1 (看门狗在响) 但状态纹丝不动
+	//
+	//  根因: jpeg_seg_merge4 的 sel 只在 i_start 时归零, 而
+	//        i_start = (引擎0 busy 的上升沿)。
+	//        看门狗软复位引擎0 后, 若 st_busy 没有产生下降沿, 就再也不会
+	//        有上升沿 => sel 一卡住就永不归零:
+	//          引擎0 在 T_HDR 等 hdr_done, 但没被选中 => m_ready=0
+	//          => 帧头吐不出去 => 段永远完不成 => sel 永不前进 => 死锁。
+	//
+	//  修法: 看门狗软复位**释放那一拍**也强制 i_start, 让 sel 归零、done_p 清空,
+	//        与引擎的复位同步重来。这样看门狗才真正起到"复位救活"的作用。
+	//  ⚠ 必须在这两个 wire 被使用 (X_jmrg 例化) 之前声明, 否则会被 Verilog
+	//    隐式声明成 1bit wire —— 这个坑本工程踩过多次。
+	//==========================================================================
+	wire        S_enc_rst_rel = S_enc_soft_d & ~S_enc_soft;   // 软复位释放拍
+	wire        S_mrg_start   = (S_jpeg_busy[0] & ~S_mrg_busy_d) | S_enc_rst_rel;
 
 	// (S_enc_flush / S_enc_soft / S_enc_done_tgl / S_enc_busy_f / S_enc_gate_r
 	//  已前置声明在编码器时钟段之前, 勿重复声明)
@@ -906,7 +929,23 @@ wire [7:0]  S_dbg_jb;
 	assign S_enc_flush = (S_enc_wdc != 6'd0);
 	assign S_enc_soft  = (S_enc_wdc > 6'd16);
 
-	assign S_dbg_jpeg = {S_enc_stall, (|(S_enc_ovf[0] | S_enc_ovf[1] | S_enc_ovf[2] | S_enc_ovf[3]))};
+	//==========================================================================
+	//  0xA3~0xA6 = 32 位, 拆成两半用:
+	//    [15:0] = {S_enc_stall[15:0], 溢出标志}   —— 看门狗触发次数 (低 16 位)
+	//    [31:16] = {S_encif_full[3:0], S_jcfg_consume, S_mrg_segc[9:0]}
+	//
+	//  V51b 为什么要看这两组:
+	//    S_mrg_segc    = 段合并器已经切过的段数。它一直不动 => sel 卡死;
+	//                    它在涨 => 合并其实在跑, 问题在别处。
+	//    S_encif_full  = 四路 enc_if FIFO 的满标志。若读回 0xF,
+	//                    说明"四路一起断流"这个全局与反压真的发生了 ——
+	//                    此时任何一路卡住都会饿死其余三路, 这是设计级问题,
+	//                    解法是给每路加独立输出 FIFO, 而不是调参数。
+	//    S_jcfg_consume= 上面那个全局与本身。
+	//==========================================================================
+	assign S_dbg_jpeg = { S_encif_full, S_jcfg_consume, S_mrg_segc,
+	                      S_enc_stall[15:0],
+	                      (|(S_enc_ovf[0] | S_enc_ovf[1] | S_enc_ovf[2] | S_enc_ovf[3])) };
 	assign S_dbg_jb   = S_jb_bp[7:0];
 
 	// ★ 2026-10-28 诊断 (0xEE): 帧门控链状态
@@ -1034,8 +1073,13 @@ wire [7:0]  S_dbg_jb;
 
 	// 合并器帧起始脉冲的延迟寄存器 (编码域)
 	always @(posedge S_enc_clk or negedge S_enc_rst_n) begin
-		if (!S_enc_rst_n) S_mrg_busy_d <= 1'b0;
-		else              S_mrg_busy_d <= S_jpeg_busy[0];
+		if (!S_enc_rst_n) begin
+			S_mrg_busy_d <= 1'b0;
+			S_enc_soft_d <= 1'b0;
+		end else begin
+			S_mrg_busy_d <= S_jpeg_busy[0];
+			S_enc_soft_d <= S_enc_soft;
+		end
 	end
 
 	// ---- 两引擎的合成状态 ----

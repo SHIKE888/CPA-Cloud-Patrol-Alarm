@@ -1380,6 +1380,20 @@ html, body{overflow:hidden}
       ctx.restore();
     }
 
+    // 2026-10-28: 手动定初始位姿的两步提示 —— 第一步点在哪个位置要看得见
+    if (S.initPos) {
+      const q = w2s(S.initPos.x, S.initPos.y);
+      ctx.strokeStyle = '#d29922'; ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(q[0] - 12, q[1]); ctx.lineTo(q[0] + 12, q[1]);
+      ctx.moveTo(q[0], q[1] - 12); ctx.lineTo(q[0], q[1] + 12);
+      ctx.stroke();
+      ctx.beginPath(); ctx.arc(q[0], q[1], 14, 0, Math.PI * 2); ctx.stroke();
+      ctx.font = '11px ui-monospace, monospace';
+      ctx.fillStyle = '#d29922';
+      ctx.fillText('车头方向?', q[0] + 16, q[1] - 6);
+    }
+
     const barM = S.scale > 40 ? 1 : S.scale > 12 ? 5 : 10;
     const barPx = barM * S.scale;
     ctx.strokeStyle = '#8b949e'; ctx.fillStyle = '#8b949e'; ctx.lineWidth = 2;
@@ -1551,6 +1565,25 @@ html, body{overflow:hidden}
     topics.goalPub = new ROSLIB.Topic({ ros: ros, name: '/goal_pose', messageType: 'geometry_msgs/PoseStamped' });
     topics.simpleGoalPub = new ROSLIB.Topic({ ros: ros, name: '/move_base_simple/goal', messageType: 'geometry_msgs/PoseStamped' });
     topics.initPub = new ROSLIB.Topic({ ros: ros, name: '/initialpose', messageType: 'geometry_msgs/PoseWithCovarianceStamped' });
+
+    // 2026-10-28: AMCL 自己的位姿估计（/amcl_pose）。
+    //   为什么要它：刚发完 /initialpose 时 TF(map->base_footprint) 必定等于
+    //   刚发的那条（AMCL 把 map->odom 反算成让它相等），所以“看 TF 对不对”
+    //   根本不能判断初始位姿是否跟地图匹配。只有 /amcl_pose 在激光匹配后
+    //   会从初始值被拉走 —— 被拉走多少，就是初始位姿错多少。
+    topics.amcl = new ROSLIB.Topic({
+      ros: ros, name: '/amcl_pose',
+      messageType: 'geometry_msgs/PoseWithCovarianceStamped',
+      throttle_rate: 200, queue_length: 1
+    });
+    topics.amcl.subscribe(function (m) {
+      const p = m.pose.pose.position, q = m.pose.pose.orientation;
+      S.amcl = {
+        x: p.x, y: p.y,
+        yaw: Math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z)),
+        t: Date.now()
+      };
+    });
     topics.cancel = new ROSLIB.Topic({ ros: ros, name: '/move_base/cancel', messageType: 'actionlib_msgs/GoalID' });
     topics.cmdVel = new ROSLIB.Topic({ ros: ros, name: '/cmd_vel', messageType: 'geometry_msgs/Twist' });
 
@@ -1751,6 +1784,78 @@ html, body{overflow:hidden}
   // 原来是个独立按钮「设为建图结束位置」，现在合并进「进入导航」自动执行。
   // 注意不要写成 $('xxx').addEventListener —— 那个按钮已经删了，会 null 报错
   // 把整个脚本的后续初始化全部打断。
+  //
+  // ★ 2026-10-28 修「开始导航后雷达点云和地图错位」：
+  //   start_navigation 只是 roslaunch 把 navigation.launch 拉起来就返回了，
+  //   AMCL 要 5~15 秒才起来订阅 /initialpose。原来这里只发**一次**，
+  //   那一条必然在 AMCL 订阅之前就丢了 => AMCL 用默认位姿(0,0,0)
+  //   => map->odom 错、点云被画到错误的地图位置。
+  //   现在：每 500ms 重发，直到 /relay/robot_pose 回到目标位姿附近
+  //   （0.25m / 0.15rad）或超时 20 秒。对齐后立刻停，不会干扰后续运动。
+  let initTimer = null;
+  function angDiff(a, b) {
+    let d = (a - b) % (Math.PI * 2);
+    if (d > Math.PI) d -= Math.PI * 2;
+    if (d < -Math.PI) d += Math.PI * 2;
+    return Math.abs(d);
+  }
+  // 2026-10-28 第二版：判断"初始位姿到底匹配没匹配"不能用 TF。
+  //   发完 /initialpose 后 TF(map->base_footprint) 必定等于刚发的那条
+  //   （AMCL 是反算 map->odom 让它相等的），所以看 TF 永远是"已对齐"。
+  //   只有 /amcl_pose（激光匹配之后的估计）会被拉走，拉走多远就是初始位姿错多少。
+  //
+  // 流程：
+  //   阶段1  每 500ms 发一次 /initialpose（tight 协方差），直到 /amcl_pose 有新鲜数据
+  //          （AMCL 起来之前发的都会丢）。
+  //   阶段2  停发，观察 2.5s，看 /amcl_pose 相对目标被拉走多少：
+  //            <0.30m 且 <10°  -> 匹配，收工
+  //            否则            -> 明确告诉用户错多少，让用右键点车真实位置/朝向
+  function startInitPoseRetry(x, y, yaw) {
+    if (initTimer) { clearInterval(initTimer); initTimer = null; }
+    let n = 0, phase1 = 0;
+    const P1_MAX = 40;                // 40 x 500ms = 20s 等 AMCL 起来
+    $('stMode').textContent = '导航（等 AMCL 起来…）';
+    initTimer = setInterval(function () {
+      n++;
+      if (phase1 === 0) {
+        const fresh = S.amcl && (Date.now() - S.amcl.t) < 1500;
+        if (!fresh && n < P1_MAX) {
+          sendInitialPose(x, y, yaw, true);
+          return;
+        }
+        phase1 = 1;
+        // 发最后一条后就进观察期
+        sendInitialPose(x, y, yaw, true);
+        if (!fresh) {
+          // AMCL 根本没起来（没有 /amcl_pose）：地图能看到但定位栈没跑
+          clearInterval(initTimer); initTimer = null;
+          $('stMode').textContent = '导航';
+          toast('等 20s 没等到 /amcl_pose（AMCL 没起来？），点云对不齐是正常的', true);
+          return;
+        }
+        setTimeout(function () {
+          // 观察期结束，看 AMCL 被拉走多少
+          if (phase1 !== 1) return;
+          clearInterval(initTimer); initTimer = null;
+          $('stMode').textContent = '导航';
+          const a = S.amcl;
+          if (!a) return;
+          const dx = a.x - x, dy = a.y - y;
+          const dpos = Math.hypot(dx, dy);
+          const dyaw = angDiff(a.yaw, yaw) * 57.2958;
+          if (dpos < 0.30 && dyaw < 10) {
+            toast('初始位姿与地图匹配（偏差 ' + dpos.toFixed(2) + 'm / ' +
+                  dyaw.toFixed(0) + '°）');
+          } else {
+            toast('初始位姿和地图对不上：AMCL 拉走 ' + dpos.toFixed(2) + 'm / ' +
+                  dyaw.toFixed(0) + '°，请右键点小车真实位置并朝车头方向', true);
+          }
+        }, 2500);
+        return;
+      }
+    }, 500);
+  }
+
   function applyLastPose() {
     callSrv('last_pose', function (res) {
       if (!res.success) {
@@ -1760,9 +1865,9 @@ html, body{overflow:hidden}
       try {
         const st = JSON.parse(res.message);
         if (!st.pose) { toast('保存时没取到位姿', true); return; }
-        sendInitialPose(st.pose.x, st.pose.y, st.pose.yaw);
-        toast('已用建图结束位置设初始位姿 (' +
-          st.pose.x.toFixed(2) + ', ' + st.pose.y.toFixed(2) + ')');
+        startInitPoseRetry(st.pose.x, st.pose.y, st.pose.yaw);
+        toast('正在用建图结束位置对齐初始位姿 (' +
+          st.pose.x.toFixed(2) + ', ' + st.pose.y.toFixed(2) + ')，等 AMCL 起来…');
       } catch (e) { toast('解析位姿失败', true); }
     });
   }
@@ -1828,9 +1933,13 @@ html, body{overflow:hidden}
     draw();
   }
 
-  function sendInitialPose(x, y, yaw) {
+  function sendInitialPose(x, y, yaw, tight) {
     if (!topics.initPub) return;
     const h = (yaw || 0) / 2;
+    // tight=true 时给更小的协方差，告诉 AMCL“我对这个初始位姿很有把握”，
+    // 防止它在长廊/对称场景里跳到 180° 反方向的那个假设上去。
+    const sxy = tight ? 0.05 : 0.25;      // 方差 (m^2)
+    const syaw = tight ? 0.02 : 0.0685;   // 方差 (rad^2)
     topics.initPub.publish(new ROSLIB.Message({
       header: { frame_id: 'map', stamp: { secs: 0, nsecs: 0 } },
       pose: {
@@ -1838,12 +1947,12 @@ html, body{overflow:hidden}
           position: { x: x, y: y, z: 0 },
           orientation: { x: 0, y: 0, z: Math.sin(h), w: Math.cos(h) }
         },
-        covariance: [0.25, 0, 0, 0, 0, 0,
-                     0, 0.25, 0, 0, 0, 0,
+        covariance: [sxy, 0, 0, 0, 0, 0,
+                     0, sxy, 0, 0, 0, 0,
                      0, 0, 0, 0, 0, 0,
                      0, 0, 0, 0, 0, 0,
                      0, 0, 0, 0, 0, 0,
-                     0, 0, 0, 0, 0, 0.0685]
+                     0, 0, 0, 0, 0, syaw]
       }
     }));
   }
@@ -1871,8 +1980,32 @@ html, body{overflow:hidden}
     if (!connected) return;
     const r = cv.getBoundingClientRect();
     const w = s2w(e.clientX - r.left, e.clientY - r.top);
-    sendInitialPose(w[0], w[1], S.pose ? S.pose.yaw : 0);
-    toast('已下发初始位姿 (' + w[0].toFixed(2) + ', ' + w[1].toFixed(2) + ')');
+    // 用户手动指定位姿 = 覆盖自动对齐：把「进入导航」时的重发循环停掉，
+    // 否则两边每 500ms 抢着发 /initialpose，位姿会被来回拽。
+    if (initTimer) { clearInterval(initTimer); initTimer = null; }
+
+    // 2026-10-28: 两步定姿态 —— 只用位置点不够，朝向反了（180°）怎么点都对不齐。
+    //   第一下：定位置；第二下：点车头方向（由两点连线的角度算出 yaw）。
+    if (S.initPos) {
+      const dx = w[0] - S.initPos.x, dy = w[1] - S.initPos.y;
+      if (Math.hypot(dx, dy) < 0.10) {
+        toast('车头点得太近，往车头方向再点远一点', true);
+        return;
+      }
+      const yaw = Math.atan2(dy, dx);
+      sendInitialPose(S.initPos.x, S.initPos.y, yaw, true);
+      toast('初始位姿 ← (' + S.initPos.x.toFixed(2) + ', ' +
+            S.initPos.y.toFixed(2) + ')  朝向 ' + (yaw * 57.2958).toFixed(0) + '°');
+      S.initPos = null;
+      $('stMode').textContent = '导航';
+      draw();
+      return;
+    }
+    S.initPos = { x: w[0], y: w[1] };
+    $('stMode').textContent = '导航（定朝向：再右键点车头方向）';
+    toast('位置已定 (' + w[0].toFixed(2) + ', ' + w[1].toFixed(2) +
+          ')，请在车头方向上再右键点一下');
+    draw();
   });
 
   cv.addEventListener('wheel', function (e) {
