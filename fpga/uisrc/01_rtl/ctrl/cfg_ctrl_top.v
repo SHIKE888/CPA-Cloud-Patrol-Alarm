@@ -136,7 +136,13 @@ module cfg_ctrl_top #(
 	//               用途: 判定板上 MIPI_CSI2 的 CRC 满屏到底是 TX 链路问题还是上游。
 	//               ★ 本版不用于验收, 测完必须把
 	//                 system_top.v 的 JPEG_TEST_SRC 置 0 / TX_SRC_SEL 置 2'd0 恢复。
-	parameter [15:0] CFG_VER  = 16'h5001
+	//     0x5002 = V50c 临时构建 (2026-10-28): **LFSR 随机图案压链路**
+	//               0x5001 用棋盘图案时: fps=50.4, frame_id 递增, MIPI_CSI2 错误=0,
+	//               Page fault=0 —— TX/D-PHY/链路在规整图案下完全干净。
+	//               本版把 TPG 改成 32 位 LFSR 伪随机 (最坏跳变), 用来区分:
+	//                 出现 CRC  -> 数据相关的信号完整性余量不足 (降速率/加预加重/查硬件)
+	//                 仍然干净  -> 链路对任意数据都 OK, 问题在 csi2_pack
+	parameter [15:0] CFG_VER  = 16'h5002
 )(
 	// ---- 系统时钟域 (25MHz 常开) ----
 	input  wire        i_sys_clk,

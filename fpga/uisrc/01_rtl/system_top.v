@@ -2779,7 +2779,8 @@ csi2_test_src #(
 	.V_ACTIVE	(1080),
 	.BPP_NUM	(2),
 	.BPP_DEN	(1),
-	.MODE		(2),            // 2 = 几何诊断图案(模盘+网格+行号斜坡), 全灰度不受字节序影响
+	.MODE		(1),            // ★ V50c: 1 = 32 位 LFSR 伪随机 (最坏跳变, 压 D-PHY 信号完整性)
+		                        //   棋盘(MODE=2)太规整, 测不出数据相关的 ISI 问题
 	.LFSR_SEED	(32'hDEAD_BEEF)
 ) u_csi2_test_src (
 	.clk			(S_dsi_byte_clk		),
