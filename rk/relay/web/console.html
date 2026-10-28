@@ -49,8 +49,10 @@ body{
     background: #21262d; border: 1px solid #30363d; color: #e6edf3;
     padding: 5px 10px; border-radius: 6px; cursor: pointer; user-select: none;
   }
-#viewMap button:hover{ background: #30363d; }
-#viewMap button:active{ transform: translateY(1px); }
+#viewMap button:not(:disabled):hover{ background: #30363d; }
+#viewMap button:not(:disabled):active{ transform: translateY(1px); }
+/* 置灰态：与视频采集页一致（保存建图 在没开始建图前不可点） */
+#viewMap button:disabled{ opacity: .4; cursor: not-allowed; }
 #viewMap button.primary{ background: #238636; border-color: #2ea043; }
 #viewMap button.danger{ background: #8b2c2c; border-color: #b34242; }
 #viewMap button.warn{ background: #8a6300; border-color: #b8860b; }
@@ -92,6 +94,11 @@ body{
 #viewMap .btnrow{ display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
 #viewMap .btnrow + .btnrow{ margin-top: 8px; }
 #viewMap .btnrow.wide{ grid-template-columns: repeat(2, 1fr); }
+/* 最近保存地图时间：一行小字，右边数值对齐 */
+#viewMap .hint{ display: flex; justify-content: space-between; align-items: baseline;
+    gap: 8px; margin: 9px 0 0; color: var(--dim); font-size: 11.5px; }
+#viewMap .hint b{ color: var(--fg); font-weight: 600; font-variant-numeric: tabular-nums;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* 仪表盘单元：与视频采集页 .metrics 同一套 */
 #viewMap .metrics{ display: grid; grid-template-columns: 1fr 1fr;
     grid-template-rows: 1fr 1fr; gap: 1px;
@@ -998,21 +1005,24 @@ html, body{overflow:hidden}
         <h3>控制</h3>
         <div class="btnrow">
           <button id="btnMapping" class="primary">开始建图</button>
-          <button id="btnSaveMap" class="warn">保存建图</button>
+          <button id="btnSaveMap" class="warn" disabled>保存建图</button>
           <button id="btnNav" class="primary">进入导航</button>
         </div>
+        <!-- 2026-10-28: 六个工具常驻显示（原来是 .navOnly，只在导航模式才出现）；
+             默认选中「无向目标」。是否真能放，由 S.navMode 在鼠标事件里把关。 -->
         <div class="btnrow">
-          <button class="tool navOnly" data-tool="goal" hidden>有向目标</button>
-          <button class="tool navOnly" data-tool="waypoint" hidden>无向目标</button>
-          <button class="tool navOnly" data-tool="pose" hidden>小车位姿</button>
-          <button class="tool navOnly" data-tool="rect" hidden>矩形警戒</button>
-          <button class="tool navOnly" data-tool="circle" hidden>圆形警戒</button>
-          <button class="tool navOnly" data-tool="pan" hidden>平移</button>
+          <button class="tool on" data-tool="waypoint">无向目标</button>
+          <button class="tool" data-tool="goal">有向目标</button>
+          <button class="tool" data-tool="pose">小车位姿</button>
+          <button class="tool" data-tool="rect">矩形警戒</button>
+          <button class="tool" data-tool="circle">圆形警戒</button>
+          <button class="tool" data-tool="pan">平移</button>
         </div>
         <div class="btnrow wide">
           <button id="btnCancelGoal" class="danger">清除目标</button>
           <button id="btnStopAll">停止全部</button>
         </div>
+        <div class="hint"><span>最近保存地图</span><b id="stMapSave">—</b></div>
       </section>
 
       <section>
@@ -1133,6 +1143,7 @@ html, body{overflow:hidden}
     baseLaser: { x: 0.12, y: 0.0, yaw: -Math.PI / 2 }, // 兜底：本车实测值
     bounds: null,                                   // 已建图区域（格坐标）
     follow: false,
+    placePrev: null,                                // 拖动中的橡皮筋 {tool,x0,y0,x1,y1}
     sceneRev: 0                                     // 静态层失效计数（地图/路径/视图变更时 ++）
   };
 
@@ -1363,6 +1374,13 @@ html, body{overflow:hidden}
       ctx.moveTo(g[0], g[1] - 9); ctx.lineTo(g[0], g[1] + 9);
       ctx.stroke();
       ctx.beginPath(); ctx.arc(g[0], g[1], 11, 0, Math.PI * 2); ctx.stroke();
+      // 有向目标：把朝向画出来，否则看不出它是“有向”的
+      if (S.goal.yaw !== null && S.goal.yaw !== undefined) {
+        ctx.beginPath();
+        ctx.moveTo(g[0], g[1]);
+        ctx.lineTo(g[0] + 26 * Math.cos(S.goal.yaw), g[1] - 26 * Math.sin(S.goal.yaw));
+        ctx.stroke();
+      }
     }
 
     if (S.pose) {
@@ -1380,18 +1398,28 @@ html, body{overflow:hidden}
       ctx.restore();
     }
 
-    // 2026-10-28: 手动定初始位姿的两步提示 —— 第一步点在哪个位置要看得见
-    if (S.initPos) {
-      const q = w2s(S.initPos.x, S.initPos.y);
-      ctx.strokeStyle = '#d29922'; ctx.lineWidth = 2;
+    // 2026-10-28: 拖动中的橡皮筋（有向目标 / 小车位姿）
+    //   起点 = 目标点/车的位置，箭头方向 = 将要下发的朝向；鼠标一动就跟着走。
+    //   不走 sceneRev（静态层不需要重建），直接在本帧的动态层上画。
+    if (S.placePrev) {
+      const pv = S.placePrev;
+      const a = w2s(pv.x0, pv.y0), b = w2s(pv.x1, pv.y1);
+      const col = pv.tool === 'goal' ? '#f0883e' : '#d29922';
+      ctx.strokeStyle = col; ctx.fillStyle = col; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(a[0], a[1], 6, 0, Math.PI * 2); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke();
+      const angS = Math.atan2(b[1] - a[1], b[0] - a[0]);   // 屏幕坐标系（y 向下）
       ctx.beginPath();
-      ctx.moveTo(q[0] - 12, q[1]); ctx.lineTo(q[0] + 12, q[1]);
-      ctx.moveTo(q[0], q[1] - 12); ctx.lineTo(q[0], q[1] + 12);
-      ctx.stroke();
-      ctx.beginPath(); ctx.arc(q[0], q[1], 14, 0, Math.PI * 2); ctx.stroke();
+      ctx.moveTo(b[0], b[1]);
+      ctx.lineTo(b[0] - 12 * Math.cos(angS - 0.38), b[1] - 12 * Math.sin(angS - 0.38));
+      ctx.lineTo(b[0] - 12 * Math.cos(angS + 0.38), b[1] - 12 * Math.sin(angS + 0.38));
+      ctx.closePath(); ctx.fill();
+      // 角度/长度用世界坐标算（y 向上），和真正下发的 yaw 一致
+      const yawW = Math.atan2(pv.y1 - pv.y0, pv.x1 - pv.x0);
+      const dW = Math.hypot(pv.x1 - pv.x0, pv.y1 - pv.y0);
       ctx.font = '11px ui-monospace, monospace';
-      ctx.fillStyle = '#d29922';
-      ctx.fillText('车头方向?', q[0] + 16, q[1] - 6);
+      ctx.fillText((yawW * 57.2958).toFixed(0) + '° / ' + dW.toFixed(2) + ' m',
+                   b[0] + 10, b[1] - 8);
     }
 
     const barM = S.scale > 40 ? 1 : S.scale > 12 ? 5 : 10;
@@ -1410,6 +1438,7 @@ html, body{overflow:hidden}
     ros = null; connected = false;
     elDot.classList.remove('on');
     $('st').textContent = '未连接';
+    if ($('stMapSave')) $('stMapSave').textContent = '—';
   }
 
   function connect() {
@@ -1425,6 +1454,7 @@ html, body{overflow:hidden}
       $('st').textContent = '已连接';
       toast('已连接 ' + url);
       subscribe();
+      refreshMapSaveTime();          // 把「最近保存地图」时间拉回来（上次保存可能早于本次开页）
     });
     ros.on('error', function (e) {
       $('st').textContent = '错误';
@@ -1837,9 +1867,12 @@ html, body{overflow:hidden}
     S.mapBase = null;          // 新图：地图身份要重新取，别拿旧图的位姿记忆去对齐
     S.sceneRev++;
     $('stMap').textContent = '重新建图中…';
+    // 只有已经开始建图，才允许「保存建图」
+    setSaveMapEnabled(true);
     drawNow();
     callSrv('start_mapping', function (res) {
       if (res.success) $('stMode').textContent = '建图';
+      else setSaveMapEnabled(false);
     });
     setNavUI(false);          // 回建图模式，收起导航工具栏
   });
@@ -1851,12 +1884,16 @@ html, body{overflow:hidden}
       // 记忆，于是回到“第一次用建图结束位置对齐”。旧图的那条记忆留着不删，
       // 万一以后又用回旧地图，还能直接用。
       S.mapBase = null;
+      // 保存成功 -> 刷新“最近保存地图时间”（用服务端时间，不信本机时钟）
+      refreshMapSaveTime();
     });
   });
   $('btnNav').addEventListener('click', function () {
     callSrv('start_navigation', function (res) {
       if (!res.success) return;
       $('stMode').textContent = '导航';
+      // 已经不在建图模式了，地图也不能再“保存” -> 置灰，回到必须重新开始建图才能保存
+      setSaveMapEnabled(false);
       // 进入导航就把「建图结束位置」隐式设为初始位姿，不再单独放按钮
       applyLastPose();
       setNavUI(true);
@@ -1892,7 +1929,7 @@ html, body{overflow:hidden}
   //          （AMCL 起来之前发的都会丢）。
   //   阶段2  停发，观察 2.5s，看 /amcl_pose 相对目标被拉走多少：
   //            <0.30m 且 <10°  -> 匹配，收工
-  //            否则            -> 明确告诉用户错多少，让用右键点车真实位置/朝向
+  //            否则            -> 明确告诉用户错多少，让用「小车位姿」重新指定
   function startInitPoseRetry(x, y, yaw) {
     if (initTimer) { clearInterval(initTimer); initTimer = null; }
     let n = 0, phase1 = 0;
@@ -1931,7 +1968,7 @@ html, body{overflow:hidden}
                   dyaw.toFixed(0) + '°）');
           } else {
             toast('初始位姿和地图对不上：AMCL 拉走 ' + dpos.toFixed(2) + 'm / ' +
-                  dyaw.toFixed(0) + '°，请右键点小车真实位置并朝车头方向', true);
+                  dyaw.toFixed(0) + '°，请选「小车位姿」工具，从车的实际位置按住左键拖向车头', true);
           }
         }, 2500);
         return;
@@ -1974,17 +2011,48 @@ html, body{overflow:hidden}
   // 建图时左键乱点就发导航目标是非常危险的，所以要用工具显式切换。
   function setNavUI(on) {
     S.navMode = !!on;
-    const els = document.querySelectorAll('.navOnly');
-    for (let i = 0; i < els.length; i++) els[i].hidden = !on;
-    if (on) {
-      selectTool('goal');
-    } else {
-      selectTool(null);
-      S.waypoints = [];
-      S.zones = [];
-    }
+    // 2026-10-28: 六个工具按钮改成常驻显示（去掉 .navOnly），不再随模式隐藏/显示。
+    // 是否真能放目标/位姿，由 S.navMode 在鼠标事件里把关：建图模式下点了
+    // 只会提示“先进入导航”，不会真发 /goal_pose。/goal_pose。
+    if (!on) { S.waypoints = []; S.zones = []; }
+    selectTool('waypoint');       // 默认「无向目标」
     S.sceneRev++;
     draw();
+  }
+
+  // 保存建图 的门禁：没点过「开始建图」不让点（置灰）
+  function setSaveMapEnabled(on) {
+    const b = $('btnSaveMap');
+    if (b) b.disabled = !on;
+  }
+
+  // 最近保存地图时间：数据源是 relay 的 last_pose 状态文件（save_map 时写入的 time）
+  function fmtMapTime(sec) {
+    if (!sec) return '';
+    const d = new Date(sec * 1000);
+    const p = function (n) { return (n < 10 ? '0' : '') + n; };
+    const today = new Date();
+    const sameDay = d.getFullYear() === today.getFullYear() &&
+                    d.getMonth() === today.getMonth() &&
+                    d.getDate() === today.getDate();
+    const hm = p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+    return sameDay ? hm : (d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + hm;
+  }
+  function refreshMapSaveTime() {
+    const el = $('stMapSave');
+    if (!el) return;
+    if (!connected) { el.textContent = '—'; return; }
+    // last_pose 在还没保存过图时 success=false，不能当错误报
+    const srv = new ROSLIB.Service({
+      ros: ros, name: '/relay/last_pose', serviceType: 'std_srvs/Trigger'
+    });
+    srv.callService(new ROSLIB.ServiceRequest({}), function (res) {
+      let st = null;
+      try { st = JSON.parse(res.message); } catch (e) { st = null; }
+      if (!res.success || !st || !st.time) { el.textContent = '—（还没保存过）'; return; }
+      el.textContent = fmtMapTime(st.time);
+      el.title = (st.map_base || '') + '.yaml';
+    }, function () { el.textContent = '—'; });
   }
 
   function selectTool(name) {
@@ -2002,6 +2070,7 @@ html, body{overflow:hidden}
         selectTool(this.getAttribute('data-tool'));
       });
     }
+    selectTool('waypoint');        // 默认「无向目标」
   })();
 
   $('btnCancelGoal').addEventListener('click', function () {
@@ -2020,18 +2089,27 @@ html, body{overflow:hidden}
     toast('已取消导航目标');
   });
 
-  function sendGoal(x, y) {
+  function sendGoal(x, y, yaw) {
     if (!connected) { toast('未连接', true); return; }
     if (!topics.goalPub) return;
+    // yaw 不传 = 「无向目标」(orientation 保持 w=1，朝向交给规划器)；
+    // yaw 传了 = 「有向目标」，把拖出来的方向直接塞进 goal 的 orientation。
+    const hasYaw = (yaw !== undefined && yaw !== null);
+    const h = hasYaw ? yaw / 2 : 0;
     const msg = new ROSLIB.Message({
       header: { frame_id: 'map', stamp: { secs: 0, nsecs: 0 } },
-      pose: { position: { x: x, y: y, z: 0 }, orientation: { x: 0, y: 0, z: 0, w: 1 } }
+      pose: {
+        position: { x: x, y: y, z: 0 },
+        orientation: { x: 0, y: 0, z: Math.sin(h), w: Math.cos(h) }
+      }
     });
     topics.goalPub.publish(msg);
     if (topics.simpleGoalPub) topics.simpleGoalPub.publish(msg);
-    S.goal = { x: x, y: y };
-    $('stGoal').textContent = x.toFixed(2) + ', ' + y.toFixed(2);
-    toast('/goal_pose ← (' + x.toFixed(2) + ', ' + y.toFixed(2) + ')');
+    S.goal = { x: x, y: y, yaw: hasYaw ? yaw : null };
+    $('stGoal').textContent = x.toFixed(2) + ', ' + y.toFixed(2) +
+      (hasYaw ? ' @ ' + (yaw * 57.2958).toFixed(0) + '°' : '');
+    toast('/goal_pose ← (' + x.toFixed(2) + ', ' + y.toFixed(2) + ')' +
+          (hasYaw ? '  朝向 ' + (yaw * 57.2958).toFixed(0) + '°' : '  无向'));
     draw();
   }
 
@@ -2059,56 +2137,125 @@ html, body{overflow:hidden}
     }));
   }
 
+  // ── 鼠标交互（2026-10-28 按需求重写）──────────────────────────────
+  //   · 右键不再放置任何东西（原来右键两步定「小车位姿」的流程整个删掉）
+  //   · 无向目标：左键**单击**就放点；拖动超过 4px 当作平移地图，松手不放
+  //   · 有向目标：必须「左键按下 + 拖动」——拖出去的方向就是目标朝向，
+  //               只单击一下不放（提示一下），避免误发一个朝向失控的目标
+  //   · 小车位姿：同有向目标，按下点 = 车的位置，拖向车头
+  //   · 平移：选「平移」工具，或直接中键/右键/按住 Shift 拖
   let drag = null;
-  cv.addEventListener('mousedown', function (e) {
-    if (e.button === 0 && !e.shiftKey) {
-      const r = cv.getBoundingClientRect();
-      const w = s2w(e.clientX - r.left, e.clientY - r.top);
-      sendGoal(w[0], w[1]);
-    }
-    S.follow = false; $('follow').checked = false;
-    drag = { x: e.clientX, y: e.clientY, ox: S.ox, oy: S.oy };
-  });
-  cv.addEventListener('mousemove', function (e) {
-    if (!drag) return;
-    S.ox = drag.ox + (e.clientX - drag.x);
-    S.oy = drag.oy - (e.clientY - drag.y);
-    draw();
-  });
-  window.addEventListener('mouseup', function () { drag = null; });
+  const CLICK_PX = 4;        // 位移小于它算“单击”，大于算“拖动”
 
-  cv.addEventListener('contextmenu', function (e) {
-    e.preventDefault();
-    if (!connected) return;
+  function evW(e) {
     const r = cv.getBoundingClientRect();
-    const w = s2w(e.clientX - r.left, e.clientY - r.top);
-    // 用户手动指定位姿 = 覆盖自动对齐：把「进入导航」时的重发循环停掉，
-    // 否则两边每 500ms 抢着发 /initialpose，位姿会被来回拽。
-    if (initTimer) { clearInterval(initTimer); initTimer = null; }
+    return s2w(e.clientX - r.left, e.clientY - r.top);
+  }
 
-    // 2026-10-28: 两步定姿态 —— 只用位置点不够，朝向反了（180°）怎么点都对不齐。
-    //   第一下：定位置；第二下：点车头方向（由两点连线的角度算出 yaw）。
-    if (S.initPos) {
-      const dx = w[0] - S.initPos.x, dy = w[1] - S.initPos.y;
-      if (Math.hypot(dx, dy) < 0.10) {
-        toast('车头点得太近，往车头方向再点远一点', true);
-        return;
-      }
-      const yaw = Math.atan2(dy, dx);
-      sendInitialPose(S.initPos.x, S.initPos.y, yaw, true);
-      toast('初始位姿 ← (' + S.initPos.x.toFixed(2) + ', ' +
-            S.initPos.y.toFixed(2) + ')  朝向 ' + (yaw * 57.2958).toFixed(0) + '°');
-      S.initPos = null;
-      $('stMode').textContent = '导航';
+  // 所有“平移地图”的入口都走这里。只有真去拽地图才关掉「跟随」——
+  // 放个目标点不应该把跟随也关掉。
+  function startPan(e, extra) {
+    S.follow = false; $('follow').checked = false;
+    drag = Object.assign({ pan: true, x: e.clientX, y: e.clientY,
+                           ox: S.ox, oy: S.oy }, extra || {});
+  }
+
+  cv.addEventListener('mousedown', function (e) {
+    const w = evW(e);
+
+    // 非左键 / 按住 Shift：一律平移
+    if (e.button !== 0 || e.shiftKey) { startPan(e); return; }
+
+    const tool = S.tool || 'waypoint';
+
+    if (tool === 'goal' || tool === 'pose') {
+      // 必须拖动才落地：先记住起点，mousemove 画橡皮筋，mouseup 才真正下发
+      drag = { place: tool, x: e.clientX, y: e.clientY, w0: w };
+      S.placePrev = { tool: tool, x0: w[0], y0: w[1], x1: w[0], y1: w[1] };
       draw();
       return;
     }
-    S.initPos = { x: w[0], y: w[1] };
-    $('stMode').textContent = '导航（定朝向：再右键点车头方向）';
-    toast('位置已定 (' + w[0].toFixed(2) + ', ' + w[1].toFixed(2) +
-          ')，请在车头方向上再右键点一下');
+
+    if (tool === 'rect' || tool === 'circle') {
+      toast('「' + (tool === 'rect' ? '矩形' : '圆形') + '警戒」还没实现，先别选它', true);
+      startPan(e);
+      return;
+    }
+
+    if (tool === 'waypoint') {
+      // 单击放点 / 拖动平移，靠位移在 mouseup 时决定
+      startPan(e, { click: 'waypoint', w0: w, moved: 0 });
+      return;
+    }
+
+    // 平移工具（及其它未知工具）：纯平移
+    startPan(e);
+  });
+
+  cv.addEventListener('mousemove', function (e) {
+    if (!drag) return;
+    if (drag.place) {
+      const w = evW(e);
+      S.placePrev = { tool: drag.place, x0: drag.w0[0], y0: drag.w0[1],
+                      x1: w[0], y1: w[1] };
+      draw();
+      return;
+    }
+    const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+    if (drag.click) {
+      drag.moved = Math.max(drag.moved, Math.hypot(dx, dy));
+      // 没过阈值就先不动地图：否则“单击”的落点会跟按下时的点差几像素
+      if (drag.moved < CLICK_PX) return;
+    }
+    S.ox = drag.ox + dx;
+    S.oy = drag.oy - dy;
     draw();
   });
+
+  window.addEventListener('mouseup', function (e) {
+    const d = drag; drag = null;
+    if (!d) return;
+
+    if (d.place) {
+      const wEnd = evW(e);
+      const dx = wEnd[0] - d.w0[0], dy = wEnd[1] - d.w0[1];
+      const dist = Math.hypot(dx, dy);
+      S.placePrev = null;
+      const name = d.place === 'goal' ? '有向目标' : '小车位姿';
+      if (!S.navMode) {
+        toast('建图模式下不放点，先点「进入导航」', true);
+        draw(); return;
+      }
+      if (!connected) { toast('未连接', true); draw(); return; }
+      // 拖得太短 = 方向没意义。宁可不放，也不要发一个随机朝向出去
+      if (dist < 0.08) {
+        toast(name + '要按住左键从起点拖向朝向，这次拖得太短（' +
+              dist.toFixed(2) + ' m），没放置', true);
+        draw(); return;
+      }
+      const yaw = Math.atan2(dy, dx);
+      if (d.place === 'goal') {
+        sendGoal(d.w0[0], d.w0[1], yaw);
+      } else {
+        // 手动指定位姿 = 覆盖自动对齐：把「进入导航」时的重发循环停掉，
+        // 否则两边每 500ms 抢着发 /initialpose，位姿会被来回拽。
+        if (initTimer) { clearInterval(initTimer); initTimer = null; }
+        sendInitialPose(d.w0[0], d.w0[1], yaw, true);
+        toast('初始位姿 ← (' + d.w0[0].toFixed(2) + ', ' + d.w0[1].toFixed(2) +
+              ')  朝向 ' + (yaw * 57.2958).toFixed(0) + '°');
+      }
+      draw();
+      return;
+    }
+
+    if (d.click === 'waypoint' && d.moved < CLICK_PX) {
+      if (!S.navMode) { toast('建图模式下不放点，先点「进入导航」', true); return; }
+      sendGoal(d.w0[0], d.w0[1]);
+    }
+  });
+
+  // 右键只吞掉浏览器菜单，不放置任何东西
+  cv.addEventListener('contextmenu', function (e) { e.preventDefault(); });
 
   cv.addEventListener('wheel', function (e) {
     e.preventDefault();
