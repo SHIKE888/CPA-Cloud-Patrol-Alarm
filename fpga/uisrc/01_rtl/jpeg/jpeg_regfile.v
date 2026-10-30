@@ -244,7 +244,13 @@ module jpeg_regfile #(
     //   0x0C~0x0F = {flag, B, G, R}   (rgb2yuv 的输入 pix0)
     //   0xFC~0xFF = {Cr, Y1, Cb, Y0}  (rgb2yuv 的输出 pair0)
     input  wire [31:0]  I_dbg_rgbin,
-    input  wire [31:0]  I_dbg_yuvout);
+    input  wire [31:0]  I_dbg_yuvout,
+
+    // V54i 诊断: cam0(右路) 从掉线恢复的次数 (dual_stitch 的 st_r_starve)
+    //   0xCA/0xCB = 低/高字节。左路对应值已经是 0xE2 (=st_l_starve[7:0])。
+    //   右半幅黑时: 这个计数持续增长 => cam0 确实没有像素进拼接器;
+    //                计数不动       => cam0 数据正常, 黑是 JPEG 侧的事。
+    input  wire [15:0]  I_dbg_cam0_starve);
 
     // ---------------------------------------------------------------- 控制寄存器
     reg        r_lossless;
@@ -581,6 +587,9 @@ module jpeg_regfile #(
             8'hFD: O_rd_data <= I_dbg_yuvout[15:8];
             8'hFE: O_rd_data <= I_dbg_yuvout[23:16];
             8'hFF: O_rd_data <= I_dbg_yuvout[31:24];
+            // V54i: cam0 (右路) 掉线恢复次数
+            8'hCA: O_rd_data <= I_dbg_cam0_starve[ 7:0];
+            8'hCB: O_rd_data <= I_dbg_cam0_starve[15:8];
                 8'hF5: O_rd_data <= {4'b0, r_pp_emboss_gain};
                 8'hF6: O_rd_data <= r_pp_emboss_bias;
                 8'hF7: O_rd_data <= 8'h00;      // 锐化已移除

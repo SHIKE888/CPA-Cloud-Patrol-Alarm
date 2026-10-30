@@ -2470,6 +2470,7 @@ cfg_ctrl_top #(
 	.i_st_line_groups ({S_st_r_ovf[7:0], S_st_lines[7:0]}),
 	.i_dbg_rgbin    (S_dbg_rgbin ),
 	.i_dbg_yuvout   (S_dbg_yuvout),
+	.i_dbg_cam0_starve (S_st_r_starve),
 	// 2026-10-28 诊断: JPEG 编码器内部状态 (0xEA~0xEE)
 	//   V48: 4 引擎 -> 只接首段(引擎0)和末段(引擎3), 便于对比
 	.i_diag_enc_l (S_diag_enc[0]),

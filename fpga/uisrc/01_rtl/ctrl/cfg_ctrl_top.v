@@ -279,7 +279,7 @@ module cfg_ctrl_top #(
 	//             而 4 引擎编码一帧要 16.62ms => 输入快 2.6ms, FIFO 必满。
 	//       回退成四路取与(任一路满就停读 dbuf, 数据留在 DDR),
 	//       保留 V54c 的 mux o_ready 修复 + sel 超时兜底。
-	parameter [15:0] CFG_VER = 16'h5405
+	parameter [15:0] CFG_VER = 16'h5406
 )(
 	// ---- 系统时钟域 (25MHz 常开) ----
 	input  wire        i_sys_clk,
@@ -378,6 +378,8 @@ module cfg_ctrl_top #(
 	//   0xFC~0xFF = {out_cr, out_y1, out_cb, out_y0} rgb2yuv 输出 pair0
 	input  wire [31:0] i_dbg_rgbin,
 	input  wire [31:0] i_dbg_yuvout,
+	// V54i 诊断: cam0(右路) 掉线恢复次数 (0xCA/0xCB)
+	input  wire [15:0] i_dbg_cam0_starve,
 	// 2026-10-28 诊断 (临时调试版): JPEG 编码器内部状态 (0xEA~0xEE)
 	input  wire [15:0] i_diag_enc_l,
 	input  wire [15:0] i_diag_enc_r,
@@ -523,17 +525,20 @@ module cfg_ctrl_top #(
 	// V54f 诊断: rgb2yuv 抽头 2 级同步 (S_hs_rx_clk -> i_sys_clk)
 	reg  [31:0] D_in_s1,  D_in_s2;
 	reg  [31:0] D_out_s1, D_out_s2;
+	reg  [15:0] C0ST_s1,  C0ST_s2;
 	always @(posedge i_sys_clk or negedge sys_rst_n) begin
 		if (!sys_rst_n) begin
 			dbg_st_s1 <= 8'd0;  dbg_st_s2 <= 8'd0;
 			lg_st_s1  <= 16'd0; lg_st_s2  <= 16'd0;
 			D_in_s1  <= 32'd0; D_in_s2  <= 32'd0;
 			D_out_s1 <= 32'd0; D_out_s2 <= 32'd0;
+			C0ST_s1  <= 16'd0; C0ST_s2  <= 16'd0;
 		end else begin
 			dbg_st_s1 <= i_dbg_status;      dbg_st_s2 <= dbg_st_s1;
 			lg_st_s1  <= i_st_line_groups;  lg_st_s2  <= lg_st_s1;
 			D_in_s1   <= i_dbg_rgbin;       D_in_s2   <= D_in_s1;
 			D_out_s1  <= i_dbg_yuvout;      D_out_s2  <= D_out_s1;
+			C0ST_s1   <= i_dbg_cam0_starve; C0ST_s2   <= C0ST_s1;
 		end
 	end
 	always @(posedge i_sys_clk or negedge sys_rst_n) begin
@@ -641,6 +646,7 @@ module cfg_ctrl_top #(
           // V54f 诊断: rgb2yuv 抽头
           .I_dbg_rgbin    (D_in_s2),
           .I_dbg_yuvout   (D_out_s2),
+          .I_dbg_cam0_starve(C0ST_s2),
           // 2026-10-20: RX 调试总线 (已 2 级同步到 i_sys_clk)
           // 2026-10-21: 0xD6/D7/D8 固定是 cam0, cam1 固定走 0xDD/DE/DF
           .I_dbg_mipi      (dbg_mipi_s2),
