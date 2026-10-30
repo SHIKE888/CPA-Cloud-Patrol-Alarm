@@ -179,6 +179,14 @@ body{
 #viewMap #dpad .srow b{ font-size: 11px; color: var(--fg); width: 32px; text-align: right;
     font-variant-numeric: tabular-nums; font-weight: 600; }
 /* 巡检选项行（循环巡检按钮本身用 .tool / .on 的统一高亮，不再另写样式） */
+#viewMap .popt2{ display: flex; align-items: center; gap: 6px; color: var(--dim);
+    font-size: 12px; }
+#viewMap .popt2 input{ width: 46px; padding: 3px 6px; font-size: 12px;
+    background: #0d1117; border: 1px solid #30363d; color: #e6edf3;
+    border-radius: 6px; font-family: ui-monospace, monospace; }
+/* 遥控盘左上角的云台雷达 */
+#viewMap #dpad .gzradar{ position: absolute; left: 6px; top: 6px; width: 58px;
+    height: 58px; z-index: 3; pointer-events: none; opacity: .92; }
 #viewMap #toast{
     position: absolute; left: 50%; transform: translateX(-50%); bottom: 18px;
     padding: 7px 14px; border-radius: 8px; background: #1f6feb33; border: 1px solid #1f6feb;
@@ -364,6 +372,11 @@ body{
 #viewVideo #gzStop{grid-area:2/2; color:var(--warn)}
 #viewVideo .gzbtn.act{background:var(--acc2); border-color:var(--acc2);
   color:#fff; font-weight:600}
+/* 方向盘 + 云台方位雷达（正上=车头）并排 */
+#viewVideo .gzrow{ display:flex; align-items:center; gap:14px; justify-content:center; }
+#viewVideo .gzradarBox{ display:flex; flex-direction:column; align-items:center; gap:4px;
+  color:var(--dim); font-size:11px; }
+#viewVideo .gzradarBox canvas{ width:96px; height:96px; }
 #viewVideo #tab-gz .kv b{font-variant-numeric:tabular-nums; font-weight:600}
 #viewVideo .kv{display:flex;justify-content:space-between;gap:8px}
 #viewVideo .mgroup{display:flex; align-items:center; gap:7px; font-size:10.5px;
@@ -944,12 +957,18 @@ html, body{overflow:hidden}
         <span id="gzLimFw">limit.pitch.deg</span> 取小 —— 目标值永远不会越界。
       </p>
 
-      <div class="gzpad">
-        <button class="gzbtn" data-jog="up"    title="视线向上（Pitch +）">↑</button>
-        <button class="gzbtn" data-jog="left"  title="视线向左（Yaw +）">←</button>
-        <button class="gzbtn" id="gzStop"      title="停止（角度保持，不失能）">■</button>
-        <button class="gzbtn" data-jog="right" title="视线向右（Yaw −）">→</button>
-        <button class="gzbtn" data-jog="down"  title="视线向下（Pitch −）">↓</button>
+      <div class="gzrow">
+        <div class="gzpad">
+          <button class="gzbtn" data-jog="up"    title="视线向上（Pitch +）">↑</button>
+          <button class="gzbtn" data-jog="left"  title="视线向左（Yaw +）">←</button>
+          <button class="gzbtn" id="gzStop"      title="停止（角度保持，不失能）">■</button>
+          <button class="gzbtn" data-jog="right" title="视线向右（Yaw −）">→</button>
+          <button class="gzbtn" data-jog="down"  title="视线向下（Pitch −）">↓</button>
+        </div>
+        <div class="gzradarBox">
+          <canvas id="gzRadar2" width="96" height="96"></canvas>
+          <span>正上=车头</span>
+        </div>
       </div>
 
       <div class="row"><label>速度</label>
@@ -1035,6 +1054,8 @@ html, body{overflow:hidden}
     <div id="toast"></div>
     <!-- 2026-10-30: 遥控盘从右列扰到地图左下角，悬停覆盖在画布上方；速度换成滑条 -->
     <div id="dpad">
+      <!-- 云台方位雷达：正上方 = 车头。巡检巡视/追踪时能直接看出云台朝哪 -->
+      <canvas id="gzRadar" class="gzradar" width="64" height="64"></canvas>
       <!-- 2026-10-30: 方向键上方一个小画面预览。
            注意不能用 <img src=/stream>：服务端 _stream_acquire(ip) 是「同 IP 只留
            最新一路」，再开一条会把「视频采集」页的那条顶黑。所以这里用
@@ -1096,6 +1117,11 @@ html, body{overflow:hidden}
           <button id="btnPatrolClear">清空列表</button>
         </div>
         <div class="plist" id="plist"></div>
+        <div class="popt2" style="margin-top:8px">
+          <span>检测到人追</span>
+          <input id="gzTrackSec" type="number" min="3" max="60" step="1" value="10">
+          <span>秒后继续巡视</span>
+        </div>
         <div class="btnrow" style="margin-top:8px">
           <button id="btnPatrolLoop" class="tool" title="跑完最后一点再从第 1 点开始，直到「停止全部」">循环</button>
           <button id="btnPatrolStart" class="primary" style="grid-column:2 / -1" disabled>开始巡检</button>
@@ -1336,7 +1362,24 @@ html, body{overflow:hidden}
     requestAnimationFrame(function () { requestAnimationFrame(doFit); });
     setTimeout(doFit, 180);
     dPrevStart();
+    gzIdleStart();          // 雷达一直跟着云台，不用等巡检
   });
+
+  // 不在巡检时也要让雷达跟着云台走：低频（1.5s）拉一次 /api/gimbal
+  let gzIdleTimer = null;
+  function gzIdleStart() {
+    if (gzIdleTimer) return;
+    const tick = function () {
+      if (document.hidden || gzPhase !== 'off') return;   // 巡检中由 gzTick 接管
+      gzFetch('GET').then(gzDrawLocal);
+    };
+    tick();
+    gzIdleTimer = setInterval(tick, 1500);
+  }
+  function gzIdleStop() {
+    if (gzIdleTimer) { clearInterval(gzIdleTimer); gzIdleTimer = null; }
+  }
+  window.addEventListener('video:show', gzIdleStop);
 
   // ── 方向键上方的小画面预览 ────────────────────────────────────
   // 用 /snapshot.jpg 轮询，而不是再开一条 /stream：
@@ -1873,7 +1916,7 @@ html, body{overflow:hidden}
     try {
       localStorage.setItem(REMOTE_KEY, JSON.stringify({
         lin: parseFloat(L.value), ang: parseFloat(A.value),
-        loop: !!S.patrolLoop
+        loop: !!S.patrolLoop, gzsec: gzTrackSec()
       }));
     } catch (e) {}
   }
@@ -1889,6 +1932,7 @@ html, body{overflow:hidden}
     if (L) L.value = clamp(c.lin, 0.02, 0.6, 0.15);
     if (A) A.value = clamp(c.ang, 0.2, 2, 0.6);
     S.patrolLoop = !!c.loop;
+    if ($('gzTrackSec')) $('gzTrackSec').value = clamp(c.gzsec, 3, 60, 10);
     syncPatrolLoopBtn();
     syncRemoteLabels();
   }
@@ -1909,6 +1953,10 @@ html, body{overflow:hidden}
                          : '已关闭循环巡检');
     });
   }
+  if ($('gzTrackSec')) $('gzTrackSec').addEventListener('change', function () {
+    saveRemoteCfg();
+    toast('检测到人追踪 ' + gzTrackSec() + ' 秒');
+  });
   loadRemoteCfg();
   $('btnStopAll').addEventListener('click', function () {
     // 巡检必须先停，否则它 300ms 一次的 tick 会继续往下发目标、
@@ -2622,7 +2670,8 @@ html, body{overflow:hidden}
           if (sec > 0) {
             S.patrolPhase = 'dwell';
             S.patrolDwellEnd = Date.now() + sec * 1000;
-            toast('第 ' + (S.patrolIdx + 1) + ' 点已停稳，开始停留 ' + pDwellText(sec));
+            gzPatrolStart();          // ★ 停稳了 -> 云台开始巡视
+            toast('第 ' + (S.patrolIdx + 1) + ' 点已停稳，开始停留 ' + pDwellText(sec) + '（云台巡视中）');
           } else {
             patrolNext();
           }
@@ -2642,7 +2691,7 @@ html, body{overflow:hidden}
 
     if (S.patrolPhase === 'dwell') {
       const left = S.patrolDwellEnd - Date.now();
-      if (left <= 0) { patrolNext(); return; }
+      if (left <= 0) { gzPatrolStop(true); patrolNext(); return; }   // 停留到 -> 云台回正
       setPatrolStatus('第 ' + (S.patrolIdx + 1) + '/' + S.patrol.length + ' 点 停留中',
         '还剩 ' + Math.ceil(left / 1000) + ' 秒' + (patrolLoopOn() ? ' · 循环' : ''));
     }
@@ -2652,11 +2701,177 @@ html, body{overflow:hidden}
   function stopPatrol(reason) {
     if (S.patrolTimer) { clearInterval(S.patrolTimer); S.patrolTimer = null; }
     S.patrolPhase = ''; S.patrolIdx = -1; S.patrolNear = 0;
+    gzPatrolStop(true);            // 云台也收工（回正）
     setPatrolStatus(reason || '已停止', '—');
     renderPatrol();
     S.sceneRev++;
     draw();
   }
+
+  // ── 巡检时的云台巡视 ────────────────────────────────────────────
+  // 需求(2026-10-30)：
+  //   到点**停稳**后自动巡视（左右扫，按后端给的软限位自动换向）；
+  //   巡视中检测到人就自动追踪 N 秒（N 在巡检框里设，默认 10），追完继续巡视；
+  //   停留时间到 / 巡检停止 -> 云台回正。
+  //
+  // 全部走板端的 /api/gimbal（和「视频采集 → 云台」页签同一套接口）：
+  //   GET  -> {available, connected, yaw_rel_deg, limits:{yaw_rel,pitch_rel}, tracking, signs, ...}
+  //   POST -> {action:'jog', yaw, pitch, hold}  {action:'home'}  {action:'track', on}
+  //   后端本身有 0.8s 看门狗 + 软件限位，目标值永远不越界；这里再按 yaw_rel 换向。
+  const GZ_API = '/api/gimbal';
+  const GZ_SCAN_SPEED = 20;        // 巡视转速 °/s
+  const GZ_LIM_MARGIN = 12;        // 离软限位还有多少度就换向
+  let gzPhase = 'off';             // off | scan | track
+  let gzDir = 1;                   // 巡视方向（+1 / -1）
+  let gzPollTimer = null, gzJogTimer = null, gzTrackEnd = 0;
+  let gzInfo = {};                 // 最近一次 GET 结果
+  let gzBusy = false;              // 防止 POST 堆积
+
+  async function gzFetch(method, body) {
+    try {
+      const r = await fetch(GZ_API, {
+        method: method, cache: 'no-store',
+        headers: body ? { 'Content-Type': 'application/json' } : undefined,
+        body: body ? JSON.stringify(body) : undefined
+      });
+      const j = await r.json();
+      if (method === 'GET') gzInfo = j || {};
+      return j;
+    } catch (e) { return null; }
+  }
+  function gzDrawLocal() {
+    if (!window.drawGimbalRadar) return;
+    window.drawGimbalRadar($('gzRadar'), {
+      yaw_rel: gzInfo.yaw_rel_deg,
+      limits: gzInfo.limits,
+      tracking: gzPhase === 'track' || !!gzInfo.tracking,
+      available: gzInfo.available
+    });
+  }
+  function gzTrackSec() {
+    const v = parseFloat($('gzTrackSec') ? $('gzTrackSec').value : 10);
+    return isFinite(v) ? Math.min(60, Math.max(3, v)) : 10;
+  }
+  function gzPatrolStart() {
+    if (gzPhase !== 'off') return;
+    gzPhase = 'scan'; gzDir = 1;
+    gzPollTimer = setInterval(gzTick, 600);
+    gzJogTimer = setInterval(gzJogOnce, 250);
+    gzTick();
+    toast('云台开始巡视');
+  }
+  function gzPatrolStop(recenter) {
+    if (gzPhase === 'off' && !recenter) return;
+    clearInterval(gzPollTimer); gzPollTimer = null;
+    clearInterval(gzJogTimer); gzJogTimer = null;
+    const wasOn = (gzPhase !== 'off');
+    gzPhase = 'off';
+    if (wasOn) toast('云台巡视结束');
+    if (recenter) {
+      gzFetch('POST', { action: 'track', on: false });
+      gzFetch('POST', { action: 'home' });      // 回正
+    }
+    gzDrawLocal();
+  }
+  function gzJogOnce() {
+    if (gzPhase !== 'scan') return;             // 追踪中不扫
+    if (!gzInfo.available) return;
+    const sg = (gzInfo.signs && Number(gzInfo.signs.yaw) < 0) ? -1 : 1;
+    gzFetch('POST', { action: 'jog', yaw: gzDir * GZ_SCAN_SPEED * sg, pitch: 0, hold: 0.8 });
+  }
+  async function gzTick() {
+    if (gzBusy) return;
+    gzBusy = true;
+    await gzFetch('GET');
+    gzBusy = false;
+    gzDrawLocal();
+
+    // 限位换向：|yaw_rel| 快到头就掉头
+    const lim = Number((gzInfo.limits || {}).yaw_rel) || 170;
+    const rel = Number(gzInfo.yaw_rel_deg) || 0;
+    if (gzPhase === 'scan' && Math.abs(rel) >= Math.max(20, lim - GZ_LIM_MARGIN)) {
+      // 只在朝限位那一侧时才掉头，避免来回抽搐
+      if ((rel > 0 && gzDir > 0) || (rel < 0 && gzDir < 0)) gzDir = -gzDir;
+    }
+
+    if (gzPhase === 'scan') {
+      const np = await aiPersonCount();
+      if (np > 0) {
+        gzPhase = 'track';
+        gzTrackEnd = Date.now() + gzTrackSec() * 1000;
+        await gzFetch('POST', { action: 'track', on: true });
+        toast('检测到 ' + np + ' 人，云台追踪 ' + gzTrackSec() + ' 秒');
+        gzDrawLocal();
+      }
+    } else if (gzPhase === 'track') {
+      if (Date.now() >= gzTrackEnd) {
+        await gzFetch('POST', { action: 'track', on: false });
+        gzPhase = 'scan';
+        toast('追踪结束，继续巡视');
+        gzDrawLocal();
+      } else {
+        gzDrawLocal();
+      }
+    }
+  }
+  // AI 结果：板端 /api/ai（和视频页同一个接口，只读，代价很小）
+  async function aiPersonCount() {
+    try {
+      const r = await fetch('/api/ai', { cache: 'no-store' });
+      const j = await r.json();
+      const d = j.detections || [];
+      return d.length;
+    } catch (e) { return 0; }
+  }
+
+  // ── 云台方位雷达（两个页面共用）─────────────────────────────────
+  //   "正上方 = 车头方向"，指针 = 云台当前 Yaw（相对零点，+Yaw = 视线向左）。
+  //   橙色 = 追踪中；蓝色 = 普通巡视。
+  window.drawGimbalRadar = function (cvs, st) {
+    if (!cvs) return;
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const size = cvs.clientWidth || cvs.width || 64;
+    if (!size) return;
+    const px = Math.round(size * dpr);
+    if (cvs.width !== px) { cvs.width = px; cvs.height = px; }
+    const g = cvs.getContext('2d');
+    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    g.clearRect(0, 0, size, size);
+    const cx = size / 2, cy = size / 2, R = size / 2 - 2;
+    g.fillStyle = 'rgba(8,12,17,.78)';
+    g.beginPath(); g.arc(cx, cy, R, 0, Math.PI * 2); g.fill();
+    g.strokeStyle = 'rgba(139,148,158,.55)'; g.lineWidth = 1;
+    g.beginPath(); g.arc(cx, cy, R, 0, Math.PI * 2); g.stroke();
+    g.strokeStyle = 'rgba(139,148,158,.28)';
+    g.beginPath();
+    g.moveTo(cx, cy - R + 1); g.lineTo(cx, cy + R - 1);
+    g.moveTo(cx - R + 1, cy); g.lineTo(cx + R - 1, cy);
+    g.stroke();
+    // 软限位扇形（橙）
+    const lim = Math.min(180, Number((st && st.limits && st.limits.yaw_rel)) || 170);
+    const half = lim * Math.PI / 180;
+    g.strokeStyle = 'rgba(240,136,62,.40)'; g.lineWidth = 1.5;
+    g.beginPath(); g.arc(cx, cy, R - 1, -Math.PI / 2 - half, -Math.PI / 2 + half); g.stroke();
+    // 车头标记（正上）
+    g.fillStyle = '#3fb950';
+    g.beginPath();
+    g.moveTo(cx, cy - R + 0.5); g.lineTo(cx - 3.4, cy - R + 6); g.lineTo(cx + 3.4, cy - R + 6);
+    g.closePath(); g.fill();
+    // 指针
+    const yaw = Number(st && st.yaw_rel) || 0;
+    const a = -Math.PI / 2 - yaw * Math.PI / 180;
+    const col = (st && st.tracking) ? '#f0883e' : '#58a6ff';
+    g.strokeStyle = col; g.lineWidth = 2;
+    g.beginPath(); g.moveTo(cx, cy);
+    g.lineTo(cx + Math.cos(a) * (R - 4), cy + Math.sin(a) * (R - 4));
+    g.stroke();
+    if (st && st.tracking) {
+      g.fillStyle = '#f85149';
+      g.beginPath(); g.arc(cx + Math.cos(a) * (R - 4), cy + Math.sin(a) * (R - 4), 3, 0, Math.PI * 2); g.fill();
+    }
+    g.fillStyle = col;
+    g.beginPath(); g.arc(cx, cy, 2.2, 0, Math.PI * 2); g.fill();
+  };
 
   patrolLoad();      // 刷新页面后把上次的巡检列表恢复回来
 
@@ -4536,6 +4751,13 @@ function gzSync() {
   const off = !g.available || (g.error && !g.connected);
   document.querySelectorAll("#tab-gz [data-jog]").forEach(b => { b.disabled = !!off; });
   $("gzStop").disabled = !!off;
+  // 2026-10-30: 云台方位小雷达（正上 = 车头），指针 = 当前 Yaw
+  if (window.drawGimbalRadar) {
+    window.drawGimbalRadar($("gzRadar2"), {
+      yaw_rel: g.yaw_rel_deg, limits: g.limits,
+      tracking: !!g.tracking, available: g.available
+    });
+  }
 }
 
 function gzSendJog() {
