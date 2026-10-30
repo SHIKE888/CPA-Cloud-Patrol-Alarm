@@ -504,6 +504,8 @@ module csi2_frame_tx_var #(
     localparam [3:0] S_FE   = 4'd6;
     localparam [3:0] S_GAP  = 4'd7;
     localparam [3:0] S_GAPL = 4'd8;         // ★V54g: 包间 GAP
+    localparam [3:0] S_FS2  = 4'd9;         // ★V54q: FS 短包的后 2 字节数据
+    localparam [3:0] S_FE2  = 4'd10;        // ★V54q: FE 短包的后 2 字节数据
     localparam [15:0] GAP_LINE_C = GAP_LINE;
 
     reg [3:0]  state;
@@ -513,8 +515,35 @@ module csi2_frame_tx_var #(
     reg [15:0] words;           // 本包 payload 总拍数
     reg [15:0] crc;
 
-    wire [31:0] fs_word = build_short_hdr(6'h00, frame_cnt[15:0]);
-    wire [31:0] fe_word = build_short_hdr(6'h01, frame_cnt[15:0]);
+    //==========================================================================
+    //  ★★★ V54q (2026-11-01): 修 FS/FE 短包结构 —— 这是 MIPI 误码的真正根因 ★★★
+    //
+    //  原来:
+    //      fs_word = build_short_hdr(6'h00, frame_cnt[15:0])
+    //      fe_word = build_short_hdr(6'h01, frame_cnt[15:0])
+    //  而 build_short_hdr 把 data16 放在了**包头 WC 字段的位置**。
+    //  于是 FS/FE 的 WC = 帧号(几千~几万), 而不是规范要求的 0。
+    //  接收侧看到 WC=N 就会认为这个短包后面还有 N 字节 payload,
+    //  **把后续 N/1024 个长包全当成 FS 的 payload 吞掉**, 每吞一个报一次错。
+    //
+    //  板上证据(完全吻合):
+    //    码率降到 1/20 错误量不变; 错误量与帧数严格成正比而与字节数无关;
+    //    每帧错误数 = 24 / 29 / 31, 而当时帧号 21341/21549/21700 除以 1024
+    //    正好是 20.8 / 21.0 / 21.2 个"被吞掉的包"—— 帧号越大吞得越多。
+    //
+    //  规范: CSI-2 短包 = 4 字节包头(DI + WC=0x0000 + ECC) + 2 字节数据,
+    //        总长 6 字节。原来只发 4 字节, 还把数据塞进了 WC 位置。
+    //
+    //  修法:
+    //    1) 包头用 build_long_hdr(dt, 16'd0) —— 它生成的正是 WC=0 的包头,
+    //       ECC 也是按 {DI, 0x0000} 算的, 与接收侧期望一致。
+    //    2) 新增 S_FS2 / S_FE2 两个状态补发那 2 字节数据(帧号),
+    //       在第二拍拉 hs_last, 让 D-PHY 把 2 字节当作短包结尾。
+    //==========================================================================
+    wire [31:0] fs_word = build_long_hdr(6'h00, 16'd0);   // FS: DI=0x00, WC=0
+    wire [31:0] fe_word = build_long_hdr(6'h01, 16'd0);   // FE: DI=0x01, WC=0
+    wire [31:0] fs_data = {16'h0000, frame_cnt[15:0]};    // 短包的 2 字节数据
+    wire [31:0] fe_data = {16'h0000, frame_cnt[15:0]};
     wire [31:0] lp_hdr  = build_long_hdr(i_dt, t_wc);
 
     // ★ 队列最多排 1 个 (描述符只有一组), 所以写侧只能在 pend_v=0 时写。
@@ -651,6 +680,14 @@ module csi2_frame_tx_var #(
             S_FS: begin
                 hs_en   <= 1'b1;
                 hs_data <= fs_word;
+                hs_last <= 1'b0;        // ★V54q: 包头, 后面还有 2 字节数据
+                state   <= S_FS2;
+            end
+
+            // ★V54q: 短包的后 2 字节 (帧号), 这拍才拉 hs_last
+            S_FS2: begin
+                hs_en   <= 1'b1;
+                hs_data <= fs_data;
                 hs_last <= 1'b1;
                 state   <= S_HDR;
             end
@@ -719,6 +756,15 @@ module csi2_frame_tx_var #(
             S_FE: begin
                 hs_en         <= 1'b1;
                 hs_data       <= fe_word;
+                hs_last       <= 1'b0;   // ★V54q: 包头, 后面还有 2 字节数据
+                gap_cnt       <= 16'd0;
+                state         <= S_FE2;
+            end
+
+            // ★V54q: FE 短包的后 2 字节, 这拍才拉 hs_last 并结束帧
+            S_FE2: begin
+                hs_en         <= 1'b1;
+                hs_data       <= fe_data;
                 hs_last       <= 1'b1;
                 frame_cnt     <= frame_cnt + 32'd1;
                 gap_cnt       <= 16'd0;

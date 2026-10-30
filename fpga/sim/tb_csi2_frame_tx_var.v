@@ -147,11 +147,19 @@ module tb_csi2_frame_tx_var;
 
         //==================================================== 期望
         nexp = 0;
-        // FS
+        // FS: 4 字节包头(WC=0) + 2 字节数据 = 6 字节 (V54q)
         exp[nexp+0]=shdr(6'h00,16'd0) & 8'hFF;  nexp=nexp+1;
         exp[nexp]= (shdr(6'h00,16'd0)>>8)&8'hFF;  nexp=nexp+1;
         exp[nexp]= (shdr(6'h00,16'd0)>>16)&8'hFF; nexp=nexp+1;
         exp[nexp]= (shdr(6'h00,16'd0)>>24)&8'hFF; nexp=nexp+1;
+        // V54q: 短包的 2 字节数据 (帧号 = 0)
+        //   ⚠ 本 tb 是"逐拍采 4 字节"的简化模型(不看 hs_last 截断),
+        //   所以这里也按 4 字节对齐写。线上真实只有低 2 字节(靠 hs_last 截断),
+        //   hs_last 拍数由下面的 nlast 检查单独验证。
+        exp[nexp]= 8'h00; nexp=nexp+1;
+        exp[nexp]= 8'h00; nexp=nexp+1;
+        exp[nexp]= 8'h00; nexp=nexp+1;
+        exp[nexp]= 8'h00; nexp=nexp+1;
         // 包1: WC=4   (DT=0x1E = 运行时 i_dt, rkcif 只认这个)
         exp[nexp]= (lhdr(6'h1E,16'd4)>>0)&8'hFF;  nexp=nexp+1;
         exp[nexp]= (lhdr(6'h1E,16'd4)>>8)&8'hFF;  nexp=nexp+1;
@@ -190,11 +198,17 @@ module tb_csi2_frame_tx_var;
             exp[nexp]= 8'h00;   nexp=nexp+1;
             exp[nexp]= 8'h00;   nexp=nexp+1;
         end
-        // FE
+        // FE: 4 字节包头(WC=0) + 2 字节数据 = 6 字节 (V54q)
         exp[nexp]= (shdr(6'h01,16'd0)>>0)&8'hFF;  nexp=nexp+1;
         exp[nexp]= (shdr(6'h01,16'd0)>>8)&8'hFF;  nexp=nexp+1;
         exp[nexp]= (shdr(6'h01,16'd0)>>16)&8'hFF; nexp=nexp+1;
         exp[nexp]= (shdr(6'h01,16'd0)>>24)&8'hFF; nexp=nexp+1;
+        // V54q: FE 短包的 2 字节数据 (帧号 = 0)
+        //   同 FS: 本 tb 按 4 字节拍对齐; 线上靠 hs_last 截断成 2 字节。
+        exp[nexp]= 8'h00; nexp=nexp+1;
+        exp[nexp]= 8'h00; nexp=nexp+1;
+        exp[nexp]= 8'h00; nexp=nexp+1;
+        exp[nexp]= 8'h00; nexp=nexp+1;
 
         //==================================================== 比对
         err = 0;
