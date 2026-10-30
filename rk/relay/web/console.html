@@ -1138,7 +1138,12 @@ html, body{overflow:hidden}
     } else {
       // 离开视频视图：先把云台点动停住（按钮被隐藏后 pointerup 收不到）
       if (typeof window.relayGzStop === 'function') window.relayGzStop();
-      resize();          // canvas 在 hidden 时尺寸会变成 0，切回来必须重算
+      // 2026-10-30: 切到「调度控制」时自动把地图缩放到适应屏幕。
+      //   注意：原来这里直接写 resize()，但 resize 是下面另一个 IIFE 里的函数，
+      //   window 上根本没有 → 每次切页都会抛 ReferenceError（一直没生效，
+      //   画面只是靠 ResizeObserver 重算了尺寸，并没重新 fitView）。
+      //   现在改成发一个事件，由地图脚本自己 resize + fitView。
+      window.dispatchEvent(new Event('map:show'));
     }
   }
 
@@ -1298,6 +1303,20 @@ html, body{overflow:hidden}
     $('stZoom').textContent = S.scale.toFixed(2) + ' px/m';
     draw();
   }
+
+  // 切到「调度控制」视图 → 自动适应画面。
+  //   视图 hidden 时 canvas 是 0×0，必须等布局完成再算，所以 rAF 两帧 + 一个
+  //   兜底定时器（某些浏览器把 hidden 元素的 rAF 推迟得很晚）。
+  window.addEventListener('map:show', function () {
+    const doFit = function () {
+      if (!cv.clientWidth || !cv.clientHeight) return;
+      resize();        // 先按容器重建画布尺寸
+      fitView();       // 再按已建图边界居中缩放
+      drawNow();
+    };
+    requestAnimationFrame(function () { requestAnimationFrame(doFit); });
+    setTimeout(doFit, 180);
+  });
 
   function drawPolylineOn(g, pts, color, lw) {
     if (!pts || pts.length < 2) return;
