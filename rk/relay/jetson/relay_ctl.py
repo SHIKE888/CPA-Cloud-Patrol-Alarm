@@ -120,6 +120,33 @@ def read_state():
         return {}
 
 
+def list_maps(limit=10):
+    """扫 ~/maps 下的 *.yaml，按文件 mtime 新的在前。
+
+    2026-10-30：页面上的「最近保存地图」原来只取 last_pose.json 的 time，
+    那是**最后一次经 /relay/save_map 保存**的时间。如果地图是 RViz / 命令行
+    map_saver 存的，或者状态文件被覆盖过，页面上显示的就**不是最新那张图**。
+    直接看文件系统才不会错。mtime 用的是车端时钟，页面会拿它和浏览器时钟
+    对比，偏差大时直接提示“车端时钟不可信”。
+    """
+    out = []
+    try:
+        names = os.listdir(MAP_DIR)
+    except OSError:
+        return out
+    for n in names:
+        if not n.endswith('.yaml'):
+            continue
+        p = os.path.join(MAP_DIR, n)
+        try:
+            st = os.stat(p)
+        except OSError:
+            continue
+        out.append({'name': n, 'base': p[:-5], 'mtime': st.st_mtime})
+    out.sort(key=lambda d: d['mtime'], reverse=True)
+    return out[:limit]
+
+
 # ---------------- services ----------------
 
 def srv_start_mapping(_req):
@@ -177,11 +204,34 @@ def srv_stop(_req):
     return TriggerResponse(True, '已停止 launch')
 
 
+def nav_stack_up():
+    """导航栈在跑吗？—— master 里有 /amcl 节点就算（只有 navigation.launch 会起它）。
+
+    2026-10-30：页面原来用“点没点过「进入导航」”来判断导航模式，
+    但导航完全可能是车端直接起的（用的就是上次保存的图），刷新一下页面
+    就“不在导航模式”了，放目标 / 跑巡检都被拦。这个标志让页面能问到真相。
+    """
+    try:
+        # 注意：getSystemState() 返回的是 (话题, 节点列表) 的列表，不是节点名。
+        # 想按节点名判断只能用 lookupNode —— 不存在时会抛 MasterError。
+        rosgraph.Master('/relay_ctl').lookupNode('/amcl')
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def srv_last_pose(_req):
-    """返回建图结束时记录的位姿（JSON 字符串放在 message 里）。"""
+    """返回建图结束时记录的位姿 + 地图清单 + 导航栈状态（JSON 放 message 里）。
+
+    maps[0] = ~/maps 里 mtime 最新的整张图（页面显示「最近保存地图」用）；
+    map_base = 导航将要加载的那张（最后一次 save_map 记录的那个）；
+    now = 车端当前 unix 时间（页面用它算时钟偏差）；
+    nav = 导航栈在跑（/amcl 节点存在）。
+  """
     st = read_state()
-    if not st:
-        return TriggerResponse(False, '{}')
+    st['maps'] = list_maps()
+    st['now'] = time.time()
+    st['nav'] = nav_stack_up()
     return TriggerResponse(True, json.dumps(st))
 
 

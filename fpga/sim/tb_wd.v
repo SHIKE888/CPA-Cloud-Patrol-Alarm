@@ -451,7 +451,7 @@ module tb_wd;
 
     // ★ 逐级探针: 看 flush 之后 enc_if 为什么不再转发
     always @(posedge c_clk) begin
-        if (rst_n && (cyc % 4000 == 0) && (cyc >= 4000) && (cyc <= 60000)) begin
+        if (rst_n && (cyc % 8000 == 0) && (cyc >= 8000) && (cyc <= 60000)) begin
             $display("[P] cyc=%0d | if0: rdgo=%b rcnt=%0d full=%b empty=%b | rd: wv=%b dv=%b wrdy=%b | srdy0=%b | wl0=%0d wl3=%0d",
                      cyc,
                      g_if[0].u_enc_if.rd_go, g_if[0].u_enc_if.f_rcnt, g_if[0].u_enc_if.f_full, g_if[0].u_enc_if.f_empty,
@@ -487,7 +487,7 @@ module tb_wd;
 
     // ★ 诊断: 引擎0 在 row3 (enc_mcu>=24) 的 DC 预测器状态 (S_DC 拍)
     always @(posedge c_clk) begin
-        if (rst_n && g_enc[0].u_e.enc_mcu >= 24 && g_enc[0].u_e.u_huff.state == 3'd1) begin
+        if (rst_n && (H <= 8) && g_enc[0].u_e.enc_mcu >= 24 && g_enc[0].u_e.u_huff.state == 3'd1) begin
             $display("E0DC mcu=%0d comp=%0d pred=%0d/%0d/%0d rd=%0d rstpred=%b",
                      g_enc[0].u_e.enc_mcu, g_enc[0].u_e.u_huff.i_comp,
                      g_enc[0].u_e.u_huff.pred_y, g_enc[0].u_e.u_huff.pred_cb, g_enc[0].u_e.u_huff.pred_cr,

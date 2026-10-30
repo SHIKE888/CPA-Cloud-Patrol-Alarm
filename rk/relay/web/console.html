@@ -99,6 +99,30 @@ body{
     gap: 8px; margin: 9px 0 0; color: var(--dim); font-size: 11.5px; }
 #viewMap .hint b{ color: var(--fg); font-weight: 600; font-variant-numeric: tabular-nums;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* 巡检点列表：一行一个点，左边序号+类型+坐标，右边停留时间+删除 */
+#viewMap .plist{ margin: 8px 0 0; max-height: 196px; overflow-y: auto;
+    border-top: 1px solid #21262d; scrollbar-width: thin; }
+#viewMap .plist::-webkit-scrollbar{ width: 8px }
+#viewMap .plist::-webkit-scrollbar-thumb{ background: #30363d; border-radius: 4px }
+#viewMap .pempty{ color: #6e7681; font-size: 11.5px; line-height: 1.55; padding: 9px 0 3px; }
+#viewMap .pitem{ display: grid; grid-template-columns: 1fr 92px 22px; gap: 8px;
+    align-items: center; padding: 7px 0; border-bottom: 1px solid #21262d;
+    font-size: 11.5px; }
+#viewMap .pitem.act{ background: rgba(31,111,235,.14); }
+#viewMap .pitem .pl{ min-width: 0; display: flex; align-items: center; white-space: nowrap; }
+#viewMap .pitem .pno{ color: var(--fg); font-weight: 600; min-width: 13px; }
+#viewMap .pitem .pk{ margin: 0 6px 0 2px; padding: 0 5px; border-radius: 4px;
+    font-size: 10.5px; line-height: 15px; background: #1f6feb; color: #fff; }
+#viewMap .pitem .pk.free{ background: #30363d; color: #adbac7; }
+#viewMap .pitem .pc{ color: var(--dim); font-family: ui-monospace, monospace;
+    overflow: hidden; text-overflow: ellipsis; }
+#viewMap .pitem .pd{ display: flex; gap: 4px; align-items: center; }
+#viewMap .pitem .pd input[type=number]{ width: 44px; padding: 3px 5px; }
+#viewMap .pitem .pd select{ background: #0d1117; border: 1px solid #30363d; color: #e6edf3;
+    border-radius: 6px; padding: 3px 1px; font-size: 11px; font-family: inherit; }
+#viewMap .pitem .pdel{ padding: 2px 3px; line-height: 1.1; font-size: 11px;
+    color: #d47777; border-color: #4a2f2f; }
+#viewMap .pitem .pdel:not(:disabled):hover{ background: #3d1f1f; border-color: #b34242; }
 /* 仪表盘单元：与视频采集页 .metrics 同一套 */
 #viewMap .metrics{ display: grid; grid-template-columns: 1fr 1fr;
     grid-template-rows: 1fr 1fr; gap: 1px;
@@ -1023,6 +1047,23 @@ html, body{overflow:hidden}
           <button id="btnStopAll">停止全部</button>
         </div>
         <div class="hint"><span>最近保存地图</span><b id="stMapSave">—</b></div>
+        <div class="hint"><span>导航用图</span><b id="stMapUse">—</b></div>
+        <div class="hint" hidden><span id="stClockNote" style="color:#d29922"></span></div>
+      </section>
+
+      <!-- 2026-10-28: 巡检框 —— 按顺序排多个有向/无向目标，每个点单独设停留时间，
+           可单独删除；点「开始巡检」才按序跑；停止共用上面的「停止全部」。 -->
+      <section id="patrolbox">
+        <h3>巡检</h3>
+        <div class="btnrow wide">
+          <button id="btnPatrolAdd" class="primary">加入巡检</button>
+          <button id="btnPatrolClear">清空列表</button>
+        </div>
+        <div class="plist" id="plist"></div>
+        <div class="btnrow wide" style="margin-top:8px">
+          <button id="btnPatrolStart" class="primary" style="grid-column:1 / -1" disabled>开始巡检</button>
+        </div>
+        <div class="hint"><span id="stPatrol">未开始</span><b id="stPatrolInfo">—</b></div>
       </section>
 
       <section>
@@ -1132,6 +1173,7 @@ html, body{overflow:hidden}
   const $ = (id) => document.getElementById(id);
 
   let ros = null, connected = false, tfClient = null;
+  let mapInfoTimer = null;          // 每 5s 刷「地图清单 + 导航栈状态」
   const topics = {};
 
   const S = {
@@ -1144,6 +1186,10 @@ html, body{overflow:hidden}
     bounds: null,                                   // 已建图区域（格坐标）
     follow: false,
     placePrev: null,                                // 拖动中的橡皮筋 {tool,x0,y0,x1,y1}
+    // 巡检：patrol 是数据（yaw=null 表示无向），其余是运行时状态
+    patrol: [], patrolIdx: -1, patrolPhase: '', patrolT0: 0,
+    patrolDwellEnd: 0, patrolNear: 0, patrolTimer: null,
+    navStack: false,                                // 车端导航栈在跑（relay 的 /amcl 探测）
     sceneRev: 0                                     // 静态层失效计数（地图/路径/视图变更时 ++）
   };
 
@@ -1398,6 +1444,28 @@ html, body{overflow:hidden}
       ctx.restore();
     }
 
+    // 2026-10-28: 巡检点 —— 按顺序编号 + 虚线连起来，一眼看出跑的顺序
+    if (S.patrol && S.patrol.length) {
+      ctx.strokeStyle = 'rgba(88,166,255,0.45)'; ctx.lineWidth = 1.5;
+      if (ctx.setLineDash) ctx.setLineDash([5, 4]);
+      ctx.beginPath();
+      for (let i = 0; i < S.patrol.length; i++) {
+        const q = w2s(S.patrol[i].x, S.patrol[i].y);
+        if (i === 0) ctx.moveTo(q[0], q[1]); else ctx.lineTo(q[0], q[1]);
+      }
+      ctx.stroke();
+      if (ctx.setLineDash) ctx.setLineDash([]);
+      ctx.font = '11px ui-monospace, monospace';
+      for (let i = 0; i < S.patrol.length; i++) {
+        const q = w2s(S.patrol[i].x, S.patrol[i].y);
+        const act = (i === S.patrolIdx);
+        ctx.fillStyle = act ? '#1f6feb' : 'rgba(31,111,235,0.5)';   // 当前点高亮
+        ctx.beginPath(); ctx.arc(q[0], q[1], act ? 9 : 7, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = '#fff';
+        ctx.fillText(String(i + 1), q[0] - (i + 1 > 9 ? 6.5 : 3), q[1] + 4);
+      }
+    }
+
     // 2026-10-28: 拖动中的橡皮筋（有向目标 / 小车位姿）
     //   起点 = 目标点/车的位置，箭头方向 = 将要下发的朝向；鼠标一动就跟着走。
     //   不走 sceneRev（静态层不需要重建），直接在本帧的动态层上画。
@@ -1455,6 +1523,12 @@ html, body{overflow:hidden}
       toast('已连接 ' + url);
       subscribe();
       refreshMapSaveTime();          // 把「最近保存地图」时间拉回来（上次保存可能早于本次开页）
+      // 2026-10-30: 每 5 秒刷一次：地图清单（可能有人在车端另存了图）+ 导航栈状态
+      //   （决定能不能放目标 / 跑巡检）。service 很轻，不会给车端造成压力。
+      if (mapInfoTimer) clearInterval(mapInfoTimer);
+      mapInfoTimer = setInterval(function () {
+        if (connected) refreshMapSaveTime();
+      }, 5000);
     });
     ros.on('error', function (e) {
       $('st').textContent = '错误';
@@ -1560,7 +1634,8 @@ html, body{overflow:hidden}
       const p = m.pose.position, q = m.pose.orientation;
       const yaw = Math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z));
       S.pose = { x: p.x, y: p.y, yaw: yaw };
-      S.poseT = Date.now();          // 位姿新鲜度（停止全部时要用它存车-地图相对位姿）
+      S.poseT = Date.now();          // 位姿新鲜度
+      autoSavePoseMemo();            // 车-地图相对位姿：实时落盘（2026-10-30）
       $('stPose').textContent = p.x.toFixed(2) + ', ' + p.y.toFixed(2) +
         ' @ ' + (yaw * 57.2958).toFixed(0) + '°';
       draw();
@@ -1708,12 +1783,16 @@ html, body{overflow:hidden}
   }
   $('dpadStop').addEventListener('click', function () { stopVel(true); });
   $('btnStopAll').addEventListener('click', function () {
+    // 巡检必须先停，否则它 300ms 一次的 tick 会继续往下发目标、
+    // 和“停止”抢着发 /goal_pose。
+    if (S.patrolTimer) {
+      stopPatrol('已停止全部（巡检中止）');
+      cancelGoalNow();
+    }
     stopVel(true);
     callSrv('stop');
-    // 2026-10-28: 停车的同时把“车在地图上的位姿”记下来。
-    //   下次进导航直接用这个对齐（前提：期间没人为挪过车）。
-    //   这里不先去查 map_base: 能点到“停止全部”说明前面已经进过导航,
-    //   S.mapBase 在 applyLastPose 里已经拿到了。
+    // 2026-10-30: 位姿现在是实时保存的（导航中每 2s / 一动就存），
+    //   这里再存一次只是“顺手把最后一帧定住”，没这个按钮也不影响。
     storePoseMemo();
   });
 
@@ -1859,12 +1938,40 @@ html, body{overflow:hidden}
           ' @ ' + (p.yaw * 57.2958).toFixed(0) + '°)');
   }
 
+  // ★ 2026-10-30：车-地图相对位姿改成**实时保存**，不再依赖「停止全部」。
+  //   原来只在点「停止全部」时写一次：只要用户不点那个按钮（或者直接关页面、
+  //   切到建图再切回来），下次进入导航还是拿旧位姿去对齐，一定会偏。
+  //   现在每收到一帧 /relay/robot_pose 就检查一下，满足下面任一条件就落盘：
+  //     · 距上次写入 ≥ 2 秒，且位姿没变（保新鲜度 / 保 ts）
+  //     · 位移 ≥ 3cm 或转角 ≥ 2°（车真的动了）
+  //   只在导航模式写：建图模式下的位姿属于一张还没保存的新图，存进去会污染
+  //   上一张图的记忆（坐标根本不是同一个地图系）。
+  let memoAt = 0, memoPose = null;
+  function autoSavePoseMemo() {
+    if (!S.mapBase || !inNav() || !S.pose || !S.poseT) return;
+    if (Date.now() - S.poseT > 3000) return;      // 位姿不新鲜，不存
+    const now = Date.now();
+    if (memoPose) {
+      const d = Math.hypot(S.pose.x - memoPose.x, S.pose.y - memoPose.y);
+      const a = angDiff(S.pose.yaw, memoPose.yaw);
+      if (d < 0.03 && a < 0.035 && (now - memoAt) < 2000) return;
+    }
+    memoAt = now;
+    memoPose = { x: S.pose.x, y: S.pose.y, yaw: S.pose.yaw };
+    const p = { x: S.pose.x, y: S.pose.y, yaw: S.pose.yaw, ts: now, auto: 1 };
+    try { localStorage.setItem(poseKey(), JSON.stringify(p)); } catch (e) {}
+  }
+
   $('btnMapping').addEventListener('click', function () {
     // 「开始建图」= 不管现在有没有图，一律重新开始。
     // 先就地清屏，不等车端回包：旧图留在屏幕上会让人以为按钮没生效。
     S.map = null; S.bounds = null;
     S.mapHz = 0; S.mapT = 0; S.mapCount = 0;
     S.mapBase = null;          // 新图：地图身份要重新取，别拿旧图的位姿记忆去对齐
+    // 新的一张图，旧的巡检点在坐标上已经没意义了
+    if (S.patrolTimer) stopPatrol('已重新开始建图（巡检中止）');
+    S.patrol = []; S.patrolIdx = -1;
+    patrolSave(); renderPatrol();
     S.sceneRev++;
     $('stMap').textContent = '重新建图中…';
     // 只有已经开始建图，才允许「保存建图」
@@ -1993,9 +2100,10 @@ html, body{overflow:hidden}
       const memo = loadPoseMemo();
       if (memo) {
         startInitPoseRetry(memo.x, memo.y, memo.yaw);
-        toast('用上次「停止全部」记住的车-地图位姿对齐 (' +
+        toast('用上次记住的车-地图位姿对齐 (' +
               memo.x.toFixed(2) + ', ' + memo.y.toFixed(2) +
-              ' @ ' + (memo.yaw * 57.2958).toFixed(0) + '°)，等 AMCL 起来…');
+              ' @ ' + (memo.yaw * 57.2958).toFixed(0) + '°)' +
+              (memo.auto ? '（导航中实时保存）' : '（停止全部时保存）') + '，等 AMCL 起来…');
         return;
       }
 
@@ -2026,6 +2134,17 @@ html, body{overflow:hidden}
     if (b) b.disabled = !on;
   }
 
+  // “现在是导航模式吗” —— 不再只认本页点过「进入导航」。
+  //   /amcl_pose 只有 navigation.launch 里的 AMCL 会发，建图模式没有，
+  //   所以“3 秒内收到过 /amcl_pose”就是一个很可靠的“导航栈在跑”信号。
+  //   这样即使用户在车端直接起过 navigation.launch（用上次保存的图），
+  //   页面刷新后照样能放目标 / 跑巡检。
+  function inNav() {
+    if (S.navMode) return true;
+    if (S.navStack) return true;                     // relay 探测到 /amcl 在跑
+    return !!(S.amcl && (Date.now() - S.amcl.t) < 3000);
+  }
+
   // 最近保存地图时间：数据源是 relay 的 last_pose 状态文件（save_map 时写入的 time）
   function fmtMapTime(sec) {
     if (!sec) return '';
@@ -2038,21 +2157,84 @@ html, body{overflow:hidden}
     const hm = p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
     return sameDay ? hm : (d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + hm;
   }
+  // map_YYYYmmdd_HHMMSS -> MM-DD HH:MM:SS（文件名本身就是保存时刻）
+  function fmtStampName(pathOrName) {
+    const n = String(pathOrName || '').split('/').pop();
+    const m = n.match(/^map_(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})/);
+    if (!m) return n;
+    return m[2] + '-' + m[3] + ' ' + m[4] + ':' + m[5] + ':' + m[6];
+  }
+  // 最近保存地图 / 导航用图 / 车端时钟偏差
+  //   ★ 2026-10-30 修「显示的最近保存地图不是最近的」：
+  //   原来只取 last_pose.json 里的 time —— 那只代表**最后一次经本页面保存**。
+  //   用 RViz / 命令行 map_saver 存的图不会更新它，显示出来自然是旧的。
+  //   现在 relay 会把 ~/maps 下 *.yaml 的清单一起返回，页面按**文件 mtime**
+  //   取最新的那张；另外单独显示「导航会加载哪张」，两张不一样时标出来。
   function refreshMapSaveTime() {
-    const el = $('stMapSave');
+    const el = $('stMapSave'), elUse = $('stMapUse'), elNote = $('stClockNote');
     if (!el) return;
-    if (!connected) { el.textContent = '—'; return; }
-    // last_pose 在还没保存过图时 success=false，不能当错误报
+    if (!connected) {
+      el.textContent = '—';
+      if (elUse) elUse.textContent = '—';
+      if (elNote && elNote.parentNode) elNote.parentNode.hidden = true;
+      return;
+    }
     const srv = new ROSLIB.Service({
       ros: ros, name: '/relay/last_pose', serviceType: 'std_srvs/Trigger'
     });
     srv.callService(new ROSLIB.ServiceRequest({}), function (res) {
       let st = null;
       try { st = JSON.parse(res.message); } catch (e) { st = null; }
-      if (!res.success || !st || !st.time) { el.textContent = '—（还没保存过）'; return; }
-      el.textContent = fmtMapTime(st.time);
-      el.title = (st.map_base || '') + '.yaml';
-    }, function () { el.textContent = '—'; });
+      if (!st) {
+        el.textContent = '—';
+        if (elUse) elUse.textContent = '—';
+        return;
+      }
+
+      // 地图身份：位姿记忆按它归类（和导航模式共用同一张图）
+      if (st.map_base) S.mapBase = st.map_base;
+      // 导航栈是否在跑（车端 /amcl 节点存在）—— 决定能不能放目标 / 跑巡检
+      S.navStack = !!st.nav;
+
+      // ① 最近保存的图 = ~/maps 里 mtime 最新的那张
+      const maps = st.maps || [];
+      const newest = maps.length ? maps[0] : null;
+      if (newest) {
+        el.textContent = fmtMapTime(newest.mtime);
+        el.title = newest.base + '.yaml';
+      } else if (st.time) {
+        el.textContent = fmtMapTime(st.time);
+        el.title = (st.map_base || '') + '.yaml';
+      } else {
+        el.textContent = '—（一张都没有）';
+      }
+
+      // ② 导航会加载哪张
+      if (elUse) {
+        if (!st.map_base) elUse.textContent = '—（还没保存过）';
+        else {
+          const same = newest && newest.base === st.map_base;
+          elUse.textContent = fmtStampName(st.map_base) + (same ? '' : '（非最新）');
+          elUse.title = st.map_base + '.yaml';
+        }
+      }
+
+      // ③ 车端时钟偏差：差 ≥ 1 天就明说，否则上面的时间数字会误导
+      if (elNote && elNote.parentNode) {
+        const skew = (Date.now() / 1000) - (st.now || 0);
+        if (st.now && Math.abs(skew) > 86400) {
+          const days = Math.round(Math.abs(skew) / 86400);
+          elNote.textContent = '车端时钟' + (skew > 0 ? '慢' : '快') + ' ' + days +
+            ' 天，地图时间不可信（需给车校时）';
+          elNote.parentNode.hidden = false;
+        } else {
+          elNote.parentNode.hidden = true;
+        }
+      }
+    }, function () {
+      el.textContent = '—';
+      if (elUse) elUse.textContent = '—';
+    });
   }
 
   function selectTool(name) {
@@ -2073,11 +2255,254 @@ html, body{overflow:hidden}
     selectTool('waypoint');        // 默认「无向目标」
   })();
 
+  // ── 巡检 ───────────────────────────────────────────────────
+  // 需求(2026-10-28)：按顺序排多个有向/无向目标点，每个点单独设停留时间
+  //   （分/秒）、可单独删除；点「开始巡检」才按序执行；停止共用「停止全部」。
+  //
+  // 数据：S.patrol = [{x, y, yaw, dv, du}]
+  //   yaw === null -> 无向目标（orientation 保持 w=1）
+  //   dv / du      -> 停留 = dv * du 秒（du 只有 1 或 60，即「秒 / 分」）
+  // 加入方式：先用「无向目标 / 有向目标」在地图上放一个目标（S.goal），
+  //   再点「加入巡检」按顺序追加。列表存 localStorage，刷新不丢。
+  const PATROL_KEY = 'patrol:list';
+  const PATROL_TOL = 0.35;          // 到位判定半径（m）
+  const PATROL_NEED = 2;            // 连续几次在圈内才算到位（300ms 一次）
+  const PATROL_GO_MS = 180000;      // 单点超时 3 分钟 -> 跳过该点
+
+  function pSec(p) { return Math.max(0, (p.dv || 0) * (p.du || 1)); }
+  function pDwellText(sec) {
+    if (!sec) return '不停留';
+    if (sec >= 60 && sec % 60 === 0) return (sec / 60) + ' 分';
+    return sec + ' 秒';
+  }
+  function patrolSave() {
+    try { localStorage.setItem(PATROL_KEY, JSON.stringify(S.patrol)); } catch (e) {}
+  }
+  function patrolLoad() {
+    S.patrol = [];
+    try {
+      const a = JSON.parse(localStorage.getItem(PATROL_KEY) || '[]');
+      if (Array.isArray(a)) {
+        for (let i = 0; i < a.length; i++) {
+          const p = a[i];
+          if (p && isFinite(p.x) && isFinite(p.y)) {
+            S.patrol.push({
+              x: +p.x, y: +p.y,
+              yaw: (p.yaw === null || p.yaw === undefined) ? null : +p.yaw,
+              dv: isFinite(p.dv) ? +p.dv : 5,
+              du: (+p.du === 60) ? 60 : 1
+            });
+          }
+        }
+      }
+    } catch (e) { S.patrol = []; }
+    renderPatrol();
+  }
+  function setPatrolStatus(a, b) {
+    if ($('stPatrol')) $('stPatrol').textContent = a;
+    if ($('stPatrolInfo')) $('stPatrolInfo').textContent = b || '—';
+  }
+
+  // 重建整个列表 DOM。只在「增删点 / 开始停止 / 切换当前点」时调；
+  // 改停留时间时**不**重建，否则输入框会失焦。
+  function renderPatrol() {
+    const box = $('plist');
+    if (!box) return;
+    const running = !!S.patrolTimer;
+    if (!S.patrol.length) {
+      box.innerHTML = '<div class="pempty">还没有巡检点：先用「无向目标 / 有向目标」' +
+        '在地图上点出目标，再点「加入巡检」按顺序加进来。' +
+        '（巡检跑在导航模式上，用的就是当前导航那张图）</div>';
+    } else {
+      let h = '';
+      for (let i = 0; i < S.patrol.length; i++) {
+        const p = S.patrol[i];
+        const free = (p.yaw === null || p.yaw === undefined);
+        h += '<div class="pitem' + (i === S.patrolIdx ? ' act' : '') + '">' +
+          '<div class="pl"><b class="pno">' + (i + 1) + '</b>' +
+          '<span class="pk' + (free ? ' free' : '') + '">' +
+          (free ? '无向' : '有向') + '</span>' +
+          '<span class="pc">' + p.x.toFixed(2) + ', ' + p.y.toFixed(2) +
+          (free ? '' : ' @ ' + (p.yaw * 57.2958).toFixed(0) + '°') + '</span></div>' +
+          '<div class="pd"><input type="number" min="0" max="6000" step="1" ' +
+          'value="' + (p.dv || 0) + '" data-di="' + i + '" title="停留时间">' +
+          '<select data-ui="' + i + '" title="单位">' +
+          '<option value="1"' + ((p.du || 1) === 1 ? ' selected' : '') + '>秒</option>' +
+          '<option value="60"' + (p.du === 60 ? ' selected' : '') + '>分</option>' +
+          '</select></div>' +
+          '<button class="pdel" data-di="' + i + '" title="删除第 ' + (i + 1) +
+          ' 点">✕</button></div>';
+      }
+      box.innerHTML = h;
+    }
+    if ($('btnPatrolStart')) {
+      $('btnPatrolStart').disabled = running || !S.patrol.length;
+      $('btnPatrolStart').textContent = running
+        ? '巡检中（第 ' + (S.patrolIdx + 1) + '/' + S.patrol.length + ' 点）'
+        : '开始巡检';
+    }
+    if ($('btnPatrolClear')) $('btnPatrolClear').disabled = running || !S.patrol.length;
+    if ($('btnPatrolAdd')) $('btnPatrolAdd').disabled = running;
+  }
+
+  $('btnPatrolAdd').addEventListener('click', function () {
+    if (!S.goal) {
+      toast('先用「无向目标 / 有向目标」在地图上放一个目标，再点「加入巡检」', true);
+      return;
+    }
+    const free = (S.goal.yaw === null || S.goal.yaw === undefined);
+    S.patrol.push({
+      x: S.goal.x, y: S.goal.y, yaw: free ? null : S.goal.yaw,
+      dv: 5, du: 1                        // 默认停留 5 秒
+    });
+    patrolSave(); renderPatrol(); S.sceneRev++; draw();
+    toast('已加入第 ' + S.patrol.length + ' 个巡检点（' + (free ? '无向' : '有向') +
+          '，默认停留 5 秒，可在列表里逐点改）');
+  });
+
+  $('btnPatrolClear').addEventListener('click', function () {
+    if (S.patrolTimer) { toast('巡检正在跑，先点「停止全部」', true); return; }
+    if (!S.patrol.length) return;
+    S.patrol = []; S.patrolIdx = -1;
+    patrolSave(); renderPatrol(); S.sceneRev++; draw();
+    setPatrolStatus('未开始', '—');
+    toast('巡检列表已清空');
+  });
+
+  // 停留时间 / 单位的修改（事件委派，改完不重建 DOM，免得输入框失焦）
+  $('plist').addEventListener('input', function (e) {
+    const t = e.target;
+    const di = t.getAttribute('data-di') !== null
+      ? t.getAttribute('data-di') : t.getAttribute('data-ui');
+    const i = parseInt(di, 10);
+    if (!(i >= 0) || !S.patrol[i]) return;
+    if (t.tagName === 'INPUT') {
+      let v = parseFloat(t.value);
+      if (!isFinite(v) || v < 0) v = 0;
+      if (v > 6000) v = 6000;
+      S.patrol[i].dv = v;
+    } else if (t.tagName === 'SELECT') {
+      S.patrol[i].du = (parseInt(t.value, 10) === 60) ? 60 : 1;
+    }
+    patrolSave();
+  });
+  $('plist').addEventListener('change', function (e) {
+    if (e.target.tagName === 'SELECT') {
+      const i = parseInt(e.target.getAttribute('data-ui'), 10);
+      if (i >= 0 && S.patrol[i]) { patrolSave(); renderPatrol(); }
+    }
+  });
+
+  // 单点删除
+  $('plist').addEventListener('click', function (e) {
+    const t = e.target;
+    if (!t || !t.classList || !t.classList.contains('pdel')) return;
+    if (S.patrolTimer) { toast('巡检正在跑，先点「停止全部」再删点', true); return; }
+    const i = parseInt(t.getAttribute('data-di'), 10);
+    if (!(i >= 0) || !S.patrol[i]) return;
+    const p = S.patrol.splice(i, 1)[0];
+    if (S.patrolIdx > i) S.patrolIdx--;      // 当前点前面被删了，索引跟着挪
+    patrolSave(); renderPatrol(); S.sceneRev++; draw();
+    toast('已删除第 ' + (i + 1) + ' 点（' + p.x.toFixed(2) + ', ' + p.y.toFixed(2) + '）');
+  });
+
+  $('btnPatrolStart').addEventListener('click', function () {
+    if (!inNav()) {
+      toast('巡检要跑在导航栈上：先点「进入导航」（或确认车端 navigation.launch 已在跑）', true);
+      return;
+    }
+    if (!connected) { toast('未连接', true); return; }
+    if (!S.patrol.length) { toast('巡检列表是空的', true); return; }
+    if (S.patrolTimer) { toast('巡检已经在跑了，要停请点上面的「停止全部」', true); return; }
+    S.patrolIdx = -1; S.patrolNear = 0;
+    S.patrolTimer = setInterval(patrolTick, 300);
+    renderPatrol();
+    patrolNext();
+  });
+
+  function patrolNext() {
+    S.patrolIdx++;
+    S.patrolNear = 0;
+    if (S.patrolIdx >= S.patrol.length) {
+      stopPatrol('巡检完成：' + S.patrol.length + ' 个点都跑完了');
+      return;
+    }
+    const p = S.patrol[S.patrolIdx];
+    const free = (p.yaw === null || p.yaw === undefined);
+    S.patrolPhase = 'go';
+    S.patrolT0 = Date.now();
+    setPatrolStatus('前往第 ' + (S.patrolIdx + 1) + '/' + S.patrol.length + ' 点',
+      p.x.toFixed(2) + ', ' + p.y.toFixed(2) +
+      (free ? ' 无向' : ' @ ' + (p.yaw * 57.2958).toFixed(0) + '°'));
+    renderPatrol();
+    sendGoal(p.x, p.y, free ? undefined : p.yaw);
+  }
+
+  function patrolTick() {
+    if (!S.patrolTimer) return;
+    if (S.patrolIdx < 0 || S.patrolIdx >= S.patrol.length) return;
+    const p = S.patrol[S.patrolIdx];
+
+    if (S.patrolPhase === 'go') {
+      const d = S.pose ? Math.hypot(S.pose.x - p.x, S.pose.y - p.y) : 1e9;
+      // 连续 2 次（≈0.6 秒）都在圈内才算到位，防 AMCL 抖一下就误判
+      S.patrolNear = (d < PATROL_TOL) ? S.patrolNear + 1 : 0;
+      if (S.patrolNear >= PATROL_NEED) {
+        const sec = pSec(p);
+        if (sec > 0) {
+          S.patrolPhase = 'dwell';
+          S.patrolDwellEnd = Date.now() + sec * 1000;
+          toast('到第 ' + (S.patrolIdx + 1) + ' 点，停留 ' + pDwellText(sec));
+        } else {
+          patrolNext();
+        }
+        return;
+      }
+      if (Date.now() - S.patrolT0 > PATROL_GO_MS) {
+        toast('第 ' + (S.patrolIdx + 1) + ' 点 3 分钟没到，跳过', true);
+        patrolNext();
+      }
+      return;
+    }
+
+    if (S.patrolPhase === 'dwell') {
+      const left = S.patrolDwellEnd - Date.now();
+      if (left <= 0) { patrolNext(); return; }
+      setPatrolStatus('第 ' + (S.patrolIdx + 1) + '/' + S.patrol.length + ' 点 停留中',
+        '还剩 ' + Math.ceil(left / 1000) + ' 秒');
+    }
+  }
+
+  // 停止巡检。「停止全部」「清除目标」都走这里，不另设停止按钮。
+  function stopPatrol(reason) {
+    if (S.patrolTimer) { clearInterval(S.patrolTimer); S.patrolTimer = null; }
+    S.patrolPhase = ''; S.patrolIdx = -1; S.patrolNear = 0;
+    setPatrolStatus(reason || '已停止', '—');
+    renderPatrol();
+    S.sceneRev++;
+    draw();
+  }
+
+  patrolLoad();      // 刷新页面后把上次的巡检列表恢复回来
+
+  // 取消当前导航目标。
+  // ★ 2026-10-30 实测踩到：点「清除目标」后车还在往前跑。原因不是 cancel 无效，
+  //   而是 WHEELTEC 那套里 /goal_pose 是经由另一个节点转成 action goal 的，
+  //   转出去那一下可能晚于我们的 cancel 到达 move_base，于是 cancel 白发了。
+  //   所以 cancel 连发两遍（立即 + 400ms），第二遍肯定在 goal 之后。
+  function cancelGoalNow() {
+    if (!topics.cancel) return;
+    const pub = function () {
+      topics.cancel.publish(new ROSLIB.Message({ stamp: { secs: 0, nsecs: 0 }, id: '' }));
+    };
+    pub();
+    setTimeout(pub, 400);
+  }
+
   $('btnCancelGoal').addEventListener('click', function () {
     if (!connected) { toast('未连接', true); return; }
-    if (topics.cancel) {
-      topics.cancel.publish(new ROSLIB.Message({ stamp: { secs: 0, nsecs: 0 }, id: '' }));
-    }
+    if (S.patrolTimer) stopPatrol('目标已清除（巡检中止）');
+    cancelGoalNow();
     S.goal = null; S.gplan = []; S.lplan = [];
     // 2026-10-28: 规划路径的缓存也要清 —— 全局路径不过期，不清的话取消目标后
     // 那条蓝线会一直挂在图上（还会被 1s 的刷新定时器一直画回来）。
@@ -2222,7 +2647,7 @@ html, body{overflow:hidden}
       const dist = Math.hypot(dx, dy);
       S.placePrev = null;
       const name = d.place === 'goal' ? '有向目标' : '小车位姿';
-      if (!S.navMode) {
+      if (!inNav()) {
         toast('建图模式下不放点，先点「进入导航」', true);
         draw(); return;
       }
@@ -2249,7 +2674,7 @@ html, body{overflow:hidden}
     }
 
     if (d.click === 'waypoint' && d.moved < CLICK_PX) {
-      if (!S.navMode) { toast('建图模式下不放点，先点「进入导航」', true); return; }
+      if (!inNav()) { toast('建图模式下不放点，先点「进入导航」', true); return; }
       sendGoal(d.w0[0], d.w0[1]);
     }
   });
