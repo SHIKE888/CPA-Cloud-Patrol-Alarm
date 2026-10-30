@@ -171,7 +171,95 @@ module cfg_ctrl_top #(
 	//                     -> 引擎0 没被选中 -> 帧头吐不出 -> 段完不成 -> 死锁。
 	//               修法: 软复位释放那一拍也强制 i_start (sel 归零 + done_p 清空)。
 	//               诊断: 0xA5/0xA6 改为 {encif_full[3:0], jcfg_consume, mrg_segc[9:0]}。
-	parameter [15:0] CFG_VER  = 16'h5101
+	//     0x5200 = V52 (2026-10-29): **修复与单目完美版 0x450D 交叉验证出的唯一回归**
+	//               0x450D 的 CSI-2 组包器 `u_csi2_frame_tx.clk = S_dsi_byte_clk`,
+	//               与 D-PHY 的 I_hs_clk **同一根时钟**, 零跨域。
+	//               V51 把 JPEG 的 `csi2_frame_tx_var` 放到了 S_hs_rx_clk = 70.24MHz,
+	//               而 D-PHY 仍是 S_dsi_byte_clk = 125MHz => hs_en/hs_data[31:0]/hs_last
+	//               32 位裸跨时钟, 125/70.24 = 1.78 非整数比 => 每个 70MHz 数据拍被
+	//               采 1 或 2 次 => 随机重复/丢字节, 码流不可能正确。
+	//               改法: 字节桥读侧 + S_jl_* 补零/丢弃状态机 + var 组包 全部搬到
+	//                     S_dsi_byte_clk; jpeg_byte_bridge 本来就是异步 FIFO,
+	//                     它成为唯一的 CDC 点, 组包器与 D-PHY 之间重新零跨域。
+	//     0x5201 = V52b (2026-10-29): **字节桥排水诊断** (纯观测, 不改数据通路)
+	//               0x5200 板上实测把死锁钉到 byte_bridge:
+	//                 0xA5/A6=0x00/0x10 => encif_full=0x1, consume=0, mrg_segc=0
+	//                 引擎0=0x1442 => T_HDR, lb_avail=1, m_ready=0
+	//                 mrg_segc=0 => sel 未前进 => m_ready=0 只能来自 o_ready_down=0
+	//                 => 桥满 (w_ready=~f_full)
+	//               本版用已作废的 0xE4/0xE5 暴露:
+	//                 0xE4 = 桥读侧已读出字节计数 (8bit, 每次握手+1)
+	//                 0xE5 = 桥读侧剩余字节数低 8 位 (511 满 -> 读回 0xFF 附近)
+	//               判定: rcnt 在变 => 桥在排水, 只是速率限住;
+	//                     rcnt 不变 + lvl 贴满 => 读侧死了。
+	//               同时 0xEF[2] 由"jl_cnt>4M"改为 dsi_pll_lock ——
+	//               S_tx_domain_rst_n 含它, 它若为 0 桥读侧会被按在复位里,
+	//               表现与"读侧死了"一模一样, 必须先排除。
+	//
+	//     0x5301 = V53a (2026-10-29): **死锁根治, 时钟仍 70.238MHz (≈57fps)**
+	//               死锁根因 (完整链路仿真 tb_jpeg_full 与板上 0x5200 完全一致):
+	//                 jpeg_seg_merge4 是 4:1 **串行** mux, 一个引擎的 seg 不结束,
+	//                 另外三路 o_ready 恒 0; 而 jpeg_bitpack 只有约 8 字节输出弹性。
+	//                 => 桥一满 -> mux 阻塞 -> 三路引擎 8 字节憋死 -> 卡 T_NEXT
+	//                 -> enc_if 填满 -> 全局死锁。
+	//               仿真三组对照:
+	//                 桥 512B  + 预取 8 行  : TIMEOUT (复现板上现象)
+	//                 桥 4KB   + 预取 8 行  : 仍 TIMEOUT (桥 level=4094 贴满)
+	//                 桥 4KB   + 预取 16 行 : PASS, 6007 B 与黄金基准逐字节相同
+	//                                       H=32 与 H=64 均 PASS (排除尺度假象)
+	//               本版改动 (只这两项, PLL 未动):
+	//                 ① jpeg_byte_bridge   AW  9 -> 12 (512B -> 4KB)
+	//                 ② jpeg_enc_if        AW 11 -> 12, START_LEVEL 1920 -> 3840 (16 行)
+	//               为什么不再改时钟 (用户要求"先按 57 做"):
+	//                 编码器 8100 MCU x 151.3 clk / 70.238MHz = 17.45ms -> 57.3fps,
+	//                 低于 VTC 的 59.6fps。若改 C3 为 20 分频 (73.75MHz) 可得
+	//                 16.62ms -> 60.2fps, 但 clk0 实测 Fmax 仅 73.872MHz,
+	//                 余量只剩 0.16%, 故先出 57fps 画面, 60fps 留作下一步 A/B。
+	//
+	//     0x5302 = V53b (2026-10-29): **合并器 i_start 根因修复 (这才是真正的死锁)**
+	//               0x5301 板上实测: 桥零字节 (lvl=0/rcnt=0/st_bp=0), mrg_segc=0,
+	//                 一路 encif_full=1, consume=0, stall=746 且每 3s +25,
+	//                 eng0=0x1442(T_HDR,m_ready=0), eng3=0x1167(T_NEXT,pend=2,bp_ok=0)
+	//                 —— 与 V52 **逐位相同**, 说明桥深度/预取深度都不是瓶颈。
+	//               台架 tb_wd 只改 m_start 一行, 其余全同 (70.238MHz + AW(12) + 16 行):
+	//                 m_start = 引擎0 busy 上升沿 (原接法) -> MERGED=6620(错), segcnt=0,
+	//                                                          **引擎1/2 输出 0 字节**
+	//                 m_start = 只由 S_enc_rst_rel 触发      -> MERGED=6007 逐字节正确,
+	//                                                          segcnt=19, 1303/1394/1303/1392
+	//               根因: i_start 会清 sel/done_p, 而引擎0 的 st_busy 不是帧起始指示器
+	//                 (i_soft_rst 清 0、帧尾也清 0, i_en 恒 1 又立刻置 1), 上传沿会在
+	//                 帧中间反复出现 -> sel 被拽回 0 -> 引擎1/2 永远轮不到 ->
+	//                 bitpack 8 字节弹性憋死 -> enc_if 填满 -> 全局 AND 反压饿死四路 ->
+	//                 源断流 -> 看门狗 114ms 复位 -> i_flush 又清 rd_go 且攒不满 16 行
+	//                 -> **永久死锁, 看门狗永远救不活**。
+	//               修法: S_mrg_start = S_enc_rst_rel (段序本身就是 0..3 循环)。
+	//
+	//     0x5303 = V53c (2026-10-29): **纯只读抽头, 不动任何逻辑**
+	//               0x5302 板上实测仍为 零帧/桥零字节/mrg_segc=0/stall 每 114ms+1,
+	//               eng0=0x1442、eng3=0x1167 依旧逐位不变 => 还有更靠前的阻塞点。
+	//               现有寄存器区分不了「sel≠0」和「桥 f_full 假报满」, 也看不到
+	//               dual_stitch 的状态, 所以一次把下面这些都挂出来:
+	//
+	//               ---- 拼接器 (dual_stitch / sensor_sync_start) ----
+	//               0xE1 = st_frames[ 7:0]   已输出帧数（成帧数，最关键的判据）
+	//               0xE3 = st_frames[15:8]
+	//               0xDC = st_l_ovf[ 7:0]    左路补零/丢弃次数（数据完整性告警）
+	//               0xD4 = st_lines[ 7:0]    已输出行数
+	//               0xD5 = st_r_ovf[ 7:0]    右路补零/丢弃次数
+	//               0xE2 = st_l_starve[7:0]  左路掉线恢复次数
+	//               0xE8 = st_r_starve[7:0]  右路掉线恢复次数
+	//                 => 两路都有帧的判据: st_frames 在涨, 且 l/r_starve 不再增长、
+	//                    l/r_ovf 不涨。掉一路: 对应 starve 会一直涨。
+	//               ⚠ st_* 在 70MHz 域被 25MHz 采样, 多 bit 会有脏快照,
+	//                 但这几个是慢变计数器, 看"是否为 0 / 在不在涨"是可靠的。
+	//
+	//               ---- JPEG 引擎/桥 ----
+	//               0xE6 = {S_yuv_de, S_jcfg_valid, S_jcfg_consume, 4'b0, S_jpeg_m_ready}
+	//                      bit0=0 直接证明桥的 f_full 一直为 1（不是 sel 的问题）
+	//               0xE7 = 引擎1 o_diag[7:0]   (bit3:0 = tstate)
+	//               0xE9 = 引擎2 o_diag[7:0]
+	//                 => 配合 0xEA/EB(eng0)、0xEC/ED(eng3) 四路状态全可见
+	parameter [15:0] CFG_VER  = 16'h5303
 )(
 	// ---- 系统时钟域 (25MHz 常开) ----
 	input  wire        i_sys_clk,
