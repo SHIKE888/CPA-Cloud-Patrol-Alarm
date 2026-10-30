@@ -184,9 +184,6 @@ body{
 #viewMap .popt2 input{ width: 46px; padding: 3px 6px; font-size: 12px;
     background: #0d1117; border: 1px solid #30363d; color: #e6edf3;
     border-radius: 6px; font-family: ui-monospace, monospace; }
-/* 遥控盘左上角的云台雷达 */
-#viewMap #dpad .gzradar{ position: absolute; left: 6px; top: 6px; width: 58px;
-    height: 58px; z-index: 3; pointer-events: none; opacity: .92; }
 #viewMap #toast{
     position: absolute; left: 50%; transform: translateX(-50%); bottom: 18px;
     padding: 7px 14px; border-radius: 8px; background: #1f6feb33; border: 1px solid #1f6feb;
@@ -1050,8 +1047,6 @@ html, body{overflow:hidden}
     <div id="toast"></div>
     <!-- 2026-10-30: 遥控盘从右列扰到地图左下角，悬停覆盖在画布上方；速度换成滑条 -->
     <div id="dpad">
-      <!-- 云台方位雷达：正上方 = 车头。巡检巡视/追踪时能直接看出云台朝哪 -->
-      <canvas id="gzRadar" class="gzradar" width="64" height="64"></canvas>
       <!-- 2026-10-30: 方向键上方一个小画面预览。
            注意不能用 <img src=/stream>：服务端 _stream_acquire(ip) 是「同 IP 只留
            最新一路」，再开一条会把「视频采集」页的那条顶黑。所以这里用
@@ -1364,24 +1359,9 @@ html, body{overflow:hidden}
     requestAnimationFrame(function () { requestAnimationFrame(doFit); });
     setTimeout(doFit, 180);
     dPrevStart();
-    gzIdleStart();          // 雷达一直跟着云台，不用等巡检
+    // 2026-10-30: 调度界面的云台雷达已去掉（云台方向看「视频采集→云台」页签），
+    //   所以这里也不再拉 1.5s 的 /api/gimbal 空轮询。
   });
-
-  // 不在巡检时也要让雷达跟着云台走：低频（1.5s）拉一次 /api/gimbal
-  let gzIdleTimer = null;
-  function gzIdleStart() {
-    if (gzIdleTimer) return;
-    const tick = function () {
-      if (document.hidden || gzPhase !== 'off') return;   // 巡检中由 gzTick 接管
-      gzFetch('GET').then(gzDrawLocal);
-    };
-    tick();
-    gzIdleTimer = setInterval(tick, 1500);
-  }
-  function gzIdleStop() {
-    if (gzIdleTimer) { clearInterval(gzIdleTimer); gzIdleTimer = null; }
-  }
-  window.addEventListener('video:show', gzIdleStop);
 
   // ── 方向键上方的小画面预览 ────────────────────────────────────
   // 用 /snapshot.jpg 轮询，而不是再开一条 /stream：
@@ -2796,8 +2776,11 @@ html, body{overflow:hidden}
     } catch (e) { return null; }
   }
   function gzDrawLocal() {
-    if (!window.drawGimbalRadar) return;
-    window.drawGimbalRadar($('gzRadar'), {
+    // 2026-10-30: 调度界面的雷达已删除；巡检/追踪仍然跑，只是不再画那个小圆盘。
+    //   $('gzRadar') 现在返回 null，这里直接返回（drawGimbalRadar 自己也有判空）。
+    const c = $('gzRadar');
+    if (!c || !window.drawGimbalRadar) return;
+    window.drawGimbalRadar(c, {
       yaw_rel: gzInfo.yaw_rel_deg,
       limits: gzInfo.limits,
       tracking: gzPhase === 'track' || !!gzInfo.tracking,
