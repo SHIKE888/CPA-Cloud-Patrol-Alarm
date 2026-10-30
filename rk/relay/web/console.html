@@ -2161,9 +2161,13 @@ html, body{overflow:hidden}
     S.mapHz = 0; S.mapT = 0; S.mapCount = 0;
     S.mapBase = null;          // 新图：地图身份要重新取，别拿旧图的位姿记忆去对齐
     // 新的一张图，旧的巡检点在坐标上已经没意义了
+    const prevBase = patrolMapSeen;
     if (S.patrolTimer) stopPatrol('已重新开始建图（巡检中止）');
     S.patrol = []; S.patrolIdx = -1;
     patrolSave(); renderPatrol();
+    // 建图中服务端可能还会把旧的 map_base 报回来；标记成"已绑定过"，
+    // 免得 patrolSyncToMap 把它当成换图又把旧列表载回来。
+    patrolMapSeen = prevBase;
     S.sceneRev++;
     $('stMap').textContent = '重新建图中…';
     // 只有已经开始建图，才允许「保存建图」
@@ -2287,6 +2291,7 @@ html, body{overflow:hidden}
 
       // 地图身份：所有位姿记忆都按它分开存
       S.mapBase = st.map_base || null;
+      patrolSyncToMap();     // ★ 同一张图的巡检点跟着位姿一起恢复
 
       // ① 有“上次停止全部”记住的位姿就用那个（车没被挪过的前提）
       const memo = loadPoseMemo();
@@ -2385,6 +2390,7 @@ html, body{overflow:hidden}
 
       // 地图身份：位姿记忆按它归类（和导航模式共用同一张图）
       if (st.map_base) S.mapBase = st.map_base;
+      patrolSyncToMap();     // ★ 地图身份可能刚拿到/刚变 -> 把这张图的巡检点换回来
       // 导航栈是否在跑（车端 /amcl 节点存在）—— 决定能不能放目标 / 跑巡检
       S.navStack = !!st.nav;
 
@@ -2457,8 +2463,8 @@ html, body{overflow:hidden}
   //   yaw === null -> 无向目标（orientation 保持 w=1）
   //   dv / du      -> 停留 = dv * du 秒（du 只有 1 或 60，即「秒 / 分」）
   // 加入方式：先用「无向目标 / 有向目标」在地图上放一个目标（S.goal），
-  //   再点「加入巡检」按顺序追加。列表存 localStorage，刷新不丢。
-  const PATROL_KEY = 'patrol:list';
+  //   再点「加入巡检」按顺序追加。列表按地图身份存 localStorage（见 patrolKey），
+  //   刷新不丢，换回同一张图也自动恢复。
   const PATROL_TOL = 0.35;          // 到位判定半径（m）
   const PATROL_STOP_NEED = 3;       // 连续几次（300ms 一次）静止才算「停稳」≈0.9s
   const PATROL_GO_MS = 180000;      // 单点超时 3 分钟 -> 跳过该点
@@ -2502,18 +2508,28 @@ html, body{overflow:hidden}
     if (sec >= 60 && sec % 60 === 0) return (sec / 60) + ' 分';
     return sec + ' 秒';
   }
-  function patrolSave() {
-    try { localStorage.setItem(PATROL_KEY, JSON.stringify(S.patrol)); } catch (e) {}
+  // ★ 2026-10-30（用户要求）：巡检点**跟地图存**，不是全局一份。
+  //   键名用的是和位姿记忆（navpose:<map_base>）同一个地图身份 map_base，
+  //   所以“换一张图 -> 点位全换一批，回到旧图 -> 点位自动恢复”。
+  //   还不知道是哪张图（刚开页 / 没连车）时先用老的全局键抛着，
+  //   等 map_base 一拿到就迁到那张图名下（只迁一次，迁完删掉旧键）。
+  const PATROL_KEY = 'patrol:list';        // 旧版本：全局一份（仅兼容迁移用）
+  let patrolMapSeen = null;                // 上次绑定的地图身份
+  function patrolKey() {
+    return S.mapBase ? ('patrol:' + S.mapBase) : PATROL_KEY;
   }
-  function patrolLoad() {
-    S.patrol = [];
+  function patrolSave() {
+    try { localStorage.setItem(patrolKey(), JSON.stringify(S.patrol)); } catch (e) {}
+  }
+  function patrolParse(raw) {
+    const out = [];
     try {
-      const a = JSON.parse(localStorage.getItem(PATROL_KEY) || '[]');
+      const a = JSON.parse(raw || '[]');
       if (Array.isArray(a)) {
         for (let i = 0; i < a.length; i++) {
           const p = a[i];
           if (p && isFinite(p.x) && isFinite(p.y)) {
-            S.patrol.push({
+            out.push({
               x: +p.x, y: +p.y,
               yaw: (p.yaw === null || p.yaw === undefined) ? null : +p.yaw,
               dv: isFinite(p.dv) ? +p.dv : 5,
@@ -2522,8 +2538,36 @@ html, body{overflow:hidden}
           }
         }
       }
-    } catch (e) { S.patrol = []; }
+    } catch (e) { return []; }
+    return out;
+  }
+  function patrolLoad() {
+    let raw = null;
+    try { raw = localStorage.getItem(patrolKey()); } catch (e) { raw = null; }
+    // 第一次把巡检列表绑到具体地图：把旧的全局列表继承过来（只做一次）
+    if (raw === null && S.mapBase) {
+      try {
+        const old = localStorage.getItem(PATROL_KEY);
+        if (old !== null) {
+          raw = old;
+          localStorage.setItem(patrolKey(), old);
+          localStorage.removeItem(PATROL_KEY);   // 删掉，不然会泄到别的图上
+        }
+      } catch (e) {}
+    }
+    S.patrol = patrolParse(raw);
     renderPatrol();
+  }
+  // map_base 变了 -> 换一批巡检点。建图时会先把 mapBase 清 null，这里只在
+  // 拿到非空 map_base 时才真换（否则会拿空值把列表冲掉）。
+  function patrolSyncToMap() {
+    if (!S.mapBase) return;
+    if (S.mapBase === patrolMapSeen) return;
+    patrolMapSeen = S.mapBase;
+    if (S.patrolTimer) stopPatrol('地图变了（巡检中止）');
+    patrolLoad();
+    S.sceneRev++;
+    draw();
   }
   function setPatrolStatus(a, b) {
     if ($('stPatrol')) $('stPatrol').textContent = a;
