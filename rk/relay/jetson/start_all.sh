@@ -55,6 +55,16 @@ wait_port() {  # wait_port PORT TIMEOUT NAME
 
 cd "$HERE" || exit 1
 
+# ── 0. eth1（连板子的 USB 网卡）──────────────────────────────
+#   ⚠ 不要在启动链路里"重新 probe"来抢时间：实测 unbind 会被那个已经卡在
+#     request_firmware 里的 probe 挡住，等满 60 秒才返回，反而把后面的 roscore
+#     拖到开机 66 秒。真因是 /boot/initrd 里没有 rtl8153b-2.fw（只有 a-4 版），
+#     唯一的修法是把固件放进 /boot/initrd，那是引导镜像改动，另行处理。
+#     这里只做一次**非阻塞**的自检日志，不影响启动时序。
+if ! ip -4 addr show eth1 2>/dev/null | grep -q "inet "; then
+  say "注意 eth1 暂无 IP（r8152 固件回退，约 71s 后才就绪）"
+fi
+
 # ── 1. roscore（后面三个都要等 master，必须串行）────────────
 if port_up 11311; then
   say "SKIP roscore  已在跑"
