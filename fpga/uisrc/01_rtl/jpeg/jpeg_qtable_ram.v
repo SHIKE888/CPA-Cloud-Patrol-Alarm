@@ -51,6 +51,37 @@ module jpeg_qtable_ram (
 
     reg [7:0] ram [0:127];
 
+    //==========================================================================
+    //  ★★ V54j (2026-10-31): 量化表放大系数 —— 把码率压回 MIPI 带宽以内 ★★
+    //
+    //  板上 0x5406 实测 (CFG_VER=0x5406):
+    //      每帧字节数 2.2M~16.8M (平均约 10 MB), st_frames 增量 49.5 fps
+    //      => 10MB x 49.5 = 495 MB/s
+    //      而 MIPI 4lane@1Gbps (8b/10b 后) 上限 = 400 MB/s => 超 24%
+    //      => D-PHY HS FIFO 溢出 => CRC/ECC 错 => 整帧报废 => 画面花/绿
+    //
+    //  正常 Q50 标准表压缩比应该 ~15:1 (每帧 ~500KB), 实测只有 1.56:1,
+    //  说明「量化步长相对 DCT 系数太小」。这里把量化步长整体放大 Q_SCALE 倍:
+    //  系数被除得更多 -> 高频大量归零 -> 熵编码输出大幅下降。
+    //  Q_SCALE=4 (等效质量降到 Q12 左右) 后预计每帧 0.2~4 MB, 数据率
+    //  10~200 MB/s, 稳稳落在 400MB/s 以内。
+    //
+    //  ⚠ 运行期无法调: 0x01 QUALITY 在 system_top 里是悬空的,
+    //     且本 RAM 的 I_wr_en 硬接 1'b0, 所以只能编译期定。
+    //     要改码率就改这个 Q_SCALE 参数 (1 = 标准表原始行为)。
+    //==========================================================================
+    parameter integer Q_SCALE = 4;
+
+    // 饱和到 255: 标准表最大 121, x4 = 484 会溢出 8 位
+    function [7:0] q_mul;
+        input [7:0] q;
+        reg   [15:0] t;
+        begin
+            t     = q * Q_SCALE;
+            q_mul = (t > 16'd255) ? 8'd255 : t[7:0];
+        end
+    endfunction
+
     // 写地址解码: 0x10..0x8F -> 0..127
     wire        S_wr_hit  = (I_wr_addr >= 8'h10) && (I_wr_addr <= 8'h8F);
     wire [6:0]  S_wr_idx  = I_wr_addr[6:0] - 7'h10;
@@ -58,10 +89,10 @@ module jpeg_qtable_ram (
     integer i;
     always @(posedge I_clk or negedge I_rst_n) begin
         if (!I_rst_n) begin
-            // 上电即装标准表: 0..63 亮度, 64..127 色度
+            // 上电即装标准表: 0..63 亮度, 64..127 色度 (按 Q_SCALE 放大)
             for (i = 0; i < 64; i = i + 1) begin
-                ram[i]     <= jpeg_q_lum(i[5:0]);
-                ram[64 + i]<= jpeg_q_chr(i[5:0]);
+                ram[i]     <= q_mul(jpeg_q_lum(i[5:0]));
+                ram[64 + i]<= q_mul(jpeg_q_chr(i[5:0]));
             end
         end else if (I_wr_en && S_wr_hit) begin
             ram[S_wr_idx] <= I_wr_data;
