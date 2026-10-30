@@ -159,6 +159,16 @@ body{
 #viewMap #dpad .stop{ grid-column: 2; grid-row: 2; font-size: 17px; font-weight: 600;
     background: #8b2c2c; border-color: #b34242; color: #ffd7d7; }
 #viewMap #dpad .stop:hover{ background: #a33535; border-color: #d05555; color: #fff; }
+/* 小画面预览：与方向键同宽（198px），16:9 */
+#viewMap #dpad .dstream{ position: relative; width: 198px; height: 111px;
+    border-radius: 8px; overflow: hidden; background: #000;
+    border: 1px solid var(--line); align-self: center; }
+#viewMap #dpad .dstream img{ width: 100%; height: 100%; object-fit: contain;
+    display: block; }
+#viewMap #dpad .dstream span{ position: absolute; inset: 0; display: flex;
+    align-items: center; justify-content: center;
+    color: #6e7681; font-size: 11.5px; pointer-events: none; }
+#viewMap #dpad .dstream img[src]{ /* 有图之后把提示藏掉 */ }
 /* 速度滑条：放在方向键**下方**（原来是右侧） */
 #viewMap #dpad .sliders{ display: flex; flex-direction: column; gap: 6px; width: 198px; }
 #viewMap #dpad .srow{ display: flex; align-items: center; gap: 6px; }
@@ -1025,6 +1035,14 @@ html, body{overflow:hidden}
     <div id="toast"></div>
     <!-- 2026-10-30: 遥控盘从右列扰到地图左下角，悬停覆盖在画布上方；速度换成滑条 -->
     <div id="dpad">
+      <!-- 2026-10-30: 方向键上方一个小画面预览。
+           注意不能用 <img src=/stream>：服务端 _stream_acquire(ip) 是「同 IP 只留
+           最新一路」，再开一条会把「视频采集」页的那条顶黑。所以这里用
+           /snapshot.jpg 轮询（~3fps），带宽和干扰都小很多。 -->
+      <div class="dstream">
+        <img id="dStream" alt="预览">
+        <span id="dStreamTip">画面预览</span>
+      </div>
       <div class="grid">
         <button data-vx="1"  data-wz="0"  style="grid-column:2;grid-row:1">▲</button>
         <button data-vx="0"  data-wz="1"  style="grid-column:1;grid-row:2">◀</button>
@@ -1134,6 +1152,7 @@ html, body{overflow:hidden}
       // 视频工作台代码已并入本文件，无需 iframe。
       // 首次切过来才触发连接，避免一打开就连两路数据。
       videoLoaded = true;
+      window.dispatchEvent(new Event('video:show'));   // 让地图页的小预览停掉
       if (typeof window.relayVideoActivate === 'function') window.relayVideoActivate();
     } else {
       // 离开视频视图：先把云台点动停住（按钮被隐藏后 pointerup 收不到）
@@ -1316,7 +1335,37 @@ html, body{overflow:hidden}
     };
     requestAnimationFrame(function () { requestAnimationFrame(doFit); });
     setTimeout(doFit, 180);
+    dPrevStart();
   });
+
+  // ── 方向键上方的小画面预览 ────────────────────────────────────
+  // 用 /snapshot.jpg 轮询，而不是再开一条 /stream：
+  //   服务端 _stream_acquire(ip) 是「同 IP 只留最新一路」，第二个 MJPEG 客户端
+  //   会把「视频采集」页那条顶掉，两边一起黑（视频页里已有注释踩过这个坑）。
+  // 只在调度控制可见时跑，切到视频页就停，不给板子添负担。
+  let dPrevTimer = null;
+  function dPrevStart() {
+    const img = $('dStream'), tip = $('dStreamTip');
+    if (!img) return;
+    if (img._onload) return;
+    img._onload = function () {
+      img._onload = true;
+      if (tip) tip.style.display = 'none';
+    };
+    img.onload = function () { if (tip) tip.style.display = 'none'; };
+    img.onerror = function () { if (tip) { tip.style.display = ''; tip.textContent = '无画面'; } };
+    if (dPrevTimer) return;
+    const tick = function () {
+      if (document.hidden) return;          // 页面在后台就不拉了
+      img.src = '/snapshot.jpg?t=' + Date.now();
+    };
+    tick();
+    dPrevTimer = setInterval(tick, 330);    // ~3fps，够看个大概
+  }
+  function dPrevStop() {
+    if (dPrevTimer) { clearInterval(dPrevTimer); dPrevTimer = null; }
+  }
+  window.addEventListener('video:show', dPrevStop);
 
   function drawPolylineOn(g, pts, color, lw) {
     if (!pts || pts.length < 2) return;
