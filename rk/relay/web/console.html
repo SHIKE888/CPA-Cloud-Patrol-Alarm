@@ -377,6 +377,9 @@ body{
 #viewVideo .gzradarBox{ display:flex; flex-direction:column; align-items:center; gap:4px;
   color:var(--dim); font-size:11px; }
 #viewVideo .gzradarBox canvas{ width:96px; height:96px; }
+/* 云台三条滑条对齐：标签列与数值列都固定宽度，滑条长度就一致了 */
+#viewVideo #tab-gz .row label{ flex: 0 0 64px; }
+#viewVideo #tab-gz .row .val{ flex: 0 0 78px; }
 #viewVideo #tab-gz .kv b{font-variant-numeric:tabular-nums; font-weight:600}
 #viewVideo .kv{display:flex;justify-content:space-between;gap:8px}
 #viewVideo .mgroup{display:flex; align-items:center; gap:7px; font-size:10.5px;
@@ -966,15 +969,15 @@ html, body{overflow:hidden}
 
       <div class="row"><label>速度</label>
         <input type="range" id="gz_speed" min="5" max="45" step="1" value="25">
-        <span class="val" id="gzv_speed" style="flex:0 0 62px">25 °/s</span></div>
+        <span class="val" id="gzv_speed">25 °/s</span></div>
 
       <div class="row"><label title="速度指令的加速度上限：越小越柔和，越大越跟手">加速度</label>
         <input type="range" id="gz_accel" min="50" max="800" step="10" value="250">
-        <span class="val" id="gzv_accel" style="flex:0 0 78px">250 °/s²</span></div>
+        <span class="val" id="gzv_accel">250 °/s²</span></div>
 
       <div class="row"><label title="卡尔曼前瞻时间：补偿 AI + 串口的流水线延迟，让人物走在画面中间而不是被追着跑；0=不预测">预测</label>
         <input type="range" id="gz_pred" min="0" max="40" step="1" value="15">
-        <span class="val" id="gzv_pred" style="flex:0 0 62px">0.15 s</span></div>
+        <span class="val" id="gzv_pred">0.15 s</span></div>
 
       <div class="sep"></div>
 
