@@ -950,13 +950,6 @@ html, body{overflow:hidden}
 
     <!-- ======== 云台（QGimbal）：快捷控制 / 零点 / YOLO 目标追踪 ======== -->
     <div class="tabbody" id="tab-gz" hidden>
-      <p class="hint" style="margin-top:0">
-        长按方向键持续转动，<b>松手立即停</b>（后端还有 0.8 s 看门狗）。
-        软件限位 <b>Yaw ±<span id="gzLimYaw">170</span>° / Pitch
-        ±<span id="gzLimPitch">42</span>°</b>，并且再与固件
-        <span id="gzLimFw">limit.pitch.deg</span> 取小 —— 目标值永远不会越界。
-      </p>
-
       <div class="gzrow">
         <div class="gzpad">
           <button class="gzbtn" data-jog="up"    title="视线向上（Pitch +）">↑</button>
@@ -4710,8 +4703,7 @@ function gzSync() {
   if ($("gzLimPitch")) $("gzLimPitch").textContent = (lim.pitch_rel ?? 42);
   if ($("gzLimFw"))    $("gzLimFw").textContent    =
       lim.pitch_fw ? ("limit.pitch.deg=" + lim.pitch_fw + "°")
-                   : "（读不到限位，已按 28° 保守处理）";
-  $("gzYaw").textContent     = deg(g.yaw_deg) + " / " + deg(g.yaw_rel_deg);
+                   : "（读不到限位，已按 28° 保守处理）";  $("gzYaw").textContent     = deg(g.yaw_deg) + " / " + deg(g.yaw_rel_deg);
   $("gzPitch").textContent   = deg(g.pitch_deg) + " / " + deg(g.pitch_rel_deg);
   $("gzTgt").textContent     = g.target ? deg(g.target[0]) + ", " + deg(g.target[1]) : "—";
   $("gzZeroPos").textContent = g.zero ? deg(g.zero[0]) + ", " + deg(g.zero[1]) : "—";
