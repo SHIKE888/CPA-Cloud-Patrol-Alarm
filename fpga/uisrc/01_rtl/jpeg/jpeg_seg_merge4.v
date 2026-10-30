@@ -118,9 +118,16 @@ module jpeg_seg_merge4 (
     end
 
     reg [3:0] done_nx;
+    // ★★ V54o (2026-11-01): sw_ok 与 i_seg_done[sel] 同拍时不能把"新完成"吞掉 ★★
+    //
+    //  原来是 `if (sw_ok) done_nx[sel] = 1'b0;` —— 无差别清零。若切换的同一拍
+    //  该引擎刚好又完成了一个段 (i_seg_done[sel]=1), 这个"真的完成了"会被当成
+    //  "我正在消费的这个 done" 清掉, 于是下一轮要等它再 done —— 但它已经 done
+    //  过了不会再发, 那一路就白等一整轮 (最坏情况一路 starve 到底)。
+    //  改成: 同拍有新 done 就保留它, 只清掉被消费的那一个。
     always @(*) begin
         done_nx = done_p | i_seg_done;
-        if (sw_ok) done_nx[sel] = 1'b0;
+        if (sw_ok) done_nx[sel] = i_seg_done[sel];
     end
 
     always @(posedge clk or negedge rst_n) begin

@@ -317,9 +317,44 @@ module ui_awb #(
         end
     end
 
-    assign O_tlast  = (valid_d1 == 1'b0) && (valid_d2 == 1'b1);
-    assign O_tuser  = I_tuser_r2;
+    //========================================================================
+    //  ★★ V54o (2026-11-01): 修 O_tlast —— 原来是"valid 上升沿", 每行产出 2 个
+    //
+    //  原实现:
+    //      assign O_tlast = (valid_d1 == 1'b0) && (valid_d2 == 1'b1);
+    //  即把 **valid 的上升沿** 当成 tlast, 而输入 I_tlast 从头到尾没被使用过。
+    //
+    //  但拼接器输出的每行是有内部空隙的: 左半 480 组 -> 2 拍 valid=0
+    //  -> 右半 480 组 -> 行末 2~3 拍 valid=0。于是每物理行产生 **2 个**
+    //  valid 上升沿 => 每行 2 个 tlast。后果 (已在板上通过 55fps + 无 FFD8
+    //  + 桥持续有数据 的现象交叉印证):
+    //    (1) S_yuv_last 每行 2 个 -> dbuf -> S_jcfg_last 每行 2 个
+    //        -> S_jg_gcnt 只在 0..479 摆动 -> S_jg_vld = {0,0,1,1}
+    //        => **引擎 2/3 永远收不到一个像素** (只剩引擎 0/1 在编)
+    //    (2) preproc_post 的 row 每行 +2 -> 一帧变成 2160 行
+    //        -> roi_h=1080 之后整片被填 RGB=0 => 画面下半幅全黑
+    //
+    //  修法: 本模块上游的 ui_signal_delay 是**按 img_width_4x 自动分行**的
+    //  (它的 rd_valid 每行固定出 img_width_4x 组, 且完全不使用 I_tlast),
+    //  所以正确的 tlast 就是"输出侧本行最后一个有效组"。这里自己在输出侧
+    //  数有效组重建 —— 与模块自身的分行逻辑严格一致, 也不受行内空隙影响
+    //  (o_col 只在 O_tvalid 时递增, 空隙不会推进行号)。
+    //
+    //  ⚠ 不用"I_tlast 延迟对齐"的做法: DELAY_CYCLE 是**行内水平位移**
+    //    (50 组), 行末的 tlast 位移 50 组后会跨到下一行, 反而错。
+    //========================================================================
+    wire [12:0] S_w4 = I_img_width >> 2;      // 每行 4 像素组数
+    reg  [12:0] o_col;
+    always @(posedge I_clk or negedge I_rst_n) begin
+        if (!I_rst_n)          o_col <= 13'd0;
+        else if (I_tuser_r2)   o_col <= 13'd1;   // 行首第一个有效组已计入
+        else if (valid_d2)
+            o_col <= (o_col >= (S_w4 - 13'd1)) ? 13'd0 : (o_col + 13'd1);
+    end
+
     assign O_tvalid = valid_d2;
+    assign O_tlast  = O_tvalid && (o_col >= (S_w4 - 13'd1));
+    assign O_tuser  = I_tuser_r2;
 
     assign O_tdata = O_tvalid ? {R_new_x4, G_new_x4, B_new_x4,
                                  R_new_x3, G_new_x3, B_new_x3,

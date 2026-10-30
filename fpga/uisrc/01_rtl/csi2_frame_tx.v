@@ -535,6 +535,14 @@ module csi2_frame_tx_var #(
         pbuf[{tx_bank, ri0}]
     };
 
+    // ★★ V54o: CRC 只累加真实字节 (ridx+k < t_wc), 越界补齐的 0 不计入 ★★
+    //    否则 WC%4!=0 的包 (每帧的 EOI 末包就是) CRC 必错。
+    //    第 0 字节一定有效 (进入 S_PL 时 ridx < t_wc), 后三个按范围条件累加。
+    wire [15:0] crc_a  = crc16_byte(crc,             pl_word[ 7: 0]);
+    wire [15:0] crc_b  = (ridx + 16'd1 < t_wc) ? crc16_byte(crc_a, pl_word[15: 8]) : crc_a;
+    wire [15:0] crc_c  = (ridx + 16'd2 < t_wc) ? crc16_byte(crc_b, pl_word[23:16]) : crc_b;
+    wire [15:0] crc_nx = (ridx + 16'd3 < t_wc) ? crc16_byte(crc_c, pl_word[31:24]) : crc_c;
+
     //==========================================================================
     //  写侧: 与状态机完全独立, 只有撞 bank 时才停
     //==========================================================================
@@ -655,16 +663,17 @@ module csi2_frame_tx_var #(
             end
 
             //------------------------------------------------------------------
+            //  ★★ V54o (2026-11-01): CRC 只能算**真实字节**, 不能算补齐的 0 ★★
+            //
+            //  pl_word 在 ridx+1/2/3 >= t_wc 时会补 8'h00, 但线路上仍然发满 4 字节
+            //  (D-PHY 靠 hs_last 截断)。原来把补的 0 也丢进 crc16_byte, 于是
+            //  任何 WC%4 != 0 的包 CRC 必错 —— 而变长码流里**每帧恰好有一个**
+            //  这样的包: 带 s_tlast 的末包。RK 侧会因此丢掉那一包, 也就丢掉
+            //  FF D9。这里改成"越界字节不参与 CRC", 与接收侧按 WC 截断完全一致。
             S_PL: begin
                 hs_en   <= 1'b1;
                 hs_data <= pl_word;
-                crc     <= crc16_byte(
-                             crc16_byte(
-                               crc16_byte(
-                                 crc16_byte(crc, pl_word[7:0]),
-                                 pl_word[15:8]),
-                               pl_word[23:16]),
-                             pl_word[31:24]);
+                crc     <= crc_nx;
                 ridx    <= ridx + 16'd4;
                 wcnt    <= wcnt + 16'd1;
                 if (wcnt == words - 16'd1) state <= S_CRC;

@@ -177,8 +177,11 @@ module jpeg_quant_zz (
     end
 
     wire [6:0] widx_d = widx_pipe[RCP_LAT-1];
-    // ⚠ 与改造前行为一致: 只有 L_RUN 期间的 127 项会写入 (rc_vld 已编码该条件),
-    //   idx=127 那一项依旧不写 —— 这是历史行为, 改变会破坏逐字节回归。
+    // ★ V54o (2026-11-01): 更正注释。原注释说"idx=127 那一项依旧不写",
+    //   但实际逻辑是**会写**的: lidx 走到 127 的那一拍 lstate 仍是 L_RUN,
+    //   jpeg_recip_pipe 的 i_valid=(lstate==L_RUN) 成立 => rc_vld=1,
+    //   而 wr_c = rc_vld && (widx_d > 63) 对 127 成立, 写入 rz_c[127&63]=rz_c[63]。
+    //   即 128 项(0..127)全部覆盖, 无遗漏。此处仅修正误导性注释, 逻辑不动。
     wire        wr_y = rc_vld && (widx_d <= 7'd63);
     wire        wr_c = rc_vld && (widx_d >  7'd63);
 

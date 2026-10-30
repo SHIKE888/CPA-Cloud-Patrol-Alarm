@@ -149,7 +149,26 @@ module jpeg_encoder_top #(
     reg         rst_req;       // 给 bitpack 的插入脉冲
     reg  [15:0] enc_mcu;       // 本帧已编完的 MCU 总数
     wire        bp_rst_done;
+    reg         bp_rst_done_d; // V54o: bp_rst_done 打一拍, 用于取上升沿
     localparam integer TOTAL_MCU = MCU_X * MCU_Y;
+
+    // ★★ V54o (2026-11-01): 软复位必须同时打到 DCT/量化/熵编码/位打包 ★★
+    //
+    //  原来 i_soft_rst 只清 tstate 和 st_busy, 而 u_dct/u_quant/u_huff/u_bitpack
+    //  全部挂在 rst_n 上。于是看门狗触发一次后: bitpack.acc 里还压着上一帧的
+    //  >=33 bit (bp_ok=0)、huff 还在半途, 而 tstate 从 mx=0,my=0 重来 ——
+    //  新帧的字节接在旧残位后面, **整帧码流必错**, 累流里不可能出现合法的 FF D8。
+    //  这也是"看门狗“救活”之后仍然没图"的直接原因。
+    //  rz_y/rz_c 会被一并清零, 但 T_IDLE 会重新置 q_load, 量化表会重新装载。
+    wire S_rst_n_all = rst_n & ~i_soft_rst;
+
+    // V54o: bp_rst_done 是电平(bitpack 的输出口冻结期间一直保持),
+    //       rst_idx 必须按上升沿自增, 否则一次会跳 4*N。
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n)          bp_rst_done_d <= 1'b0;
+        else if (i_soft_rst) bp_rst_done_d <= 1'b0;
+        else                 bp_rst_done_d <= bp_rst_done;
+    end
 
     //=============================================================== linebuf
     wire        lb_ready;
@@ -271,7 +290,7 @@ module jpeg_encoder_top #(
 
     jpeg_quant_zz u_quant (
         .clk         (clk),
-        .rst_n       (rst_n),
+        .rst_n       (S_rst_n_all),
         .i_load      (q_load),
         .o_qt_idx    (o_qt_idx_b),
         .i_qt_data   (i_qt_data_b),
@@ -311,7 +330,7 @@ module jpeg_encoder_top #(
 
     jpeg_huff_enc u_huff (
         .clk          (clk),
-        .rst_n        (rst_n),
+        .rst_n        (S_rst_n_all),
         .i_blk_start  (huff_start),
         .i_comp       (huff_comp),
         .i_chroma_tbl (huff_chroma),
@@ -338,7 +357,7 @@ module jpeg_encoder_top #(
 
     jpeg_bitpack u_bitpack (
         .clk        (clk),
-        .rst_n      (rst_n),
+        .rst_n      (S_rst_n_all),
         .i_flush    (bp_flush),
         .i_rst_req  (rst_req),
         .i_rst_idx  (rst_idx),
@@ -491,8 +510,18 @@ module jpeg_encoder_top #(
                 end
             end
 
+            // ★★ V54o (2026-11-01): bp_rst_done 是**电平**, rst_idx 必须按边沿自增
+            //
+            //  bp_rst_done 来自 jpeg_bitpack 的 o_rst_done: 它在把 0xDn 摆到输出口
+            //  那一拍置 1, 只有 out_go=(!o_valid||o_ready) 成立时才清 0。所以只要
+            //  m_ready 在此时被拉低 (合并器切到别的引擎 / 桥忙), 这个电平会**保持
+            //  很多拍**。原来按电平自增 => rst_idx 一次跳 4*N, RST0..RST7 的序号
+            //  彻底乱掉, 解码器从该点起全部错位。
+            //  改成上升沿自增, rst_busy 仍按电平保持清除(它本来就是"等标记出去")。
             if (bp_rst_done) begin
                 rst_busy      <= 1'b0;
+            end
+            if (bp_rst_done && !bp_rst_done_d) begin
                 rst_pred_pend <= 1'b1;    // 重启段的第一块要清 DC 预测器
                 rst_idx       <= rst_idx + RST_STEP[2:0];
             end
@@ -766,7 +795,24 @@ module jpeg_encoder_top #(
 
             T_EOI: begin
                 // ★ FF/D9 也要等下游接住; 否则发包期间这两个字节会丢。
-                if (m_ready) begin
+                // ★★ V54o (2026-11-01): 必须同时看 m_valid ★★
+                //
+                //  输出 mux 只在 (tstate==T_EOI && EOI_EN!=0) 时才强制 m_valid=1。
+                //  对 EOI_EN==0 的引擎 (本工程 4 个引擎里只有最后一个带 EOI),
+                //  T_EOI 期间 m_valid = bp_valid, 通常是 0 —— 原来只判 m_ready
+                //  就会在**完全没有握手**的情况下翻两次 eoi_ph 收尾, 于是
+                //  st_done/st_busy 照常更新, 而实际还有字节没吐出去 =>
+                //  "统计正常但码流少字节"的典型成因。
+                //  修法: EOI_EN==0 直接收尾(不出 EOI); EOI_EN!=0 时要求
+                //  m_valid && m_ready 才算真的送出一个字节。
+                if (EOI_EN == 0) begin
+                    eoi_ph         <= 1'b0;
+                    st_frame_bytes <= bp_cnt[23:0];
+                    st_frame_cnt   <= st_frame_cnt + 32'd1;
+                    st_done        <= 1'b1;
+                    st_busy        <= 1'b0;
+                    tstate         <= T_IDLE;
+                end else if (m_valid && m_ready) begin
                     eoi_ph <= ~eoi_ph;
                     if (eoi_ph) begin
                         st_frame_bytes <= bp_cnt[23:0];

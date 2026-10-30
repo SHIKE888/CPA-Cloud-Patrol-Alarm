@@ -182,7 +182,9 @@ module tb_csi2_frame_tx_var;
         begin : c2
             reg [15:0] c; integer k;
             c = 16'hFFFF;
-            for (k=4;k<8;k=k+1) c = crc_b(c, (k<7) ? src[k] : 8'h00);
+            // V54o: CRC 只覆盖 WC 指定的真实字节 (WC=3 => src[4..6]),
+            //       线路上补的 0x00 不参与运算。
+            for (k=4;k<7;k=k+1) c = crc_b(c, src[k]);
             exp[nexp]= c[7:0];  nexp=nexp+1;
             exp[nexp]= c[15:8]; nexp=nexp+1;
             exp[nexp]= 8'h00;   nexp=nexp+1;

@@ -764,6 +764,8 @@ wire [7:0]  S_dbg_jb;
 //      CE=1 但 CC!=FF  -> SOI 在码流里但不在帧首 => sel 起始相位错 (段计数与 4 不同余)
 //      CE=0             -> 合并器从不输出 SOI => 引擎 0 的 T_HDR 根本没吐头
 wire [23:0] S_dbg_mhdr;
+// V54o: 四路 enc_if 源侧溢出汇总, 送给 0xA8 bit2 (原来那一位硬接 0)
+wire        S_enc_ovf_any;
 
 `ifdef JPEG_EN
 	// V48: 原先这里的 S_jpeg_s_ready / S_jpeg_qt_a,b / S_jpeg_qta,qtb 单数声明已删
@@ -1150,6 +1152,7 @@ wire [23:0] S_dbg_mhdr;
 		end
 	end
 	assign S_dbg_mhdr = { 7'b0, S_msoi_seen, S_mhdr_b1, S_mhdr_b0 };
+	assign S_enc_ovf_any = |{S_enc_ovf[3], S_enc_ovf[2], S_enc_ovf[1], S_enc_ovf[0]};
 
 	// ★ V53c: 只读抽头 (0xE6/E7/E9)，见上方声明处的位定义
 	assign S_diag_misc = { S_yuv_de, S_jcfg_valid, S_jcfg_consume, 4'b0000,
@@ -1515,6 +1518,7 @@ wire [23:0] S_dbg_mhdr;
 	assign S_dbg_jpeg = 32'd0;
 	assign S_dbg_jb   = 8'd0;
 	assign S_dbg_mhdr = 24'd0;      // V54l
+	assign S_enc_ovf_any = 1'b0;    // V54o
 	assign S_diag_bridge = 16'd0;   // V52b
 	assign S_diag_misc   = 8'd0;    // V53c
 	assign S_diag_e1     = 8'd0;    // V53c
@@ -2523,6 +2527,7 @@ cfg_ctrl_top #(
 	.i_dbg_yuvout   (S_dbg_yuvout),
 	.i_dbg_cam0_starve (S_st_r_starve),
 	.i_dbg_mhdr     (S_dbg_mhdr   ),
+	.i_st_enc_ovf   (S_enc_ovf_any),
 	.o_qt_wr_en      (S_qt_wr_en   ),
 	.o_qt_wr_addr    (S_qt_wr_addr ),
 	.o_qt_wr_data    (S_qt_wr_data ),
