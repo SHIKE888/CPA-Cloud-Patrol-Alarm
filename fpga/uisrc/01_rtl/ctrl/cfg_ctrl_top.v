@@ -279,7 +279,7 @@ module cfg_ctrl_top #(
 	//             而 4 引擎编码一帧要 16.62ms => 输入快 2.6ms, FIFO 必满。
 	//       回退成四路取与(任一路满就停读 dbuf, 数据留在 DDR),
 	//       保留 V54c 的 mux o_ready 修复 + sel 超时兜底。
-	parameter [15:0] CFG_VER = 16'h5407
+	parameter [15:0] CFG_VER = 16'h5408
 )(
 	// ---- 系统时钟域 (25MHz 常开) ----
 	input  wire        i_sys_clk,
@@ -322,6 +322,11 @@ module cfg_ctrl_top #(
 	output wire [7:0]  o_pp_thresh,
 	output wire        o_pp_morph_sel,
 	output wire [7:0]  o_pp_morph_th,
+
+	// V54k: 量化表写入透传 (0x10~0x8F) -> system_top -> jpeg_qtable_ram
+	output wire        o_qt_wr_en,
+	output wire [7:0]  o_qt_wr_addr,
+	output wire [7:0]  o_qt_wr_data,
 	output wire [4:0]  o_pp_lap_gain,
 	output wire [4:0]  o_pp_prew_gain,
 	output wire [3:0]  o_pp_emboss_gain,
@@ -577,6 +582,9 @@ module cfg_ctrl_top #(
 		.O_cfg_quality   (cfg_quality),
 		.O_cfg_target_bytes (cfg_target),
 		.O_cfg_rc_en     (cfg_rc_en),
+		.O_qt_wr_en      (o_qt_wr_en),
+		.O_qt_wr_addr    (o_qt_wr_addr),
+		.O_qt_wr_data    (o_qt_wr_data),
 		.O_cfg_rc_speed  (cfg_rc_speed),
 		.O_cfg_jpg_tx    (cfg_jpg_tx),
 		.O_cfg_jpg_dt18  (cfg_jpg_dt18),

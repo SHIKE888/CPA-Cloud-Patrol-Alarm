@@ -250,7 +250,23 @@ module jpeg_regfile #(
     //   0xCA/0xCB = 低/高字节。左路对应值已经是 0xE2 (=st_l_starve[7:0])。
     //   右半幅黑时: 这个计数持续增长 => cam0 确实没有像素进拼接器;
     //                计数不动       => cam0 数据正常, 黑是 JPEG 侧的事。
-    input  wire [15:0]  I_dbg_cam0_starve);
+    input  wire [15:0]  I_dbg_cam0_starve,
+
+    //=========================================================================
+    //  ★★ V54k (2026-10-31): 量化表写入透传 (0x10~0x8F) ★★
+    //
+    //  原来写部分的 default 分支写着「 0x10~0x4F 由 qtable RAM 处理」，
+    //  但本模块**根本没有把这个写口接出去**（没端口，system_top 里也把
+    //  jpeg_qtable_ram.I_wr_en 硬接成 1'b0）。结果量化表永远是上电初值，
+    //  运行期没办法调码率 —— 这也是 0x5406 实测 1.56:1 压缩比的一个侧面原因:
+    //  量程根本没参与调节。
+    //
+    //  接法: cfg_ctrl_top 透传 -> system_top -> jpeg_qtable_ram 写口。
+    //  地址范围与 qtable RAM 内部解码 (0x10..0x8F -> idx 0..127) 一致。
+    //=========================================================================
+    output wire         O_qt_wr_en,
+    output wire [7:0]   O_qt_wr_addr,
+    output wire [7:0]   O_qt_wr_data);
 
     // ---------------------------------------------------------------- 控制寄存器
     reg        r_lossless;
@@ -522,6 +538,11 @@ module jpeg_regfile #(
     assign O_cfg_jpg_tx   = r_jpg_tx;
     assign O_cfg_jpg_dt18 = r_jpg_dt18;
     assign O_cfg_jpg_pad  = r_jpg_pad;
+
+    // V54k: 0x10~0x8F 的写入直接透传给量化表 RAM (它内部自己解码地址)
+    assign O_qt_wr_en   = I_wr_en && (I_wr_addr >= 8'h10) && (I_wr_addr <= 8'h8F);
+    assign O_qt_wr_addr = I_wr_addr;
+    assign O_qt_wr_data = I_wr_data;
 
     // ---------------------------------------------------------------- 读 (1 拍延迟)
     // 量化表整段占 0x10~0x8F (128 项 = 亮度 64 + 色度 64), 单独判断,

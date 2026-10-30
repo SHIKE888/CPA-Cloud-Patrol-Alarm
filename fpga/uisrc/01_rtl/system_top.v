@@ -916,6 +916,10 @@ wire [7:0]  S_dbg_jb;
 	wire [6:0]  S_qt_b [0:3];
 	wire [7:0]  S_qta  [0:3];
 	wire [7:0]  S_qtb  [0:3];
+	// V54k: 量化表写入通路 (来自 cfg_ctrl_top 的 0x10~0x8F 透传)
+	wire        S_qt_wr_en;
+	wire [7:0]  S_qt_wr_addr;
+	wire [7:0]  S_qt_wr_data;
 	wire [7:0]  S_jm_d [0:3];
 	wire [15:0] S_diag_enc [0:3];
 	wire [23:0] S_jpeg_bytes [0:3];
@@ -1173,9 +1177,9 @@ wire [7:0]  S_dbg_jb;
 		jpeg_qtable_ram u_qt (
 			.I_clk       (S_enc_clk       ),
 			.I_rst_n     (S_enc_rst_n     ),
-			.I_wr_en     (1'b0            ),
-			.I_wr_addr   (8'd0            ),
-			.I_wr_data   (8'd0            ),
+			.I_wr_en     (S_qt_wr_en      ),
+			.I_wr_addr   (S_qt_wr_addr    ),
+			.I_wr_data   (S_qt_wr_data    ),
 			.I_rd_idx_a  (S_qt_a[gi_qt]   ),
 			.O_rd_data_a (                ),
 			.O_rd_data_a_asyn (S_qta[gi_qt]),
@@ -2471,6 +2475,9 @@ cfg_ctrl_top #(
 	.i_dbg_rgbin    (S_dbg_rgbin ),
 	.i_dbg_yuvout   (S_dbg_yuvout),
 	.i_dbg_cam0_starve (S_st_r_starve),
+	.o_qt_wr_en      (S_qt_wr_en   ),
+	.o_qt_wr_addr    (S_qt_wr_addr ),
+	.o_qt_wr_data    (S_qt_wr_data ),
 	// 2026-10-28 诊断: JPEG 编码器内部状态 (0xEA~0xEE)
 	//   V48: 4 引擎 -> 只接首段(引擎0)和末段(引擎3), 便于对比
 	.i_diag_enc_l (S_diag_enc[0]),
