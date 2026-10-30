@@ -263,7 +263,16 @@ module cfg_ctrl_top #(
 	//     V54 (0x5400) 2026-10-30:
 	//       PLL C3 70.238 -> 73.75MHz, JPEG 一帧 17.45ms -> 16.62ms (57.3 -> 60.19fps)
 	//       其余寄存器定义与 0x5303 完全相同。详见 docs/V54_60FPS.md
-	parameter [15:0] CFG_VER  = 16'h5400
+	//
+	//     V54c (0x5401) 2026-10-30: 只改 RTL 逻辑, 寄存器定义不变
+	//       ① system_top: jpeg_seg_merge4 的 o_ready 驱动方向修好
+	//          (原来 S_jm_rdy_p 被 {S_jm_rdy} 组合驱动又多驱动, o_ready 被解析成 0
+	//           => 四引擎 m_ready 全 0 => 完全无画面)
+	//       ② system_top: 源侧反压改成只看当前段那一路 (~(|S_encif_full) 会一路满饿死四路)
+	//       ③ jpeg_seg_merge4: sel 无进展超时兜底 (SEL_TO=262143 拍)
+	//       台架: 3840x256 从 FAIL(ENG by 0/0/0/0) 变成
+	//             PASS(ENG by 80927x3/80925, MERGED 324321, segcnt 963, ovf 0)
+	parameter [15:0] CFG_VER  = 16'h5401
 )(
 	// ---- 系统时钟域 (25MHz 常开) ----
 	input  wire        i_sys_clk,
