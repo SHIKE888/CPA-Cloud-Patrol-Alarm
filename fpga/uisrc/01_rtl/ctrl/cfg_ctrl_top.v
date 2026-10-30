@@ -279,7 +279,7 @@ module cfg_ctrl_top #(
 	//             而 4 引擎编码一帧要 16.62ms => 输入快 2.6ms, FIFO 必满。
 	//       回退成四路取与(任一路满就停读 dbuf, 数据留在 DDR),
 	//       保留 V54c 的 mux o_ready 修复 + sel 超时兜底。
-	parameter [15:0] CFG_VER = 16'h5408
+	parameter [15:0] CFG_VER = 16'h5409
 )(
 	// ---- 系统时钟域 (25MHz 常开) ----
 	input  wire        i_sys_clk,
@@ -385,6 +385,9 @@ module cfg_ctrl_top #(
 	input  wire [31:0] i_dbg_yuvout,
 	// V54i 诊断: cam0(右路) 掉线恢复次数 (0xCA/0xCB)
 	input  wire [15:0] i_dbg_cam0_starve,
+	// V54l 诊断: 合并器输出 JPEG 起始三态 (0xCC/0xCD/0xCE)
+	//   [7:0]=首字节 [15:8]=次字节 [16]=看过到 FF D8
+	input  wire [23:0] i_dbg_mhdr,
 	// 2026-10-28 诊断 (临时调试版): JPEG 编码器内部状态 (0xEA~0xEE)
 	input  wire [15:0] i_diag_enc_l,
 	input  wire [15:0] i_diag_enc_r,
@@ -531,6 +534,7 @@ module cfg_ctrl_top #(
 	reg  [31:0] D_in_s1,  D_in_s2;
 	reg  [31:0] D_out_s1, D_out_s2;
 	reg  [15:0] C0ST_s1,  C0ST_s2;
+	reg  [23:0] MHD_s1,   MHD_s2;   // V54l
 	always @(posedge i_sys_clk or negedge sys_rst_n) begin
 		if (!sys_rst_n) begin
 			dbg_st_s1 <= 8'd0;  dbg_st_s2 <= 8'd0;
@@ -538,12 +542,14 @@ module cfg_ctrl_top #(
 			D_in_s1  <= 32'd0; D_in_s2  <= 32'd0;
 			D_out_s1 <= 32'd0; D_out_s2 <= 32'd0;
 			C0ST_s1  <= 16'd0; C0ST_s2  <= 16'd0;
+			MHD_s1   <= 24'd0; MHD_s2   <= 24'd0;
 		end else begin
 			dbg_st_s1 <= i_dbg_status;      dbg_st_s2 <= dbg_st_s1;
 			lg_st_s1  <= i_st_line_groups;  lg_st_s2  <= lg_st_s1;
 			D_in_s1   <= i_dbg_rgbin;       D_in_s2   <= D_in_s1;
 			D_out_s1  <= i_dbg_yuvout;      D_out_s2  <= D_out_s1;
 			C0ST_s1   <= i_dbg_cam0_starve; C0ST_s2   <= C0ST_s1;
+			MHD_s1    <= i_dbg_mhdr;        MHD_s2    <= MHD_s1;
 		end
 	end
 	always @(posedge i_sys_clk or negedge sys_rst_n) begin

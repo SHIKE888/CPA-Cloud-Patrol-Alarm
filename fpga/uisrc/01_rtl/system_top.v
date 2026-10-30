@@ -754,6 +754,16 @@ wire        S_jpeg_pad;         // 由 0x0B[2] 驱动, 默认 0 = 变长帧
 //   0xA7      = 跨时钟桥 写侧背压低 8 位
 wire [31:0] S_dbg_jpeg;
 wire [7:0]  S_dbg_jb;
+// ★ V54l (2026-11-01): 段合并器输出的 JPEG 起始三态判别 —— 专门定位
+//    "buffer 里没有 FFD8" 到底丢在哪一级。取值:
+//      0xCC = 上电后第 1 个有效字节 (正常必须是 0xFF)
+//      0xCD = 上电后第 2 个有效字节 (正常必须是 0xD8)
+//      0xCE = bit0: 合并器输出里是否见到过连续的 FF D8
+//    三态判读:
+//      CC=FF CD=D8 CE=1 -> 合并器完全正确, 问题在跨时钟桥 / CSI-2 组包 / D-PHY
+//      CE=1 但 CC!=FF  -> SOI 在码流里但不在帧首 => sel 起始相位错 (段计数与 4 不同余)
+//      CE=0             -> 合并器从不输出 SOI => 引擎 0 的 T_HDR 根本没吐头
+wire [23:0] S_dbg_mhdr;
 
 `ifdef JPEG_EN
 	// V48: 原先这里的 S_jpeg_s_ready / S_jpeg_qt_a,b / S_jpeg_qta,qtb 单数声明已删
@@ -1105,6 +1115,42 @@ wire [7:0]  S_dbg_jb;
 	                      S_enc_stall[15:0],
 	                      (|(S_enc_ovf[0] | S_enc_ovf[1] | S_enc_ovf[2] | S_enc_ovf[3])) };
 	assign S_dbg_jb   = S_jb_bp[7:0];
+
+	//==========================================================================
+	//  ★ V54l: 合并器输出 JPEG 起始三态捕获 (enc 域, 不跨域采样, 只抓一次)
+	//  仿真 tb_jpeg_full 已证明 merge4 逐字节正确 (MERGED4=6007 含 SOI), 但那
+	//  是 RTL 行为; 板上可能因为看门狗 flush / enc_if 溢出 / sel 相位而与仿真
+	//  不同。这里只抓"上电后前 2 个有效字节"+"是否见过 FF D8", 三种失败位置
+	//  各自对应唯一的读数组合, 一次烧录即可判定。
+	//==========================================================================
+	reg  [1:0] S_mhdr_cnt  = 2'd0;
+	reg  [7:0] S_mhdr_b0   = 8'h00;
+	reg  [7:0] S_mhdr_b1   = 8'h00;
+	reg        S_msoi_seen = 1'b0;
+	reg  [7:0] S_mprev     = 8'h00;
+	always @(posedge S_enc_clk or negedge S_enc_rst_n) begin
+		if (!S_enc_rst_n) begin
+			S_mhdr_cnt  <= 2'd0;
+			S_mhdr_b0   <= 8'h00;
+			S_mhdr_b1   <= 8'h00;
+			S_msoi_seen <= 1'b0;
+			S_mprev     <= 8'h00;
+		end else if (S_jpeg_m_valid && S_jpeg_m_ready) begin
+			// SOI 检测只看"相邻两个有效字节", 避免把上一帧尾巴的 FF 与本帧 D8 拼错
+			if ((S_mprev == 8'hFF) && (S_jpeg_m_data == 8'hD8))
+				S_msoi_seen <= 1'b1;
+			S_mprev <= S_jpeg_m_data;
+			if (S_mhdr_cnt == 2'd0) begin
+				S_mhdr_b0  <= S_jpeg_m_data;
+				S_mhdr_cnt <= 2'd1;
+			end else if (S_mhdr_cnt == 2'd1) begin
+				S_mhdr_b1  <= S_jpeg_m_data;
+				S_mhdr_cnt <= 2'd2;
+			end
+		end
+	end
+	assign S_dbg_mhdr = { 7'b0, S_msoi_seen, S_mhdr_b1, S_mhdr_b0 };
+
 	// ★ V53c: 只读抽头 (0xE6/E7/E9)，见上方声明处的位定义
 	assign S_diag_misc = { S_yuv_de, S_jcfg_valid, S_jcfg_consume, 4'b0000,
 	                       S_jpeg_m_ready };
@@ -1468,6 +1514,7 @@ wire [7:0]  S_dbg_jb;
 	// 未启用时给 cfg 只读寄存器一个确定值 (否则读到 X)
 	assign S_dbg_jpeg = 32'd0;
 	assign S_dbg_jb   = 8'd0;
+	assign S_dbg_mhdr = 24'd0;      // V54l
 	assign S_diag_bridge = 16'd0;   // V52b
 	assign S_diag_misc   = 8'd0;    // V53c
 	assign S_diag_e1     = 8'd0;    // V53c
@@ -2475,6 +2522,7 @@ cfg_ctrl_top #(
 	.i_dbg_rgbin    (S_dbg_rgbin ),
 	.i_dbg_yuvout   (S_dbg_yuvout),
 	.i_dbg_cam0_starve (S_st_r_starve),
+	.i_dbg_mhdr     (S_dbg_mhdr   ),
 	.o_qt_wr_en      (S_qt_wr_en   ),
 	.o_qt_wr_addr    (S_qt_wr_addr ),
 	.o_qt_wr_data    (S_qt_wr_data ),

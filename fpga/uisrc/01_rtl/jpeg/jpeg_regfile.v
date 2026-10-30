@@ -252,6 +252,13 @@ module jpeg_regfile #(
     //                计数不动       => cam0 数据正常, 黑是 JPEG 侧的事。
     input  wire [15:0]  I_dbg_cam0_starve,
 
+    // V54l 诊断: 合并器输出 JPEG 起始三态 (0xCC/0xCD/0xCE)
+    //   [7:0]=首字节 [15:8]=次字节 [16]=曾经看到过连续的 FF D8
+    //   判读: CC=FF CD=D8 CE=1 -> 合并器对, 丢在下游;
+    //         CE=1 但 CC!=FF   -> SOI 不在帧首, sel 起始相位错;
+    //         CE=0             -> 合并器从不输出 SOI, 引擎 0 的 T_HDR 没吐头。
+    input  wire [23:0]  I_dbg_mhdr,
+
     //=========================================================================
     //  ★★ V54k (2026-10-31): 量化表写入透传 (0x10~0x8F) ★★
     //
@@ -611,6 +618,15 @@ module jpeg_regfile #(
             // V54i: cam0 (右路) 掉线恢复次数
             8'hCA: O_rd_data <= I_dbg_cam0_starve[ 7:0];
             8'hCB: O_rd_data <= I_dbg_cam0_starve[15:8];
+            // V54l: 合并器输出 JPEG 起始三态判别
+            8'hCC: O_rd_data <= I_dbg_mhdr[ 7:0];
+            8'hCD: O_rd_data <= I_dbg_mhdr[15:8];
+            8'hCE: O_rd_data <= {7'b0, I_dbg_mhdr[16]};
+            // V54l: 合并器输出 JPEG 起始三态判别
+            //   0xCC=首字节(应 FF)  0xCD=次字节(应 D8)  0xCE.bit0=见过 FF D8
+            8'hCC: O_rd_data <= I_dbg_mhdr[ 7:0];
+            8'hCD: O_rd_data <= I_dbg_mhdr[15:8];
+            8'hCE: O_rd_data <= {7'b0, I_dbg_mhdr[16]};
                 8'hF5: O_rd_data <= {4'b0, r_pp_emboss_gain};
                 8'hF6: O_rd_data <= r_pp_emboss_bias;
                 8'hF7: O_rd_data <= 8'h00;      // 锐化已移除
