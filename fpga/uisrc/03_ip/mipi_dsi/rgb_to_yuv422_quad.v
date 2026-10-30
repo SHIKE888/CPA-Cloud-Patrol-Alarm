@@ -158,9 +158,19 @@ module rgb_to_yuv422_quad (
         end else begin
             o_data     <= { cr[3], yv[3], cb[2], yv[2],
                             cr[1], yv[1], cb[0], yv[0] };
-            o_de       <= de_d[3];
-            o_user_sof <= sof_d[3];
-            o_last     <= last_d[3];
+            // ★ V54 (2026-10-30) 修正: 控制链比数据链晚一拍
+            //   数据: pr -> m_* -> s_* -> yv/cb/cr -> o_data  = 4 拍
+            //   控制: i_de -> de_d[0..3] -> o_de              = 5 拍
+            //   用 de_d[3] 时 o_de 比 o_data 晚一拍, 而 system_top 里
+            //     S_ud_wtvalid = S_yuv_de ,  S_ud_wtdata = S_yuv_data
+            //   后果: dbuf 写侧**每行丢掉第一组 4 像素**, 其余整体左移 4 像素,
+            //         行尾多写一组越界数据, tlast 也跟着错一拍。
+            //   4/3840 = 0.1%, 肉眼看不出, 所以从 V20 起一直没被发现
+            //   (tb_pre2jpeg 用定点参考模型逐字节比对才抓出来)。
+            //   改用 de_d[2], 让 valid/user/last 与 o_data 同拍。
+            o_de       <= de_d[2];
+            o_user_sof <= sof_d[2];
+            o_last     <= last_d[2];
         end
     end
 

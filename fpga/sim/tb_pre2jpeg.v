@@ -33,6 +33,9 @@ module tb_pre2jpeg;
     localparam integer W4   = W1/4;      // 每引擎像素宽 (128)
     localparam integer QW   = W4/4;      // 每引擎每行 64b word 数 (32)
     localparam integer SLVL = 16*QW;     // enc_if 预取 16 行
+    // 段数 = 每引擎 ceil(H/RSTI) 段 x 4 引擎 + 3 (头/尾/收尾边界的 3 个额外段)
+    // tb_wd (H=32,RSTI=8) 实测 segcnt = 19 = 4*4+3
+    localparam integer NSEG_EXP = (H/RSTI)*4 + 3;
 
     //------------------------------------------------------------ 时钟 / 复位
     reg clk = 1'b0, rst_n = 1'b0;
@@ -92,8 +95,7 @@ module tb_pre2jpeg;
     wire [3:0]  x_ev, x_erd, x_full;
     wire [31:0] x_ed [0:3];
     wire [15:0] x_wl [0:3], x_ovf [0:3];
-    wire        feed_en = 1'b1;
-    wire        g_go    = feed_en & ~(|x_full);   // 与板上 S_jcfg_consume 一致: 四路取与
+    wire        g_go    = ~(|x_full);   // 与板上 S_jcfg_consume 一致: 四路取与
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n)            gcnt <= 10'd0;
@@ -160,11 +162,15 @@ module tb_pre2jpeg;
     wire [9:0]  m_segc;
     wire [31:0] e_d_pack = { e_md[3], e_md[2], e_md[1], e_md[0] };
 
-    // ★ 与板上 V53b 一致: i_start 只由复位释放产生 (上电 rst_n 之后一拍)
+    // ★ 与板上 V53b 一致: i_start 只由复位释放产生 (上电后单拍, 之后不再触发)
     reg m_start = 1'b0;
+    reg [1:0] mst_c = 2'd0;
     always @(posedge clk or negedge rst_n) begin
-        if (!rst_n) m_start <= 1'b0;
-        else        m_start <= ~m_start;      // 上电只打一拍, 之后不再触发
+        if (!rst_n) begin m_start <= 1'b0; mst_c <= 2'd0; end
+        else begin
+            m_start <= (mst_c == 2'd2);
+            if (mst_c != 2'd3) mst_c <= mst_c + 2'd1;
+        end
     end
 
     jpeg_seg_merge4 u_mrg (
@@ -184,19 +190,17 @@ module tb_pre2jpeg;
     wire [15:0] bw_bp;
     wire [11:0] br_lvl;
 
-    jpeg_byte_bridge #(.AW(12)) u_br (
-        .w_clk(clk), .w_rst_n(rst_n),
-        .w_valid(m_v), .w_data(m_d), .w_last(m_l), .w_ready(bw_rdy),
-        .r_clk(b_clk), .r_rst_n(brst_n),
-        .r_valid(br_v), .r_data(br_d), .r_last(br_l), .r_ready(br_v & br_rdy_d),
-        .st_bp(bw_bp), .o_level(br_lvl));
-
     wire        tx_r;
     wire [31:0] tx_hs_d;
     wire        tx_hs_en, tx_hs_l;
     wire [31:0] tx_pkt, tx_byc, tx_frm;
-    reg         br_rdy_d = 1'b1;
-    always @(posedge b_clk) br_rdy_d <= tx_r;
+
+    jpeg_byte_bridge #(.AW(12)) u_br (
+        .w_clk(clk), .w_rst_n(rst_n),
+        .w_valid(m_v), .w_data(m_d), .w_last(m_l), .w_ready(bw_rdy),
+        .r_clk(b_clk), .r_rst_n(brst_n),
+        .r_valid(br_v), .r_data(br_d), .r_last(br_l), .r_ready(tx_r),
+        .st_bp(bw_bp), .o_level(br_lvl));
 
     csi2_frame_tx_var #(.PKT_BYTES(1024), .GAP_FRAME(200), .VC(2'b00)) u_tx (
         .clk(b_clk), .rst_n(brst_n), .enable(1'b1), .i_dt(6'h1E),
@@ -213,22 +217,21 @@ module tb_pre2jpeg;
     reg [7:0] exp_y, exp_cb, exp_cr;
 
     integer tmp_s, tmp_p, tmp_n;
-    function [7:0] qY;  input [7:0] r, g, b; begin
+    function [7:0] qY;  input [7:0] r, g, b; integer s; begin
         tmp_s = r*47 + g*157 + b*16 + 4096;
         qY = (tmp_s > 65535) ? 8'hFF : tmp_s[15:8];
     end endfunction
-    function [7:0] qCb; input [7:0] r, g, b; begin
-        tmp_p = b*112 + 32768; tmp_n = r*26 + g*86;
-        qCb = (tmp_p >= tmp_n) ? (((tmp_p - tmp_n) >> 8) > 255 ? 8'hFF : (tmp_p - tmp_n) >> 8) : 8'd0;
+    function [7:0] qCb; input [7:0] r, g, b; integer p, n; begin
+        p = b*112 + 32768; n = r*26 + g*86;
+        qCb = (p >= n) ? (((p - n) >> 8) > 255 ? 8'hFF : (p - n) >> 8) : 8'd0;
     end endfunction
-    function [7:0] qCr; input [7:0] r, g, b; begin
-        tmp_p = r*112 + 32768; tmp_n = g*102 + b*10;
-        qCr = (tmp_p >= tmp_n) ? (((tmp_p - tmp_n) >> 8) > 255 ? 8'hFF : (tmp_p - tmp_n) >> 8) : 8'd0;
+    function [7:0] qCr; input [7:0] r, g, b; integer p, n; begin
+        p = r*112 + 32768; n = g*102 + b*10;
+        qCr = (p >= n) ? (((p - n) >> 8) > 255 ? 8'hFF : (p - n) >> 8) : 8'd0;
     end endfunction
 
     integer chk_k;
     integer px0;
-    integer eof_sof, eof_last;
     initial begin err_yuv = 0; err_user = 0; err_last = 0; n_pixline = 0; n_line = 0; n_sof = 0; end
 
     always @(posedge clk) begin
@@ -260,7 +263,7 @@ module tb_pre2jpeg;
                 if (err_user < 4) $display("[ERR-USER] x=%0d y=%0d got=%b", n_pixline, n_line, y_user);
                 err_user = err_user + 1;
             end
-            if (y_last !== ((n_pixline/W1) == 0 && n_pixline == W1-4)) begin
+            if (y_last !== (n_pixline == W1-4)) begin
                 if (err_last < 4) $display("[ERR-LAST] x=%0d y=%0d got=%b", n_pixline, n_line, y_last);
                 err_last = err_last + 1;
             end
@@ -286,7 +289,7 @@ module tb_pre2jpeg;
                 s_rgb[ 63:32] = {8'hFF, fR(4*sk+1, sy), fG(4*sk+1, sy), fB(4*sk+1, sy)};
                 s_rgb[ 95:64] = {8'hFF, fR(4*sk+2, sy), fG(4*sk+2, sy), fB(4*sk+2, sy)};
                 s_rgb[127:96] = {8'hFF, fR(4*sk+3, sy), fG(4*sk+3, sy), fB(4*sk+3, sy)};
-                if (!g_go) @(posedge clk);      // 被反压就等 (源比下游快)
+                while (!g_go) @(negedge clk);   // 被反压就等 (源比下游快)
             end
         end
         @(negedge clk); s_v = 1'b0; s_user = 1'b0; s_last = 1'b0;
@@ -314,13 +317,13 @@ module tb_pre2jpeg;
         $display("--------------------------------------------------");
         $display("LINES   : %0d (exp %0d)  SOF=%0d (exp 1)", n_line, H, n_sof);
         $display("ERR  yuv=%0d user=%0d last=%0d", err_yuv, err_user, err_last);
-        $display("MERGED  : %0d bytes  segcnt=%0d (exp %0d)  cyc=%0d", nm, m_segc, 4*H, cyc);
+        $display("MERGED  : %0d bytes  segcnt=%0d (exp %0d)  cyc=%0d", nm, m_segc, NSEG_EXP, cyc);
         $display("ENG by  : %0d/%0d/%0d/%0d  wl=%0d/%0d/%0d/%0d  ovf=%b",
                  e_by[0], e_by[1], e_by[2], e_by[3],
                  x_wl[0], x_wl[1], x_wl[2], x_wl[3],
                  (|x_ovf[0])|(|x_ovf[1])|(|x_ovf[2])|(|x_ovf[3]));
         $display("BRIDGE  : level=%0d wbp=%0d  txpkt=%0d", br_lvl, bw_bp, tx_pkt);
-        if (err_yuv == 0 && err_user == 0 && err_last == 0 && nm > 100 && m_segc == 4*H)
+        if (err_yuv == 0 && err_user == 0 && err_last == 0 && nm > 100 && m_segc == NSEG_EXP)
             $display("RESULT  : PASS");
         else
             $display("RESULT  : FAIL");

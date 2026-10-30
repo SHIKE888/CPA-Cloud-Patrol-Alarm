@@ -23,7 +23,7 @@
 module tb_wd_full;
 
     parameter  integer W1   = 3840;
-    localparam integer W4   = 128;
+    parameter  integer W4   = W1/4;
     parameter  integer H    = 1080;
     localparam integer RSTI = 8;
     localparam integer QW   = W1/4/4;
@@ -505,8 +505,8 @@ module tb_wd_full;
 
     initial begin
         // 四个引擎都把本帧 1024 个 64b word 吃完 -> 再等输出完全吐干净
-        wait ((n_rd32[0] == W1*H/16) && (n_rd32[1] == W1*H/16) &&
-              (n_rd32[2] == W1*H/16) && (n_rd32[3] == W1*H/16));
+        wait ((n_rd32[0] == W1*H/8) && (n_rd32[1] == W1*H/8) &&
+              (n_rd32[2] == W1*H/8) && (n_rd32[3] == W1*H/8));
         wait (stall > 30000);
         $fclose(fdm);
         $display("--------------------------------------------------");

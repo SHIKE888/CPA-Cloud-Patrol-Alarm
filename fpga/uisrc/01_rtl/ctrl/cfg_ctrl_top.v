@@ -259,7 +259,11 @@ module cfg_ctrl_top #(
 	//               0xE7 = 引擎1 o_diag[7:0]   (bit3:0 = tstate)
 	//               0xE9 = 引擎2 o_diag[7:0]
 	//                 => 配合 0xEA/EB(eng0)、0xEC/ED(eng3) 四路状态全可见
-	parameter [15:0] CFG_VER  = 16'h5303
+	//
+	//     V54 (0x5400) 2026-10-30:
+	//       PLL C3 70.238 -> 73.75MHz, JPEG 一帧 17.45ms -> 16.62ms (57.3 -> 60.19fps)
+	//       其余寄存器定义与 0x5303 完全相同。详见 docs/V54_60FPS.md
+	parameter [15:0] CFG_VER  = 16'h5400
 )(
 	// ---- 系统时钟域 (25MHz 常开) ----
 	input  wire        i_sys_clk,
