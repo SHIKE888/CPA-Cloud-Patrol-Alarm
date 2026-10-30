@@ -34,9 +34,17 @@ pkill -f mipi_webstream.py 2>/dev/null && echo "  已停" || echo "  未运行"
 sleep 2
 
 echo ""
-echo "########## 2) 抓 2 帧 ##########"
-W=$($CFG get 0x00 2>/dev/null | tail -1)   # 占位, 只为保持输出对齐
-dmesg -c >/dev/null 2>&1
+echo "########## 2) RK 侧按拼接分辨率接收 (默认 3840x1080) ##########"
+# 拼接后 FPGA 输出 3840x1080 (左半 cam1 + 右半 cam0), 不是单目的 1920x1080,
+# 也不是 4K 的 3840x2160。想让 rkcif 收得下必须三处 (sensor/dphy/csi2) 都改。
+W=${W:-3840}
+H=${H:-1080}
+MED=$(ls /dev/media* 2>/dev/null | head -1)
+for e in "m02_back_FPGA-MIPI 9-001a" "rockchip-csi2-dphy3" "rockchip-mipi-csi2"; do
+    media-ctl -d $MED --set-v4l2 "\"$e\":0[fmt:YUYV8_2X8/${W}x${H}]" >/dev/null 2>&1 \
+        && echo "  $e:0 -> ${W}x${H} ok" || echo "  $e:0 FAIL (名字/设备号可能不同)"
+done
+v4l2-ctl -d $DEV --set-fmt-video=width=$W,height=$H,pixelformat=YUYV >/dev/null 2>&1
 v4l2-ctl -d $DEV --get-fmt-video 2>&1 | head -4
 rm -f /tmp/v54.raw
 timeout 20 v4l2-ctl -d $DEV --stream-mmap=4 --stream-count=2 --stream-to=/tmp/v54.raw 2>&1 | tail -5

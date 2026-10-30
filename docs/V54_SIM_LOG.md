@@ -62,6 +62,20 @@ PIXEL PATH  OK
 
 （`tb_pre2jpeg` 与 `tb_wd_full` 的结果见下方，按实际运行填写）
 
+### 4.0 tb_dual_stitch（前端：双路异步时钟 → 拼接）
+
+```
+=== Phase 1: dual simultaneous capture, 6 frames ===
+  frames=6 lines=47 groups=1535 tuser=6 tlast=47 black(L/R)=16/0
+=== Phase 2: cam1 stopped (left must go black, right keeps running) ===
+  during stop: black L=864 R=0 starve_l=1
+=== Phase 3: cam1 resumed ===
+  steady state after resume: black L=0 R=0
+RESULT: **PASS**
+```
+左半幅只会来自 cam1、右半幅只来自 cam0；掉一路时**整条流水线不死**，
+恢复后左半幅重新出图。两路时钟故意给 32.4 / 33.2 MHz，输出 73.75 MHz。
+
 ### 4.1 tb_pre2jpeg（512×32，73.75 MHz 单时钟）
 
 判据：
