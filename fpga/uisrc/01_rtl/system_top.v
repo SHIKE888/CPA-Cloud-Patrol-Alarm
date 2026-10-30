@@ -596,6 +596,45 @@ rgb_to_yuv422_quad u_rgb2yuv_quad (
 	.o_data     (S_yuv_data     )
 );
 
+//=============================================================================
+// V54f 诊断: rgb_to_yuv422_quad 输入/输出抽头
+//   每帧在 S_yuv_de 的第 1000 组采一次(第一行中间, 避开行首边界)
+//   0x0C..0x0F = {tog, in_b, in_g, in_r}          ← rgb2yuv 输入 pix0
+//   0xFC..0xFF = {out_cr, out_y1, out_cb, out_y0} ← rgb2yuv 输出 pair0
+//   抽头在 S_hs_rx_clk 域, 到 25MHz 由 cfg_ctrl_top 做 2 级同步
+//=============================================================================
+reg [15:0] S_dbg_smp;
+reg [7:0]  S_dbg_in_r, S_dbg_in_g, S_dbg_in_b;
+reg [7:0]  S_dbg_out_y0, S_dbg_out_cb, S_dbg_out_y1, S_dbg_out_cr;
+reg        S_dbg_tog;
+always @(posedge S_hs_rx_clk or negedge S_pll_lock) begin
+	if (!S_pll_lock) begin
+		S_dbg_smp    <= 16'd0;
+		S_dbg_in_r   <= 8'd0;  S_dbg_in_g   <= 8'd0;  S_dbg_in_b   <= 8'd0;
+		S_dbg_out_y0 <= 8'd0;  S_dbg_out_cb <= 8'd0;
+		S_dbg_out_y1 <= 8'd0;  S_dbg_out_cr <= 8'd0;
+		S_dbg_tog    <= 1'b0;
+	end else begin
+		if (S_yuv_sof)     S_dbg_smp <= 16'd0;
+		else if (S_yuv_de) S_dbg_smp <= S_dbg_smp + 16'd1;
+
+		if (S_yuv_de && (S_dbg_smp == 16'd999)) begin
+			S_dbg_in_r <= S_post_tdata[23:16];
+			S_dbg_in_g <= S_post_tdata[15: 8];
+			S_dbg_in_b <= S_post_tdata[ 7: 0];
+		end
+		if (S_yuv_de && (S_dbg_smp == 16'd1000)) begin
+			S_dbg_out_y0 <= S_yuv_data[ 7: 0];
+			S_dbg_out_cb <= S_yuv_data[15: 8];
+			S_dbg_out_y1 <= S_yuv_data[23:16];
+			S_dbg_out_cr <= S_yuv_data[31:24];
+			S_dbg_tog    <= ~S_dbg_tog;
+		end
+	end
+end
+wire [31:0] S_dbg_rgbin  = {S_dbg_tog, S_dbg_in_b,  S_dbg_in_g,  S_dbg_in_r };
+wire [31:0] S_dbg_yuvout = {S_dbg_out_cr, S_dbg_out_y1, S_dbg_out_cb, S_dbg_out_y0};
+
 
 //=============================================================================
 //  FPGA 硬件 JPEG 编码器接线 (2026-10-21)
@@ -2428,6 +2467,8 @@ cfg_ctrl_top #(
 	//     脏快照 —— 但这几个都是慢变计数器, 看趋势/是否为 0 是可靠的。
 	.i_dbg_status   (S_st_l_ovf[7:0]),
 	.i_st_line_groups ({S_st_r_ovf[7:0], S_st_lines[7:0]}),
+	.i_dbg_rgbin    (S_dbg_rgbin ),
+	.i_dbg_yuvout   (S_dbg_yuvout),
 	// 2026-10-28 诊断: JPEG 编码器内部状态 (0xEA~0xEE)
 	//   V48: 4 引擎 -> 只接首段(引擎0)和末段(引擎3), 便于对比
 	.i_diag_enc_l (S_diag_enc[0]),

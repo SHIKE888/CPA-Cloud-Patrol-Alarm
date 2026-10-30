@@ -279,7 +279,7 @@ module cfg_ctrl_top #(
 	//             而 4 引擎编码一帧要 16.62ms => 输入快 2.6ms, FIFO 必满。
 	//       回退成四路取与(任一路满就停读 dbuf, 数据留在 DDR),
 	//       保留 V54c 的 mux o_ready 修复 + sel 超时兜底。
-	parameter [15:0] CFG_VER  = 16'h5402
+	parameter [15:0] CFG_VER = 16'h5403
 )(
 	// ---- 系统时钟域 (25MHz 常开) ----
 	input  wire        i_sys_clk,
@@ -373,6 +373,11 @@ module cfg_ctrl_top #(
 	//     慢变计数器, 看趋势/是否为 0 可靠; 多 bit 快照可能脏一拍, 不在意。
 	input  wire [7:0]  i_dbg_status,
 	input  wire [15:0] i_st_line_groups,
+	// V54f 诊断: rgb_to_yuv422_quad 抽头 (在 S_hs_rx_clk 域, 下面 2 级同步)
+	//   0x0C~0x0F = {tog, in_b, in_g, in_r}          rgb2yuv 输入 pix0
+	//   0xFC~0xFF = {out_cr, out_y1, out_cb, out_y0} rgb2yuv 输出 pair0
+	input  wire [31:0] i_dbg_rgbin,
+	input  wire [31:0] i_dbg_yuvout,
 	// 2026-10-28 诊断 (临时调试版): JPEG 编码器内部状态 (0xEA~0xEE)
 	input  wire [15:0] i_diag_enc_l,
 	input  wire [15:0] i_diag_enc_r,
@@ -515,13 +520,20 @@ module cfg_ctrl_top #(
 	//   RX 的逐 lane 状态仍旧看 0xD6/D7/D8 (cam0) 和 0xDD/DE/DF (cam1)。
 	reg  [7:0]  dbg_st_s1, dbg_st_s2;
 	reg  [15:0] lg_st_s1,  lg_st_s2;
+	// V54f 诊断: rgb2yuv 抽头 2 级同步 (S_hs_rx_clk -> i_sys_clk)
+	reg  [31:0] D_in_s1,  D_in_s2;
+	reg  [31:0] D_out_s1, D_out_s2;
 	always @(posedge i_sys_clk or negedge sys_rst_n) begin
 		if (!sys_rst_n) begin
 			dbg_st_s1 <= 8'd0;  dbg_st_s2 <= 8'd0;
 			lg_st_s1  <= 16'd0; lg_st_s2  <= 16'd0;
+			D_in_s1  <= 32'd0; D_in_s2  <= 32'd0;
+			D_out_s1 <= 32'd0; D_out_s2 <= 32'd0;
 		end else begin
 			dbg_st_s1 <= i_dbg_status;      dbg_st_s2 <= dbg_st_s1;
 			lg_st_s1  <= i_st_line_groups;  lg_st_s2  <= lg_st_s1;
+			D_in_s1   <= i_dbg_rgbin;       D_in_s2   <= D_in_s1;
+			D_out_s1  <= i_dbg_yuvout;      D_out_s2  <= D_out_s1;
 		end
 	end
 	always @(posedge i_sys_clk or negedge sys_rst_n) begin
@@ -626,6 +638,9 @@ module cfg_ctrl_top #(
 		.I_diag_enc_t    (i_diag_enc_t),
 		.I_diag_jv       (i_diag_jv),
           .I_st_line_groups(lg_st_s2),
+          // V54f 诊断: rgb2yuv 抽头
+          .I_dbg_rgbin    (D_in_s2),
+          .I_dbg_yuvout   (D_out_s2),
           // 2026-10-20: RX 调试总线 (已 2 级同步到 i_sys_clk)
           // 2026-10-21: 0xD6/D7/D8 固定是 cam0, cam1 固定走 0xDD/DE/DF
           .I_dbg_mipi      (dbg_mipi_s2),
@@ -636,8 +651,7 @@ module cfg_ctrl_top #(
           .I_dbg1_delay    (dbg1_delay_s2),
           .I_dbg1_best_len (dbg1_blen_s2),
           .I_dbg1_autodone (dbg1_adone_s2),
-          .I_dbg_status    (dbg_st_s2),
-          .O_dbg_btn       (cfg_dbg_btn)
+          .I_dbg_status    (dbg_st_s2),          .O_dbg_btn       (cfg_dbg_btn)
   );
 
 	assign o_dbg_btn = cfg_dbg_btn;

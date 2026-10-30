@@ -238,7 +238,13 @@ module jpeg_regfile #(
     //   bit2 cam0 autodone        bit3 cam1 autodone
     //   bit4 cam0 unpack_valid    bit5 cam1 unpack_valid
     //   bit6 cam0 4lane byte对齐  bit7 cam1 4lane byte对齐
-    input  wire [7:0]   I_dbg_status);
+    input  wire [7:0]   I_dbg_status,
+
+    // V54f 诊断: rgb_to_yuv422_quad 抽头快照 (每帧采一组像素)
+    //   0x0C~0x0F = {flag, B, G, R}   (rgb2yuv 的输入 pix0)
+    //   0xFC~0xFF = {Cr, Y1, Cb, Y0}  (rgb2yuv 的输出 pair0)
+    input  wire [31:0]  I_dbg_rgbin,
+    input  wire [31:0]  I_dbg_yuvout);
 
     // ---------------------------------------------------------------- 控制寄存器
     reg        r_lossless;
@@ -535,6 +541,11 @@ module jpeg_regfile #(
                 8'h09: O_rd_data <= {5'b0, r_predictor};
                 8'h0A: O_rd_data <= 8'h00;
                 8'h0B: O_rd_data <= {5'b0, r_jpg_pad, r_jpg_dt18, r_jpg_tx};
+            // V54f 诊断抽头
+            8'h0C: O_rd_data <= I_dbg_rgbin[ 7:0];
+            8'h0D: O_rd_data <= I_dbg_rgbin[15:8];
+            8'h0E: O_rd_data <= I_dbg_rgbin[23:16];
+            8'h0F: O_rd_data <= I_dbg_rgbin[31:24];
 
                 8'hA0: O_rd_data <= s_frame_bytes[ 7:0];
                 8'hA1: O_rd_data <= s_frame_bytes[15:8];
@@ -565,6 +576,11 @@ module jpeg_regfile #(
                 8'hF9: O_rd_data <= r_basic_he_clip;
                 8'hFA: O_rd_data <= 8'h00;      // 已废弃: HE 平滑不再可调
                 8'hFB: O_rd_data <= {7'b0, r_basic_linefix};
+            // V54f 诊断抽头
+            8'hFC: O_rd_data <= I_dbg_yuvout[ 7:0];
+            8'hFD: O_rd_data <= I_dbg_yuvout[15:8];
+            8'hFE: O_rd_data <= I_dbg_yuvout[23:16];
+            8'hFF: O_rd_data <= I_dbg_yuvout[31:24];
                 8'hF5: O_rd_data <= {4'b0, r_pp_emboss_gain};
                 8'hF6: O_rd_data <= r_pp_emboss_bias;
                 8'hF7: O_rd_data <= 8'h00;      // 锐化已移除
