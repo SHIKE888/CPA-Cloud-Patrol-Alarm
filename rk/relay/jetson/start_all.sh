@@ -12,12 +12,27 @@
 #   - 每一步都等端口就绪，超时明确报错
 #
 # 不启动建图/导航 launch —— 那是按需的，由网页上的「开始建图」按钮触发。
+#
+# ★ 2026-10-31 启动加速（用户反馈「bridge 起得太慢」）
+#   实测（journalctl -b -o short-monotonic，开机后秒数）：
+#     [ 12.8] cron 跑 @reboot -> sleep 8
+#     [ 20.8] start_all 开始
+#     [ 23.8] roscore 就绪
+#     [ 24.8] foxglove 就绪   <- 串行 wait_port
+#     [ 26.8] rosbridge 就绪  <- 串行 wait_port
+#     [ 31.8] relay_ctl       <- 再单独 sleep 5
+#   改法：
+#     1) crontab 的 sleep 8 -> 2（start_all 自带 wait_port，不需要死等）；
+#     2) foxglove / rosbridge / relay_ctl 互不依赖，**并行起**，
+#        总耗时从 1+2+5=8s 变成 max(1,2,5)=5s；
+#     3) 每行日志带「脚本内已用秒数」，下次看日志能直接定位慢在哪一段。
 set -u
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROS_SETUP=/opt/ros/noetic/setup.bash
+T0=$(date +%s)
 
-say() { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*"; }
+say() { printf '[%s +%ss] %s\n' "$(date +%H:%M:%S)" "$(( $(date +%s) - T0 ))" "$*"; }
 
 port_up() { ss -lnt 2>/dev/null | grep -q ":$1 "; }
 
@@ -40,7 +55,7 @@ wait_port() {  # wait_port PORT TIMEOUT NAME
 
 cd "$HERE" || exit 1
 
-# ── 1. roscore ────────────────────────────────────────────────
+# ── 1. roscore（后面三个都要等 master，必须串行）────────────
 if port_up 11311; then
   say "SKIP roscore  已在跑"
 else
@@ -49,7 +64,11 @@ else
 fi
 wait_port 11311 60 roscore || exit 1
 
-# ── 2. foxglove_bridge (8765) ─────────────────────────────────
+# ── 2/3/4. foxglove(8765) / rosbridge(9090) / relay_ctl 并行起 ──
+#   三者互不依赖，只要 master 在就行。原来一行一行 wait_port 白等 3 秒，
+#   再单独 sleep 5 等 relay_ctl，属实没必要。
+RC_PID=""
+
 if port_up 8765; then
   say "SKIP foxglove_bridge  已在跑"
 else
@@ -57,34 +76,47 @@ else
   if proc_up 'foxglove_bridge'; then
     say "清理连不上 master 的 foxglove_bridge"
     pkill -f 'foxglove_bridge' 2>/dev/null
-    sleep 2
+    sleep 1
   fi
   say "START foxglove_bridge"
   nohup "$HERE/start_bridge.sh" >> "$HERE/bridge.log" 2>&1 &
 fi
-wait_port 8765 60 foxglove_bridge
 
-# ── 3. rosbridge_websocket (9090) ─────────────────────────────
 if port_up 9090; then
   say "SKIP rosbridge  已在跑"
 else
   say "START rosbridge"
   nohup "$HERE/start_rosbridge.sh" 9090 >> "$HERE/rosbridge.log" 2>&1 &
 fi
-wait_port 9090 60 rosbridge
 
-# ── 4. relay_ctl（提供 /relay/* 服务与 /relay/map）─────────────
 if proc_up 'relay_ctl[.]py'; then
   say "SKIP relay_ctl  已在跑"
 else
   say "START relay_ctl"
   nohup bash -c ". $ROS_SETUP; exec python3 $HERE/relay_ctl.py" >> "$HERE/relay_ctl.log" 2>&1 &
-  sleep 5
-  if proc_up 'relay_ctl[.]py'; then
+  RC_PID=$!          # exec 之后 PID 不变，直接 kill -0 判存活
+fi
+
+wait_port 8765 60 foxglove_bridge
+wait_port 9090 60 rosbridge
+
+# relay_ctl 起来大约要 4~5 秒（连 master + 建 TF/map 订阅），按 PID 等存活。
+# 原来这里是死等 sleep 5，现在它和上面两个 wait_port 并行进行，只补足差额。
+if [ -n "$RC_PID" ]; then
+  i=0
+  while [ "$i" -lt 12 ]; do
+    kill -0 "$RC_PID" 2>/dev/null || break
+    [ "$i" -ge 5 ] && break
+    sleep 1
+    i=$((i + 1))
+  done
+  if kill -0 "$RC_PID" 2>/dev/null; then
     say "OK   relay_ctl"
   else
     say "FAIL relay_ctl  见 $HERE/relay_ctl.log"
   fi
+elif proc_up 'relay_ctl[.]py'; then
+  say "OK   relay_ctl（已在跑）"
 fi
 
 say "==== 全栈就绪 ===="

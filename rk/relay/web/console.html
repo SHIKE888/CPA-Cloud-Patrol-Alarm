@@ -559,13 +559,9 @@ html, body{overflow:hidden}
         </div>
         <img id="stream" alt="stream" style="display:none">
         <div id="quad">
-          <!-- 2026-10-30 V54d: 结构上【左半 = cam1, 右半 = cam0】
-               (system_top 的 dual_stitch .SWAP(0)),
-               而 quadDraw() 里 cvL 裁的是流的左半、cvR 裁的是右半,
-               所以左上格子的标题必须是 cam1, 右上才是 cam0。 -->
-          <div class="qc"><b>cam1（左）</b>
+          <div class="qc"><b>cam0</b>
             <div class="qb"><canvas id="cvL"></canvas></div></div>
-          <div class="qc"><b>cam0（右）</b>
+          <div class="qc"><b>cam1</b>
             <div class="qb"><canvas id="cvR"></canvas></div></div>
           <div class="qc"><b>骨架</b>
             <div class="qb"><canvas id="cvSkel"></canvas></div></div>
@@ -647,19 +643,14 @@ html, body{overflow:hidden}
         </div>
         <div class="row"><label>单目通道</label>
           <div style="flex:1;display:flex;gap:6px">
-            <!-- 2026-10-30 V54d: 结构上【左半 = cam1, 右半 = cam0】(见 system_top
-                 的 dual_stitch .SWAP(0)), 所以标签按这个来。
-                 data-cam 的值是 cam 编号(写 FPGA 0xDB[0]), 不能改。
-                 按钮顺序按屏幕位置排: 左目在左, 右目在右。 -->
-            <button class="ghost" data-cam="1" style="flex:1">左目(CAM1)</button>
-            <button class="ghost" data-cam="0" style="flex:1">右目(CAM0)</button>
+            <button class="ghost" data-cam="0" style="flex:1">左目(CAM0)</button>
+            <button class="ghost" data-cam="1" style="flex:1">右目(CAM1)</button>
           </div>
         </div>
         <div class="row"><label>AI 通道</label>
           <div style="flex:1;display:flex;gap:6px">
-            <!-- data-aisrc 是"从拼接流里取哪一半"的索引: 0 = 左半 = cam1 -->
-            <button class="ghost" data-aisrc="0" style="flex:1">左目(CAM1)</button>
-            <button class="ghost" data-aisrc="1" style="flex:1">右目(CAM0)</button>
+            <button class="ghost" data-aisrc="0" style="flex:1">左目(CAM0)</button>
+            <button class="ghost" data-aisrc="1" style="flex:1">右目(CAM1)</button>
           </div>
         </div>
 
@@ -3599,7 +3590,7 @@ document.querySelectorAll("#viewVideo [data-jrc]").forEach(b => {
     schedulePush();
   });
 });
-/* 推流模式: 单目 / 双目拼接(左cam1 右cam0)
+/* 推流模式: 单目 / 双目拼接(左cam0右cam1)
    ★ 完全显式, 不会自动切 —— 想单目就点单目, 不会因为看到两路标记被改掉。 */
 document.querySelectorAll("#viewVideo [data-mode]").forEach(b => {
   b.onclick = () => {
@@ -3616,7 +3607,7 @@ document.querySelectorAll("#viewVideo [data-rot]").forEach(b => {
 
 /* 单目通道: 写 FPGA 的 0xDB[0] (走 /api/fpga 的位操作, 保留 mark_en/dual_en) */
 /* ---------------- 双目四宫格 ---------------- */
-// 上左 cam1 / 上右 cam0 / 下左 骨架 / 下右 深度(预留)
+// 上左 cam0 / 上右 cam1 / 下左 骨架 / 下右 深度(预留)
 // 两路上视频用 canvas 从【同一条】MJPEG 流裁左/右半边 ——
 // 不能建两个 <img src=/stream>: 服务端 _stream_acquire(ip) 是
 // "同 IP 只留最新一路", 第二个 img 会把第一个顶掉, 两个都黑。
@@ -3750,7 +3741,7 @@ async function syncCam() {
       b.style.opacity = dead ? ".4" : "1";
       b.style.cursor = dead ? "not-allowed" : "pointer";
       b.title = dead
-        ? (c ? "左目(CAM1)" : "右目(CAM0)") + "：未检测到模组（AE 计数不增长）"
+        ? (c ? "右目(CAM1)" : "左目(CAM0)") + "：未检测到模组（AE 计数不增长）"
         : "";
     });
   } catch (e) { /* 静默: FPGA 没启用时不影响页面 */ }
@@ -3767,7 +3758,7 @@ document.querySelectorAll("#viewVideo [data-cam]").forEach(b => {
       await api("/api/fpga", {
         method: "POST", body: JSON.stringify({ RX_SEL: c })
       });
-      toast("已切到 " + (c ? "左目(CAM1)" : "右目(CAM0)"));
+      toast("已切到 " + (c ? "右目(CAM1)" : "左目(CAM0)"));
       syncCam();
     } catch (e) { toast("切通道失败: " + e.message, true); }
   };
@@ -3780,7 +3771,7 @@ document.querySelectorAll("#viewVideo [data-aisrc]").forEach(b => {
     document.querySelectorAll("#viewVideo [data-aisrc]").forEach(x =>
       x.classList.toggle("on", x === b));
     schedulePush();
-    toast("AI 通道 -> " + (params.ai_src ? "右目(CAM0)" : "左目(CAM1)"));
+    toast("AI 通道 -> " + (params.ai_src ? "右目(CAM1)" : "左目(CAM0)"));
   };
 });
 

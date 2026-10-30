@@ -35,7 +35,7 @@ module tb_wd_full;
     reg r_clk, c_clk, b_clk, rst_n, brst_n;
     initial begin r_clk = 1'b0; c_clk = 1'b0; b_clk = 1'b0;
                   rst_n = 1'b0; brst_n = 1'b0; end
-    always #4.752 r_clk = ~r_clk;    // 9.504 ns -> 105.2 MHz (dbuf 读侧)
+    always #3.390 r_clk = ~r_clk;    // 9.504 ns -> 105.2 MHz (dbuf 读侧)
     always #7.118 c_clk = ~c_clk;    // 14.236 ns -> 70.238 MHz (板上 S_clk_70m, V53a 实测)
 
     // ★ 看门狗派生的控制 (复刻 system_top 的 i_flush / i_soft_rst / i_start)
@@ -61,8 +61,11 @@ module tb_wd_full;
     wire        c_v, c_sof, c_last;
     wire [63:0] c_d;
     // ★ 与 RTL 一致: 源只受 enc_if 的 FIFO 满反压, 不受帧门控
+    //   ★V54e: 回到四路取与 (与 system_top 的 S_jcfg_consume 同步) —
+    //   per-segment 会让板上 enc_if 溢出 (ovf=1) -> 色度丢 -> 大片绿。
     reg         c_rdy_en;
     wire [3:0]  x_full;
+    reg  [9:0]  gcnt;
     wire        c_rdy = c_rdy_en & ~(|x_full);
     initial c_rdy_en = 1'b0;
 
@@ -76,7 +79,7 @@ module tb_wd_full;
     );
 
     //------------------------------------------------------ 行内 1/4 分组
-    reg  [9:0] gcnt;
+    // ★ gcnt 已在前面的 V54b 块里前置声明 (供 c_rdy 使用)
     wire [3:0] gvld = { (gcnt >= 3*QW),
                         (gcnt >= 2*QW) && (gcnt < 3*QW),
                         (gcnt >= 1*QW) && (gcnt < 2*QW),
