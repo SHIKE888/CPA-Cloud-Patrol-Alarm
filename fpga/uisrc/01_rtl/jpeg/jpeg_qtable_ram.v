@@ -70,7 +70,30 @@ module jpeg_qtable_ram (
     //     且本 RAM 的 I_wr_en 硬接 1'b0, 所以只能编译期定。
     //     要改码率就改这个 Q_SCALE 参数 (1 = 标准表原始行为)。
     //==========================================================================
-    parameter integer Q_SCALE = 4;
+    //  ⚠⚠ V54m (2026-11-01): Q_SCALE=4 **不可用** —— 它会把全链拖进死锁 ✅✅
+    //
+    //  板上 0x5409 实测 (V54l 三态诊断 + 0xEF 排水链状态):
+    //    0xCC/0xCD/0xCE 全为 0  -> 合并器从未输出过任何一个字节
+    //    0xEF bit6 S_jb_v = 0   -> 桥的 FIFO 始终是空的 (一个字节都没进过)
+    //    但 0xA0 帧字节数仍在涨 -> 引擎在"空转"完成帧
+    //
+    //  机理 (因果链已闭合):
+    //    Q_SCALE=4 -> 量化过狠 -> Huffman 输出极稀疏 -> bp_valid 长时间为 0
+    //    -> 合并器 cur_valid=0 且 done_p=0, cur_can_sw 永不成立
+    //    -> sel 只能靠 SEL_TO 超时轮转, 每 3.5ms 跳一次
+    //    -> 引擎长时间拿不到 o_ready, bitpack 填满 -> 卡 T_NEXT
+    //    -> i_seg_done 永不来 -> done_p 永不置位 -> 死锁锁存(不可自忽)
+    //    -> 桥始终空, o_ready_down 恒为 1 (因为空)
+    //    -> jpeg_encoder_top 的 T_EOI 只要 m_ready=1 就往前走
+    //       (它 **不检查 m_valid**), 于是 st_frame_bytes 照常更新、
+    //       字芖却全部被静默丢弃 -> "统计正常但 buffer 全零"
+    //
+    //  这也是为什么 0x5406 (Q_SCALE=1) 能出 288KB 真 JPEG, 而 0x5407 之后全废。
+    //
+    //  => 降码率**不能**靠粗慕地放大量化步长。正确做法是走 V54k 已打通的
+    //     运行时写表通路 (I2C addr 0x40, 寄存器 0x10~0x8F -> RAM[0..127]),
+    //     从 1.0x 开始逐步上调, 每步看 0xA0/0xCE 是否仍健康。
+    parameter integer Q_SCALE = 1;
 
     // 饱和到 255: 标准表最大 121, x4 = 484 会溢出 8 位
     function [7:0] q_mul;
