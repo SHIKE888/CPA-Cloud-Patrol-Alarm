@@ -349,6 +349,14 @@ module cfg_ctrl_top #(
 	input  wire [7:0]  i_diag_rxck,
 	input  wire [7:0]  i_diag_c1ck,
 	input  wire [7:0]  i_diag_rtv,
+	// ★ V53c: 拼接器(sensor_sync_start)的数据完整性告警 —— 原来这两个信号
+	//   **根本没接到寄存器**, 白浪费。 
+	//     0xDC      = i_dbg_status      = 左路补零/丢弃次数低 8 位
+	//     0xD4/0xD5 = i_st_line_groups  = {右路补零/丢弃次数低8位, 已输出行数低8位}
+	//   ⚠ 两者都在 S_hs_rx_clk (73.75MHz), 下面用 2 级同步到 i_sys_clk(25MHz)。
+	//     慢变计数器, 看趋势/是否为 0 可靠; 多 bit 快照可能脏一拍, 不在意。
+	input  wire [7:0]  i_dbg_status,
+	input  wire [15:0] i_st_line_groups,
 	// 2026-10-28 诊断 (临时调试版): JPEG 编码器内部状态 (0xEA~0xEE)
 	input  wire [15:0] i_diag_enc_l,
 	input  wire [15:0] i_diag_enc_r,
@@ -486,6 +494,20 @@ module cfg_ctrl_top #(
 	};
 	// 2026-10-21: 手动 tap 步进按钮 (idle=1)
 	wire       cfg_dbg_btn;
+	// ★ V53c: 拼接器行数/补零次数 2 级同步 (S_hs_rx_clk -> i_sys_clk)
+	//   注意: 原来的 0xDC 是 cfg_dbg_status(RX 状态打包), 已改成左路补零次数,
+	//   RX 的逐 lane 状态仍旧看 0xD6/D7/D8 (cam0) 和 0xDD/DE/DF (cam1)。
+	reg  [7:0]  dbg_st_s1, dbg_st_s2;
+	reg  [15:0] lg_st_s1,  lg_st_s2;
+	always @(posedge i_sys_clk or negedge sys_rst_n) begin
+		if (!sys_rst_n) begin
+			dbg_st_s1 <= 8'd0;  dbg_st_s2 <= 8'd0;
+			lg_st_s1  <= 16'd0; lg_st_s2  <= 16'd0;
+		end else begin
+			dbg_st_s1 <= i_dbg_status;      dbg_st_s2 <= dbg_st_s1;
+			lg_st_s1  <= i_st_line_groups;  lg_st_s2  <= lg_st_s1;
+		end
+	end
 	always @(posedge i_sys_clk or negedge sys_rst_n) begin
 		if (!sys_rst_n) begin
 			dbg_mipi_s1  <= 8'd0; dbg_mipi_s2  <= 8'd0;
@@ -587,7 +609,7 @@ module cfg_ctrl_top #(
 		.I_diag_enc_r    (i_diag_enc_r),
 		.I_diag_enc_t    (i_diag_enc_t),
 		.I_diag_jv       (i_diag_jv),
-          .I_st_line_groups(lg_max),
+          .I_st_line_groups(lg_st_s2),
           // 2026-10-20: RX 调试总线 (已 2 级同步到 i_sys_clk)
           // 2026-10-21: 0xD6/D7/D8 固定是 cam0, cam1 固定走 0xDD/DE/DF
           .I_dbg_mipi      (dbg_mipi_s2),
@@ -598,7 +620,7 @@ module cfg_ctrl_top #(
           .I_dbg1_delay    (dbg1_delay_s2),
           .I_dbg1_best_len (dbg1_blen_s2),
           .I_dbg1_autodone (dbg1_adone_s2),
-          .I_dbg_status    (cfg_dbg_status),
+          .I_dbg_status    (dbg_st_s2),
           .O_dbg_btn       (cfg_dbg_btn)
   );
 
