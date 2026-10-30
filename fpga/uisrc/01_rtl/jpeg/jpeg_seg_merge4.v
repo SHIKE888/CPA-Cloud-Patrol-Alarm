@@ -72,11 +72,36 @@ module jpeg_seg_merge4 (
     // 可以切换的条件: 本段已经吐完, 且(没有待发的字节 或 那个字节这拍被接走)
     wire cur_can_sw = done_p[sel] && (!cur_valid || o_ready_down);
 
+    //==========================================================================
+    //  ★★ V54c (2026-10-30) sel 超时兜底 ★★
+    //  板上 0x5400 实测: 引擎2/3 (右半幅, cam0) 一旦卡住, 它的 o_seg_done 永远
+    //  不来 -> sel 卡在它上面 -> 其它三路也拿不到 m_ready -> 全链死锁, 连
+    //  看门狗都救不活 (0xA3~A6 的 enc_stall 在涨但引擎 diag 一动不动)。
+    //  这里加"无进展超时": sel 在某一路停留超过 SEL_TO 拍且一个字节都没送出去,
+    //  就强制切到下一路 —— 代价是丢一个 RST 段 (画面上一条横条花屏), 但不会死锁。
+    //  SEL_TO 取得比"单段正常耗时"大很多: 一段 = 60 MCU x 151clk ≈ 9060 拍,
+    //  取 262143 (≈3.7ms @70MHz) 不可能误触发, 只会在真卡死时生效。
+    //==========================================================================
+    localparam [17:0] SEL_TO = 18'd262143;
+    reg  [17:0] sel_tmr;
+    // 本拍真的送出了一个字节 = 有进展
+    wire sel_prog = cur_valid && o_ready_down;
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n)                sel_tmr <= 18'd0;
+        else if (i_start || sel_prog) sel_tmr <= 18'd0;
+        else if (sel_tmr != SEL_TO) sel_tmr <= sel_tmr + 18'd1;
+    end
+
+    wire sel_to = (sel_tmr >= SEL_TO);
+
     // done_p 同拍可能既 set 又 clear, 先用组合算下一状态再整体写回
+    // ★ V54c: 超时也允许切换 (sel_to), 否则一路卡死就永久锁死
+    wire sw_ok  = cur_can_sw || sel_to;
     reg [3:0] done_nx;
     always @(*) begin
         done_nx = done_p | i_seg_done;
-        if (cur_can_sw) done_nx[sel] = 1'b0;
+        if (sw_ok) done_nx[sel] = 1'b0;
     end
 
     always @(posedge clk or negedge rst_n) begin
@@ -90,7 +115,7 @@ module jpeg_seg_merge4 (
             o_seg_cnt <= 10'd0;
         end else begin
             done_p <= done_nx;
-            if (cur_can_sw) begin
+            if (sw_ok) begin
                 sel       <= sel + 2'd1;
                 o_seg_cnt <= o_seg_cnt + 10'd1;
             end

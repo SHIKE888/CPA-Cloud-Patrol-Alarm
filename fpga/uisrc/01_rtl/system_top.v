@@ -786,7 +786,24 @@ wire [7:0]  S_dbg_jb;
 	// ★ V50a: 源侧反压只看"四个 enc_if 的 FIFO 装不装得下", 不再用帧门控。
 	//   任何一个满了就停读 dbuf —— 数据留在 DDR 里, 这才是三帧缓存该起的作用。
 	wire [3:0]  S_encif_full;
-	wire        S_jcfg_consume = ~(|S_encif_full);
+
+	// ★★ V54b (2026-10-30, 板上 0x5400 实测定案) ★★
+	//   原来: S_jcfg_consume = ~(|S_encif_full)   <-- **四路取与**
+	//   后果: 只要有一路 enc_if 满, 源就全停, 另外三路也饿死;
+	//         而哪一路会满完全取决于 mux 当时选了谁 -> 单路憋死就能拖死全线。
+	//   板上 0x5400 实测指纹 (与 V52 死锁时逐位相同):
+	//     0xA3~A6( S_dbg_jpeg ) = ovf=1, mrg_segc=0, encif_full 只有一路=1
+	//     0xA0~A2 = 0 (从没编完过一帧), 0xA7/0xE4/0xE5 = 0 (桥零字节)
+	//     引擎0 = 0x1442 (T_HDR, m_ready=0)  引擎3 = 0x1167 (T_NEXT, pend=2)
+	//   修法: 一拍数据只属于**一个**段(由 S_jg_gcnt 决定), 所以只需要
+	//         "当前这一段对应的那一路" FIFO 能收就行, 其它三路满不满与这一拍无关。
+	//   ⇒ 任何一路被 mux 卡住, 其它三路仍能正常吃数, 不会再被一起饿死。
+	//   ⚠ S_jg_gcnt 必须先声明再用 (否则被隐式声明成 1bit wire, 本工程踩过多次)
+	reg  [9:0]  S_jg_gcnt;
+	wire [1:0]  S_jg_seg   = (S_jg_gcnt >= 10'd720) ? 2'd3 :
+	                         (S_jg_gcnt >= 10'd480) ? 2'd2 :
+	                         (S_jg_gcnt >= 10'd240) ? 2'd1 : 2'd0;
+	wire        S_jcfg_consume = ~S_encif_full[S_jg_seg];
 
 	yuv32_to_quad X_jcfg (
 		.r_clk   (S_pclkx1          ),
@@ -806,7 +823,7 @@ wire [7:0]  S_dbg_jb;
 	);
 
 	// 读侧 group 计数 (每拍 4px, 一行 960 拍, 4 段各 240 拍)
-	reg  [9:0] S_jg_gcnt;
+	// ★ S_jg_gcnt 已在上面 V54b 块里前置声明 (供 S_jcfg_consume 使用)
 	wire [3:0] S_jg_vld = { (S_jg_gcnt >= 10'd720),
 	                        (S_jg_gcnt >= 10'd480) && (S_jg_gcnt < 10'd720),
 	                        (S_jg_gcnt >= 10'd240) && (S_jg_gcnt < 10'd480),
@@ -860,14 +877,26 @@ wire [7:0]  S_dbg_jb;
 	//   (不能直接对拼接 wire 的位赋驱动 -> multi-driver)
 	wire        S_jm_v  [0:3];
 	wire        S_jm_l  [0:3];
-	wire        S_jm_rdy[0:3];
+	// ★ V54c: S_jm_rdy[0:3] 已删除 —— 原来它被当作 mux o_ready 的驱动源(方向反了),
+	//   现在编码器直接接 S_jm_rdy_p[gi_enc] (由 X_jmrg.o_ready 驱动)。
 	wire        S_jseg  [0:3];
 	wire        S_jpeg_busy [0:3];
 	wire        S_jpeg_done [0:3];
 
 	wire [3:0]  S_jm_v_p   = { S_jm_v[3],   S_jm_v[2],   S_jm_v[1],   S_jm_v[0]   };
 	wire [3:0]  S_jm_l_p   = { S_jm_l[3],   S_jm_l[2],   S_jm_l[1],   S_jm_l[0]   };
-	wire [3:0]  S_jm_rdy_p = { S_jm_rdy[3], S_jm_rdy[2], S_jm_rdy[1], S_jm_rdy[0] };
+	// ★★ V54c (2026-10-30) 修重大 bug: o_ready 是 merge4 的 **output**
+	//   原来写的是
+	//     wire [3:0] S_jm_rdy_p = { S_jm_rdy[3], S_jm_rdy[2], S_jm_rdy[1], S_jm_rdy[0] };
+	//   把 merge4 的输出接到一条"由 S_jm_rdy 组合拼接出来"的 wire 上 ——
+	//   **驱动方向完全反了**, 形成一个组合环。综合后 mux 的 o_ready 恒 0
+	//   => 四个引擎的 m_ready 全为 0 => 引擎0 卡 T_HDR、引擎3 卡 T_NEXT
+	//   => 一个字节都吐不出来 => 桥永远为空 (0xA7=0, 0xE4/E5=0, 0xEF 的 jb_v=0)。
+	//   板上 0x5400 实测指纹 0x1442 / 0x1167 就是它。
+	//   而台架 tb_wd 里是 .o_ready(e_rdy) 直接连 packed vector, 没有这段反向拼接,
+	//   所以"台架 PASS、真机死锁"。
+	//   ⇒ S_jm_rdy_p 改为由 X_jmrg 驱动, 再分位给 4 个引擎的 m_ready。
+	wire [3:0]  S_jm_rdy_p;                      // 由 X_jmrg.o_ready 驱动
 	wire [3:0]  S_jseg_p   = { S_jseg[3],   S_jseg[2],   S_jseg[1],   S_jseg[0]   };
 	wire [3:0]  S_jpeg_busy_p = { S_jpeg_busy[3], S_jpeg_busy[2], S_jpeg_busy[1], S_jpeg_busy[0] };
 	wire [3:0]  S_jpeg_done_p = { S_jpeg_done[3], S_jpeg_done[2], S_jpeg_done[1], S_jpeg_done[0] };
@@ -1140,7 +1169,7 @@ wire [7:0]  S_dbg_jb;
 			.m_valid        (S_jm_v[gi_enc]       ),
 			.m_data         (S_jm_d[gi_enc]       ),
 			.m_last         (S_jm_l[gi_enc]       ),
-			.m_ready        (S_jm_rdy[gi_enc]     ),
+			.m_ready        (S_jm_rdy_p[gi_enc]),   // V54c: 直接用 mux 的输出
 			.st_frame_bytes (S_jpeg_bytes[gi_enc] ),
 			.st_busy        (S_jpeg_busy[gi_enc]  ),
 			.st_done        (S_jpeg_done[gi_enc]  ),
