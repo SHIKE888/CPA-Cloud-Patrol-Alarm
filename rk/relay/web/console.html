@@ -137,36 +137,40 @@ body{
 #viewMap .metrics b{ display: block; font-size: 14px; line-height: 1.15; font-weight: 600;
     color: var(--fg); font-variant-numeric: tabular-nums;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-/* 遥控卡：方向键 + 速度，占满剩余高度后贴底 */
-#viewMap #dpad{ display: flex; flex-direction: column; flex: 1 1 auto; }
-#viewMap #dpad .grid{ display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px;
-    width: 100%; max-width: 280px; margin: auto; }
-#viewMap #dpad button{ font-size: 22px; padding: 0; width: 100%; height: auto;
-    aspect-ratio: 1 / 1; border-radius: 10px;
+/* 遥控盘：浮在地图左下角（覆盖在画布上方），默认半透明，鼠标移上去变实 */
+#viewMap #dpad{
+    position: absolute; left: 14px; bottom: 14px; z-index: 6;
+    display: flex; align-items: flex-end; gap: 10px;
+    padding: 9px; border-radius: 12px;
+    background: rgba(13,17,23,.70); border: 1px solid var(--line);
+    backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+    opacity: .70; transition: opacity .15s, background .15s;
+}
+#viewMap #dpad:hover{ opacity: 1; background: rgba(13,17,23,.93); }
+#viewMap #dpad .grid{ display: grid; grid-template-columns: repeat(3, 32px);
+    grid-auto-rows: 32px; gap: 5px; }
+#viewMap #dpad button{ font-size: 15px; padding: 0; width: 100%; height: 100%;
+    border-radius: 8px;
     background: var(--panel2); border: 1px solid var(--line); color: #c9d4e0;
     transition: background .12s, border-color .12s, color .12s, transform .06s; }
 #viewMap #dpad button:hover{ background: #2b333e; border-color: var(--acc2); color: #fff; }
-#viewMap #dpad button:active{ transform: scale(.96); }
-#viewMap #dpad .stop{ grid-column: 2; grid-row: 2; font-size: 15px; font-weight: 600;
+#viewMap #dpad button:active{ transform: scale(.94); }
+#viewMap #dpad .stop{ grid-column: 2; grid-row: 2; font-size: 13px; font-weight: 600;
     background: #8b2c2c; border-color: #b34242; color: #ffd7d7; }
 #viewMap #dpad .stop:hover{ background: #a33535; border-color: #d05555; color: #fff; }
-/* 速度两行，与方向键同属「遥控」卡 */
-#viewMap #dpad .speed{ display: grid; grid-template-columns: 1fr 1fr;
-    gap: 8px 12px; align-items: center; }
-#viewMap #dpad .speed .vrow{ display: flex; align-items: stretch; gap: 0; min-width: 0;
-    background: #0d1117; border: 1px solid var(--line); border-radius: 6px;
-    overflow: hidden; transition: border-color .12s, box-shadow .12s; }
-#viewMap #dpad .speed .vrow:focus-within{ border-color: #1f6feb;
-    box-shadow: 0 0 0 2px rgba(31,111,235,.25); }
-/* 名字和输入框本体连在一起：名字做成左侧内嵌标签 */
-#viewMap #dpad .speed .vrow span{ display: flex; align-items: center; padding: 0 8px;
-    font-size: 12px; color: var(--dim); background: var(--panel2);
-    border-right: 1px solid var(--line); white-space: nowrap; }
-#viewMap #dpad .speed input[type=number]{ flex: 1 1 auto; min-width: 0; width: auto;
-    padding: 4px 8px; font-size: 12px;
-    background: transparent; border: 0; color: var(--fg);
-    text-align: right; font-variant-numeric: tabular-nums; }
-#viewMap #dpad .speed input[type=number]:focus{ outline: none; box-shadow: none; }
+/* 速度滑条：线速 / 角速，值实时显示，存 localStorage */
+#viewMap #dpad .sliders{ display: flex; flex-direction: column; gap: 7px;
+    padding-bottom: 2px; }
+#viewMap #dpad .srow{ display: flex; align-items: center; gap: 6px; }
+#viewMap #dpad .srow span{ font-size: 11px; color: var(--dim); white-space: nowrap; }
+#viewMap #dpad .srow input[type=range]{ width: 104px; height: 14px; margin: 0;
+    accent-color: #1f6feb; cursor: pointer; background: transparent; }
+#viewMap #dpad .srow b{ font-size: 11px; color: var(--fg); width: 34px; text-align: right;
+    font-variant-numeric: tabular-nums; font-weight: 600; }
+/* 巡检选项行（循环巡检） */
+#viewMap .popt{ display: flex; align-items: center; gap: 6px; margin-top: 8px;
+    color: var(--dim); font-size: 12px; cursor: pointer; user-select: none; }
+#viewMap .popt input{ accent-color: #1f6feb; }
 #viewMap #toast{
     position: absolute; left: 50%; transform: translateX(-50%); bottom: 18px;
     padding: 7px 14px; border-radius: 8px; background: #1f6feb33; border: 1px solid #1f6feb;
@@ -1021,6 +1025,22 @@ html, body{overflow:hidden}
   <div id="wrap">
     <canvas id="cv"></canvas>
     <div id="toast"></div>
+    <!-- 2026-10-30: 遥控盘从右列扰到地图左下角，悬停覆盖在画布上方；速度换成滑条 -->
+    <div id="dpad">
+      <div class="grid">
+        <button data-vx="1"  data-wz="0"  style="grid-column:2;grid-row:1">▲</button>
+        <button data-vx="0"  data-wz="1"  style="grid-column:1;grid-row:2">◀</button>
+        <button class="stop" id="dpadStop">停</button>
+        <button data-vx="0"  data-wz="-1" style="grid-column:3;grid-row:2">▶</button>
+        <button data-vx="-1" data-wz="0"  style="grid-column:2;grid-row:3">▼</button>
+      </div>
+      <div class="sliders">
+        <div class="srow"><span>线速</span>
+          <input id="vlin" type="range" min="0.02" max="0.6" step="0.01" value="0.15"><b id="vlinv">0.15</b></div>
+        <div class="srow"><span>角速</span>
+          <input id="wang" type="range" min="0.2" max="2" step="0.05" value="0.6"><b id="wangv">0.60</b></div>
+      </div>
+    </div>
   </div>
 
   <div id="sidecol">
@@ -1060,6 +1080,7 @@ html, body{overflow:hidden}
           <button id="btnPatrolClear">清空列表</button>
         </div>
         <div class="plist" id="plist"></div>
+        <label class="popt"><input type="checkbox" id="patrolLoop"> 循环巡检（跑完最后一点再从第 1 点开始，直到「停止全部」）</label>
         <div class="btnrow wide" style="margin-top:8px">
           <button id="btnPatrolStart" class="primary" style="grid-column:1 / -1" disabled>开始巡检</button>
         </div>
@@ -1086,23 +1107,6 @@ html, body{overflow:hidden}
         </div>
       </section>
     </aside>
-
-    <div id="dpad">
-      <h3>遥控</h3>
-      <div class="grid">
-        <button data-vx="1"  data-wz="0"  style="grid-column:2;grid-row:1">▲</button>
-        <button data-vx="0"  data-wz="1"  style="grid-column:1;grid-row:2">◀</button>
-        <button class="stop" id="dpadStop">停</button>
-        <button data-vx="0"  data-wz="-1" style="grid-column:3;grid-row:2">▶</button>
-        <button data-vx="-1" data-wz="0"  style="grid-column:2;grid-row:3">▼</button>
-      </div>
-      <div class="speed">
-        <div class="vrow"><span>线速</span>
-          <input id="vlin" type="number" value="0.15" step="0.05" min="0.02" max="0.6"></div>
-        <div class="vrow"><span>角速</span>
-          <input id="wang" type="number" value="0.6" step="0.1" min="0.2" max="2"></div>
-      </div>
-    </div>
   </div>
 </main>
 </div>
@@ -1782,6 +1786,45 @@ html, body{overflow:hidden}
     })(padBtns[i]);
   }
   $('dpadStop').addEventListener('click', function () { stopVel(true); });
+
+  // ── 遥控设置：线速/角速（滑条）+ 循环巡检开关，都存 localStorage ─────────
+  // 2026-10-30: 速度由数字框改滑条，并记住上次的值。
+  const REMOTE_KEY = 'remote:cfg';
+  function syncRemoteLabels() {
+    const L = $('vlin'), A = $('wang');
+    if (L && $('vlinv')) $('vlinv').textContent = parseFloat(L.value).toFixed(2);
+    if (A && $('wangv')) $('wangv').textContent = parseFloat(A.value).toFixed(2);
+  }
+  function saveRemoteCfg() {
+    const L = $('vlin'), A = $('wang'), LP = $('patrolLoop');
+    try {
+      localStorage.setItem(REMOTE_KEY, JSON.stringify({
+        lin: parseFloat(L.value), ang: parseFloat(A.value),
+        loop: !!(LP && LP.checked)
+      }));
+    } catch (e) {}
+  }
+  function loadRemoteCfg() {
+    let c = {};
+    try { c = JSON.parse(localStorage.getItem(REMOTE_KEY) || '{}') || {}; } catch (e) {}
+    const L = $('vlin'), A = $('wang'), LP = $('patrolLoop');
+    const clamp = function (v, lo, hi, dv) {
+      v = parseFloat(v);
+      if (!isFinite(v)) return dv;
+      return Math.min(hi, Math.max(lo, v));
+    };
+    if (L) L.value = clamp(c.lin, 0.02, 0.6, 0.15);
+    if (A) A.value = clamp(c.ang, 0.2, 2, 0.6);
+    if (LP) LP.checked = !!c.loop;
+    syncRemoteLabels();
+  }
+  if ($('vlin')) $('vlin').addEventListener('input', function () { syncRemoteLabels(); saveRemoteCfg(); });
+  if ($('wang')) $('wang').addEventListener('input', function () { syncRemoteLabels(); saveRemoteCfg(); });
+  if ($('patrolLoop')) $('patrolLoop').addEventListener('change', function () {
+    saveRemoteCfg();
+    toast(this.checked ? '已开启循环巡检' : '已关闭循环巡检');
+  });
+  loadRemoteCfg();
   $('btnStopAll').addEventListener('click', function () {
     // 巡检必须先停，否则它 300ms 一次的 tick 会继续往下发目标、
     // 和“停止”抢着发 /goal_pose。
@@ -2266,8 +2309,37 @@ html, body{overflow:hidden}
   //   再点「加入巡检」按顺序追加。列表存 localStorage，刷新不丢。
   const PATROL_KEY = 'patrol:list';
   const PATROL_TOL = 0.35;          // 到位判定半径（m）
-  const PATROL_NEED = 2;            // 连续几次在圈内才算到位（300ms 一次）
+  const PATROL_STOP_NEED = 3;       // 连续几次（300ms 一次）静止才算「停稳」≈0.9s
   const PATROL_GO_MS = 180000;      // 单点超时 3 分钟 -> 跳过该点
+
+  // 循环巡检开关（存在 localStorage 的 remote:cfg 里，refresh 后恢复）
+  function patrolLoopOn() {
+    const cb = $('patrolLoop');
+    return !!(cb && cb.checked);
+  }
+
+  // 实时估计机器人运动量，用来判断「车停稳了没」。
+  // 只看位姿变化率（/relay/robot_pose 实际 ~10Hz），不依赖 /cmd_vel。
+  let pmPrev = null, pmVal = { v: 0, w: 0, stopped: true };
+  function patrolMotion() {
+    if (!S.pose) return pmVal;
+    const now = Date.now();
+    if (!pmPrev) {
+      pmPrev = { x: S.pose.x, y: S.pose.y, yaw: S.pose.yaw, t: now };
+      return pmVal;
+    }
+    const dt = (now - pmPrev.t) / 1000;
+    if (dt < 0.08) return pmVal;                 // 采样太快，沿用上次结果
+    const dpos = Math.hypot(S.pose.x - pmPrev.x, S.pose.y - pmPrev.y);
+    const dyaw = angDiff(S.pose.yaw, pmPrev.yaw);
+    const v = dpos / dt;                         // m/s
+    const w = dyaw / dt;                         // rad/s
+    pmPrev = { x: S.pose.x, y: S.pose.y, yaw: S.pose.yaw, t: now };
+    // 位姿会因激光匹配而小幅抖动，阈值不能太苛刻；再叠加一个时间平滑
+    const stopped = (v < 0.06 && w < 0.12);
+    pmVal = { v: v, w: w, stopped: stopped };
+    return pmVal;
+  }
 
   function pSec(p) { return Math.max(0, (p.dv || 0) * (p.du || 1)); }
   function pDwellText(sec) {
@@ -2423,7 +2495,15 @@ html, body{overflow:hidden}
   function patrolNext() {
     S.patrolIdx++;
     S.patrolNear = 0;
+    pmPrev = null;                  // 重新计运动量（新的一段路）
     if (S.patrolIdx >= S.patrol.length) {
+      // 2026-10-30: 循环巡检 —— 跑完最后一点再从第 1 点开始，直到「停止全部」
+      if (patrolLoopOn()) {
+        S.patrolIdx = -1;
+        toast('一轮巡检完成，循环开始下一轮');
+        patrolNext();
+        return;
+      }
       stopPatrol('巡检完成：' + S.patrol.length + ' 个点都跑完了');
       return;
     }
@@ -2445,18 +2525,27 @@ html, body{overflow:hidden}
 
     if (S.patrolPhase === 'go') {
       const d = S.pose ? Math.hypot(S.pose.x - p.x, S.pose.y - p.y) : 1e9;
-      // 连续 2 次（≈0.6 秒）都在圈内才算到位，防 AMCL 抖一下就误判
-      S.patrolNear = (d < PATROL_TOL) ? S.patrolNear + 1 : 0;
-      if (S.patrolNear >= PATROL_NEED) {
-        const sec = pSec(p);
-        if (sec > 0) {
-          S.patrolPhase = 'dwell';
-          S.patrolDwellEnd = Date.now() + sec * 1000;
-          toast('到第 ' + (S.patrolIdx + 1) + ' 点，停留 ' + pDwellText(sec));
-        } else {
-          patrolNext();
+      if (d < PATROL_TOL) {
+        // ★ 2026-10-30: 进容差不算到位，要等车**真的停稳**才开始停留倒计时。
+        //   否则车还在滑行就把停留时间烧完了（用户提的现象）。
+        //   停稳 = 位置变化率和角速度都接近 0，连续 PATROL_STOP_NEED 次。
+        const mv = patrolMotion();
+        S.patrolNear = mv.stopped ? S.patrolNear + 1 : 0;
+        if (S.patrolNear >= PATROL_STOP_NEED) {
+          const sec = pSec(p);
+          if (sec > 0) {
+            S.patrolPhase = 'dwell';
+            S.patrolDwellEnd = Date.now() + sec * 1000;
+            toast('第 ' + (S.patrolIdx + 1) + ' 点已停稳，开始停留 ' + pDwellText(sec));
+          } else {
+            patrolNext();
+          }
+          return;
         }
-        return;
+        setPatrolStatus('第 ' + (S.patrolIdx + 1) + '/' + S.patrol.length + ' 点 已到点',
+          mv.stopped ? '等车停稳…' : '车还在动，等停稳…');
+      } else {
+        S.patrolNear = 0;
       }
       if (Date.now() - S.patrolT0 > PATROL_GO_MS) {
         toast('第 ' + (S.patrolIdx + 1) + ' 点 3 分钟没到，跳过', true);
@@ -2469,7 +2558,7 @@ html, body{overflow:hidden}
       const left = S.patrolDwellEnd - Date.now();
       if (left <= 0) { patrolNext(); return; }
       setPatrolStatus('第 ' + (S.patrolIdx + 1) + '/' + S.patrol.length + ' 点 停留中',
-        '还剩 ' + Math.ceil(left / 1000) + ' 秒');
+        '还剩 ' + Math.ceil(left / 1000) + ' 秒' + (patrolLoopOn() ? ' · 循环' : ''));
     }
   }
 
