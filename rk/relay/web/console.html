@@ -1342,28 +1342,35 @@ html, body{overflow:hidden}
   // 用 /snapshot.jpg 轮询，而不是再开一条 /stream：
   //   服务端 _stream_acquire(ip) 是「同 IP 只留最新一路」，第二个 MJPEG 客户端
   //   会把「视频采集」页那条顶掉，两边一起黑（视频页里已有注释踩过这个坑）。
-  // 只在调度控制可见时跑，切到视频页就停，不给板子添负担。
-  let dPrevTimer = null;
+  //
+  // ★ 帧率：不用固定 setInterval，改成「上一帧 onload 之后再等 GAP 毫秒」取下一帧。
+  //   实测单帧 313 KB / 传输 ~90 ms，固定 330ms 间隔只能到 ~2.4fps；
+  //   自定速后 ≈ 1/(0.09+0.06) ≈ 6~8 fps，且不会因为传输慢而堆积请求。
+  //   想再快就调小 D_PREV_GAP（带宽随之线性上升：8fps ≈ 2.5 MB/s）。
+  const D_PREV_GAP = 60;
+  let dPrevTimer = null, dPrevAlive = false;
   function dPrevStart() {
     const img = $('dStream'), tip = $('dStreamTip');
-    if (!img) return;
-    if (img._onload) return;
-    img._onload = function () {
-      img._onload = true;
-      if (tip) tip.style.display = 'none';
-    };
-    img.onload = function () { if (tip) tip.style.display = 'none'; };
-    img.onerror = function () { if (tip) { tip.style.display = ''; tip.textContent = '无画面'; } };
-    if (dPrevTimer) return;
+    if (!img || dPrevAlive) return;
+    dPrevAlive = true;
     const tick = function () {
-      if (document.hidden) return;          // 页面在后台就不拉了
+      if (!dPrevAlive) return;
+      if (document.hidden) { dPrevTimer = setTimeout(tick, 500); return; }
       img.src = '/snapshot.jpg?t=' + Date.now();
     };
+    img.onload = function () {
+      if (tip) tip.style.display = 'none';
+      if (dPrevAlive) dPrevTimer = setTimeout(tick, D_PREV_GAP);
+    };
+    img.onerror = function () {
+      if (tip) { tip.style.display = ''; tip.textContent = '无画面'; }
+      if (dPrevAlive) dPrevTimer = setTimeout(tick, 1500);   // 出错放慢重试
+    };
     tick();
-    dPrevTimer = setInterval(tick, 330);    // ~3fps，够看个大概
   }
   function dPrevStop() {
-    if (dPrevTimer) { clearInterval(dPrevTimer); dPrevTimer = null; }
+    dPrevAlive = false;
+    if (dPrevTimer) { clearTimeout(dPrevTimer); dPrevTimer = null; }
   }
   window.addEventListener('video:show', dPrevStop);
 
