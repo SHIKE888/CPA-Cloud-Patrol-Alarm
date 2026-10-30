@@ -10,6 +10,7 @@ module tb_csi2_frame_tx_var;
 
     localparam integer PKT = 4;      // 故意设很小, 好让一帧拆成多个包
     localparam integer GAP = 3;
+    localparam integer GAPL = 5;     // ★V54g: 包间 GAP (给 D-PHY FIFO 排空)
 
     reg clk = 0, rst_n = 0, enable = 0;
     reg        s_tvalid = 0;
@@ -24,12 +25,34 @@ module tb_csi2_frame_tx_var;
 
     always #5 clk = ~clk;
 
-    csi2_frame_tx_var #(.PKT_BYTES(PKT), .GAP_FRAME(GAP), .DT(6'h18)) dut (
+    csi2_frame_tx_var #(.PKT_BYTES(PKT), .GAP_FRAME(GAP), .GAP_LINE(GAPL)) dut (
         .clk(clk), .rst_n(rst_n), .enable(enable),
+        .i_dt(6'h1E),
         .s_tvalid(s_tvalid), .s_tdata(s_tdata), .s_tlast(s_tlast), .s_tready(s_tready),
         .hs_en(hs_en), .hs_data(hs_data), .hs_last(hs_last),
         .frame_cnt(frame_cnt), .packet_cnt(packet_cnt), .byte_cnt(byte_cnt)
     );
+
+    //======================================================== ★V54g 包间 GAP 实测
+    //   hs_en 掉低后到下一次拉高之间的拍数。每个 packet (hs_last) 之间
+    //   必须 >= GAPL, 否则 D-PHY 的 HS TX FIFO 排不空 -> 溢出丢字节 -> CRC 错。
+    integer gap_run   = 0;
+    integer min_gap   = 999999;
+    integer seen_pkt  = 0;
+    integer gap_viol  = 0;
+    always @(posedge clk) begin
+        if (!hs_en) begin
+            gap_run = gap_run + 1;
+        end else begin
+            if (seen_pkt > 0 && gap_run > 0) begin
+                $display("  [GAP] packet boundary gap = %0d clk (need >= %0d)", gap_run, GAPL);
+                if (gap_run < min_gap) min_gap = gap_run;
+                if (gap_run < GAPL)    gap_viol = gap_viol + 1;
+            end
+            gap_run = 0;
+        end
+        if (hs_en && hs_last) seen_pkt = seen_pkt + 1;
+    end
 
     //======================================================== 参考模型
     function [7:0] ecc8;
@@ -129,11 +152,11 @@ module tb_csi2_frame_tx_var;
         exp[nexp]= (shdr(6'h00,16'd0)>>8)&8'hFF;  nexp=nexp+1;
         exp[nexp]= (shdr(6'h00,16'd0)>>16)&8'hFF; nexp=nexp+1;
         exp[nexp]= (shdr(6'h00,16'd0)>>24)&8'hFF; nexp=nexp+1;
-        // 包1: WC=4
-        exp[nexp]= (lhdr(6'h18,16'd4)>>0)&8'hFF;  nexp=nexp+1;
-        exp[nexp]= (lhdr(6'h18,16'd4)>>8)&8'hFF;  nexp=nexp+1;
-        exp[nexp]= (lhdr(6'h18,16'd4)>>16)&8'hFF; nexp=nexp+1;
-        exp[nexp]= (lhdr(6'h18,16'd4)>>24)&8'hFF; nexp=nexp+1;
+        // 包1: WC=4   (DT=0x1E = 运行时 i_dt, rkcif 只认这个)
+        exp[nexp]= (lhdr(6'h1E,16'd4)>>0)&8'hFF;  nexp=nexp+1;
+        exp[nexp]= (lhdr(6'h1E,16'd4)>>8)&8'hFF;  nexp=nexp+1;
+        exp[nexp]= (lhdr(6'h1E,16'd4)>>16)&8'hFF; nexp=nexp+1;
+        exp[nexp]= (lhdr(6'h1E,16'd4)>>24)&8'hFF; nexp=nexp+1;
         exp[nexp]=8'hAA; nexp=nexp+1;
         exp[nexp]=8'hBB; nexp=nexp+1;
         exp[nexp]=8'hCC; nexp=nexp+1;
@@ -148,10 +171,10 @@ module tb_csi2_frame_tx_var;
             exp[nexp]= 8'h00;   nexp=nexp+1;
         end
         // 包2: WC=3 (补 1 个 0)
-        exp[nexp]= (lhdr(6'h18,16'd3)>>0)&8'hFF;  nexp=nexp+1;
-        exp[nexp]= (lhdr(6'h18,16'd3)>>8)&8'hFF;  nexp=nexp+1;
-        exp[nexp]= (lhdr(6'h18,16'd3)>>16)&8'hFF; nexp=nexp+1;
-        exp[nexp]= (lhdr(6'h18,16'd3)>>24)&8'hFF; nexp=nexp+1;
+        exp[nexp]= (lhdr(6'h1E,16'd3)>>0)&8'hFF;  nexp=nexp+1;
+        exp[nexp]= (lhdr(6'h1E,16'd3)>>8)&8'hFF;  nexp=nexp+1;
+        exp[nexp]= (lhdr(6'h1E,16'd3)>>16)&8'hFF; nexp=nexp+1;
+        exp[nexp]= (lhdr(6'h1E,16'd3)>>24)&8'hFF; nexp=nexp+1;
         exp[nexp]=8'h11; nexp=nexp+1;
         exp[nexp]=8'h22; nexp=nexp+1;
         exp[nexp]=8'hD9; nexp=nexp+1;
@@ -191,11 +214,21 @@ module tb_csi2_frame_tx_var;
                 if (i > 40) i = nexp;   // 只报前几个
             end
         end
-        if (nlast != 2) begin
-            $display("hs_last COUNT MISMATCH: got %0d, exp 2", nlast);
+        // ★V54g: hs_last 拍数 = FS(1) + 包1_CRC(1) + 包2_CRC(1) + FE(1) = 4
+        if (nlast != 4) begin
+            $display("hs_last COUNT MISMATCH: got %0d, exp 4", nlast);
             err = 1;
         end
         $display("packet_cnt=%0d byte_cnt=%0d frame_cnt=%0d", packet_cnt, byte_cnt, frame_cnt);
+
+        // ★V54g: 包间 GAP 必须 >= GAPL (D-PHY HS FIFO 排空)
+        $display("[GAP] min packet gap = %0d clk (GAPL=%0d), violations = %0d",
+                 min_gap, GAPL, gap_viol);
+        if (gap_viol != 0) begin
+            $display("GAP TOO SMALL: %0d packet boundaries had gap < %0d", gap_viol, GAPL);
+            err = 1;
+        end
+
         if (err) $display("RESULT: FAIL");
         else     $display("RESULT: PASS (%0d bytes)", ngot);
         $finish;

@@ -1435,7 +1435,8 @@ wire [7:0]  S_dbg_jb;
 
 	csi2_frame_tx_var #(
 		.PKT_BYTES (1024),
-		.GAP_FRAME (200 ),
+		.GAP_FRAME (4000),      // 帧间空闲: 对齐定长版 4000
+		.GAP_LINE  (200 ),      // ★V54g: 包间排空, 定长版板上验证过的值
 		.VC        (2'b00)
 	) X_jv (
 		// ★★ V52: 与 D-PHY 的 I_hs_clk 同一根时钟, 消除 32 位裸跨域

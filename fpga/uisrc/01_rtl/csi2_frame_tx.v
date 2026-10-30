@@ -374,7 +374,8 @@ endmodule
 //==============================================================================
 module csi2_frame_tx_var #(
     parameter integer PKT_BYTES = 1024,     // 每个 long packet 的目标载荷字节数 (2 的幂, >= 4)
-    parameter integer GAP_FRAME = 200,      // FE 之后到下一帧 FS 的空闲拍数
+    parameter integer GAP_FRAME = 4000,     // FE 之后到下一帧 FS 的空闲拍数
+    parameter integer GAP_LINE  = 200,      // ★V54g: 包间空闲拍数 (给 D-PHY HS FIFO 排空)
     parameter [1:0]   VC        = 2'b00
 )(
     input  wire        clk,
@@ -502,6 +503,8 @@ module csi2_frame_tx_var #(
     localparam [3:0] S_CRC  = 4'd5;
     localparam [3:0] S_FE   = 4'd6;
     localparam [3:0] S_GAP  = 4'd7;
+    localparam [3:0] S_GAPL = 4'd8;         // ★V54g: 包间 GAP
+    localparam [15:0] GAP_LINE_C = GAP_LINE;
 
     reg [3:0]  state;
     reg [15:0] gap_cnt;
@@ -675,11 +678,32 @@ module csi2_frame_tx_var #(
                 packet_cnt <= packet_cnt + 32'd1;
                 byte_cnt   <= byte_cnt + {16'd0, t_wc};
                 tx_busy    <= 1'b0;
+                gap_cnt    <= 16'd0;
                 if (t_fe) begin
                     state <= S_FE;
                 end else begin
-                    state <= S_IDLE;
+                    state <= S_GAPL;
                 end
+            end
+
+            //------------------------------------------------------------------
+            // ★★ V54g (2026-10-30): 补回【包间排空间隔】★★
+            //
+            //  定长版 csi2_frame_tx 每个 long packet 后等 GAP_LINE=200 拍:
+            //  实测 4K25 下 rkcif 25.00fps / ECC=0 / CRC=0; 改 100 立刻爆 e2/crc,
+            //  改 40 同样报错 —— 那 200 拍就是给 D-PHY 的 HS TX FIFO 排空用的。
+            //
+            //  变长版把这个间隔丢了: S_CRC 后直接回 S_IDLE 抢下一个 bank,
+            //  hs_en 连续不断地灌 D-PHY 的 "DRAM" 型 HS TX FIFO, 而
+            //  system_top 里 u_dphy_tx 的 O_hs_tx_ready 是**空悬**的(无法反压)
+            //  => FIFO 溢出丢字节 => 每个 packet 的 CRC 都错。
+            //
+            //  板上症状(0x5402): MIPI_CSI2 累计 4300+ 条 ecc2/crc, VC 0~3 全覆盖
+            //  (配置里只用 VC=0, 连包头 VC 字段都被打坏); v4l2 buffer 99% 是 0
+            //  且 4MB 内找不到任何一个 FF D8。
+            S_GAPL: begin
+                if (gap_cnt >= GAP_LINE_C) state <= S_IDLE;
+                else                       gap_cnt <= gap_cnt + 16'd1;
             end
 
             //------------------------------------------------------------------
