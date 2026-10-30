@@ -1242,6 +1242,7 @@ html, body{overflow:hidden}
     // 巡检：patrol 是数据（yaw=null 表示无向），其余是运行时状态
     patrol: [], patrolIdx: -1, patrolPhase: '', patrolT0: 0,
     patrolDwellEnd: 0, patrolNear: 0, patrolTimer: null, patrolLoop: false,
+    patrolArriveT: 0, patrolCanceled: false,
     navStack: false,                                // 车端导航栈在跑（relay 的 /amcl 探测）
     sceneRev: 0                                     // 静态层失效计数（地图/路径/视图变更时 ++）
   };
@@ -2474,6 +2475,11 @@ html, body{overflow:hidden}
   const PATROL_TOL = 0.35;          // 到位判定半径（m）
   const PATROL_STOP_NEED = 3;       // 连续几次（300ms 一次）静止才算「停稳」≈0.9s
   const PATROL_GO_MS = 180000;      // 单点超时 3 分钟 -> 跳过该点
+  // ★ 2026-10-30：到点后 move_base 会在容差内原地微调（左右摆），
+  //   角速度一直超阈值 -> 「停稳」永远判不出来，最终只能等 3 分钟超时。
+  //   所以到点后 4s 还停不稳就先取消目标逼它站住，再等 3s 还不算就直接当停稳。
+  const PATROL_ARRIVE_CANCEL_MS = 4000;
+  const PATROL_SETTLE_MS = 3000;
 
   // 循环巡检开关（状态在 S.patrolLoop，按钮 .on 高亮，存 localStorage 的 remote:cfg 里）
   function patrolLoopOn() {
@@ -2657,6 +2663,7 @@ html, body{overflow:hidden}
   function patrolNext() {
     S.patrolIdx++;
     S.patrolNear = 0;
+    S.patrolArriveT = 0; S.patrolCanceled = false;   // 新的一段路，重新计
     pmPrev = null;                  // 重新计运动量（新的一段路）
     if (S.patrolIdx >= S.patrol.length) {
       // 2026-10-30: 循环巡检 —— 跑完最后一点再从第 1 点开始，直到「停止全部」
@@ -2667,6 +2674,7 @@ html, body{overflow:hidden}
         return;
       }
       stopPatrol('巡检完成：' + S.patrol.length + ' 个点都跑完了');
+      goalHoldStill();            // 最后一个点也停住，别让车继续在原地找目标
       return;
     }
     const p = S.patrol[S.patrolIdx];
@@ -2691,22 +2699,42 @@ html, body{overflow:hidden}
         // ★ 2026-10-30: 进容差不算到位，要等车**真的停稳**才开始停留倒计时。
         //   否则车还在滑行就把停留时间烧完了（用户提的现象）。
         //   停稳 = 位置变化率和角速度都接近 0，连续 PATROL_STOP_NEED 次。
+        if (!S.patrolArriveT) S.patrolArriveT = Date.now();
+        const arrived = Date.now() - S.patrolArriveT;
         const mv = patrolMotion();
         S.patrolNear = mv.stopped ? S.patrolNear + 1 : 0;
-        if (S.patrolNear >= PATROL_STOP_NEED) {
+
+        // 到点很久还停不稳（典型：在容差内原地来回微调）-> 先取消目标逼它停下。
+        // 取消后车就不再追目标，一般 1 秒内就真停了。
+        if (!S.patrolCanceled && arrived > PATROL_ARRIVE_CANCEL_MS) {
+          S.patrolCanceled = true;
+          goalHoldStill();
+        }
+        // 取消之后又等了 PATROL_SETTLE_MS 仍判不出停稳 -> 直接当停稳，别耗到 3 分钟超时。
+        const forced = S.patrolCanceled &&
+                       arrived > PATROL_ARRIVE_CANCEL_MS + PATROL_SETTLE_MS;
+
+        if (S.patrolNear >= PATROL_STOP_NEED || forced) {
           const sec = pSec(p);
           if (sec > 0) {
+            // ★ 停稳就立刻取消目标。move_base 在到点容差内还会反复微调
+            //   （原地小幅摆头/来回蹭），目标留着车就静不下来。
+            //   ⚠ sec==0 时不 cancel：下一拍就 patrolNext() 发新目标，
+            //     多一发 cancel 可能把刚发的目标打掉。
+            goalHoldStill();
             S.patrolPhase = 'dwell';
             S.patrolDwellEnd = Date.now() + sec * 1000;
             gzPatrolStart();          // ★ 停稳了 -> 云台开始巡视
-            toast('第 ' + (S.patrolIdx + 1) + ' 点已停稳，开始停留 ' + pDwellText(sec) + '（云台巡视中）');
+            toast('第 ' + (S.patrolIdx + 1) + ' 点' + (forced ? '已到点' : '已停稳') +
+                  '，已取消目标，开始停留 ' + pDwellText(sec) + '（云台巡视中）');
           } else {
             patrolNext();
           }
           return;
         }
         setPatrolStatus('第 ' + (S.patrolIdx + 1) + '/' + S.patrol.length + ' 点 已到点',
-          mv.stopped ? '等车停稳…' : '车还在动，等停稳…');
+          mv.stopped ? '等车停稳…'
+            : (S.patrolCanceled ? '已取消目标，等车停稳…' : '车还在动，等停稳…'));
       } else {
         S.patrolNear = 0;
       }
@@ -2915,6 +2943,25 @@ html, body{overflow:hidden}
     };
     pub();
     setTimeout(pub, 400);
+  }
+
+  // 到点停稳后「取消目标 + 清掉规划线」。
+  // 2026-10-30（用户要求）：巡检时车一到点就在原地小幅摆动，原因是 move_base
+  // 在到点容差内还在反复微调。停稳后直接把目标取消，车就真的站住了，
+  // 停留倒计时和云台巡视也干净。
+  // ⚠ 这里只发一次 cancel（不像 cancelGoalNow 那样补发第二发）：
+  //   目标已经跑了几十秒，move_base 肯定手上有了，单发就够；
+  //   补发晚 400ms 反而有把紧接着下发的新目标打掉的风险。
+  function goalHoldStill() {
+    if (topics.cancel) {
+      topics.cancel.publish(new ROSLIB.Message({ stamp: { secs: 0, nsecs: 0 }, id: '' }));
+    }
+    S.goal = null; S.gplan = []; S.lplan = [];
+    S.plansG = {}; S.plansL = {};      // 全局路径不会自动过期，不清就一条蓝线挂着
+    if ($('stGoal')) $('stGoal').textContent = '—';
+    if ($('stPath')) $('stPath').textContent = '—';
+    S.sceneRev++;
+    draw();
   }
 
   $('btnCancelGoal').addEventListener('click', function () {
