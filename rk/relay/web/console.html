@@ -645,9 +645,10 @@ html, body{overflow:hidden}
           <div style="flex:1;display:flex;gap:6px">
             <!-- 2026-10-30 V54d: 结构上【左半 = cam1, 右半 = cam0】(见 system_top
                  的 dual_stitch .SWAP(0)), 所以标签按这个来。
-                 data-cam 的值是 cam 编号(写 FPGA 0xDB[0]), 不能改。 -->
-            <button class="ghost" data-cam="0" style="flex:1">右目(CAM0)</button>
+                 data-cam 的值是 cam 编号(写 FPGA 0xDB[0]), 不能改。
+                 按钮顺序按屏幕位置排: 左目在左, 右目在右。 -->
             <button class="ghost" data-cam="1" style="flex:1">左目(CAM1)</button>
+            <button class="ghost" data-cam="0" style="flex:1">右目(CAM0)</button>
           </div>
         </div>
         <div class="row"><label>AI 通道</label>
