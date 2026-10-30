@@ -279,7 +279,7 @@ module cfg_ctrl_top #(
 	//             而 4 引擎编码一帧要 16.62ms => 输入快 2.6ms, FIFO 必满。
 	//       回退成四路取与(任一路满就停读 dbuf, 数据留在 DDR),
 	//       保留 V54c 的 mux o_ready 修复 + sel 超时兜底。
-	parameter [15:0] CFG_VER = 16'h540B
+	parameter [15:0] CFG_VER = 16'h540C
 )(
 	// ---- 系统时钟域 (25MHz 常开) ----
 	input  wire        i_sys_clk,
@@ -667,6 +667,13 @@ module cfg_ctrl_top #(
           .I_dbg_rgbin    (D_in_s2),
           .I_dbg_yuvout   (D_out_s2),
           .I_dbg_cam0_starve(C0ST_s2),
+          // ★★ V54p (2026-11-01): 这条连线在 V54l 时**静默失败漏掉了** ★★
+          //   MHD_s1/MHD_s2 同步器当时已经加了, 但这一行没加上, 于是 MHD_s2
+          //   悬空 -> 综合把 i_dbg_mhdr/MHD_s* 整条链优化掉 -> regfile 的
+          //   I_dbg_mhdr 悬空 -> 0xCC/0xCD/0xCE 恒读 0x00。
+          //   这是"桥明显在搬字节(0xE4 疯涨) 但三态诊断全零"的唯一原因,
+          //   之前基于这三个读数的所有推断都作废。
+          .I_dbg_mhdr     (MHD_s2),
           // 2026-10-20: RX 调试总线 (已 2 级同步到 i_sys_clk)
           // 2026-10-21: 0xD6/D7/D8 固定是 cam0, cam1 固定走 0xDD/DE/DF
           .I_dbg_mipi      (dbg_mipi_s2),
