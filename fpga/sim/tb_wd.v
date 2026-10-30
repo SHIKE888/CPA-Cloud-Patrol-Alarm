@@ -61,15 +61,12 @@ module tb_wd;
     wire        c_v, c_sof, c_last;
     wire [63:0] c_d;
     // ★ 与 RTL 一致: 源只受 enc_if 的 FIFO 满反压, 不受帧门控
-    //   ★V54b: 改成"只看当前段那一路"(与 system_top 的 S_jcfg_consume 同步);
-    //   原来四路取与 -> 一路满就饿死四路。
+    //   ★V54e: 回到四路取与 (与 system_top 的 S_jcfg_consume 同步) —
+    //   per-segment 会让板上 enc_if 溢出 (ovf=1) -> 色度丢 -> 大片绿。
     reg         c_rdy_en;
     wire [3:0]  x_full;
     reg  [9:0]  gcnt;
-    wire [1:0]  g_seg = (gcnt >= 3*QW) ? 2'd3 :
-                        (gcnt >= 2*QW) ? 2'd2 :
-                        (gcnt >= 1*QW) ? 2'd1 : 2'd0;
-    wire        c_rdy = c_rdy_en & ~x_full[g_seg];
+    wire        c_rdy = c_rdy_en & ~(|x_full);
     initial c_rdy_en = 1'b0;
 
     yuv32_to_quad u_conv (

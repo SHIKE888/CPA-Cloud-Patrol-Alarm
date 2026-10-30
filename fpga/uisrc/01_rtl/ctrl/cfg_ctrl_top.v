@@ -272,7 +272,14 @@ module cfg_ctrl_top #(
 	//       ③ jpeg_seg_merge4: sel 无进展超时兜底 (SEL_TO=262143 拍)
 	//       台架: 3840x256 从 FAIL(ENG by 0/0/0/0) 变成
 	//             PASS(ENG by 80927x3/80925, MERGED 324321, segcnt 963, ovf 0)
-	parameter [15:0] CFG_VER  = 16'h5401
+	//     V54e (0x5402) 2026-10-30: 回退源侧反压策略, 寄存器定义不变
+	//       V54c 把 S_jcfg_consume 从"四路取与"改成"只看当前段那一路",
+	//       板上实测 0xA3~A6 出现 ovf=1 / mrg_segc=0, 画面大片绿(色度全丢)。
+	//       根因: dbuf 读侧 147.5MHz 一行 13.0us x 1080 = 14.06ms 灌完,
+	//             而 4 引擎编码一帧要 16.62ms => 输入快 2.6ms, FIFO 必满。
+	//       回退成四路取与(任一路满就停读 dbuf, 数据留在 DDR),
+	//       保留 V54c 的 mux o_ready 修复 + sel 超时兜底。
+	parameter [15:0] CFG_VER  = 16'h5402
 )(
 	// ---- 系统时钟域 (25MHz 常开) ----
 	input  wire        i_sys_clk,

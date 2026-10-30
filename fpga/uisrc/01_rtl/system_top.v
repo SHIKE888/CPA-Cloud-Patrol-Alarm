@@ -800,10 +800,18 @@ wire [7:0]  S_dbg_jb;
 	//   ⇒ 任何一路被 mux 卡住, 其它三路仍能正常吃数, 不会再被一起饿死。
 	//   ⚠ S_jg_gcnt 必须先声明再用 (否则被隐式声明成 1bit wire, 本工程踩过多次)
 	reg  [9:0]  S_jg_gcnt;
-	wire [1:0]  S_jg_seg   = (S_jg_gcnt >= 10'd720) ? 2'd3 :
-	                         (S_jg_gcnt >= 10'd480) ? 2'd2 :
-	                         (S_jg_gcnt >= 10'd240) ? 2'd1 : 2'd0;
-	wire        S_jcfg_consume = ~S_encif_full[S_jg_seg];
+	// ★★ V54e (2026-10-30, 板上 0x5401 实测定案): 反压**必须**是四路取与 ★★
+	//   V54c 曾改成只看当前段那一路 (~S_encif_full[S_jg_seg]), 结果板上
+	//   S_dbg_jpeg(0xA3~A6) 读出 ovf=1、mrg_segc=0, 画面大片绿(色度全丢)。
+	//   原因: dbuf 读侧 147.5MHz, 一行 1920 word = 13.0us, 1080 行 = 14.06ms 灌完;
+	//         而 4 引擎编码一帧要 16.62ms => 输入比编码快 2.6ms,
+	//         FIFO 一定积累到满。per-segment 只看当前段那一路, 会把它写爆。
+	//   四路取与的效果是: 任一路满就停读 dbuf, 数据留在 DDR 三帧缓存里,
+	//   等编码追上再继续 —— 代价是突发-停顿的节奏, 但一帧数据 14.06ms
+	//   仍在 16.66ms 帧周期内传得完, 帧率不受影响, 且永远不会溢出。
+	//   "一路满饿死四路" 的真因是 mux 的 o_ready 驱动方向错了(已在 V54c 修好),
+	//   不是反压策略的问题。
+	wire        S_jcfg_consume = ~(|S_encif_full);
 
 	yuv32_to_quad X_jcfg (
 		.r_clk   (S_pclkx1          ),
