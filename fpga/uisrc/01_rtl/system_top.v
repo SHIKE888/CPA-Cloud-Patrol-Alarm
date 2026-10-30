@@ -2218,14 +2218,10 @@ dual_stitch #(
     .HGRP       (480),      // 1920 px / 4 px + 4px/clk = 480 组
     .V_ACTIVE   (1080),
     .FIFO_AW    (11),       // 每源 2048 word ≈ 4.2 行
-    // ★ V54d (2026-10-30): SWAP 0 -> 1
-    //   原来 SWAP=0 是"左半 = cam1, 右半 = cam0", 但 web/console.html 的
-    //   既定设计是「左cam0 右cam1」(见其 3593 行注释与 646/647 行按钮),
-    //   结果就是用户看到的"左右目反了": 选中右目(CAM1)时画面出现在左半。
-    //   cam0 是物理上左边那颗, 所以让 cam0 走左半。SWAP 在 sensor_sync_start
-    //   里只是把两路到 FIFO0/FIFO1 的物理连接对调(综合期常量), 改一个参数即可,
-    //   时钟域也一起跟着换, 不会引入新的跨时钟问题。
-    .SWAP       (1),        // ★ 左 = cam0, 右 = cam1 (与 web 一致)
+    // ★ 结构定义 (以这里为准): 左半幅 = cam1, 右半幅 = cam0
+    //   V54d 曾把 SWAP 改成 1 想做左右对调, 但用户确认「结构上左目就是 cam1」,
+    //   反的是 web/console.html 的标签与注释 —— 已在 web 侧修正。这里保持 0。
+    .SWAP       (0),        // ★ 左 = cam1, 右 = cam0
     .STARVE_MAX (2400)      // @70.238MHz ≈ 34.2us ≈ 2.3 行
 ) X_dual_stitch (
     .l_clk     (S_hs_clk1        ),
