@@ -168,10 +168,7 @@ body{
     accent-color: #1f6feb; cursor: pointer; background: transparent; }
 #viewMap #dpad .srow b{ font-size: 11px; color: var(--fg); width: 32px; text-align: right;
     font-variant-numeric: tabular-nums; font-weight: 600; }
-/* 巡检选项行（循环巡检） */
-#viewMap .popt{ display: flex; align-items: center; gap: 6px; margin-top: 8px;
-    color: var(--dim); font-size: 12px; cursor: pointer; user-select: none; }
-#viewMap .popt input{ accent-color: #1f6feb; }
+/* 巡检选项行（循环巡检按钮本身用 .tool / .on 的统一高亮，不再另写样式） */
 #viewMap #toast{
     position: absolute; left: 50%; transform: translateX(-50%); bottom: 18px;
     padding: 7px 14px; border-radius: 8px; background: #1f6feb33; border: 1px solid #1f6feb;
@@ -1081,9 +1078,9 @@ html, body{overflow:hidden}
           <button id="btnPatrolClear">清空列表</button>
         </div>
         <div class="plist" id="plist"></div>
-        <label class="popt"><input type="checkbox" id="patrolLoop"> 循环巡检（跑完最后一点再从第 1 点开始，直到「停止全部」）</label>
-        <div class="btnrow wide" style="margin-top:8px">
-          <button id="btnPatrolStart" class="primary" style="grid-column:1 / -1" disabled>开始巡检</button>
+        <div class="btnrow" style="margin-top:8px">
+          <button id="btnPatrolLoop" class="tool" title="跑完最后一点再从第 1 点开始，直到「停止全部」">循环</button>
+          <button id="btnPatrolStart" class="primary" style="grid-column:2 / -1" disabled>开始巡检</button>
         </div>
         <div class="hint"><span id="stPatrol">未开始</span><b id="stPatrolInfo">—</b></div>
       </section>
@@ -1193,7 +1190,7 @@ html, body{overflow:hidden}
     placePrev: null,                                // 拖动中的橡皮筋 {tool,x0,y0,x1,y1}
     // 巡检：patrol 是数据（yaw=null 表示无向），其余是运行时状态
     patrol: [], patrolIdx: -1, patrolPhase: '', patrolT0: 0,
-    patrolDwellEnd: 0, patrolNear: 0, patrolTimer: null,
+    patrolDwellEnd: 0, patrolNear: 0, patrolTimer: null, patrolLoop: false,
     navStack: false,                                // 车端导航栈在跑（relay 的 /amcl 探测）
     sceneRev: 0                                     // 静态层失效计数（地图/路径/视图变更时 ++）
   };
@@ -1797,18 +1794,18 @@ html, body{overflow:hidden}
     if (A && $('wangv')) $('wangv').textContent = parseFloat(A.value).toFixed(2);
   }
   function saveRemoteCfg() {
-    const L = $('vlin'), A = $('wang'), LP = $('patrolLoop');
+    const L = $('vlin'), A = $('wang');
     try {
       localStorage.setItem(REMOTE_KEY, JSON.stringify({
         lin: parseFloat(L.value), ang: parseFloat(A.value),
-        loop: !!(LP && LP.checked)
+        loop: !!S.patrolLoop
       }));
     } catch (e) {}
   }
   function loadRemoteCfg() {
     let c = {};
     try { c = JSON.parse(localStorage.getItem(REMOTE_KEY) || '{}') || {}; } catch (e) {}
-    const L = $('vlin'), A = $('wang'), LP = $('patrolLoop');
+    const L = $('vlin'), A = $('wang');
     const clamp = function (v, lo, hi, dv) {
       v = parseFloat(v);
       if (!isFinite(v)) return dv;
@@ -1816,15 +1813,27 @@ html, body{overflow:hidden}
     };
     if (L) L.value = clamp(c.lin, 0.02, 0.6, 0.15);
     if (A) A.value = clamp(c.ang, 0.2, 2, 0.6);
-    if (LP) LP.checked = !!c.loop;
+    S.patrolLoop = !!c.loop;
+    syncPatrolLoopBtn();
     syncRemoteLabels();
   }
   if ($('vlin')) $('vlin').addEventListener('input', function () { syncRemoteLabels(); saveRemoteCfg(); });
   if ($('wang')) $('wang').addEventListener('input', function () { syncRemoteLabels(); saveRemoteCfg(); });
-  if ($('patrolLoop')) $('patrolLoop').addEventListener('change', function () {
-    saveRemoteCfg();
-    toast(this.checked ? '已开启循环巡检' : '已关闭循环巡检');
-  });
+
+  // 循环巡检：做成和 6 个工具按钮同风格的开关按钮（.on 高亮），不再用文字说明的复选框
+  function syncPatrolLoopBtn() {
+    const b = $('btnPatrolLoop');
+    if (b) b.classList.toggle('on', !!S.patrolLoop);
+  }
+  if ($('btnPatrolLoop')) {
+    $('btnPatrolLoop').addEventListener('click', function () {
+      S.patrolLoop = !S.patrolLoop;
+      syncPatrolLoopBtn();
+      saveRemoteCfg();
+      toast(S.patrolLoop ? '已开启循环巡检（跑完最后一点回到第 1 点）'
+                         : '已关闭循环巡检');
+    });
+  }
   loadRemoteCfg();
   $('btnStopAll').addEventListener('click', function () {
     // 巡检必须先停，否则它 300ms 一次的 tick 会继续往下发目标、
@@ -2283,14 +2292,16 @@ html, body{overflow:hidden}
 
   function selectTool(name) {
     S.tool = name;
-    const btns = document.querySelectorAll('button.tool');
+    // 只处理真正带 data-tool 的按钮：巡检的「循环」等按钮也用了 .tool 样式，
+    // 但它们不是画布工具，不能被 selectTool(null) 误点亮。
+    const btns = document.querySelectorAll('button.tool[data-tool]');
     for (let i = 0; i < btns.length; i++) {
       btns[i].classList.toggle('on', btns[i].getAttribute('data-tool') === name);
     }
   }
 
   (function bindTools() {
-    const btns = document.querySelectorAll('button.tool');
+    const btns = document.querySelectorAll('button.tool[data-tool]');
     for (let i = 0; i < btns.length; i++) {
       btns[i].addEventListener('click', function () {
         selectTool(this.getAttribute('data-tool'));
@@ -2313,10 +2324,9 @@ html, body{overflow:hidden}
   const PATROL_STOP_NEED = 3;       // 连续几次（300ms 一次）静止才算「停稳」≈0.9s
   const PATROL_GO_MS = 180000;      // 单点超时 3 分钟 -> 跳过该点
 
-  // 循环巡检开关（存在 localStorage 的 remote:cfg 里，refresh 后恢复）
+  // 循环巡检开关（状态在 S.patrolLoop，按钮 .on 高亮，存 localStorage 的 remote:cfg 里）
   function patrolLoopOn() {
-    const cb = $('patrolLoop');
-    return !!(cb && cb.checked);
+    return !!S.patrolLoop;
   }
 
   // 实时估计机器人运动量，用来判断「车停稳了没」。
