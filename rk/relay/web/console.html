@@ -355,10 +355,10 @@ body{
 /* ---- 云台页签：方向键盘 ----
    长按方向键持续转，松手立即停。touch-action:none 必须写 —— 手机上
    不写会被当成长按选中/滚动，pointerup 收不到，云台就会一直转。 */
+/* 2026-10-30: 云台方向键改成正方形（原来是 1fr 宽 × 46px 高，扁长方形） */
 #viewVideo .gzpad{
-  display:grid; grid-template-columns:repeat(3,1fr);
-  grid-template-rows:repeat(3,46px); gap:8px; margin:8px 0 4px;
-  max-width:264px; margin-left:auto; margin-right:auto;
+  display:grid; grid-template-columns:repeat(3,56px);
+  grid-template-rows:repeat(3,56px); gap:8px; margin:0;
   user-select:none; -webkit-user-select:none;
 }
 #viewVideo .gzbtn{
