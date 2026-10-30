@@ -1222,6 +1222,11 @@ html, body{overflow:hidden}
 
   let ros = null, connected = false, tfClient = null;
   let mapInfoTimer = null;          // 每 5s 刷「地图清单 + 导航栈状态」
+  // ── 自动重连（2026-10-30）────────────────────────────────────
+  //   车重启后 roscore/rosbridge 要几十秒才就绪；早先页面只会停在「已断开」，
+  //   必须手动再点一次「连接」。现在断开后按 1.5~6s 退避一直重试，
+  //   车端一旦启动完成就自己接回去（状态栏会显示正在重试第几次）。
+  let reconnectTimer = null, reconnectTries = 0, rosGen = 0;
   const topics = {};
 
   const S = {
@@ -1616,7 +1621,25 @@ html, body{overflow:hidden}
     ctx.fillText(barM + ' m', W - 16 - barPx, H - 24);
   }
 
+  function stopReconnect() {
+    if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+  }
+
+  // 退避重试：1.5s → 3s → 4.5s → 6s …（上限 6s，永不放弃）
+  function scheduleReconnect() {
+    if (reconnectTimer) return;
+    reconnectTries++;
+    const wait = Math.min(6000, 1500 * reconnectTries);
+    $('st').textContent = '车端未就绪，' + (wait / 1000).toFixed(1) + 's 后重试 #' + reconnectTries;
+    reconnectTimer = setTimeout(function () {
+      reconnectTimer = null;
+      connect();                      // 重连（状态栏/提示词按 reconnectTries 自动选）
+    }, wait);
+  }
+
   function disconnect() {
+    stopReconnect();
+    rosGen++;                         // 作废旧 socket 的所有回调
     if (tfClient) { try { tfClient.unsubscribe('base_footprint'); } catch (e) {} tfClient = null; }
     if (ros) { try { ros.close(); } catch (e) {} }
     ros = null; connected = false;
@@ -1629,14 +1652,19 @@ html, body{overflow:hidden}
     const url = elAddr.value.trim() || defaultUrl();
     localStorage.setItem('ros_ws', url);
     disconnect();
-    $('st').textContent = '连接中…';
+    const myGen = ++rosGen;           // 只有最新一代的 socket 能改 UI
+    $('st').textContent = reconnectTries > 0
+      ? ('连接中…（第 ' + reconnectTries + ' 次重试）') : '连接中…';
     ros = new ROSLIB.Ros({ url: url });
 
     ros.on('connection', function () {
+      if (myGen !== rosGen) return;
+      const wasRetry = reconnectTries > 0;
       connected = true;
+      reconnectTries = 0;
       elDot.classList.add('on');
       $('st').textContent = '已连接';
-      toast('已连接 ' + url);
+      toast(wasRetry ? ('车端已就绪，自动重连成功') : ('已连接 ' + url));
       subscribe();
       refreshMapSaveTime();          // 把「最近保存地图」时间拉回来（上次保存可能早于本次开页）
       // 2026-10-30: 每 5 秒刷一次：地图清单（可能有人在车端另存了图）+ 导航栈状态
@@ -1647,13 +1675,17 @@ html, body{overflow:hidden}
       }, 5000);
     });
     ros.on('error', function (e) {
+      if (myGen !== rosGen) return;
+      // 自动重试期间不弹 toast（不然每 1.5s 一条），只改状态栏
+      if (reconnectTries > 0) { $('st').textContent = '车端未就绪，等它启动…'; return; }
       $('st').textContent = '错误';
       toast('连接错误：' + (e && e.message ? e.message : '见控制台'), true);
     });
     ros.on('close', function () {
+      if (myGen !== rosGen) return;   // 被 disconnect() 主动关掉的不算
       connected = false; elDot.classList.remove('on');
-      $('st').textContent = '已断开';
       stopVel(false);
+      scheduleReconnect();
     });
   }
 
@@ -3081,7 +3113,7 @@ html, body{overflow:hidden}
     draw();
   }, { passive: false });
 
-  $('connect').addEventListener('click', connect);
+  $('connect').addEventListener('click', function () { reconnectTries = 0; connect(); });
   $('fit').addEventListener('click', fitView);
   $('follow').addEventListener('change', function (e) {
     S.follow = e.target.checked;
@@ -3095,7 +3127,7 @@ html, body{overflow:hidden}
     subMap();
     toast('重新订阅 /map');
   });
-  elAddr.addEventListener('keydown', function (e) { if (e.key === 'Enter') connect(); });
+  elAddr.addEventListener('keydown', function (e) { if (e.key === 'Enter') { reconnectTries = 0; connect(); } });
 
   elAddr.value = defaultUrl();
   resize();
