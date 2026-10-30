@@ -619,11 +619,11 @@ module jpeg_regfile #(
             8'hCA: O_rd_data <= I_dbg_cam0_starve[ 7:0];
             8'hCB: O_rd_data <= I_dbg_cam0_starve[15:8];
             // V54l: 合并器输出 JPEG 起始三态判别
-            8'hCC: O_rd_data <= I_dbg_mhdr[ 7:0];
-            8'hCD: O_rd_data <= I_dbg_mhdr[15:8];
-            8'hCE: O_rd_data <= {7'b0, I_dbg_mhdr[16]};
-            // V54l: 合并器输出 JPEG 起始三态判别
             //   0xCC=首字节(应 FF)  0xCD=次字节(应 D8)  0xCE.bit0=见过 FF D8
+            //   ⚠ V54n: 这里原来重复定义了两次 (编辑事故)。重复 case 标签会让
+            //     综合工具丢弃整个分支, 并连带把 I_dbg_mhdr 的整条驱动链优化掉,
+            //     于是 0xCC/0xCD/0xCE 恒读 0x00 —— 这是"读数全零但桥实际在动"
+            //     矛盾现象的最可能解释。现只保留一组。
             8'hCC: O_rd_data <= I_dbg_mhdr[ 7:0];
             8'hCD: O_rd_data <= I_dbg_mhdr[15:8];
             8'hCE: O_rd_data <= {7'b0, I_dbg_mhdr[16]};
