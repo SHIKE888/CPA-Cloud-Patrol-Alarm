@@ -214,6 +214,11 @@ class GimbalWeb(object):
     #   用户看到的就是“松开方向键后云台自己还在慢慢转”。
     POS_FB_TOL = 2.0       # 小于它一律不动（度）
     POS_FB_MAX = 1.0       # 最大修正速度（度/秒）
+    # ★★ 总开关（2026-10-30 实测后关掉）：固件在速度模式下 0 rpm 就“角度保持”，
+    #   实测静置 23 s 读数一位不变，根本不需要软件位置环。
+    #   只要它还开着，任何“目标 ≠ 实测”的情况（手掰一下云台、点动尾巴、
+    #   编码器 1 Hz 外推误差）都会让云台自己慢慢转回去 —— 就是用户说的“漂移”。
+    POS_FB_ENABLE = False
 
     def __init__(self, port="/dev/ttyACM0", yaw_limit_deg=170.0,
                  pitch_limit_deg=42.0, speed_max=25.0,
@@ -1064,10 +1069,12 @@ class GimbalWeb(object):
         v = [want[0], want[1]]
         stall = [False, False]
         # 什么时候允许位置环介入：没有前馈 + 两轴都几乎不动
+        #   ⚠ 默认 POS_FB_ENABLE=False（完全不介入）：空发时只有前馈能产生速度，
+        #     云台不会再自己动。要恢复位置保持把开关改 True 即可。
         calm = (abs(want[0]) < 0.2 and abs(want[1]) < 0.2
                 and abs(self._vel_meas[0]) <= 3.0
                 and abs(self._vel_meas[1]) <= 3.0)
-        pos_fb = bool(not tracking and calm)
+        pos_fb = bool(self.POS_FB_ENABLE and not tracking and calm)
         if pos_est is not None:
             gain = self.kp_vel * _clamp(1.0 - age / 1.2, 0.0, 1.0)
             for i in (0, 1):
