@@ -87,17 +87,36 @@ module jpeg_seg_merge4 (
     // 本拍真的送出了一个字节 = 有进展
     wire sel_prog = cur_valid && o_ready_down;
 
-    always @(posedge clk or negedge rst_n) begin
-        if (!rst_n)                sel_tmr <= 18'd0;
-        else if (i_start || sel_prog) sel_tmr <= 18'd0;
-        else if (sel_tmr != SEL_TO) sel_tmr <= sel_tmr + 18'd1;
-    end
-
     wire sel_to = (sel_tmr >= SEL_TO);
 
     // done_p 同拍可能既 set 又 clear, 先用组合算下一状态再整体写回
     // ★ V54c: 超时也允许切换 (sel_to), 否则一路卡死就永久锁死
     wire sw_ok  = cur_can_sw || sel_to;
+
+    //==========================================================================
+    // ★★ V54h (2026-10-31): 切换时必须清 sel_tmr —— 否则"一超时就是永久超时"
+    //
+    //  板上 0x5404 实测: mrg_segc 在 1 秒内从 0x9683 涨到 0xd081 (= +14846),
+    //  而一帧只有 1080 行 x 4 段 = 4320 段。数字本身就证明 sel 在**每拍疯狂轮转**。
+    //
+    //  根因: sel_tmr 原来只在 i_start / sel_prog 时清零, sw_ok 时不清。
+    //    一旦 sel_tmr 撞到 SEL_TO, sel_to 就恒为 1 -> sw_ok 恒为 1 ->
+    //    每拍 sel 递增一次、done_p[sel] 每拍被清一次 -> sel 空转一整圈只要 4 拍,
+    //    4 路都拿不到**持续**的 o_ready -> 每路引擎输出 FIFO 逐个填满 ->
+    //    引擎停在段中间 -> i_seg_done 永不来 -> 全链死锁。
+    //    这与实测"eng0 停在 796、eng3 冻在 26385、encif_full[3]=1、consume=0"
+    //    完全吻合; 也解释了为什么一超时之后无论等多久都救不回来。
+    //
+    //  修法: sw_ok 那一拍同时清 sel_tmr, 让超时只生效一拍 (占空 1 拍),
+    //    切到下一路后重新完整计时。这样超时是"跳过卡死的那一路", 而不是
+    //    "从此永久空转"。
+    //==========================================================================
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n)                             sel_tmr <= 18'd0;
+        else if (i_start || sel_prog || sw_ok)  sel_tmr <= 18'd0;
+        else if (sel_tmr != SEL_TO)             sel_tmr <= sel_tmr + 18'd1;
+    end
+
     reg [3:0] done_nx;
     always @(*) begin
         done_nx = done_p | i_seg_done;
