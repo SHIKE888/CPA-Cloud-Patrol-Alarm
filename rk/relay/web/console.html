@@ -559,9 +559,13 @@ html, body{overflow:hidden}
         </div>
         <img id="stream" alt="stream" style="display:none">
         <div id="quad">
-          <div class="qc"><b>cam0</b>
+          <!-- 2026-10-30 V54d: 结构上【左半 = cam1, 右半 = cam0】
+               (system_top 的 dual_stitch .SWAP(0)),
+               而 quadDraw() 里 cvL 裁的是流的左半、cvR 裁的是右半,
+               所以左上格子的标题必须是 cam1, 右上才是 cam0。 -->
+          <div class="qc"><b>cam1（左）</b>
             <div class="qb"><canvas id="cvL"></canvas></div></div>
-          <div class="qc"><b>cam1</b>
+          <div class="qc"><b>cam0（右）</b>
             <div class="qb"><canvas id="cvR"></canvas></div></div>
           <div class="qc"><b>骨架</b>
             <div class="qb"><canvas id="cvSkel"></canvas></div></div>
