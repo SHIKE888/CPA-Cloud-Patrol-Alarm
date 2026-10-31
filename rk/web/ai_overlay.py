@@ -542,6 +542,11 @@ class AiOverlay(object):
         # 瞄准点滞回：tid -> 上一帧“云台挪过去能否全包”
         #   临界尺寸上 head <-> 几何中心 会来回切，云台会“点头”
         self._aim_full = {}
+        # 瞄准点帧间平滑：tid -> [x, y]
+        #   2026-11-01：人离得**远**时只占画面很小一块，检测框/关键点几个像素
+        #   的抖动换算成归一化误差就是 2~8%，直接送给云台就是"远处也在震荡"。
+        #   这里按 tid 做 EMA + 每帧位移限幅，云台拿到的是平滑轨迹。
+        self._aim_smooth = {}
         self._stats = {"n": 0, "t0": time.time(), "det_n": 0, "pose_n": 0}
 
         self._stop = threading.Event()
@@ -969,6 +974,44 @@ class AiOverlay(object):
                 pass
 
     # ------------------------------------------------------------------ 状态 / 调参
+    _AIM_EMA = 0.40          # 瞄准点每帧融合比例（AI 30fps 时 τ≈0.08s）
+    _AIM_STEP_FRAC = 0.02    # 每帧最大位移（占画面高）：68px/秒@30fps 的量级
+
+    def _smooth_aim(self, tid, aim, frame_wh):
+        """瞄准点帧间平滑（按 tid）。返回平滑后的 (x, y)。
+
+        为什么需要（2026-11-01 用户报"人离得远时也会震荡"）：
+          远距离的人只占画面很小一块（框高 50~80px），检测框和关键点……
+          每帧几个像素的抖动，换算成归一化误差就是 2~8%；而俯仰/横滚的死区
+          才 0.015（4px），根本拦不住 —— 云台就一直追着这点抖动跑。
+          这里给一条平滑轨迹：EMA + 每帧位移限幅，抖动被吃掉、真实移动仍跟得上。
+        与 gimbal 侧 aim_tau 的关系：那边是二阶串联，所以加了这个之后
+        aim_tau 从 0.12 降到 0.05（避免两段低通叠加把相位裕度吃光）。
+        """
+        try:
+            ax, ay = float(aim[0]), float(aim[1])
+        except (TypeError, ValueError, IndexError):
+            return aim
+        pv = self._aim_smooth.get(tid)
+        if pv is None:
+            self._aim_smooth[tid] = [ax, ay]
+            return (ax, ay)
+        nx = pv[0] + self._AIM_EMA * (ax - pv[0])
+        ny = pv[1] + self._AIM_EMA * (ay - pv[1])
+        try:
+            fh_px = float(frame_wh[1]) if frame_wh else 0.0
+        except (TypeError, ValueError, IndexError):
+            fh_px = 0.0
+        if fh_px > 0:
+            lim = self._AIM_STEP_FRAC * fh_px
+            nx = pv[0] + max(-lim, min(lim, nx - pv[0]))
+            ny = pv[1] + max(-lim, min(lim, ny - pv[1]))
+        pv[0], pv[1] = nx, ny
+        # 目标消失太久就清掉，避免字典无限长（正常 <= 几个人）
+        if len(self._aim_smooth) > 32:
+            self._aim_smooth = {tid: pv}
+        return (nx, ny)
+
     def status(self):
         with self._lock:
             res = list(self._result)
@@ -995,13 +1038,16 @@ class AiOverlay(object):
             plan = None
             try:
                 # 滞回：上一帧已经能全包 -> 用正常阈值维持；否则要更严格才切回来
+                #（2026-11-01 起 can_full 只用于显示，不再影响瞄哪个点）
                 prev = self._aim_full.get(d.get("tid"))
                 plan = _aim_plan(d, frame_wh, prev_can_full=prev)
                 aim = plan["aim"]
                 full = plan["can_full"]
                 head = plan["head"]
-                if d.get("tid") is not None:
-                    self._aim_full[d.get("tid")] = bool(plan["can_full"])
+                tid = d.get("tid")
+                if tid is not None:
+                    self._aim_full[tid] = bool(plan["can_full"])
+                    aim = self._smooth_aim(tid, aim, frame_wh)
             except Exception:                               # noqa: BLE001
                 # 瞄准点算不出来不该让整个 /api/ai 挂掉（云台会显示"读取失败"）
                 pass

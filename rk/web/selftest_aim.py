@@ -18,7 +18,7 @@
 import sys
 
 try:
-    from ai_overlay import _aim_plan
+    from ai_overlay import _aim_plan, AiOverlay
 except Exception as e:                                  # noqa: BLE001
     print("导入 ai_overlay 失败: %s: %s" % (type(e).__name__, e))
     sys.exit(1)
@@ -127,6 +127,48 @@ print("   相邻两档 aim 最大跳变 = %.2f%% 画面高（要求 < 2%%）" % 
 if maxjump > 0.02:
     ok = False
     print("   [X] aim 还在跳")
+
+# ---------- 6/7. 瞄准点帧间平滑（远距离目标抖动）----------
+#   直接用 AiOverlay._smooth_aim，造一个只有状态字段的假对象即可。
+class _Fake(object):
+    _AIM_EMA = AiOverlay._AIM_EMA
+    _AIM_STEP_FRAC = AiOverlay._AIM_STEP_FRAC
+
+    def __init__(self):
+        self._aim_smooth = {}
+
+
+fake = _Fake()
+
+
+def sm(tid, x, y):
+    return AiOverlay._smooth_aim(fake, tid, (x, y), (FW, FH))
+
+
+# 6) 远距离：框高 ~60px 的人静止站着，aim 每帧 ±5px 来回抖
+#   注：交替方波是 EMA 的最坏情况，稳态摆幅 = 2A*a/(2-a)（a=0.4 -> 2.5px）。
+#   判据不用"压到 0"，而是**必须远小于云台死区**（pitch 死区 0.05 归一化
+#   = 13.5px），否则云台还会追着它动。
+seq = [270 + (5 if i % 2 else -5) for i in range(30)]
+out = [sm(1, 480, y)[1] for y in seq]
+pp6 = max(out[10:]) - min(out[10:])
+print("6) 静止远目标(±5px 抖): 平滑后摆幅 %.2f px（原 10.0px，死区 13.5px，要求 < 5）"
+      % pp6)
+if pp6 >= 5.0:
+    ok = False
+    print("   [X] 抖动没被压住")
+
+# 7) 真实移动要跟得上：aim 从 270 匀速走到 220（50px / 1s @30fps）
+fake2 = _Fake()
+ys = [270 - 50.0 * i / 30.0 for i in range(31)]
+last = None
+for y in ys:
+    last = AiOverlay._smooth_aim(fake2, 2, (480, y), (FW, FH))[1]
+lag = abs(last - ys[-1])
+print("7) 真实移动 50px/s: 1 秒后滞后 %.1f px（要求 < 8）" % lag)
+if lag >= 8.0:
+    ok = False
+    print("   [X] 跟得太慢")
 
 print("\nPASS" if ok else "\nFAIL")
 raise SystemExit(0 if ok else 1)
