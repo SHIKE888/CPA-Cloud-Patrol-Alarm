@@ -1,0 +1,14 @@
+[Unit]
+Description=Restore camera params (exposure/gain/WB) from state_snapshot.json
+# 必须等 web 服务起来：/api/fpga 在 mipi-webstream 里
+After=mipi-webstream.service
+Wants=mipi-webstream.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh /root/rk/deploy/restore_cam.sh
+TimeoutStartSec=180
+RemainAfterExit=no
+
+[Install]
+WantedBy=multi-user.target
