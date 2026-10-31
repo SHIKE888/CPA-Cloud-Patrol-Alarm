@@ -626,7 +626,7 @@ html, body{overflow:hidden}
             <div class="qb"><canvas id="cvSkel"></canvas></div></div>
           <div class="qc"><b>深度点云 <i id="dHud">—</i></b>
             <div class="qb"><canvas id="cvDepth"
-                 title="拖动旋转 / 双击改水平视场角（未标定前用来把比例调对）"></canvas></div></div>
+                 title="正视方向固定显示 / 拖动可临时旋转 / 双击复位 / 右键改水平视场角"></canvas></div></div>
         </div>
       </div>
       <!-- 画面下方指标区: 等分网格, 整齐对齐 -->
@@ -3748,10 +3748,13 @@ const _dp = {
   ax: new Float32Array(DPN), ay: new Float32Array(DPN), az: new Float32Array(DPN),
   ord: new Int32Array(DPN),
 };
-let _dYaw = 0.55, _dPitch = 0.22;
+// 2026-10-31 用户要求：点云**固定正视方向**（yaw/pitch 都 0, 且不再自动慢转）。
+// 之前是初始 yaw=0.55(约 32°斜看) + 每帧 +0.28 rad/s 自转，看着像掉帧的旋转视频，
+// 也不方便“按画面对准物理方向”。现在默认就是正前方；想看侧面可以拖，双击复位。
+let _dYaw = 0, _dPitch = 0;
 let _dFit = 0, _dCx = 0, _dCy = 0;     // 自适应取景(平滑后)
 let _dZlo = 0.4, _dZhi = 2.2;          // 自适应量程(平滑后)
-let _dInfo = null, _dTprev = 0;
+let _dInfo = null;
 let _depthTimer = null, _dDrag = null;
 
 const _CRAMP = [[255, 72, 48], [255, 196, 64], [128, 232, 128],
@@ -3822,11 +3825,7 @@ function drawCloud(d) {
     _dZhi = _dZhi * 0.85 + zhi * 0.15;
   }
 
-  // ---- 视角：自动慢转，拖动时接管 ----
-  const now = performance.now();
-  const dt = _dTprev ? Math.min(0.2, (now - _dTprev) / 1000) : 0;
-  _dTprev = now;
-  if (!_dDrag) _dYaw += dt * 0.28;
+  // ---- 视角：固定正视（不再自动转；拖动才转，双击复位）----
   const cyw = Math.cos(_dYaw), syw = Math.sin(_dYaw);
   const cpt = Math.cos(_dPitch), spt = Math.sin(_dPitch);
 
@@ -3893,8 +3892,12 @@ function drawCloud(d) {
 
   // ---- HUD ----
   if ($("dHud")) {
-    $("dHud").textContent = (d.stale ? "停更 · " : "") +
-      (d.fov_deg || 0) + "° / " + (d.ms || 0) + "ms";
+    // 未标定 -> 显示 FOV(引擎按它估算焦距)；已标定 -> 显示标定出来的 fx，
+    // 此时 FOV 旋钮/右键改 FOV 一律被引擎忽略（避免两套参数打架）。
+    const tag = d.calib ? ("fx" + Math.round(+d.focal_px || 0))
+                        : ((d.fov_deg || 0) + "°");
+    $("dHud").textContent = (d.stale ? "停更 · " : "") + tag + " / " +
+      (d.ms || 0) + "ms";
   }
   const hud = "近 " + _dZlo.toFixed(2) + "m  远 " + _dZhi.toFixed(2) +
     "m · " + n + "点 · " + (d.fps || 0) + "fps · 基线 " +
@@ -3919,10 +3922,14 @@ async function depthTick() {
   } catch (e) { /* 静默: 服务重启/换源时不出图是正常的 */ }
 }
 
-/* 点云交互：拖动旋转，双击改水平视场角（未标定前用来把比例调对） */
+/* 点云交互：
+     默认就是**正视**(yaw=pitch=0)，且**不会自动转** —— 用户要求固定正视方向。
+     拖动 = 临时转个角度看立体感；双击 = 复位正视；
+     右键 = 改水平视场角（未标定前用它把比例调对；标定后引擎直接用标定焦距）。 */
 (function () {
   const c = $("cvDepth"); if (!c) return;
   c.addEventListener("pointerdown", e => {
+    if (e.button !== 0) return;
     _dDrag = { x: e.clientX, y: e.clientY, yaw: _dYaw, pitch: _dPitch };
     try { c.setPointerCapture(e.pointerId); } catch (err) { /* 老浏览器 */ }
   });
@@ -3935,10 +3942,17 @@ async function depthTick() {
   const up = () => { _dDrag = null; };
   window.addEventListener("pointerup", up);
   window.addEventListener("blur", up);
-  c.addEventListener("dblclick", async () => {
+  // 双击复位到正视方向
+  c.addEventListener("dblclick", () => {
+    _dYaw = 0; _dPitch = 0;
+    toast("点云已复位：正视方向");
+  });
+  // 右键改水平视场角（原来是双击，现在双击留给"复位"）
+  c.addEventListener("contextmenu", e => {
+    e.preventDefault();
     const cur = (_dInfo && _dInfo.fov_deg) || params.depth_fov || 60;
     const v = prompt("水平视场角 FOV（度）\n" +
-      "未标定前用它把点云比例调对；标定后引擎直接用标定焦距。", cur);
+      "未标定前用它把点云比例调对；标定后引擎直接用标定焦距，此项被忽略。", cur);
     if (v == null) return;
     const f = Math.max(20, Math.min(150, parseFloat(v) || cur));
     params.depth_fov = f;
