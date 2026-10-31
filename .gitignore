@@ -1,39 +1,35 @@
 # ============================================================================
 #  08_csi2rk_mipi_imx415  .gitignore
 #
-#  ĺĺ: ĺŞćăäşşĺçăéčŚ review çăćžčżçćŹĺş;
-#        ćĺťşäş§çŠăĺ¤§äşčżĺśăĺżŤç§ĺ¤äť˝ä¸ĺžćé¤ă
+#  原则：只忽略「可再生成 / 体积大 / 运行时状态 / 个人草稿」，
+#        凡是 review 需要的源码、脚本、文档、配置一律入库。
 #
-#  ćł¨ć: .gitignore é # ĺŞĺ¨ăčĄéŚăćŻćł¨é, čĄĺ°žĺćł¨éäźč˘Ťĺ˝ćć¨Ąĺźçä¸é¨ĺ!
+#  注意：本文件用 UTF-8 保存，换行 LF。
+#        另外 git 不支持行尾注释 —— 规则后面写 "# xxx" 会让整行当作模式匹配失败。
 # ============================================================================
 
-# ---- ĺ¤äť˝çŽĺ˝: ćŹčşŤĺ°ąćŻĺżŤç§, ä¸ĺ  100+ MB ----
+# ---- 体积大的备份与归档：本身可再生成，不入库 ----
 backup/
-
-# ---- ĺŽćšĺčćşç ĺçźŠĺ (58 MB) ----
 *.zip
 
-# ---- FPGA ćĺťşäş§çŠ (ćŻćŹĄçźčŻé˝ĺ, ä˝ç§Żčżĺ¤§) ----
-# fpga_prj_Runs ćŻçťźĺ/ĺŽç°çťć, 26.5 MB
+# ---- FPGA 工程产物（每次综合都会重新生成）----
+# fpga_prj_Runs 综合/实现产物, log 综合日志, .al TD 内部编译产物
 fpga/fpga_prj_Runs/
-# çźčŻćĽĺż
 fpga/log/
-# TD ĺé¨çźĺ­ä¸çść
 fpga/.al/
 fpga/.lock.f
 fpga/.recent_user_depot.ini
-# ćŻçšćľ (çźčŻçć)
+# bitstream（发布走 backup/ 或 release）/ TD 崩溃转储
 fpga/*.bit
+fpga/*.bit.bak*
+fpga/*.dmp
 
-# ---- RK çŤŻĺ¤§äşčżĺś (çćĄŁĺ¨ backup/ é) ----
-# boot.img 45 MB?????/?????? boot.multimode.img ???
+# ---- RK 启动镜像（45 MB+，单独归档）----
 rk/boot*.img
 
-# ---- äťżçäş§çŠ ----
+# ---- 仿真与编译中间产物 ----
 *.vvp
 *.vcd
-
-# ---- çźčŻä¸­é´äş§çŠ ----
 *.o
 *.so
 *.ko
@@ -42,31 +38,7 @@ rk/boot*.img
 __pycache__/
 *.pyc
 
-# ---- č°čŻäş§çŠ (ĺŻéćśéć°çć) ----
-tools/*.png
-tools/_*.txt
-/tmp_*
-
-# ---- çłťçťĺĺž ----
-Thumbs.db
-desktop.ini
-.DS_Store
-
-# TD ąŔŔŁ×Ş´˘
-fpga/*.dmp
-
-# ---- RK AI model weights / converter binaries (71.8 MB) ----
-rk/ai/models/
-rk/ai/dist/
-
-# ---- FPGA bitstream backups ----
-fpga/*.bit.bak*
-
-# ============================================================================
-#  2026-10-28 ����׷��
-# ============================================================================
-
-# ---- �����������: ÿ���ܲ���̨������������, ��Ӧ��� ----
+# ---- 仿真台输出（每次跑测试台都会重新生成）----
 fpga/sim/rtl.jpg
 fpga/sim/rtl_r2.jpg
 fpga/sim/merged.jpg
@@ -75,15 +47,44 @@ fpga/sim/jwt_*.jpg
 fpga/sim/*.log
 fpga/sim/_o.txt
 
-# ---- ��Ŀ¼ɢ�����ʱ�ļ� ----
-/rtl.jpg
-/_c*.js
+# ---- RK AI 模型权重 / 转换产物（71.8 MB）----
+rk/ai/models/
+rk/ai/dist/
 
-# ---- �ݸ� / �����ļ� (�»���ǰ׺, _bak Ŀ¼) ----
+# ---- 板端运行时状态（每次启动/调参都会变，不属于源码）----
+rk/web/state.json
+rk/web/depth_pan_gain
+rk/web/depth_z_near
+rk/deploy/state_snapshot.json
+rk/cloud/token
+
+# ---- 双目标定原始采集图（几十 MB，标定结果 stereo_calib.json 才入库）----
+rk/web/calib_pairs/
+rk/web/libyuvconv.so
+
+# ---- 备份文件统一忽略（git 历史里都有）----
+*.bak
+*.bak_*
+*.orig
+
+# ---- 草稿 / 临时文件（下划线前缀, _bak 目录）----
 /_*.js
+/_*.py
 rk/web/_*.html
 rk/web/_*.py
 rk/relay/web/_bak/
 tools/_*.py
 tools/_snap.jpg
+tools/*.png
+tools/_*.txt
 rk/web/action_net_weights.js
+
+# ---- 根目录散落的临时文件 ----
+/rtl.jpg
+/tmp_*
+/dual_now.jpg
+
+# ---- 操作系统产物 ----
+Thumbs.db
+desktop.ini
+.DS_Store
