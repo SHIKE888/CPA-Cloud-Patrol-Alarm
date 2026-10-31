@@ -408,6 +408,8 @@ wire          					S_hs_rx_clk		;   // BUFG 后的全局 byte clock (= HS clk / 
 	wire							S_out_src		;   // 当前输出帧的来源 0/1
 	wire							S_frame_parity	;
 	wire							S_ch1_lost		;   // cam1 行缓冲没跟上
+    wire [15:0]                                                S_dbg_c1wr     ;   // 2026-10-31 诊断: cam1 环形缓冲写入行数
+    wire [7:0]                                                 S_dbg_c1lost   ;   // 2026-10-31 诊断: cam1 丢行数
 	wire							S_sensor_rst_n	;   // 两颗传感器的 RSTn (同步启动)
 	wire							S_cfg_hold		;   // 1 = 两个 cfg 模块保持在复位
 
@@ -1463,7 +1465,9 @@ dual_frame_sched #(
     .O_l          (S_axis_tlast     ),
     .O_src        (S_out_src        ),
     .O_ch1_lost   (S_ch1_lost       ),
-    .O_parity     (S_frame_parity   )
+    .O_parity     (S_frame_parity   ),
+    .O_dbg_wr_lines  (S_dbg_c1wr    ),
+    .O_dbg_lost_lines(S_dbg_c1lost  )
 );
 
 
@@ -1617,6 +1621,8 @@ cfg_ctrl_top #(
 	.i_diag_rxck  (D_rxck_s2),
 	.i_diag_c1ck  (D_c1ck_s2),
 	.i_diag_rtv   (D_rtv_s2),
+   .i_diag_c1wr  (S_dbg_c1wr),
+   .i_diag_c1lost(S_dbg_c1lost),
 	.i_fs_corr    (S_axis_tuser),        // 裁剪模块输出帧首
 	.i_last_corr  (S_axis_tlast),        // 裁剪模块输出行尾
 	// 2026-10-20: LP-free RX 调试总线 (只读 0xD6/0xD7/0xD8) = 固定 cam0

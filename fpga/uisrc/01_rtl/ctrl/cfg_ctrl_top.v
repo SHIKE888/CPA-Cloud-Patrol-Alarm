@@ -53,7 +53,7 @@ module cfg_ctrl_top #(
 	//                 实测: 10 帧均值极差 3536 -> 172 (改善 ~20 倍), 第1帧即锁定。
 	//    ★ 网页「版本」格悬停会按 QUICKSTART 的登记表显示含义, 加版本时同步登记。
 	//=========================================================================
-	parameter [15:0] CFG_VER  = 16'h4708
+	parameter [15:0] CFG_VER  = 16'h4709
 )(
 	// ---- 系统时钟域 (25MHz 常开) ----
 	input  wire        i_sys_clk,
@@ -132,7 +132,9 @@ module cfg_ctrl_top #(
 	input  wire [7:0]  i_diag_rxck,
 	input  wire [7:0]  i_diag_c1ck,
 	input  wire [7:0]  i_diag_rtv,
-
+    // 2026-10-31 双目数据通路诊断 (0xED/0xEE/0xEF)
+    input  wire [15:0] i_diag_c1wr,
+    input  wire [7:0]  i_diag_c1lost,
 	// ---- 画质参数 (同步到像素域) ----
 	output wire [7:0]  o_wb_r,
 	output wire [7:0]  o_wb_b,
@@ -353,6 +355,8 @@ module cfg_ctrl_top #(
 		.I_diag_rxck     (i_diag_rxck),
 		.I_diag_c1ck     (i_diag_c1ck),
 		.I_diag_rtv      (i_diag_rtv),
+            .I_diag_c1wr     (i_diag_c1wr),
+            .I_diag_c1lost   (i_diag_c1lost),
           .I_st_line_groups(lg_max),
           // 2026-10-20: RX 调试总线 (已 2 级同步到 i_sys_clk)
           // 2026-10-21: 0xD6/D7/D8 固定是 cam0, cam1 固定走 0xDD/DE/DF

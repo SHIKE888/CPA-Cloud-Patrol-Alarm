@@ -59,7 +59,12 @@ module dual_frame_sched #(
     output wire                  O_l,
     output wire                  O_src,        // 本帧来源: 0=cam0 1=cam1
     output wire                  O_ch1_lost,   // 1 = 读到的 cam1 行数据没准备好
-    output wire                  O_parity      // 当前帧奇偶 (调试用)
+    output wire                  O_parity,     // 当前帧奇偶 (调试用)
+    // 2026-10-31 双目数据通路专项诊断 (→ I2C 只读 0xED/0xEE/0xEF)
+    //   O_dbg_wr_lines  : cam1 环形缓冲累计写入行数; 双目下不涨 = cam1 没进本模块
+    //   O_dbg_lost_lines: 行首 blk_ready=0 的行数(饱和 0xFF); 涨 = cam1 行数据跟不上
+    output wire [15:0]           O_dbg_wr_lines,
+    output wire [7:0]            O_dbg_lost_lines
 );
 
     localparam CNTW = 9;                       // 行内计数 0..479 -> 4 行共 1920 项
@@ -211,5 +216,26 @@ module dual_frame_sched #(
         else if (dual_r && v0_r)  lost_r <= ~line_ok;
     end
     assign O_ch1_lost = dual_r & lost_r;
+
+    //-------------------------------------------------------------------------
+    //  2026-10-31: 双目数据通路诊断计数
+    //-------------------------------------------------------------------------
+    reg [15:0] wr_lines;
+    always @(posedge I_clk1 or negedge I_rst_n) begin
+        if (!I_rst_n)               wr_lines <= 16'd0;
+        else if (I_v1 && wline_end) wr_lines <= wr_lines + 16'd1;
+    end
+
+    reg [7:0] lost_lines;
+    always @(posedge I_clk or negedge I_rst_n) begin
+        if (!I_rst_n)
+            lost_lines <= 8'd0;
+        else if (rd_en && (rcnt == {CNTW{1'b0}}) && !blk_ready
+                 && (lost_lines != 8'hFF))
+            lost_lines <= lost_lines + 8'd1;
+    end
+
+    assign O_dbg_wr_lines   = wr_lines;
+    assign O_dbg_lost_lines = lost_lines;
 
 endmodule

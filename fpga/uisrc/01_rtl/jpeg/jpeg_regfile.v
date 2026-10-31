@@ -195,6 +195,13 @@ module jpeg_regfile #(
     input  wire [7:0]   I_diag_c1ck,
     input  wire [7:0]   I_diag_rtv,
 
+    // 2026-10-31 双目数据通路专项诊断 (只读, 0xED~0xEF)
+    //   0xED/0xEE = cam1 行环形缓冲累计写入行数 (小端)
+    //               —— 双目下不涨 = cam1 数据根本没写进 dual_frame_sched
+    //   0xEF      = line_ok=0 的行数 (饱和 0xFF) —— 大 = cam1 行数据没跟上
+    input  wire [15:0]  I_diag_c1wr,
+    input  wire [7:0]   I_diag_c1lost,
+
     // 2026-10-20: LP-free RX 调试总线 (只读)
     //   0xD6 = dbg_mipi  : [3:0]各lane字节对齐 [4]word对齐 [5]in_frame
     //                      [6]payload_valid [7]10bit解包有效
@@ -558,6 +565,10 @@ module jpeg_regfile #(
                 8'hE7: O_rd_data <= I_diag_rxck;
                 8'hE8: O_rd_data <= I_diag_c1ck;
                 8'hE9: O_rd_data <= I_diag_rtv;
+                // 2026-10-31 双目数据通路: cam1 环形缓冲写入行数 / 丢行数
+                8'hED: O_rd_data <= I_diag_c1wr[ 7:0];
+                8'hEE: O_rd_data <= I_diag_c1wr[15:8];
+                8'hEF: O_rd_data <= I_diag_c1lost;
                 8'hD0: O_rd_data <= s_cam_wr_cnt[ 7:0];
                 8'hD1: O_rd_data <= s_cam_wr_cnt[15:8];
                 8'hD2: O_rd_data <= {7'b0, s_cam_busy};
