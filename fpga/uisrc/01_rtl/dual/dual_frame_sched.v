@@ -114,7 +114,6 @@ module dual_frame_sched #(
     reg [1:0]      rblk;
     reg [CNTW-1:0] rcnt;
     reg            rd_en;
-    reg [DATA_WIDTH-1:0] rdata;
     reg            line_ok;          // 本行 cam1 数据是否就绪（行首锁一次）
 
     wire rline_end  = (rcnt == LINE_GRP[CNTW-1:0] - 1'b1);
@@ -127,8 +126,31 @@ module dual_frame_sched #(
     //     从"不读"切到"读"时读写块号是任意相位, 头几行会读到正在写的块(撕裂)。
     wire [1:0] rblk_idle = wblk_s2 - 2'd2;
 
-    always @(posedge I_clk) begin
-        if (rd_en) rdata <= mem[{rblk, rcnt}];
+    //-------------------------------------------------------------------------
+    //  读口输出三件套**必须一起打拍**（2026-10-31 tb_sched 仿真抓到）
+    //
+    //  RAM 是同步读（ERAM），rdata 天然滞后 1 拍；而 rline_end 是组合的
+    //  (rcnt==LG-1)，比 rdata 早一拍。下游于是变成"tlast 在最后一个组之前"
+    //  -> 每行少一个组、下一行多一个组 -> tb_sched 里 err_mix 一片。
+    //  cam0 直通支没这问题（d0_r/l0_r 都打过拍），所以只有环形缓冲这条路坏。
+    //  修法：数据 + 行尾 + 本行就绪 用同一个 if(rd_en) 打一拍，三者永远对齐。
+    //
+    //  ⚠ 本 always 块必须放在 rline_end/blk_ready 的声明**之后**，
+    //    否则它们会被隐式声明成 1bit wire（TD 只给一条奇怪的位宽警告）。
+    //-------------------------------------------------------------------------
+    reg [DATA_WIDTH-1:0] rdata_q;
+    reg                  rlast_q, rok_q;
+    wire line_ok_now = (rcnt == {CNTW{1'b0}}) ? blk_ready : line_ok;
+    always @(posedge I_clk or negedge I_rst_n) begin
+        if (!I_rst_n) begin
+            rdata_q <= {DATA_WIDTH{1'b0}};
+            rlast_q <= 1'b0;
+            rok_q   <= 1'b0;
+        end else if (rd_en) begin
+            rdata_q <= mem[{rblk, rcnt}];
+            rlast_q <= rline_end;
+            rok_q   <= line_ok_now;
+        end
     end
 
     // 行首锁一次就绪状态。
@@ -217,9 +239,9 @@ module dual_frame_sched #(
     //   cam1 现在跑自己的恢复时钟, 用 I_clk 直接采样 d1 就是跨时钟取样。
     //   统一成 "use_ch1 ? 环形缓冲 : cam0 直通", 单目/双目只差 use_ch1 的来源。
     wire use_ch1 = dual_r ? parity_r : sel_r;
-    assign O_d = use_ch1 ? (line_ok ? rdata : {DATA_WIDTH{1'b0}}) : d0_r;
+    assign O_d = use_ch1 ? (rok_q ? rdata_q : {DATA_WIDTH{1'b0}}) : d0_r;
     assign O_u = u0_r;
-    assign O_l = use_ch1 ? rline_end : l0_r;
+    assign O_l = use_ch1 ? rlast_q : l0_r;
     assign O_src    = use_ch1;
     assign O_parity = parity_r;
 
