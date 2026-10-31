@@ -7,18 +7,26 @@
 #   ./start_webstream.sh /dev/video22 9012
 #   ./start_webstream.sh /dev/video22 9012 --stream-width 960 --backend opencv
 #
+# 监听地址:
+#   默认 **127.0.0.1**（2026-10-27 用户要求：对外只开 80）。
+#   对外的唯一入口是 nginx `http://<板子>/`（/api/、/stream、/snapshot.jpg
+#   全部反代到本机 9012）。想看全端口监听（调试/无 nginx 时）：
+#       HOST=0.0.0.0 ./start_webstream.sh
+#
 # 指定解释器:
 #   PYTHON=/opt/miniforge3/envs/mlk-ov/bin/python ./start_webstream.sh
 #
 # 启动后:
-#   PC 浏览器打开 mipi_viewer.html, 填 RK 的 IP:9012 即可看画面并调参
-#   也可以直接在 RK 上打开 http://<RK的IP>:9012/
+#   浏览器直接开  http://<板子>/          （recommended，走 80 反代）
+#   板子本机可以开 http://127.0.0.1:9012/
 #=============================================================================
 set -u
 DIR="$(cd "$(dirname "$0")" && pwd)"
 
 DEV="${1:-/dev/video22}";  [ $# -ge 1 ] && shift
 PORT="${1:-9012}";         [ $# -ge 1 ] && shift
+# 只监听回环：外部一律走 nginx(80) 反代，避免 9012 直接暴露给局域网。
+HOST="${HOST:-127.0.0.1}"
 
 # ---- 选 Python 解释器 ----
 # 本板 OpenCV(cv2 5.0) 装在 conda 环境 mlk-ov 里; 系统 python3 没有 cv2 但有 gi/Gst。
@@ -59,8 +67,8 @@ echo "=============================================================="
 echo " MIPI 网页推流"
 echo "   Python : $PYTHON"
 echo "   设备   : $DEV"
-echo "   端口   : $PORT"
-echo "   地址   : http://${LISTEN_IP:-<本机IP>}:$PORT/"
+echo "   监听   : $HOST:$PORT  (对外请走 nginx 80 端口)"
+echo "   对外   : http://${LISTEN_IP:-<本机IP>}/   (nginx 反代 /api/ /stream)"
 echo "   加速   : C 色彩转换 $ACCEL"
 echo "   流水线 : 采集1线程 / 转换4线程 / 编码3线程, 默认绑大核"
 
@@ -79,4 +87,5 @@ echo "=============================================================="
 
 # -u: 关掉 python 的 stdout 块缓冲。重定向到日志文件时 stdout 不是 tty,
 #     不关缓冲的话启动横幅(含 FPGA I2C 探测结果)会迟迟不落盘, 不好排查。
-exec "$PYTHON" -u "$DIR/mipi_webstream.py" --device "$DEV" --port "$PORT" $AI_ARGS "$@"
+exec "$PYTHON" -u "$DIR/mipi_webstream.py" --device "$DEV" --port "$PORT" \
+     --host "$HOST" $AI_ARGS "$@"

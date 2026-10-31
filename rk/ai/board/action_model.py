@@ -204,7 +204,9 @@ class ActionEngine(object):
             kps = r.get('kps')
             box = r.get('box')
             if kps is not None and box is not None:
-                st.buf.push(t, kps, box)
+                # frame_size 要传下去：判断"人被画面边缘切到"靠它，
+                # 只看关键点无法区分"腿被挡住"和"腿在画面外"。
+                st.buf.push(t, kps, box, frame_size)
 
             labels = []
             # ---- 1) 模型动作
