@@ -81,9 +81,12 @@ flowchart LR
 ### 4.1 服务器
 
 ```bash
+# 服务器地址不入库，按自己环境替换 <SERVER_IP>
+export SRV=<SERVER_IP>
+
 # 本地：把三个文件传到服务器
-scp cloud/server.py cloud/static/index.html cloud/deploy/install.sh root@<SERVER_IP>:/tmp/csi-deploy/
-ssh root@<SERVER_IP>
+scp cloud/server.py cloud/static/index.html cloud/deploy/install.sh root@$SRV:/tmp/csi-deploy/
+ssh root@$SRV
 cd /tmp/csi-deploy && sh install.sh          # 幂等；已存在 config.json 不会覆盖密码
 ```
 
