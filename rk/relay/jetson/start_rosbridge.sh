@@ -20,6 +20,9 @@ for d in enx usbeth0 eth0 wlan0; do
     ip=$(ip -4 -o addr show dev "$d" 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -1)
     if [ -n "${ip:-}" ]; then export ROS_IP="$ip"; break; fi
 done
+# 开机很早（systemd ~7s）时网卡可能还没拿到 IP —— 回落到回环，
+# 否则 ROS_IP 留空会走主机名，行为不确定。车端所有节点都在本机。
+[ -n "${ROS_IP:-}" ] || export ROS_IP=127.0.0.1
 export ROS_MASTER_URI="${ROS_MASTER_URI:-http://127.0.0.1:11311}"
 
 PORT=${1:-9090}

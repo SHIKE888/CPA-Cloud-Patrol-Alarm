@@ -1615,11 +1615,13 @@ html, body{overflow:hidden}
     if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
   }
 
-  // 退避重试：1.5s → 3s → 4.5s → 6s …（上限 6s，永不放弃）
+  // 退避重试：1s → 2s → 2s …（封顶 2s，永不放弃）
+  //   2026-10-31：原来封顶 6 秒。车端现在开机 ~20 秒就能连上，
+  //   封顶 6 秒意味着最坏多等 6 秒才接回去，体感差别很明显。
   function scheduleReconnect() {
     if (reconnectTimer) return;
     reconnectTries++;
-    const wait = Math.min(6000, 1500 * reconnectTries);
+    const wait = Math.min(2000, 1000 * reconnectTries);
     $('st').textContent = '车端未就绪，' + (wait / 1000).toFixed(1) + 's 后重试 #' + reconnectTries;
     reconnectTimer = setTimeout(function () {
       reconnectTimer = null;

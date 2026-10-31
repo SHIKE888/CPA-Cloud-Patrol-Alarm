@@ -33,6 +33,9 @@ for d in enx usbeth0 eth0 wlan0; do
         break
     fi
 done
+# 开机很早（systemd ~7s）时网卡可能还没拿到 IP —— 回落到回环，
+# 否则 ROS_IP 留空会走主机名，行为不确定。车端所有节点都在本机。
+[ -n "${ROS_IP:-}" ] || export ROS_IP=127.0.0.1
 export ROS_MASTER_URI="${ROS_MASTER_URI:-http://127.0.0.1:11311}"
 
 echo "[$(date '+%F %T')] start_bridge ROS_IP=${ROS_IP:-unset} MASTER=$ROS_MASTER_URI" >>"$LOG"
