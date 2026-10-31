@@ -200,6 +200,52 @@ body{
 #viewMap #toast.show{ opacity: 1; }
 #viewMap #toast.err{ background: #8b2c2c55; border-color: #b34242; color: #ffd7d7; }
 
+/* ===== 2026-11-01: 手机/窄屏 —— 调度页改成**上下排布** =====
+   原来 #viewMap main 是 display:flex 横排，右列写死 360px、且没有任何
+   小屏媒体查询 → 手机宽 360~430px 时地图被压成 0 宽、右栏还占满屏
+   （用户报"手机打开建图界面不会变成竖直排布"）。
+   这里 <=860px 改成竖向：地图在上（固定高度），侧栏在下，整页一起滚。 */
+@media (max-width: 860px){
+  /* 顶部标题条：brand 原本 white-space:nowrap 且带副标题，231~390px 宽时会
+     把 body 撑出横向滚动条（实测 body.scrollWidth 290 > 231）。这里允许换行。 */
+  .topnav{ padding: 0 8px; gap: 4px; }
+  .topnav .brand{ white-space: normal; line-height: 1.25; margin-right: 4px;
+                  font-size: 13px; min-width: 0; }
+  .topnav .brand i{ display: block; margin-left: 0; font-size: 11px; }
+  .topnav a.tab{ padding: 5px 9px; font-size: 12.5px; }
+  .topnav .host{ font-size: 11px; }
+  #viewMap main{
+    flex-direction: column;
+    padding: 10px; gap: 10px;
+    overflow-y: auto; overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+  }
+  #viewMap #wrap{
+    flex: none; width: 100%;
+    height: 52vh; min-height: 240px;
+  }
+  #viewMap #sidecol{
+    width: 100%; flex: none; min-height: 0;
+    overflow: visible;            /* 交给外层 main 统一滚动，避免嵌套滚动 */
+  }
+  #viewMap header{ padding: 8px 10px; gap: 8px; }
+  #viewMap header .ttl{ font-size: 14px; margin-right: 4px; }
+  #viewMap #addr{ min-width: 0; flex: 1 1 140px; }
+  /* 遥控盘盖在地图左下角，竖屏时缩到 0.78，别把地图全挡住 */
+  #viewMap #dpad{ transform: scale(.78); transform-origin: left bottom; }
+  /* 竖屏时遥控盘由 JS 搬到侧栏里（wrapInline），不再盖在地图上：
+     原来 390px 高的遥控盘压住 439px 的地图，几乎没法看地图。 */
+  #viewMap #dpad.wrapInline{
+    position: static; left: auto; bottom: auto; right: auto;
+    transform: none; width: 100%; opacity: 1;
+    background: var(--panel); border: 1px solid var(--line);
+    backdrop-filter: none; -webkit-backdrop-filter: none;
+  }
+  #viewMap #dpad.wrapInline:hover{ background: var(--panel); }
+  /* 地图上的图例/比例尺不至于贴边太挤 */
+  #viewMap #toast{ bottom: 10px; max-width: 88%; }
+}
+
 /* ========== 视频采集工作台（原 mipi_viewer.html） ========== */
 :root{--bg:#0d1117;--panel:#161b22;--panel2:#21262d;--line:#30363d;--fg:#e6edf3;--dim:#8b949e;--acc:#3fb950;--acc2:#1f6feb;--warn:#d29922;--err:#f85149}
 #viewVideo *{box-sizing:border-box}
@@ -1479,6 +1525,31 @@ html, body{overflow:hidden}
     // 2026-10-30: 调度界面的云台雷达已去掉（云台方向看「视频采集→云台」页签），
     //   所以这里也不再拉 1.5s 的 /api/gimbal 空轮询。
   });
+
+  // ── 遥控盘的位置：宽屏浮在地图上，窄屏（手机竖排）搬进侧栏 ──────────
+  //   #dpad 原本 absolute 盖在 #wrap 左下角。手机上 #wrap 只有 52vh，
+  //   一块 390px 高的遥控盘会把地图吃掉 —— 竖排时把它搬到侧栏第一个位置。
+  function layoutDpad() {
+    const dpad = $('dpad'), side = $('sidecol'), wrap = $('wrap');
+    if (!dpad || !side || !wrap) return;
+    const narrow = window.innerWidth <= 860;
+    if (narrow) {
+      if (dpad.parentElement !== side) side.insertBefore(dpad, side.firstChild);
+      dpad.classList.add('wrapInline');
+    } else {
+      if (dpad.parentElement !== wrap) wrap.appendChild(dpad);
+      dpad.classList.remove('wrapInline');
+    }
+  }
+  (function initDpadLayout() {
+    layoutDpad();
+    let t = null;
+    window.addEventListener('resize', function () {
+      clearTimeout(t);
+      t = setTimeout(layoutDpad, 120);
+    });
+    window.addEventListener('map:show', function () { setTimeout(layoutDpad, 60); });
+  })();
 
   // ── 方向键上方的小画面预览 ────────────────────────────────────
   // 用 /snapshot.jpg 轮询，而不是再开一条 /stream：
