@@ -3738,6 +3738,8 @@ async function skelTick() {
          板端算完只传 ~18KB/帧(10Hz 也就 180KB/s)。
    自适应量程: 服务端给 z 的 8%/92% 分位, 这里再做 EMA 平滑 —— 近处有人时
          点云不会被远处背景压扁, 颜色也始终用满整个色标。
+   比例: 与上方视频同一比例尺 —— 按相机水平视场角定标 (fit = (W/2)/tan(fov/2)),
+         而不是按点云包围盒拉伸；盒子与相机比例不符时留黑边(contain)。
    坐标系: 左目光心为原点, x 右 / y 下 / z 前 (单位 m)。
    -------------------------------------------------------- */
 const DPN = 4000;
@@ -3752,7 +3754,7 @@ const _dp = {
 // 之前是初始 yaw=0.55(约 32°斜看) + 每帧 +0.28 rad/s 自转，看着像掉帧的旋转视频，
 // 也不方便“按画面对准物理方向”。现在默认就是正前方；想看侧面可以拖，双击复位。
 let _dYaw = 0, _dPitch = 0;
-let _dFit = 0, _dCx = 0, _dCy = 0;     // 自适应取景(平滑后)
+let _dZinit = false;                   // 量程只首帧直接取，之后 EMA 平滑
 let _dZlo = 0.4, _dZhi = 2.2;          // 自适应量程(平滑后)
 let _dInfo = null;
 let _depthTimer = null, _dDrag = null;
@@ -3820,7 +3822,7 @@ function drawCloud(d) {
   // ---- 自适应量程（平滑，避免逐帧跳变）----
   const zlo = +d.zmin, zhi = +d.zmax;
   if (zhi > zlo && zhi - zlo > 0.05) {
-    if (!_dFit) { _dZlo = zlo; _dZhi = zhi; }
+    if (!_dZinit) { _dZlo = zlo; _dZhi = zhi; _dZinit = true; }
     _dZlo = _dZlo * 0.85 + zlo * 0.15;
     _dZhi = _dZhi * 0.85 + zhi * 0.15;
   }
@@ -3841,28 +3843,20 @@ function drawCloud(d) {
     _dp.ay[i] = (y * cpt - Z1 * spt) / Z2;
   }
 
-  // 稳健取景：用 2%/98% 分位，别被几个噪点把画面拉爆
-  const step = Math.max(1, n >> 7);
-  const sa = [], sb = [];
-  for (let i = 0; i < n; i += step) {
-    if (_dp.az[i] < 0) continue;
-    sa.push(_dp.ax[i]); sb.push(_dp.ay[i]);
-  }
-  let fit = _dFit, ocx = _dCx, ocy = _dCy;
-  if (sa.length > 4) {
-    sa.sort((p, q) => p - q); sb.sort((p, q) => p - q);
-    const i0 = Math.floor(sa.length * 0.02);
-    const i1 = Math.max(i0, Math.floor(sa.length * 0.98) - 1);
-    const du = Math.max(1e-3, sa[i1] - sa[i0]);
-    const dv2 = Math.max(1e-3, sb[i1] - sb[i0]);
-    const f = Math.min(W * 0.94 / du, H * 0.94 / dv2);
-    const tx = W * 0.5 - f * (sa[i0] + sa[i1]) * 0.5;
-    const ty = H * 0.5 - f * (sb[i0] + sb[i1]) * 0.5;
-    if (!_dFit) { _dFit = f; _dCx = tx; _dCy = ty; }
-    fit = _dFit = _dFit * 0.8 + f * 0.2;
-    ocx = _dCx = _dCx * 0.8 + tx * 0.2;
-    ocy = _dCy = _dCy * 0.8 + ty * 0.2;
-  }
+  // ---- 比例跟视频一致（不再按点云包围盒拉伸）----
+  // 相机水平视场角是已知的（引擎给 fov_deg；标定后由标定 fx 反算），
+  // 所以“1 单位 tan 角 = 多少像素”是唯一确定的：
+  //     kw = (W/2) / tan(fov/2)        竖直 kh = (H/2) / (tan(fov/2) * h/w)
+  // 两者取小（contain）：盒子比例与相机不一致时留黑边，绝不拉伸。
+  // 这样“正对墙面”在点云里就是正的矩形、近太远小的比例与上面视频一致。
+  // （之前是按点云 ax/ay 的 2%~98% 分位拉到满框，比例随内容变，和视频对不上。）
+  const fovDeg = Math.min(170, Math.max(10,
+    (+d.fov_deg) || (+params.depth_fov) || 60));
+  const tanH = Math.tan(fovDeg * Math.PI / 360);        // tan(fov/2)
+  const camAR = ((+d.h > 0 && +d.w > 0) ? (+d.h / +d.w) : (9 / 16));
+  const fit = Math.min((W * 0.5) / tanH, (H * 0.5) / (tanH * camAR));
+  // 主点固定在框中心：点云里的“正前方”和视频里的正前方落在同一位置
+  const ocx = W * 0.5, ocy = H * 0.5;
 
   // ---- 画家算法：远的先画（近的盖住远的）----
   const ord = _dp.ord, sub = ord.subarray(0, n);
