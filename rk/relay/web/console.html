@@ -47,7 +47,8 @@ body{
 #viewMap input[type=number]{ width: 68px; }
 #viewMap button{
     background: #21262d; border: 1px solid #30363d; color: #e6edf3;
-    padding: 5px 10px; border-radius: 6px; cursor: pointer; user-select: none;
+    padding: 6px 10px; border-radius: 6px; cursor: pointer; user-select: none;
+    font-size: 13.5px;
   }
 #viewMap button:not(:disabled):hover{ background: #30363d; }
 #viewMap button:not(:disabled):active{ transform: translateY(1px); }
@@ -76,27 +77,41 @@ body{
 #viewMap #sidecol::-webkit-scrollbar-track{ background: transparent }
 #viewMap aside{
     width: auto; background: transparent; border: 0; border-radius: 0;
-    padding: 0; overflow: visible; font-size: 12px; flex: none;
-    display: flex; flex-direction: column; gap: 14px;
+    padding: 0; overflow: visible; font-size: 13px; flex: none;
+    display: flex; flex-direction: column; gap: 12px;
   }
+/* 侧栏页签（2026-11-01 用户要求：输入框设置项单独一个页签）——
+   与视频采集页那组页签同一套长相，字号跟全局一起调到 14。 */
+#viewMap .tabs{ display: flex; gap: 6px; flex-wrap: nowrap; }
+#viewMap .tab{
+    background: var(--panel2); border: 1px solid var(--line);
+    border-radius: 8px; padding: 7px 8px; color: var(--dim);
+    font-size: 14px; line-height: 1.2; white-space: nowrap;
+    flex: 1 1 0; min-width: 0; text-align: center;
+    cursor: pointer; transition: background .12s, color .12s, border-color .12s;
+  }
+#viewMap .tab:hover{ color: var(--fg); border-color: var(--acc2); }
+#viewMap .tab.on{ background: var(--acc2); border-color: var(--acc2);
+    color: #fff; font-weight: 600; }
+#viewMap .tabbody{ display: flex; flex-direction: column; gap: 12px; }
 /* 四张卡：完全同一套底/描边/圆角/内距 */
-#viewMap aside > section,
+#viewMap aside section,
 #viewMap #dpad{
     background: var(--panel); border: 1px solid var(--line);
     border-radius: 12px; padding: 14px;
   }
 /* 四张卡的标题：同字号/字重/字距 */
-#viewMap #sidecol h3{ margin: 0 0 10px; font-size: 13px; color: var(--dim); font-weight: 600;
+#viewMap #sidecol h3{ margin: 0 0 10px; font-size: 14px; color: var(--dim); font-weight: 600;
              letter-spacing: .05em; text-transform: uppercase; }
-/* 信息卡吃掉剩余高度，这样卡片间距全部是 14px，中间不会出现空档 */
-#viewMap aside > section{ display: flex; flex-direction: column; }
+/* 卡片内部：纵向排列 */
+#viewMap aside section{ display: flex; flex-direction: column; }
 /* 按钮行：三列等宽 / 两列等宽，行距统一 8px */
 #viewMap .btnrow{ display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
 #viewMap .btnrow + .btnrow{ margin-top: 8px; }
 #viewMap .btnrow.wide{ grid-template-columns: repeat(2, 1fr); }
 /* 最近保存地图时间：一行小字，右边数值对齐 */
 #viewMap .hint{ display: flex; justify-content: space-between; align-items: baseline;
-    gap: 8px; margin: 9px 0 0; color: var(--dim); font-size: 11.5px; }
+    gap: 8px; margin: 9px 0 0; color: var(--dim); font-size: 12.5px; }
 #viewMap .hint b{ color: var(--fg); font-weight: 600; font-variant-numeric: tabular-nums;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* 巡检点列表：一行一个点，左边序号+类型+坐标，右边停留时间+删除 */
@@ -104,10 +119,10 @@ body{
     border-top: 1px solid #21262d; scrollbar-width: thin; }
 #viewMap .plist::-webkit-scrollbar{ width: 8px }
 #viewMap .plist::-webkit-scrollbar-thumb{ background: #30363d; border-radius: 4px }
-#viewMap .pempty{ color: #6e7681; font-size: 11.5px; line-height: 1.55; padding: 9px 0 3px; }
+#viewMap .pempty{ color: #6e7681; font-size: 12.5px; line-height: 1.55; padding: 9px 0 3px; }
 #viewMap .pitem{ display: grid; grid-template-columns: 1fr 92px auto; gap: 8px;
     align-items: center; padding: 7px 0; border-bottom: 1px solid #21262d;
-    font-size: 11.5px; }
+    font-size: 12.5px; }
 #viewMap .pitem.act{ background: rgba(31,111,235,.14); }
 #viewMap .pitem .pl{ min-width: 0; display: flex; align-items: center; white-space: nowrap; }
 #viewMap .pitem .pno{ color: var(--fg); font-weight: 600; min-width: 13px; }
@@ -138,10 +153,10 @@ body{
 #viewMap .metrics .m{ background: #12151a; padding: 9px 11px 10px; min-width: 0;
     overflow: hidden; transition: background .2s; }
 #viewMap .metrics .m:hover{ background: #171b21; }
-#viewMap .metrics i{ display: block; font-style: normal; font-size: 10.5px;
+#viewMap .metrics i{ display: block; font-style: normal; font-size: 11.5px;
     letter-spacing: .05em; color: var(--dim); margin-bottom: 5px;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-#viewMap .metrics b{ display: block; font-size: 14px; line-height: 1.15; font-weight: 600;
+#viewMap .metrics b{ display: block; font-size: 15px; line-height: 1.15; font-weight: 600;
     color: var(--fg); font-variant-numeric: tabular-nums;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* 遥控盘：浮在地图左下角（覆盖在画布上方），默认半透明，鼠标移上去变实 */
@@ -191,19 +206,16 @@ body{
 #viewMap .popt2 input{ width: 46px; padding: 3px 6px; font-size: 12px;
     background: #0d1117; border: 1px solid #30363d; color: #e6edf3;
     border-radius: 6px; font-family: ui-monospace, monospace; }
-/* 警戒区参数表：每组 = "标签 ……… 输入框+单位"，标签贴块左、数字贴块右。
-   2026-11-01 用户两次反馈：
-     · "框太长了" -> 输入框从 flex:1（约 224px）改成固定 72px 右对齐；
-     · "显示不全"（手机 390 视口下仍排成两列，每组只剩 ~165px，
-       "同目标冷却/云台零点偏置/雷达方位窗口" 全被省略号截断）
-       -> 不再用固定断点，改 auto-fit + 每组至少 240px：
-          侧栏 >=500px 才两列，否则单列，永远不给标签留不下字的宽度。 */
+/* 设置页签里的参数表：每组 = "标签 ……… 输入框+单位"，标签贴左、数字贴右。
+   2026-11-01 用户三次反馈演进：
+     · "框太长了"  -> 输入框从 flex:1（约 224px）改成固定宽度、右对齐；
+     · "显示不全"  -> 改成 auto-fit + 每组至少 220px，空间不够自动单列；
+     · "字号大一点统一全局" -> 标签 14px、输入框 14px/86px、单位 12px。 */
 #viewMap .gform{
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-    gap: 7px 20px; align-items: center;
-    margin: 10px 0 0; padding-top: 10px; border-top: 1px solid #21262d;
-    font-size: 12px; color: var(--dim);
+    gap: 9px 20px; align-items: center;
+    font-size: 14px; color: var(--dim);
   }
 #viewMap .gform .gf{
     display: flex; align-items: center; justify-content: space-between;
@@ -212,14 +224,14 @@ body{
 #viewMap .gform label{ white-space: nowrap; }
 #viewMap .gform .gi{ display: flex; align-items: center; gap: 5px; flex: none; }
 #viewMap .gform .gi input{
-    flex: none; width: 72px; min-width: 0;
-    padding: 4px 7px; font-size: 12px; text-align: right;
+    flex: none; width: 86px; min-width: 0;
+    padding: 6px 8px; font-size: 14px; text-align: right;
     background: #0d1117; border: 1px solid #30363d; color: #e6edf3;
     border-radius: 6px; font-family: ui-monospace, monospace;
   }
 #viewMap .gform .gi input:focus{ outline: none; border-color: var(--acc2); }
-#viewMap .gform .gi i{ font-style: normal; color: #6e7681; font-size: 11px;
-    width: 14px; flex: none; text-align: left; }
+#viewMap .gform .gi i{ font-style: normal; color: #6e7681; font-size: 12px;
+    width: 16px; flex: none; text-align: left; }
 #viewMap #toast{
     position: absolute; left: 50%; transform: translateX(-50%); bottom: 18px;
     padding: 7px 14px; border-radius: 8px; background: #1f6feb33; border: 1px solid #1f6feb;
@@ -553,11 +565,19 @@ body{
 #viewVideo .scroll{max-height:260px; overflow:auto}
 #viewVideo .scroll::-webkit-scrollbar{width:8px}
 #viewVideo .scroll::-webkit-scrollbar-thumb{background:#30363d;border-radius:4px}
-#viewVideo .tabs{display:flex; gap:6px; margin:-2px 0 14px}
+#viewVideo .tabs{display:flex; gap:6px; margin:-2px 0 14px;
+    flex-wrap:nowrap; overflow-x:auto; scrollbar-width:none}
+#viewVideo .tabs::-webkit-scrollbar{height:0}
 /* 未选中的页签也要有框，四颗按钮看起来才是同一组控件 */
+/* 2026-11-01 两轮修正：
+   ① 字号 13->14 后右列装不下，「预处理」被挤成两行 -> nowrap + 不压缩；
+   ② 只加 nowrap 会变成按钮很窄（padding 被挤掉）-> 改成 **flex:1 均分整行**，
+      按钮随列宽自动定量，既不换行也不显窄。 */
 #viewVideo .tab{background:var(--panel2); border:1px solid var(--line);
-       border-radius:8px; padding:7px 13px; color:var(--dim);
-       font-size:13px; cursor:pointer; transition:background .12s, color .12s, border-color .12s}
+       border-radius:8px; padding:7px 8px; color:var(--dim);
+       font-size:14px; line-height:1.2; white-space:nowrap;
+       flex:1 1 0; min-width:0; text-align:center;
+       cursor:pointer; transition:background .12s, color .12s, border-color .12s}
 #viewVideo .tab:hover{color:var(--fg); border-color:var(--acc2)}
 #viewVideo .tab.on{background:var(--acc2); border-color:var(--acc2); color:#fff; font-weight:600}
 #viewVideo .tabbody{padding-top:2px}
@@ -1230,6 +1250,17 @@ html, body{overflow:hidden}
 
   <div id="sidecol">
     <aside>
+      <!-- 2026-11-01 用户要求：输入框设置项单独一个页签（和视频采集页一样）。
+           侧栏内容多、手机上要滚很久，这里按用途分四组页签。
+           注意：[hidden] 是全局 display:none !important，页签靠它切换。 -->
+      <div class="tabs">
+        <button class="tab on" data-mtab="ctl">控制</button>
+        <button class="tab" data-mtab="patrol">巡检</button>
+        <button class="tab" data-mtab="guard">警戒</button>
+        <button class="tab" data-mtab="cfg">设置</button>
+      </div>
+
+      <div class="tabbody" id="mtab-ctl">
       <section id="ctrlbox">
         <h3>控制</h3>
         <div class="btnrow">
@@ -1256,6 +1287,28 @@ html, body{overflow:hidden}
         <div class="hint" hidden><span id="stClockNote" style="color:#d29922"></span></div>
       </section>
 
+      <section>
+        <h3>链路</h3>
+        <div class="metrics">
+          <div class="m"><i>状态</i><b id="st">未连接</b></div>
+          <div class="m"><i>模式</i><b id="stMode">—</b></div>
+          <div class="m"><i>/map</i><b id="stMap">—</b></div>
+          <div class="m"><i>/scan</i><b id="stScan">—</b></div>
+        </div>
+      </section>
+
+      <section>
+        <h3>位姿</h3>
+        <div class="metrics">
+          <div class="m"><i>机器人</i><b id="stPose">—</b></div>
+          <div class="m"><i>目标</i><b id="stGoal">—</b></div>
+          <div class="m"><i>路径</i><b id="stPath">—</b></div>
+          <div class="m"><i>缩放</i><b id="stZoom">—</b></div>
+        </div>
+      </section>
+      </div><!-- /mtab-ctl -->
+
+      <div class="tabbody" id="mtab-patrol" hidden>
       <!-- 2026-10-28: 巡检框 —— 按顺序排多个有向/无向目标，每个点单独设停留时间，
            可单独删除；点「开始巡检」才按序跑；停止共用上面的「停止全部」。 -->
       <section id="patrolbox">
@@ -1276,7 +1329,9 @@ html, body{overflow:hidden}
         </div>
         <div class="hint"><span id="stPatrol">未开始</span><b id="stPatrolInfo">—</b></div>
       </section>
+      </div><!-- /mtab-patrol -->
 
+      <div class="tabbody" id="mtab-guard" hidden>
       <!-- 2026-11-01: 警戒区域 + 人员上图 + 越界告警。
            数据流：板端 /api/targets（AI 框 + 双目深度 + 云台角度 => 车体系相对位置）
                    → 这里叠上小车位姿 → 地图坐标 → 判越界 → /api/alarm 入队
@@ -1284,17 +1339,26 @@ html, body{overflow:hidden}
       <section id="guardbox">
         <h3>警戒区域 / 人员定位</h3>
         <div class="plist" id="zlist"></div>
+        <div class="btnrow wide" style="margin-top:10px">
+          <button id="btnGuardClear" class="tool">清空区域</button>
+          <button id="btnGuardDbg" class="tool" title="在浏览器控制台打一下这一拍用到的原始数据">打印调试</button>
+        </div>
+        <div class="hint"><span id="stGuard">未开始</span><b id="stGuard2">—</b></div>
+      </section>
+      </div><!-- /mtab-guard -->
 
-        <!-- 参数表：每组「标签 …… 输入框+单位」，宽屏两列、手机单列。
-             输入框固定 72px 右对齐（原来 flex:1 撑满右列，一个"1"字占一大片）。 -->
+      <div class="tabbody" id="mtab-cfg" hidden>
+      <!-- 参数表：单独一个「设置」页签（用户要求）。每组「标签 …… 输入框+单位」。 -->
+      <section>
+        <h3>人员定位 / 越界告警</h3>
         <div class="gform">
           <span class="gf"><label for="gPollSec">采样间隔</label>
             <span class="gi"><input id="gPollSec" type="number" min="0.3" max="10" step="0.1" value="1"><i>秒</i></span></span>
 
-          <span class="gf"><label for="gWarnN">预警阈值</label>
+          <span class="gf"><label for="gWarnN" title="连续在警戒区内多少拍触发预警">预警阈值</label>
             <span class="gi"><input id="gWarnN" type="number" min="1" max="200" step="1" value="5"><i>次</i></span></span>
 
-          <span class="gf"><label for="gAlarmN">报警阈值</label>
+          <span class="gf"><label for="gAlarmN" title="连续在警戒区内多少拍升级为报警">报警阈值</label>
             <span class="gi"><input id="gAlarmN" type="number" min="1" max="200" step="1" value="10"><i>次</i></span></span>
 
           <span class="gf"><label for="gCoolSec" title="同一个目标两次上报的最小间隔">目标冷却</label>
@@ -1307,36 +1371,12 @@ html, body{overflow:hidden}
             <span class="gi"><input id="gWinDeg" type="number" min="2" max="30" step="1" value="7"><i>°</i></span></span>
         </div>
 
-        <div class="btnrow wide" style="margin-top:10px">
+        <div class="btnrow wide" style="margin-top:12px">
           <button id="btnGuardReport" class="tool on" title="关掉只在本页弹提示，不往云端上报">上报云端</button>
-          <button id="btnGuardClear" class="tool">清空区域</button>
-        </div>
-        <div class="btnrow wide" style="margin-top:8px">
           <button id="btnGuardLidar" class="tool on" title="用 /scan 里与双目距离一致的那一簇回波修正水平距离；明显比人近的（椅子/箱子）当障碍物丢掉">融合雷达</button>
-          <button id="btnGuardDbg" class="tool" title="在浏览器控制台打一下这一拍用到的原始数据">打印调试</button>
-        </div>
-        <div class="hint"><span id="stGuard">未开始</span><b id="stGuard2">—</b></div>
-      </section>
-
-      <section>
-        <h3>链路</h3>
-        <div class="metrics">
-          <div class="m"><i>状态</i><b id="st">未连接</b></div>
-          <div class="m"><i>模式</i><b id="stMode">—</b></div>
-          <div class="m"><i>/map</i><b id="stMap">—</b></div>
-          <div class="m"><i>/scan</i><b id="stScan">—</b></div>
         </div>
       </section>
-
-      <section>
-        <h3>位姿</h3>
-        <div class="metrics">
-          <div class="m"><i>机器人</i><b id="stPose">—</b></div>
-          <div class="m"><i>目标</i><b id="stGoal">—</b></div>
-          <div class="m"><i>路径</i><b id="stPath">—</b></div>
-          <div class="m"><i>缩放</i><b id="stZoom">—</b></div>
-        </div>
-      </section>
+      </div><!-- /mtab-cfg -->
     </aside>
   </div>
 </main>
@@ -1573,7 +1613,10 @@ html, body{overflow:hidden}
     if (!dpad || !side || !wrap) return;
     const narrow = window.innerWidth <= 860;
     if (narrow) {
-      if (dpad.parentElement !== side) side.insertBefore(dpad, side.firstChild);
+      // 2026-11-01: 侧栏加了页签之后不能再插到 side.firstChild（会跑到页签上面），
+      //   统一放进「控制」页签里（遥控盘本来就属于控制）。
+      const host = $('mtab-ctl') || side;
+      if (dpad.parentElement !== host) host.appendChild(dpad);
       dpad.classList.add('wrapInline');
     } else {
       if (dpad.parentElement !== wrap) wrap.appendChild(dpad);
@@ -5887,6 +5930,25 @@ document.querySelectorAll("#viewVideo [data-tab]").forEach(b => {
     ["cam", "pp", "sw", "ai", "gz"].forEach(t => {
       const el = $("tab-" + t);
       if (el) el.hidden = (t !== b.dataset.tab);
+    });
+  };
+});
+
+/* ---------------- 选项卡切换（调度页侧栏，2026-11-01）----------------
+   把「控制 / 巡检 / 警戒 / 设置」分成四个页签：侧栏内容太多，手机上要滚很久；
+   参数输入项单独一页（用户要求，和视频采集页同一套交互）。 */
+document.querySelectorAll("#viewMap [data-mtab]").forEach(function (b) {
+  b.onclick = function () {
+    document.querySelectorAll("#viewMap [data-mtab]").forEach(function (x) {
+      x.classList.toggle("on", x === b);
+    });
+    ["ctl", "patrol", "guard", "cfg"].forEach(function (t) {
+      const el = document.getElementById("mtab-" + t);
+      if (el) el.hidden = (t !== b.dataset.mtab);
+    });
+    // 页签切换会改变可见高度：地图画布要重新量尺寸，否则会留白/拉伸
+    requestAnimationFrame(function () {
+      try { resize(); draw(); } catch (e) {}
     });
   };
 });
