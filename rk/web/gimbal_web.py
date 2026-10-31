@@ -267,6 +267,21 @@ class GimbalWeb(object):
         self.pred_max = 0.25             # 预测位移限幅(归一化)
         self.ahead_max = 0.30            # 前瞻上限(s)：再大就是把噪声当运动
         self._track_moving = [False, False]   # 启动/停止死区滞回（yaw/pitch）
+        # ---- pitch（俯仰）单独一套参数（2026-11-01）----
+        #   yaw 收住了之后，用户又报"瞄准后**周期上下摆动**，人员位置跟着乱飘"。
+        #   为什么偏偏是 pitch：
+        #     ① 人站着时垂直方向本来就不怎么动，pitch 追上一点又没意义；
+        #     ② 俯仰轴对**近处目标**的归一化增益特别大 —— 0.5m 处俯仰 1° 就把
+        #        人在画面里推开一大截（同样的 ey 变化，1.5m 处要俯仰 3° 才有）；
+        #     ③ 叠上视觉延迟（0.25~0.45s），环增益在近处会超过相位裕度允许值
+        #        -> 1~2Hz 的上下极限环（实测周期 ≈1.2s，正好来回扫一个画面）。
+        #   所以 pitch 不再做速度前瞻、用大死区 + 半增益 + 限速，只在人快
+        #   跑出画面上下时才慢慢跟；`pitch_hold=False` 可切回老的全跟踪。
+        self.pitch_hold = True
+        self.pitch_deadband = 0.10       # 归一化（≈3.3°）：这个带里完全不动
+        self.pitch_gain = 0.5            # 相对 yaw 的比例增益
+        self.pitch_rate_max = 10.0       # 俯仰最大角速度 °/s
+        self._pitch_active = False       # 滞回：出带才动、回带就停
         # 平滑：所有速度指令都按这个加速度斜坡上去/下来，不再阶跃
         self.accel = _clamp(_num(accel_deg_s2, 250.0), 10.0, 3000.0)
         self.predict_s = _clamp(_num(predict_s, 0.15), 0.0, 0.6)
@@ -570,6 +585,11 @@ class GimbalWeb(object):
                     "ahead_max": round(self.ahead_max, 2),
                     "kp": round(self.track_kp, 1),
                     "moving": list(self._track_moving),
+                    # 俯仰单独一套（2026-11-01 修"周期上下摆动"）
+                    "pitch_hold": bool(self.pitch_hold),
+                    "pitch_deadband": round(self.pitch_deadband, 3),
+                    "pitch_gain": round(self.pitch_gain, 2),
+                    "pitch_rate_max": round(self.pitch_rate_max, 1),
                 },
                 # 双闭环：loop=vel 时 v_out/v_meas/trim/pos_err 才有意义
                 "ctrl": dict(self.ctrl_info),
@@ -677,6 +697,21 @@ class GimbalWeb(object):
                 if "predict_s" in body:
                     self.predict_s = _clamp(_num(body["predict_s"],
                                                  self.predict_s), 0.0, 0.6)
+                # 俯仰独立参数（2026-11-01）：pitch_hold=false 切回"全跟踪"
+                if "pitch_hold" in body:
+                    self.pitch_hold = bool(body["pitch_hold"])
+                    self._pitch_active = False
+                if "pitch_deadband" in body:
+                    self.pitch_deadband = _clamp(
+                        _num(body["pitch_deadband"], self.pitch_deadband),
+                        0.0, 0.5)
+                if "pitch_gain" in body:
+                    self.pitch_gain = _clamp(
+                        _num(body["pitch_gain"], self.pitch_gain), 0.05, 2.0)
+                if "pitch_rate_max" in body:
+                    self.pitch_rate_max = _clamp(
+                        _num(body["pitch_rate_max"], self.pitch_rate_max),
+                        1.0, 45.0)
                 if "kalman" in body:
                     self.kalman = bool(body["kalman"])
                     self._kf_x = self._kf_y = None
@@ -1592,11 +1627,36 @@ class GimbalWeb(object):
 
         r_yaw = (self.yaw_sign * self.track_gain
                  * axis_rate(ex_p, self.speed_max, 0))
-        r_pit = (self.pitch_sign * self.track_gain
-                 * axis_rate(ey_p, min(self.speed_max, 15.0), 1))
+        if self.pitch_hold:
+            # ---- 俯仰：不用前瞻、大死区、半增益、限速 ----
+            #   用 ey（原始测量误差）而不是 ey_p：卡尔曼的速度估计在俯仰上
+            #   噪声占主导，前瞻等于把噪声放大成动作，正是极限环的燃料。
+            dead_p = max(dead, self.pitch_deadband)
+            a_p = abs(ey)
+            # 滞回：出带(1.5 倍)才动，回带(1 倍)就停 —— 防止在带边上反复启停
+            if self._pitch_active:
+                if a_p <= dead_p:
+                    self._pitch_active = False
+            elif a_p >= dead_p * 1.5:
+                self._pitch_active = True
+            if self._pitch_active:
+                v = min(self.pitch_rate_max,
+                        self.track_kp * self.pitch_gain * (a_p - dead_p))
+                r_pit = (-self.pitch_sign * self.track_gain * v
+                         * (1.0 if ey > 0 else -1.0))
+            else:
+                r_pit = 0.0
+            self._track_moving[1] = self._pitch_active
+        else:
+            r_pit = (self.pitch_sign * self.track_gain
+                     * axis_rate(ey_p, min(self.speed_max, 15.0), 1))
         # 「已对准」看的是预测误差，不看"速度是否恰好为 0"：
         # 误差落进死区边缘时会算出 0.05°/s 这种非零速度，按速度判会永远显示"追踪中"。
-        aligned = (abs(ex_p) <= dead * 2.5 and abs(ey_p) <= dead * 2.5)
+        if self.pitch_hold:
+            aligned = (abs(ex_p) <= dead * 2.5
+                       and abs(ey) <= max(dead * 2.5, self.pitch_deadband))
+        else:
+            aligned = (abs(ex_p) <= dead * 2.5 and abs(ey_p) <= dead * 2.5)
         self.track = {
             "state": "已对准" if aligned else "追踪中",
             "persons": len(dets),
@@ -1616,6 +1676,10 @@ class GimbalWeb(object):
             "predict_s": round(self.predict_s, 2),
             "ahead_s": round(ahead, 2),
             "kalman": bool(self.kalman),
+            "pitch_hold": bool(self.pitch_hold),
+            "pitch_deadband": round(self.pitch_deadband, 3),
+            "pitch_gain": round(self.pitch_gain, 2),
+            "pitch_active": bool(self._pitch_active),
             "rate": [round(r_yaw, 1), round(r_pit, 1)],
             "yaw_deg": _round(self.angle[0] if self.angle else None),
             "pitch_deg": _round(self.angle[1] if self.angle else None),
