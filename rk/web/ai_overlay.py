@@ -102,6 +102,239 @@ def _lower_priority(delta):
         pass
 
 
+# COCO-17 关键点里跟"头部"有关的编号
+_HEAD_IDX = (0, 1, 2, 3, 4)      # 鼻、两眼、两耳
+_FOOT_IDX = (15, 16)             # 两脚踝
+_SHOULDER_IDX = (5, 6)
+_HIP_IDX = (11, 12)
+_KNEE_IDX = (13, 14)
+_KPT_CONF = 0.30
+
+# 人体比例（相对**身高** H，成人均值）—— 用来从可见关节反推“整个人有多高”。
+#   没有它就只能看检测框，而人走近/走到画面边缘时框是被裁过的，
+#   框高只是“可见部分”，据此判断“能不能全包”必然误判。
+_BODY_SEG = (
+    ("torso", 0.29),     # 肩中点 -> 髋中点
+    ("thigh", 0.25),     # 髋 -> 膝
+    ("shin", 0.23),      # 膝 -> 踝
+)
+_HEAD_UP = 0.07          # 眼睛（头中心）到头顶
+_FOOT_DOWN = 0.05        # 踝到脚底
+_HIP_Y = 0.47            # 髋在身高里的位置（从头顶往下算）
+_AIM_MARGIN = 0.03       # 全包判定留的边距（占画面高的比例）
+
+
+def _kpt_rows(kps):
+    """把关键点统一成 [[x, y, conf], ...]（兼容 numpy / list）。"""
+    if kps is None:
+        return None
+    try:
+        return kps.tolist() if hasattr(kps, "tolist") else list(kps)
+    except Exception:                                           # noqa: BLE001
+        return None
+
+
+def _kp(rows, idx, conf=_KPT_CONF):
+    """一组关键点的平均位置；全都不可见返回 None。"""
+    if not rows:
+        return None
+    pts = [rows[i] for i in idx
+           if i < len(rows) and len(rows[i]) >= 3 and rows[i][2] >= conf]
+    if not pts:
+        return None
+    return (sum(p[0] for p in pts) / len(pts),
+            sum(p[1] for p in pts) / len(pts))
+
+
+def _dist(a, b):
+    dx, dy = a[0] - b[0], a[1] - b[1]
+    return (dx * dx + dy * dy) ** 0.5
+
+
+def _body_size(rows, box_h, conf=_KPT_CONF):
+    """按关节比例估算**完整人体**的身高（像素）。返回 (est_h, from_joints)。
+
+    ``from_joints`` 很重要：为 False 时 est_h 只是“检测框高度”，
+    而框可能被裁过（人近了/走到边上）——那种情况下 est_h 是**下界**，
+    不能拿它下“整个人装得下”的结论。
+    """
+    est = []
+    sh = _kp(rows, _SHOULDER_IDX, conf)
+    hp = _kp(rows, _HIP_IDX, conf)
+    kn = _kp(rows, _KNEE_IDX, conf)
+    an = _kp(rows, _FOOT_IDX, conf)
+    for name, ratio in _BODY_SEG:
+        a, b = {"torso": (sh, hp), "thigh": (hp, kn),
+                "shin": (kn, an)}[name]
+        if a is None or b is None:
+            continue
+        d = _dist(a, b)
+        if d > 2.0:
+            est.append(d / ratio)
+    hd = _kp(rows, _HEAD_IDX, conf)
+    if hd is not None and an is not None:
+        # 头中心 -> 踝 占身高的比例（1 - 头顶到眼 - 踝到脚底）
+        d = abs(an[1] - hd[1])
+        if d > 2.0:
+            est.append(d / (1.0 - _HEAD_UP - _FOOT_DOWN))
+    if not est:
+        return (box_h if box_h > 0 else None), False
+    est.sort()
+    v = est[len(est) // 2]
+    # ⚠ 不能直接 `max(v, box_h)`：检测框通常带 padding（比人还高一点），
+    #   拿它当身高会把“其实装得下”判成“装不下” -> 永远锁头、人不居中。
+    #   只有框高**明显**大于关节估计（>1.15 倍）才认为关节估计不可信。
+    if box_h and box_h > v * 1.15:
+        v = box_h
+    return v, True
+
+
+def _aim_plan(det, frame_wh=None, margin_ratio=_AIM_MARGIN,
+              prev_can_full=None):
+    """算这个人的瞄准点 —— 带“云台试探位移”再判断能否全包。
+
+    用户要求：**能全包就锁人体几何中心，装不下就优先锁头。**
+
+    怎么判断“能不能全包”（试探位移）：假设云台把瞄准点送到画面正中，
+    那么人体其余点的位置 = 原坐标 + (画面中心 - 瞄准点)。先按关节比例
+    估出**完整身高**（框可能被裁，框高只是可见部分），把头顶/脚底挪到
+    你希望的位置，看它们是否还落在画面内（各留 margin）：
+      * 能  -> 瞄人体几何中心（头脚中点），人会在画面里上下居中；
+      * 不能（人比画面还高 / 太近 / 关键点不够算不出身高）-> 瞄头部。
+    头部被上边框裁掉时“瞄头”没意义，退回框中心。
+
+    ``prev_can_full`` 用来做**滞回**：切入宽松（span <= 画面高 − 2×边距），
+    一旦全包了就放宽一点才退出（span <= 画面高 − 1×边距）。
+    ⚠ 方向不能写反：早先写成“切入要求 0.85 倍”这种更严的阈值，
+    导致明明放得下也一直锁头（人贴到底部、不居中）。
+
+    返回 dict：aim / mode / full_now / can_full / head / est_h / shift。
+    """
+    b = det.get("box")
+    # ⚠ 不要写 `det.get("box") or [...]`：AI 内部的 box 可能是 numpy 数组，
+    #   `or` 会对数组求布尔值 → ValueError: truth value ... is ambiguous。
+    #   只要画面里出现目标，status() 就会整条抛异常（云台侧显示"AI 状态读取失败"）。
+    try:
+        b = [float(v) for v in b] if b is not None else []
+    except Exception:                                           # noqa: BLE001
+        b = []
+    if len(b) < 4:
+        b = [0.0, 0.0, 0.0, 0.0]
+    x1, y1, x2, y2 = b[0], b[1], b[2], b[3]
+    center = ((x1 + x2) / 2.0, (y1 + y2) / 2.0)
+    rows = _kpt_rows(det.get("kps"))
+
+    head = _kp(rows, _HEAD_IDX)
+    feet = _kp(rows, _FOOT_IDX)
+    hip = _kp(rows, _HIP_IDX)
+
+    fw = fh = 0
+    try:
+        if frame_wh and len(frame_wh) >= 2:
+            fw, fh = int(frame_wh[0] or 0), int(frame_wh[1] or 0)
+    except Exception:                                           # noqa: BLE001
+        fw = fh = 0
+
+    box_h = max(0.0, y2 - y1)
+    est_h, from_joints = _body_size(rows, box_h)
+    cut_top = y1 <= 2
+    cut_bottom = fh > 0 and y2 >= fh - 3
+    # 当前这一刻：头 + 脚都在画面里，且框没被上下边缘截断
+    full_now = bool(head is not None and feet is not None
+                    and not cut_top and not cut_bottom)
+
+    # ---- 完整人体的上下边界（脚被裁时按比例补出来）----
+    top = bottom = None
+    if est_h:
+        if head is not None:
+            top = head[1] - _HEAD_UP * est_h
+        elif not cut_top:
+            top = y1
+        else:
+            top = (y1 if y1 > 0 else center[1] - est_h / 2.0)
+        if feet is not None:
+            bottom = feet[1] + _FOOT_DOWN * est_h
+        elif hip is not None:
+            bottom = hip[1] + (1.0 - _HIP_Y) * est_h
+        else:
+            bottom = top + est_h
+    else:
+        top, bottom = y1, y2
+    body = (hip[0] if hip is not None else center[0], (top + bottom) / 2.0)
+    span = max(1.0, bottom - top)
+
+    # ---- 试探位移：把几何中心送到画面中心后，头顶/脚底会落在哪 ----
+    can_full = False
+    shift = (0.0, 0.0)
+    if fh > 0:
+        margin = max(8.0, margin_ratio * fh)
+        # 框图被裁过又没关节可用 -> est_h 只是下界，不能据此说"装得下"
+        known = bool(from_joints or (not cut_top and not cut_bottom))
+        if known:
+            # 切入：严格一点（上下各留边距）；已全包：放宽 1 个边距才退出
+            lim = (fh - margin) if prev_can_full else (fh - 2.0 * margin)
+            can_full = span <= lim
+        dy = fh / 2.0 - body[1]
+        shift = (fw / 2.0 - body[0] if fw > 0 else 0.0, dy)
+    else:
+        # 画面尺寸未知（早期帧）：退回"当前是否完整"
+        can_full = full_now
+
+    if can_full:
+        aim, mode = body, "center"
+    elif head is not None and not cut_top:
+        aim, mode = head, "head"
+    else:
+        aim, mode = center, "box"
+    return {
+        "aim": (float(aim[0]), float(aim[1])),
+        "mode": mode,
+        "full_now": full_now,
+        "can_full": bool(can_full),
+        "head": head,
+        "est_h": (float(est_h) if est_h else None),
+        "span": float(span),
+        "shift": (float(shift[0]), float(shift[1])),
+    }
+
+
+def _aim_point(det, frame_wh=None):
+    """兼容旧签名：返回 (aim, can_full, head)。
+
+    ``aim``  = 建议瞄准点 (x, y) 像素；连框都没有时也不为 None（用框中心）
+    ``can_full`` = 云台挪过去之后能不能把整个人装进画面
+    ``head`` = 头部中心 (x, y) 或 None
+    """
+    p = _aim_plan(det, frame_wh)
+    return p["aim"], p["can_full"], p["head"]
+
+
+def _make_actions(zone, box_margin, rule_cls):
+    """动作识别后端：**demo 分类器优先**，异常时退回几何规则。
+
+    demo 分类器 = rk/ai/board/action_demo_cls.py，也就是 rk/web/action_demo.html
+    里 `demoClassifier()` 的 Python 移植（两者数值对拍差 <5e-7）。
+    它不依赖训练数据：每个类都是"人写的充分条件"，阈值按前级
+    （YOLO-pose + EMA α≈0.55）**实际可达**的速度标定，所以上板一次就对。
+    训练模型（rknn/npz）那条路等采到干净的 idle/run/handup 再启用。
+    """
+    try:
+        from action_model import ActionEngine
+        from action_demo_cls import DemoActionModel, DEMO_WINDOW
+        am = DemoActionModel(t_len=32)
+        print("[ai] 动作识别: demo 分类器 (窗口 %.3fs, %d 类)"
+              % (DEMO_WINDOW, len(am.classes)))
+        eng = ActionEngine(am, alert_polygon=zone, cooldown=2.0,
+                           window=DEMO_WINDOW)
+        # 与 model.tune 共享同一个 dict：网页上的"灵敏度"滑杆
+        # (fall/run/swing/throw) 直接写 ActionEngine.tune，这样仍能生效。
+        eng.tune = getattr(am, 'tune', {})
+        return eng
+    except Exception as e:                                      # noqa: BLE001
+        print("[ai] demo 动作分类器不可用(%s)，退回几何规则" % e)
+        return rule_cls(alert_polygon=zone, box_margin=box_margin)
+
+
 class AiOverlay(object):
     """线程安全的 AI 叠加器。编码线程调 submit()/draw()，本类内部线程负责推理。"""
 
@@ -112,8 +345,7 @@ class AiOverlay(object):
                  spread_pose=True, pose_budget=2, pipeline=True,
                  source="raw", enabled=True,
                  zone=None, show_skeleton=True, show_score=True, show_label=True,
-                 show_hud=False, skeleton_only=False, state_path=None, verbose=False,
-                 action_model="", action_npz=""):
+                 show_hud=False, skeleton_only=False, state_path=None, verbose=False):
         self.ai_dir = os.path.abspath(ai_dir or default_ai_dir())
         mdir = os.path.join(self.ai_dir, "models")
         self.model_dir = mdir
@@ -173,10 +405,6 @@ class AiOverlay(object):
         self._draw_person = None
         self._draw_pose = None
         self.zone = list(zone or [])
-        # 动作识别后端：给了模型就走轻量模型（rknn 优先，numpy 兜底），
-        # 两个都没给/都不可用 —— 退回原来的几何规则（action_rules）。
-        self.action_model = action_model or ""
-        self.action_npz = action_npz or ""
 
         self.ok = False
         self.err = ""
@@ -203,6 +431,9 @@ class AiOverlay(object):
         self._result = []             # 最近一次的标注结果
         self._result_t = 0.0
         self._seq_gen = itertools.count(1)   # submit() 用的原子序号
+        # 瞄准点滞回：tid -> 上一帧“云台挪过去能否全包”
+        #   临界尺寸上 head <-> 几何中心 会来回切，云台会“点头”
+        self._aim_full = {}
         self._stats = {"n": 0, "t0": time.time(), "det_n": 0, "pose_n": 0}
 
         self._stop = threading.Event()
@@ -264,25 +495,6 @@ class AiOverlay(object):
                         "active": p["id"] == self.preset})
         return out
 
-    def _build_action_engine(self, rule_cls):
-        """动作识别后端：轻量模型优先，不可用就退回几何规则。
-
-        为什么要这层兜底：模型文件可能没拷过去、rknnlite 版本对不上、
-        或者 NPU 已被别的进程占满 —— 这些都不应该让"动作识别"整体消失。
-        """
-        if self.action_model or self.action_npz:
-            try:
-                from action_model import ActionEngine, ActionModel   # noqa: WPS433
-                am = ActionModel(rknn_path=self.action_model,
-                                 npz_path=self.action_npz)
-                if am.ok:
-                    print("[ai] 动作识别: 轻量模型 (后端 %s)" % am.backend)
-                    return ActionEngine(am, alert_polygon=self.zone, cooldown=2.0)
-                print("[ai] 动作模型不可用(%s)，退回几何规则" % am.err)
-            except Exception as e:                                  # noqa: BLE001
-                print("[ai] 动作模型加载异常(%s)，退回几何规则" % e)
-        return rule_cls(alert_polygon=self.zone, box_margin=self.box_margin)
-
     def _load(self):
         """加载模型（只在需要时做一次）。"""
         board = os.path.join(self.ai_dir, "board")
@@ -306,7 +518,8 @@ class AiOverlay(object):
             return False
         self.detector = det
         self.tracker = SimpleTracker()
-        self.actions = self._build_action_engine(ActionRecognizer)
+        self.actions = _make_actions(self.zone, self.box_margin,
+                                    ActionRecognizer)
         self.ok = True
         if not det.pose or not det.pose.ok:
             self.err = "姿态模型不可用(仅画人体框): %s" % (
@@ -648,36 +861,19 @@ class AiOverlay(object):
                 pass
 
     # ------------------------------------------------------------------ 状态 / 调参
-    def keypoints(self):
-        """数据采集用：返回最近一次结果里的关键点（**像素坐标** + 置信度）。
-
-        只给 `record_action.py` 用，不进推流路径；采集时不再重跑推理，
-        所以对 NPU 零额外负载。
-        """
-        with self._lock:
-            res = list(self._result)
-            tt = self._result_t
-        out = []
-        for d in res:
-            kps = d.get("kps")
-            if kps is None:
-                continue
-            try:
-                rows = kps.tolist() if hasattr(kps, "tolist") else list(kps)
-                kk = [[round(float(v), 1) for v in row[:3]] for row in rows]
-            except Exception:                               # noqa: BLE001
-                continue
-            out.append({"tid": d.get("tid"),
-                        "box": [round(float(v), 1)
-                                for v in d.get("box", [0, 0, 0, 0])],
-                        "score": round(float(d.get("score", 0)), 3),
-                        "kps": kk})
-        return {"ok": self.ok, "t": float(tt or time.time()), "tracks": out}
-
     def status(self):
         with self._lock:
             res = list(self._result)
             rt = self._result_t
+        # 画面尺寸：detections 里的 box 是**像素坐标**，云台追踪要拿它
+        # 归一化成"偏离画面中心多少"，所以必须把喂给 AI 那一帧的宽高一起给出。
+        fr = self._frame
+        frame_wh = None
+        try:
+            if fr is not None and hasattr(fr, "shape"):
+                frame_wh = [int(fr.shape[1]), int(fr.shape[0])]
+        except Exception:                                       # noqa: BLE001
+            frame_wh = None
         dets = []
         for d in res:
             kps = d.get("kps")
@@ -687,12 +883,45 @@ class AiOverlay(object):
                     n_kpt = int((kps[:, 2] > 0).sum())
                 except Exception:                               # noqa: BLE001
                     n_kpt = 0
+            aim, full, head = None, False, None
+            plan = None
+            try:
+                # 滞回：上一帧已经能全包 -> 用正常阈值维持；否则要更严格才切回来
+                prev = self._aim_full.get(d.get("tid"))
+                plan = _aim_plan(d, frame_wh, prev_can_full=prev)
+                aim = plan["aim"]
+                full = plan["can_full"]
+                head = plan["head"]
+                if d.get("tid") is not None:
+                    self._aim_full[d.get("tid")] = bool(plan["can_full"])
+            except Exception:                               # noqa: BLE001
+                # 瞄准点算不出来不该让整个 /api/ai 挂掉（云台会显示"读取失败"）
+                pass
             dets.append({
                 "tid": d.get("tid"),
                 "box": [int(v) for v in d.get("box", [0, 0, 0, 0])],
                 "score": round(float(d.get("score", 0)), 3),
                 "risk": d.get("risk", 0),
                 "n_kpt": n_kpt,
+                # 给云台追踪用的"瞄准点"：
+                #   能全包 = 人体几何中心（头脚中点）
+                #   装不下 = 头部中心（头被上边框裁掉才退回框中心）
+                "aim": ([int(round(aim[0])), int(round(aim[1]))]
+                        if aim else None),
+                "aim_head": bool(plan and plan["mode"] == "head"),
+                "aim_mode": ({"head": "头部", "center": "几何中心",
+                              "box": "框中心"}[plan["mode"]]
+                             if plan else None),
+                # full = 当前这一刻是否完整可见（旧语义，页面显示用）
+                # can_full = 云台挪过去以后能不能全包（决定瞄哪）
+                "full": bool(plan["full_now"]) if plan else bool(full),
+                "can_full": bool(full),
+                "est_h": (int(round(plan["est_h"]))
+                          if plan and plan["est_h"] else None),
+                "shift": ([int(round(plan["shift"][0])),
+                           int(round(plan["shift"][1]))] if plan else None),
+                "head": ([int(round(head[0])), int(round(head[1]))]
+                         if head else None),
                 "labels": [a["cn"] for a in (d.get("actions") or [])],
                 "labels_en": [_act_en(a) for a in (d.get("actions") or [])],
             })
@@ -709,6 +938,7 @@ class AiOverlay(object):
             "enabled": self.enabled,
             "source": self.source,
             "active": self.active,
+            "frame": frame_wh,
             "fps": round(self.measured_fps, 1),
             "fps_target": round(self.ai_fps, 1),
             "fps_det": round(self.fps_det, 1),

@@ -915,6 +915,16 @@ html, body{overflow:hidden}
 
         <div class="sep"></div>
 
+        <div class="row"><label title="最近能测到多近。调小=能测更近，但视差搜索范围变大、先慢一点">深度最近</label>
+          <input type="range" id="p_depth_z_near" min="0.12" max="0.6" step="0.01" value="0.25">
+          <span class="val" id="v_depth_z_near">0.25</span></div>
+
+        <div class="row"><label title="云台/车体转动时修正视差偏置。0=关；正负决定补偿方向，绝对值决定补多少">运动补偿</label>
+          <input type="range" id="p_depth_pan_gain" min="-2" max="2" step="0.1" value="0">
+          <span class="val" id="v_depth_pan_gain">0.00</span></div>
+
+        <div class="sep"></div>
+
         <div class="grid2" style="margin-bottom:8px">
           <button class="ghost" id="btnMirror">水平镜像</button>
           <button class="ghost" id="btnFlipv">垂直翻转</button>
@@ -3636,7 +3646,8 @@ document.addEventListener("contextmenu", (e) => {
 });
 
 /* 滑块绑定 */
-["brightness","contrast","saturation","hue","gamma","scale","quality","fps"]
+["brightness","contrast","saturation","hue","gamma","scale","quality","fps",
+ "depth_z_near","depth_pan_gain"]
 .forEach(k => {
   const el = $("p_" + k);
   el.addEventListener("input", () => {
@@ -5267,7 +5278,12 @@ async function gzLoad() {
 
 function gzPoll() {
   clearInterval(gzTimer);
-  gzTimer = setInterval(() => { if (connected) gzLoad(); }, 800);
+  // 250ms 拉一次：后端现在 5Hz 更新姿态（原来是 1Hz），页面别成为瓶颈。
+  // 页面隐藏/切到建图页时不拉，省流量也省设备端 CPU。
+  gzTimer = setInterval(() => {
+    const vv = document.getElementById('viewVideo');
+    if (connected && !document.hidden && !(vv && vv.hidden)) gzLoad();
+  }, 250);
   gzLoad();
 }
 

@@ -200,9 +200,16 @@ class GimbalWeb(object):
 
     PERIOD = 0.025         # 主控制周期（秒）。0.06 太粗 —— 每拍要挪 1.5°，
                            # 固件到点就停一下再等下一拍，看起来就是「一顿一顿」
-    TELEMETRY = 0.30       # 空闲时 status 轮询周期（秒）
-    TELEMETRY_MOVING = 1.0 # 运动中放慢：每次 status 会占 15~40ms 总线，
-                           # 0.3s 一读就是 3Hz 的卡顿（实测现象）
+    TELEMETRY = 0.10       # 空闲时 status 轮询周期（秒）= 10 Hz
+    # ★ 2026-11-01：从 1.0s 提到 0.10s（10Hz）。
+    #   当初放慢到 1s 是因为**角度模式**下 0.3s 一读会让指令流空一拍（3Hz 卡顿）；
+    #   现在速度模式下固件按最后一条 `ctrl speed` 持续转，读 status 不再打断运动，
+    #   所以可以放心提高频率 —— 姿态更实时，限位/航向推算也更准。
+    #   实测单次 status 只占 3.6ms（空闲），10Hz 也就吃掉 3.6% 总线；
+    #   固件忙时靠 _tel_cost 自适应把间隔拉到 >= 4 倍实测耗时。
+    TELEMETRY_MOVING = 0.10
+    TELEMETRY_MIN = 0.05   # 不管多便宜，最少间隔（别把总线打满）
+    TEL_COST_K = 4.0       # 间隔 >= 单次实测耗时 × 4（给 speed 心跳留地方）
     JOG_HOLD = 0.8         # 点动保持时间（秒）—— 页面每 200ms 续一次
     BAUD = 115200
     REPLY_TIMEOUT = 0.8
@@ -316,6 +323,7 @@ class GimbalWeb(object):
         self._t_meas = 0.0
         self._vel_meas = [0.0, 0.0]
         self._vel_meas_hold = [0.0, 0.0]   # 上一次有效的测速（防止瞬时 0 让封顶失效）
+        self._tel_cost = 0.0              # status 单次耗时的平滑估计（自适应限流）
         self._stall = [False, False]        # 本拍是否因“目标超前太多”被冻结
         self.ctrl_info = {"loop": self.loop}
         self.msg = "未连接" if self.available else ("云台不可用: %s" % DRIVER_ERR)
@@ -482,6 +490,8 @@ class GimbalWeb(object):
                 "speed_max": round(self.speed_max, 1),
                 "drive": self.drive,
                 "limit_hit": list(self._limit_hit),
+                "telemetry_ms": (round(self._tel_cost * 1000.0, 1)
+                                 if self._tel_cost > 0 else None),
                 "jog": [round(self.jog[0], 1), round(self.jog[1], 1)],
                 "applied": [round(self.applied[0], 1),
                             round(self.applied[1], 1)],
@@ -815,21 +825,30 @@ class GimbalWeb(object):
                 if self.connected:
                     self._tick(dt, now)
                     if now >= next_tel:
-                        # ⚠ status 回显很长，一次要占 15~40ms 总线。原来固定
-                        #   0.3s 一读 → 每 0.3s 指令流空一拍 → 3Hz 的「一顿」。
-                        #   运动中放慢到 1s，空闲时才按 0.3s 刷（看清角度）。
+                        # ★ 速度模式：读 status 不会打断运动（固件按最后一条
+                        #   ctrl speed 持续转），所以能读快就快点读 ——
+                        #   姿态更实时，限位/航向推算也更准。
                         moving = (abs(self.rate_cmd[0]) > 0.5
                                   or abs(self.rate_cmd[1]) > 0.5
                                   or self.tracking)
+                        base = (self.TELEMETRY_MOVING if moving
+                                else self.TELEMETRY)
                         if self.drive == "speed" and self._near_limit():
-                            # 贴到限位附近：软限位刹车靠"编码器角度 + 速度外推"，
-                            # 推算误差 = v*age，age 越大多算越远 -> 刹车越早、
-                            # 也越容易提前停。靠近限位时把回读加快到 0.15s。
-                            next_tel = now + 0.15
-                        else:
-                            next_tel = now + (self.TELEMETRY_MOVING if moving
-                                              else self.TELEMETRY)
+                            # 贴限位：软限位刹车靠"角度 + 速度外推"，读得越快越准
+                            base = min(base, 0.06)
+                        # 自适应限流：单次 status 实测很贵时（总线拥堵/固件忙），
+                        #   至少留 TEL_COST_K 倍耗时给它，否则 speed 心跳会被挤掉
+                        base = max(base, self.TELEMETRY_MIN,
+                                   self._tel_cost * self.TEL_COST_K)
+                        next_tel = now + base
+                        # ⚠ 用 perf_counter 而不是 monotonic：Windows 上
+                        #   monotonic 的分辨率只有 ~15.6ms，一次 status（几 ms）
+                        #   会量成 0.0，_tel_cost 永远上不去。
+                        t_tel = time.perf_counter()
                         self._read_status()
+                        cost = time.perf_counter() - t_tel
+                        self._tel_cost = (cost if self._tel_cost <= 0.0
+                                          else 0.7 * self._tel_cost + 0.3 * cost)
             except Exception as e:                       # noqa: BLE001
                 self.last_error = "%s: %s" % (type(e).__name__, e)
                 if self.verbose:

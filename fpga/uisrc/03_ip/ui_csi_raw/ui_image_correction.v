@@ -33,7 +33,15 @@
 
 module ui_image_correction #(
     parameter DATA_WIDTH   = 40,
-    parameter TDEST_WIDTH  = 10
+    parameter TDEST_WIDTH  = 10,
+    // ★ 2026-10-31 (0x4717): 每行起始要**跳过的像素组数**(1 组 = 4 像素)。
+    //
+    //   背景: 板上实测 cam1(左目) 画面整体向左偏移 12 像素。
+    //   偏移量 12 像素 = 3 组, 正好是组粒度的整数倍, 所以在这一层补最干净。
+    //   (之前试过在 web 端 np.roll 补偿, 用户明确要求不要软件校准, 已回退)
+    //
+    //   cam0 保持 0 —— 它没有这个偏移。
+    parameter [4:0] H_SKIP = 5'd0
 )(
     input                          		I_clk   			,
     input                          		I_rst_n 			,
@@ -76,20 +84,23 @@ module ui_image_correction #(
 // V21: 运行时宽高 (4 像素/时钟)
     wire [14:0] img_width_4x  = (I_img_width >> 2);
     wire [14:0] img_height_rt = I_img_height;
+    // ★ 0x4717: 每行起始跳过的组数 (H_SKIP=0 时退化为原来的 h_cnt>0 / ==1, cam0 逐位不变)
+    wire [14:0] h_lo = {10'd0, H_SKIP};
+    wire [14:0] h_hi = img_width_4x + h_lo;
     // V39: 垂直裁剪窗口 = (v_start, v_start + height]
     wire [14:0] v_start_rt    = {2'b00, I_v_start};
     wire [14:0] v_end_rt      = v_start_rt + img_height_rt;
 
-    assign H_valid 		= (h_cnt <= img_width_4x) && (h_cnt > 0);
+    assign H_valid 		= (h_cnt <= h_hi) && (h_cnt > h_lo);
     
     // tuser 必须落在第一个有效行 (v_start+1)，否则 ISP/AWB/去马赛克的
     // 行计数与 Bayer 相位仍会从 OB/EBD 行开始。
-    assign tuser 		= (h_cnt == 1) && (v_cnt == v_start_rt + 15'd1) && I_raw_tvalid_d;
+    assign tuser 		= (h_cnt == h_lo + 15'd1) && (v_cnt == v_start_rt + 15'd1) && I_raw_tvalid_d;
     
     assign O_raw_tdata  = V_valid && H_valid? I_raw_tdata_r:0;
     assign I_raw_tready = O_raw_tready;
     assign O_raw_tvalid = H_valid && V_valid && I_raw_tvalid_d;
-    assign O_raw_tlast  = V_valid && (h_cnt == img_width_4x) && I_raw_tvalid_d;
+    assign O_raw_tlast  = V_valid && (h_cnt == h_hi) && I_raw_tvalid_d;
     assign O_raw_tuser  = tuser;
 
     always @(posedge I_clk or negedge I_rst_n) begin

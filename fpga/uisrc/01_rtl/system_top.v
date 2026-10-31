@@ -512,7 +512,7 @@ assign S_ud_wtuser 				= S_yuv_sof		;
 assign S_ud_wtvalid 			= S_yuv_de		;
 assign S_ud_wtlast 				= S_yuv_last	;
 //=============================================================================
-//  2026-10-21: 帧标记（双目模式下 web 靠它区分这一帧是 cam0 还是 cam1）
+//  帧标记（双目模式下 web 靠它区分这一帧是 cam0 还是 cam1）
 //
 //  打在本帧第一个 64bit 组（= 头 4 个像素）上，只在 sof 那一拍覆盖。
 //  rgb_to_yuv422_quad 的输出位序: {Cr3, Y3, Cb2, Y2, Cr1, Y1, Cb0, Y0}
@@ -525,7 +525,40 @@ wire [63:0] S_frame_mark = { 8'h80, 8'hFF,
                               8'h80, S_out_src ? 8'h11 : 8'h00,
                               8'h80, 8'h5A,
                               8'h80, 8'hA5 };
-assign S_ud_wtdata 				= (S_mark_en && S_yuv_sof) ? S_frame_mark : S_yuv_data;
+
+//--------------------------------------------------------------------------
+//  ★ 2026-10-31 (0x4711): 标记必须在**写侧**打，否则 src 和画面不同源
+//
+//  症状: 双目左右两半是同一路图像，但帧标记 cam0/cam1 严格 1:1 交替、
+//        相位相关 dx≈0 / response≈1.04（同一场景），mad 在 0.004(静止)
+//        和 3.3(有运动) 之间摆。
+//
+//  根因(代码级确定): 标记原来在 dbuf **读侧**覆盖，
+//     src = S_out_src  <-- 这是 sched **写侧**当下的帧源，
+//     而数据是 DDR 三帧缓存里**读出来**的某一帧。写侧永远领先读侧 1~3 帧
+//     -> 标 "cam1" 的那一半装的是 cam0 的帧，整体错位。
+//
+//  修法: 回到写侧打，但**不能只打 sof 那一拍**（原来就是因此失效的:
+//     sof 那一拍若 de 为低，覆盖的数据根本没写进 DDR）。
+//     现在从 sof 开始，数**写侧实际的 de 拍**，连打完 4 拍。
+//     这样 src 和像素在同一个时刻、同一次写入里进 DDR，不可能错位。
+//
+//  一键回退: MARK_ON_WRITE = 1'b0 就回到读侧打标记（旧行为）。
+//--------------------------------------------------------------------------
+localparam MARK_ON_WRITE = 1'b1;
+
+// 写侧帧首 4 拍计数器: 0=空闲, 1..4 = 已覆盖的拍数
+reg [2:0] S_wmk;
+always @(posedge S_hs_rx_clk or negedge S_pll_lock) begin
+	if (!S_pll_lock)     S_wmk <= 3'd0;
+	else if (S_yuv_sof)  S_wmk <= 3'd1;                    // sof 当拍算第 1 拍
+	else if (S_yuv_de && (S_wmk != 3'd0) && (S_wmk < 3'd4))
+		                   S_wmk <= S_wmk + 3'd1;          // 只数真正写入的拍
+end
+// sof 当拍可能 de 还没来，所以窗口从 sof 起、按 de 拍数计
+wire S_wmk_on = S_yuv_de && (S_yuv_sof || ((S_wmk >= 3'd1) && (S_wmk <= 3'd3)));
+
+assign S_ud_wtdata 				= (S_mark_en && MARK_ON_WRITE && S_wmk_on) ? S_frame_mark : S_yuv_data;
 
 
 //=============================================================================
@@ -969,11 +1002,73 @@ localparam        RES_RST_TX_SIDE = 1'b1;
 //    所以 dual_eff 变化导致的换源也必须复位（单目<->双目切换）。
 //--------------------------------------------------------------------------
 // (S_rx_sel_d / S_src_chg 已在前部信号区声明, 这里只放逻辑)
+//=============================================================================
+//  2026-10-31 (0x470F): 换源改成"在显示帧边界生效 + 固定复位窗"
+//
+//  原来(0x4708): 写 0xDB[0] 那一刻立刻换时钟 mux -> RX 在随机相位被复位
+//    -> 重新 HS 检测/byte 对齐/word 对齐 的耗时不固定 -> 就是"花屏卡顿一段，
+//       时长不定，偶尔卡很久"。
+//
+//  现在: 0xDB[0] 只是"请求"(S_rx_sel)；真正送到时钟 mux 的是 S_sel_act，
+//        它只在 **显示帧首 S_vtc_vs** 的边沿上更新。于是:
+//          切换点固定 -> RX 复位窗起点固定 -> 恢复时长固定
+//          总等待 = ≤1帧(16.7ms) + 120ms 写侧窗 ≈ 137ms，每次都一样。
+//        + 100ms 超时兜底: 万一帧首丢了（源挂了）也照样切，不会永远卡在等价。
+//
+//  ⚠ 跳时钟必须用**翻转沿**: S_vtc_vs 在 pclkx1 域，25MHz 直接采样可能
+//    整个脉冲都漏掉（147.5MHz 的单拍只有 6.8ns）-> 永远切不过去 = 卡死。
+//
+//  ★ 2026-10-31 (0x4710): 单目<->双目 也必须走这条路。
+//    实测 0x470F 只同步了 0xDB[0]，而单双目切换改的是 S_dual_eff，
+//    它直接死在 S_clk_sel_r 那行的三元式里 -> 仍然是"立刻跳时钟"
+//    -> 用户报的"单双目切换卡死"就是这个。
+//    现在把"真正送给 mux 的值"定义成 S_sel_tgt:
+//        S_sel_tgt = S_dual_eff ? 0 : S_rx_sel
+//    两条换源路径（单目内换路、单双目切换）统一追它，切点都在帧边界。
+//=============================================================================
+localparam [23:0] SW_WAIT_TIMEOUT = 24'd2_500_000;   // 100ms @25MHz
+
+reg  S_vs_tog;
+always @(posedge S_pclkx1 or negedge S_pll_lock) begin
+	if (!S_pll_lock) S_vs_tog <= 1'b0;
+	else if (S_vtc_vs) S_vs_tog <= ~S_vs_tog;      // 每帧翻转一次
+end
+reg [2:0] S_vs_tog_s;
+always @(posedge I_sysclk_25m or negedge S_pll_lock) begin
+	if (!S_pll_lock) S_vs_tog_s <= 3'b000;
+	else             S_vs_tog_s <= {S_vs_tog_s[1:0], S_vs_tog};
+end
+wire S_frame_edge = S_vs_tog_s[2] ^ S_vs_tog_s[1];
+
+// 最终该送进时钟 mux 的值（单目内换路 + 单双目切换 统一到这里）
+wire S_sel_tgt = S_dual_eff ? 1'b0 : S_rx_sel;
+
+reg        S_sel_act;          // 真正生效的源（送到时钟 mux 和 sched）
+reg [23:0] S_sw_wait;
+
+//  ★ 2026-10-31 回退: 曾经加过“PLL 锁住瞬间立即对齐目标值”(S_sw_init)。
+//    那会把“跳变 -> S_clk_chg -> RX 复位 20ms -> 恢复时钟停 -> PLL 失锁
+//    -> S_pll_lock=0 -> 又立即对齐 -> 再跳”变成自持循环，上板直接没帧。
+//    现在只保留“帧沿 / 超时”两个推进条件，不再有瞬时跳变路径。
+always @(posedge I_sysclk_25m or negedge S_pll_lock) begin
+	if (!S_pll_lock) begin
+		S_sel_act <= 1'b0;         // 与 S_clk_sel_r 复位值一致(cam0)
+		S_sw_wait <= 24'd0;
+	end else if (S_sel_act == S_sel_tgt) begin
+		S_sw_wait <= 24'd0;
+	end else if (S_frame_edge || (S_sw_wait >= SW_WAIT_TIMEOUT)) begin
+		S_sel_act <= S_sel_tgt;    // 帧边界（或超时）才真正切
+		S_sw_wait <= 24'd0;
+	end else begin
+		S_sw_wait <= S_sw_wait + 24'd1;
+	end
+end
+
 always @(posedge I_sysclk_25m or negedge S_pll_lock) begin
 	if (!S_pll_lock) S_rx_sel_d <= 1'b0;
-	else             S_rx_sel_d <= S_rx_sel;
+	else             S_rx_sel_d <= S_sel_act;
 end
-assign S_src_chg = (S_rx_sel != S_rx_sel_d);   // 配置位变化(给下游复位窗用)
+assign S_src_chg = (S_sel_act != S_rx_sel_d);   // 真正生效的源变了(给下游复位窗用)
 
 reg  S_clk_sel_d;
 always @(posedge I_sysclk_25m or negedge S_pll_lock) begin
@@ -1064,7 +1159,20 @@ reg  [17:0] S_ud_dly;
 reg         S_ud_rst_win;                       // 1 = 正在复位 dbuf/FDMA
 always @(posedge I_sysclk_25m or negedge S_pll_lock) begin
 	if (!S_pll_lock)                     S_ud_dly <= 18'd0;
-	else if (S_res_chg_d == 2'b01)       S_ud_dly <= 18'd1;        // 从切换沿开始计时
+	// ★ 2026-10-31 (0x4714): 换源(RX_SEL / DUAL_EN)也必须复位 dbuf+FDMA。
+	//
+	//   原来这里只认 S_res_chg（分辨率写入），换源时不装 S_ud_dly ->
+	//   dbuf/FDMA 压根不复位。于是换通道时:
+	//     RX 复位了 ✓  VTC/ISP/packer 复位了 ✓  dbuf+FDMA 没复位 ✗
+	//   写侧状态机(w_ycnt / buffer 号 / wfifo) 还停在旧数据流的状态，
+	//   而输入被 RX 复位打断过 -> 两边错开 -> 三帧缓冲轮转几圈后
+	//   读写撞车 -> MIPI TX 停发。
+	//   板上表现就是用户报的:“刚切完 60fps 很流畅, 约 2 秒后画面冻住,
+	//   再切一次就好”(再切一次 = 又跑一次复位)。
+	//   实测兜底：卡死时 /api/status 的 frame_id 停在 29、fps=0.4，
+	//   证明是 FPGA 不再出帧，不是 web 端问题。
+	else if ((S_res_chg_d == 2'b01) || S_src_chg || S_clk_chg)
+		                                  S_ud_dly <= 18'd1;        // 从切换沿开始计时
 	else if (S_ud_dly == 18'd0)          S_ud_dly <= 18'd0;
 	else if (S_ud_dly <  UD_RST_DLY)     S_ud_dly <= S_ud_dly + 18'd1;
 	else                                 S_ud_dly <= 18'd0;        // 到点停
@@ -1319,7 +1427,7 @@ sensor_sync_start #(
 //   (声明在文件前部信号区, 这里只放逻辑)
 always @(posedge I_sysclk_25m or negedge S_pll_lock) begin
 	if (!S_pll_lock) S_clk_sel_r <= 1'b0;
-	else             S_clk_sel_r <= S_dual_eff ? 1'b0 : S_rx_sel;
+	else             S_clk_sel_r <= S_sel_act;   // 0x4710: 已经是"帧边界对齐后"的值
 end
 assign S_hs_rx_clk_mux = S_clk_sel_r ? S_hs_clk1 : S_hs_clk0;
 
@@ -1346,7 +1454,7 @@ PH1_LOGIC_BUFG X_bufg_rx_clk (
 //   整颗 RX(含它的 AXIS 输出状态机)重新复位一遍，起来就是干净的。
 always @(posedge S_hs_rx_clk or negedge S_pll_lock) begin
 	if (!S_pll_lock) S_rx_sel_rx_s <= 2'b00;
-	else             S_rx_sel_rx_s <= {S_rx_sel_rx_s[0], S_rx_sel};
+	else             S_rx_sel_rx_s <= {S_rx_sel_rx_s[0], S_sel_act};
 end
 assign S_rx_sel_rx = S_rx_sel_rx_s[1];
 
@@ -1383,8 +1491,9 @@ ui_image_correction #(
     .I_img_height     (S_v_active		  ),
     // V39: 垂直起始裁剪 (4K=35, 1080p=19)
     .I_v_start        (S_v_start		  ),
-    // 2026-10-21: 每行实际组数 (1080p=486 / 4K=966), 不依赖行间空闲分行
-    .I_grp_per_line   (S_grp_per_line     ),
+    // ★ cam0 保持 13'd0 (用"行间空闲 10 拍"分行) —— 它的 valid 行间会掉,
+    //   实测正常, 不要动。cam1 请看下面那处例化。
+    .I_grp_per_line   (13'd0              ),
 	
     .I_raw_data       (S_rx0_tdata        ),       
     .I_raw_valid      (S_rx0_tvalid       ),     
@@ -1406,7 +1515,12 @@ ui_image_correction #(
 //    dbuf 写状态机不再推进 -> 画面冻结。
 ui_image_correction #(
     .DATA_WIDTH  (40),
-    .TDEST_WIDTH (10)
+    .TDEST_WIDTH (10),
+    // ★ 0x4717: cam1 画面整体向左偏 12 像素 (= 3 组 × 4 像素)，
+    //   每行起始跳过 3 组把它推回去。
+    //   为什么是 12 而不是 14：这个模块的窗口只能按 4 像素(1 组)为粒度调，
+    //   12 是能精确对上又不越界的值。
+    .H_SKIP      (5'd3)
 )X_ui_image_correction1
 (
     .O_line_groups    (S_line_groups1    ),
@@ -1415,7 +1529,17 @@ ui_image_correction #(
     .I_img_width      (S_h_active		  ),
     .I_img_height     (S_v_active		  ),
     .I_v_start        (S_v_start		  ),
-    .I_grp_per_line   (S_grp_per_line     ),
+    // ★ 2026-10-31 (0x4716): cam1 用**实测行组数 487** 分行。
+    //
+    //   ⚠ 上一版 (0x4715) 我写的是注释里的 "1080p 实测 486", 结果撕裂:
+    //     h_cnt 在 485 就清零, 而这一行实际还有 2 组数据要来 -> 那 2 组被算进
+    //     下一行 -> 每行错位 2 组并逐行累积 -> 斜向撕裂。
+    //
+    //   板上实测 (0xD4/0xD5 = cam0, 0xE4/0xE5 = cam1):
+    //     0x4714: cam0 = 487, cam1 = 487  (两路都是 487, 480 有效 + 7 尾部)
+    //     0x4715: cam0 = 487, cam1 = 485  (我设 486 造成)
+    //   所以这里必须用 487 —— 与 cam0 的判据完全一致, 不会再撕裂。
+    .I_grp_per_line   (13'd487            ),
     .I_raw_data       (S_rx1_tdata        ),
     .I_raw_valid      (S_rx1_tvalid       ),
     .I_raw_frame_start(S_crop1_frame_start),
@@ -2095,6 +2219,18 @@ end
 //  之后没有 tuser 也照常写 DDR, 所以**画面一直是好的**, 这个坑极其隐蔽。
 //  (写侧那段先留着不删 —— sof 若真不来它就是死代码, 来了也只是重复打标记。)
 //
+//  2026-10-31 (0x4711) 复盘 —— 上面这段“写侧没生效”的结论**是错的**:
+//    真正的原因不是 sof 不来 (D_sof_cnt 在涨，它确实来)，而是**只在 sof
+//    那一拍覆盖**，而 sof 当拍 S_yuv_de 可能为低 —— 那一拍根本没写进 DDR。
+//    现在已经改成“从 sof 起按 de 拍数连打 4 拍”，写在上面 S_ud_wtdata 处。
+//
+//  ⚠ 为什么必须回到写侧: 读侧打标记时 src 取的是 S_out_src(写侧当前帧源)，
+//    而数据是 DDR 三帧缓存里读出来的某一帧 —— 两者隔 1~3 帧，**永远不同步**。
+//    板上的表现就是: 标记 cam0/cam1 严格 1:1 交替，但左右两半是同一路画面
+//    (相位相关 dx≈0 / response≈1.04)。
+//
+//  下面这段读侧覆盖只作为**自动回退**保留: 只在画面里探测不到写侧标记时生效。
+//
 //  读侧的 O_R_tuser 是 dbuf 读状态机自己按"读地址回 0"产生的, 打包器靠它
 //  分行, 一定可靠。所以在这里覆盖:
 //    第 1 拍 -> Y0=0xA5  Cb0=0x80  Y1=0x5A  Cr1=0x80
@@ -2127,7 +2263,27 @@ wire [31:0] S_mark_w0 = { 8'h80, 8'h5A, 8'h80, 8'hA5 };
 wire [31:0] S_mark_wA = { 8'h80, 8'hFF, 8'h80, S_mark_src_b };
 wire [31:0] S_mark_wB = { 8'h80, S_mark_src_b, 8'h80, 8'hFF };
 
-assign S_dsi_R_tdata32 = !S_mark_en            ? S_ud_rtdata :
+//--------------------------------------------------------------------------
+//  ★ 0x4711: 自动探测"画面里是否已经有写侧打进去的标记"
+//
+//  写侧标记 (Y0=A5 Y1=5A) 如果存在，说明 src 与数据同帧，读侧**不能再覆盖**
+//  （覆盖就会把正确的 src 改回错位的 S_out_src）。
+//  如果写侧没打进去（历史上真发生过），读侧照旧补一遍 —— 宁可 src 可能偏，
+//  也不能让 web 端完全找不到标记而把双目帧全丢掉（那会直接黑屏）。
+//
+//  所以这是一个**自动回退**，不需要人工切开关。
+//  S_ud_rtdata 位序: [7:0]=Y0  [23:16]=Y1
+//--------------------------------------------------------------------------
+wire S_wmark_present = (S_ud_rtdata[7:0] == 8'hA5) &&
+                       (S_ud_rtdata[23:16] == 8'h5A);
+
+reg S_rdmark_ok;        // 本帧已经有写侧标记
+always @(posedge S_pclkx1 or negedge S_mark_rst_n) begin
+	if (!S_mark_rst_n)            S_rdmark_ok <= 1'b0;
+	else if (S_dsi_R_tuser)       S_rdmark_ok <= S_wmark_present;
+end
+
+assign S_dsi_R_tdata32 = (!S_mark_en || S_rdmark_ok) ? S_ud_rtdata :
                          S_dsi_R_tuser         ? S_mark_w0 :
                          S_rtuser_d1           ? S_mark_wA :
                          S_rtuser_d2           ? S_mark_wB :

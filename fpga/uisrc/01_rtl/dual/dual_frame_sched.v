@@ -65,6 +65,31 @@ module dual_frame_sched #(
     localparam CNTW = 9;                       // 行内计数 0..479 -> 4 行共 1920 项
 
     //-------------------------------------------------------------------------
+    //  ★ 2026-10-31 (0x4713): 双目改成**完全对称的直通**，环形缓冲不再参与
+    //
+    //  原设计: cam0 走直通 d0_r，cam1 走 4 行环形缓冲 rdata，
+    //          但 valid/tuser **永远取 cam0** 的 (O_v=v0_r, O_u=u0_r)。
+    //          即“cam1 的数据”被挂在“cam0 的行节拍”上。
+    //
+    //  板上现象(用户实测): 单目完全正常；双目左目(cam1)有错位 -->>
+    //    竖条位置每次切换都不同、个别次正常、伴随红绿/紫绿偏色(Bayer 相位
+    //    移了非偶数个像素)，严重时整块发紫。
+    //
+    //  原因: 两路的帧/行相位不可能严格相等（每次换源 RX 重新 HS 对齐，
+    //        相位随机）。数据来自 2 行前的缓冲，而节拍来自另一路，
+    //        行内组数一旦漂移就永久累积，帧首也拿错 -> 错位 + 偏色。
+    //
+    //  修法: I_clk1 和 I_clk 本来就是同一个 S_hs_rx_clk（system_top 里
+    //        两路 RX 的 m_axis_video_aclk 都接 S_hs_rx_clk），cam1 的数据
+    //        天然与 cam0 同域，**根本不需要跨域缓冲**。
+    //        所以数据、valid、tuser、tlast **四条全部一起选**，
+    //        与单目模式走完全相同的直通路径 -> 两边彻底对称。
+    //
+    //  一键回退: DUAL_DIRECT = 1'b0 就回到原来的环形缓冲方案。
+    //-------------------------------------------------------------------------
+    localparam DUAL_DIRECT = 1'b1;
+
+    //-------------------------------------------------------------------------
     //  cam1 4 行环形缓冲 —— 写侧在 I_clk1 域
     //-------------------------------------------------------------------------
     reg [DATA_WIDTH-1:0] mem [0:(4*(1<<CNTW))-1];
@@ -158,7 +183,7 @@ module dual_frame_sched #(
         end
     end
 
-    always @* rd_en = I_dual_en & I_v0;
+    always @* rd_en = I_dual_en & I_v0 & ~DUAL_DIRECT;
 
     //-------------------------------------------------------------------------
     //  ch0 直通路径也打一拍, 与 RAM 读延迟对齐
@@ -206,23 +231,32 @@ module dual_frame_sched #(
         end
     end
 
-    assign O_v = dual_r ? v0_r : (sel_r ? v1_r : v0_r);
+    //  直通模式下：本帧到底看哪一路
+    //    双目 = 帧奇偶；单目 = 0xDB[0]。两条路径**完全同构**。
+    wire sel_ch1 = dual_r ? parity_r : sel_r;
+
+    assign O_v = DUAL_DIRECT ? (sel_ch1 ? v1_r : v0_r)
+                             : (dual_r ? v0_r : (sel_r ? v1_r : v0_r));
     // 双路模式下 cam1 数据没跟上时输出 **黑**（0）而不是环形缓冲里的旧数据 ——
     // 否则板上会看到一个"冻结的 cam1 画面"，极易误判成"cam1 工作正常"。
-    assign O_d = dual_r ? (parity_r ? (line_ok ? rdata : {DATA_WIDTH{1'b0}}) : d0_r)
-                        : (sel_r ? d1_r : d0_r);
-    assign O_u = dual_r ? u0_r : (sel_r ? u1_r : u0_r);
-    assign O_l = dual_r ? (parity_r ? rlast_q : l0_r)
-                        : (sel_r ? l1_r : l0_r);
+    assign O_d = DUAL_DIRECT ? (sel_ch1 ? d1_r : d0_r)
+                             : (dual_r ? (parity_r ? (line_ok ? rdata : {DATA_WIDTH{1'b0}}) : d0_r)
+                                       : (sel_r ? d1_r : d0_r));
+    assign O_u = DUAL_DIRECT ? (sel_ch1 ? u1_r : u0_r)
+                             : (dual_r ? u0_r : (sel_r ? u1_r : u0_r));
+    assign O_l = DUAL_DIRECT ? (sel_ch1 ? l1_r : l0_r)
+                             : (dual_r ? (parity_r ? rlast_q : l0_r)
+                                       : (sel_r ? l1_r : l0_r));
     assign O_src    = dual_r ? parity_r : sel_r;
     assign O_parity = parity_r;
 
     // 读块不就绪说明 cam1 数据没跟上（没接 / 没对齐 / 掉速）
+    // 直通模式下没有"块就绪"这个概念，恒不报
     reg lost_r;
     always @(posedge I_clk or negedge I_rst_n) begin
         if (!I_rst_n)             lost_r <= 1'b0;
         else if (dual_r && v0_r)  lost_r <= ~line_ok;
     end
-    assign O_ch1_lost = dual_r & lost_r;
+    assign O_ch1_lost = DUAL_DIRECT ? 1'b0 : (dual_r & lost_r);
 
 endmodule

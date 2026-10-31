@@ -107,9 +107,29 @@ WANT_TTL = 6.0              # 多久没人拉 /api/depth 就停机(秒)
 Z_NEAR_FILE = os.environ.get("DEPTH_Z_NEAR_FILE", "/root/rk/web/depth_z_near")
 _ZN = {"mtime": None, "v": float(os.environ.get("DEPTH_Z_NEAR", "0.25"))}
 
+# StereoDepth 构造时挂上 Params 对象, 让 z_near()/pan_gain() 能读到网页参数。
+_PARAMS = None
+
+
+def _param(key, dflt=None):
+    """取一项网页参数（未接参数对象时返回 dflt）。"""
+    if _PARAMS is None:
+        return dflt
+    try:
+        v = _PARAMS.get().get(key, dflt)
+    except Exception:                                          # noqa: BLE001
+        return dflt
+    return dflt if v is None else v
+
 
 def z_near():
-    """最近可测距离(m)。文件优先，否则用环境变量/默认值。"""
+    """最近可测距离(m)。网页参数优先，其次热调文件，最后环境变量/默认值。"""
+    v = _param("depth_z_near")
+    if v is not None:
+        try:
+            return max(0.12, min(1.0, float(v)))
+        except (TypeError, ValueError):
+            pass
     try:
         st = os.stat(Z_NEAR_FILE)
     except OSError:
@@ -146,7 +166,13 @@ _PAN_GAIN = {"mtime": None, "v": 1.0}
 
 
 def pan_gain():
-    """读热调增益；文件不存在/读不动就用 1.0。"""
+    """运动补偿增益（可正负，符号=方向）。网页参数优先，其次热调文件。"""
+    v = _param("depth_pan_gain")
+    if v is not None:
+        try:
+            return max(-4.0, min(4.0, float(v)))
+        except (TypeError, ValueError):
+            pass
     try:
         st = os.stat(PAN_GAIN_FILE)
     except OSError:
@@ -158,7 +184,7 @@ def pan_gain():
     try:
         with open(PAN_GAIN_FILE) as f:
             v = float(f.read().strip().split()[0])
-        v = max(0.0, min(4.0, v))
+        v = max(-4.0, min(4.0, v))
     except Exception:                                          # noqa: BLE001
         v = 1.0
     _PAN_GAIN["mtime"] = st.st_mtime
@@ -266,6 +292,8 @@ class StereoDepth(threading.Thread):
     def __init__(self, params=None, quiet=False):
         super(StereoDepth, self).__init__(daemon=True, name="depth")
         self._params = params          # mipi_webstream 的 Params 对象(有 .get())
+        global _PARAMS
+        _PARAMS = params               # 给 z_near()/pan_gain() 读网页参数用
         self._quiet = quiet
         self._lock = threading.Lock()
         self._cond = threading.Condition(self._lock)

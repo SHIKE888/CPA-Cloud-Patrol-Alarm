@@ -19,8 +19,12 @@
 //   · 一行内所有组的 L 相同（err_mix == 0）
 //   · 行内组号从 0 开始、逐 1 递增（err_zero == 0, err_seq == 0）
 //   · 每行恰好 LG 个组（err_len == 0）
-//   · tuser 只出现在行首（err_u == 0）
-//=============================================================================
+//   · tuser 只出现在行首（err_u == 0）//   · ★ 2026-10-31 新增 src 判别（err_src）：
+//       cam1 的行号编为 L+128，于是 O_src 与数据来源必须一致：
+//         O_src=0 的帧里出现 L>=128  -> car0 半装了 cam1 的数据
+//         O_src=1 的帧里出现 L<128   -> cam1 半装了 cam0 的数据
+//       原来两路嗂完全相同的数，任何“两半一样”的错位都测不出来。
+//       板上现象正是“左右两半都是 cam0”，必须靠这条才能定性。//=============================================================================
 `timescale 1ns/1ps
 
 module tb_sched;
@@ -109,7 +113,7 @@ module tb_sched;
                 for (L1 = 0; (L1 < NLINES) && go; L1 = L1 + 1) begin
                     for (g1 = 0; (g1 < LG) && go; g1 = g1 + 1) begin
                         @(negedge clk);
-                        v1 = 1; d1 = enc(L1, g1);
+                        v1 = 1; d1 = enc(L1 + 64, g1);
                         u1 = (L1 == 0) && (g1 == 0);
                         l1 = (g1 == LG-1);
                     end
@@ -130,6 +134,7 @@ module tb_sched;
     integer warm = 0;                       // 0 = 还没对齐到行边界，先不计错
     integer n_lines = 0, n_groups = 0;
     integer err_mix = 0, err_seq = 0, err_len = 0, err_u = 0, err_zero = 0;
+    integer err_src = 0, cur_src;
     integer cur_L, prev_g, cnt_line, n_u;
     integer src0_lines, src1_lines;
 
@@ -153,8 +158,12 @@ module tb_sched;
                 end
                 if (cnt_line == 0) begin
                     cur_L  = O_d[15:9];
+                    cur_src = O_src;
                     prev_g = O_d[8:0];
                     if (O_d[8:0] != 0) err_zero = err_zero + 1;
+                    // 源与数据必须对得上（cam1 行号 >= 64；L 字段只有 7 位）
+                    if (cur_src && (cur_L < 64))  err_src = err_src + 1;
+                    if (!cur_src && (cur_L >= 64)) err_src = err_src + 1;
                 end else begin
                     if (O_d[15:9] != cur_L)                   err_mix = err_mix + 1;
                     if (O_d[8:0]  != ((prev_g + 1) & (LG-1))) err_seq = err_seq + 1;
@@ -178,6 +187,7 @@ module tb_sched;
         begin
             n_lines = 0; n_groups = 0;
             err_mix = 0; err_seq = 0; err_len = 0; err_u = 0; err_zero = 0; n_u = 0;
+            err_src = 0; cur_src = 0;
             src0_lines = 0; src1_lines = 0; cnt_line = 0;
             warm = 0;
         end
@@ -189,9 +199,10 @@ module tb_sched;
         begin
             $display("[%0s] lines=%0d groups=%0d tuser=%0d src0=%0d src1=%0d",
                      tag, n_lines, n_groups, n_u, src0_lines, src1_lines);
-            $display("        err: mix=%0d seq=%0d len=%0d tuser_pos=%0d g0!=0=%0d",
-                     err_mix, err_seq, err_len, err_u, err_zero);
-            if ((err_mix==0) && (err_seq==0) && (err_len==0) && (err_u==0) && (err_zero==0))
+            $display("        err: mix=%0d seq=%0d len=%0d tuser_pos=%0d g0!=0=%0d src=%0d",
+                     err_mix, err_seq, err_len, err_u, err_zero, err_src);
+            if ((err_mix==0) && (err_seq==0) && (err_len==0) && (err_u==0)
+                && (err_zero==0) && (err_src==0))
                 $display("        => PASS");
             else begin
                 $display("        => FAIL");

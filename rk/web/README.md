@@ -1,12 +1,12 @@
 # MIPI 网页推流 + 远程调参
 
-把 RK3576 上采集到的画面推到 **`<RK的IP>:9012`**，用浏览器打开
-**`http://<RK的IP>/`**（nginx 反代 → `rk/relay/web/console.html`）即可看画面并在线调节参数。
+把 RK3576 上采集到的画面推到 **`<RK的IP>:9012`**，PC 上用 `mipi_viewer.html`
+即可看画面并在线调节画面参数。
 
 ```
 ┌──────────────┐  MIPI x4   ┌──────────┐   HTTP MJPEG :9012   ┌────────────────────┐
 │ FPGA 采集    │ ─────────► │ RK3576   │ ───────────────────► │ PC 浏览器          │
-│ MIPI → ISP   │            │ mipi_web │ ◄─────────────────── │ console.html       │
+│ MIPI → ISP   │            │ mipi_web │ ◄─────────────────── │ mipi_viewer.html   │
 └──────────────┘            │ stream.py│   /api/params (调参)  └────────────────────┘
                             └──────────┘
 ```
@@ -195,12 +195,8 @@ PYTHON=/opt/miniforge3/envs/mlk-ov/bin/python ./start_webstream.sh
 | 文件 | 说明 |
 |------|------|
 | `mipi_webstream.py` | RK 端服务：抓流 → JPEG → HTTP MJPEG 推流 + 调参 API（**默认端口 9012**）|
+| `mipi_viewer.html` | PC 端本地网页：看画面 + 调参（纯静态，双击即可打开）|
 | `start_webstream.sh` | 一键启动脚本 |
-
-> **页面只有一份**：`rk/relay/web/console.html`（视频工作台 + 建图导航，部署到板上
-> `/var/www/ros-relay/console.html`，用 `http://<板子>/` 打开）。
-> 原先独立的单页 `mipi_viewer.html` 已于 2026-10-28 移除，需要时从 git 提交
-> `9323912`（留档提交）取回。
 
 ---
 
@@ -241,12 +237,13 @@ cd /root/rk/web && chmod +x *.sh
 
 ## 3. PC 上查看
 
-### 方式 A（推荐）：浏览器打开 `http://<RK的IP>/`
-1. 直接在浏览器输入 **`http://192.168.137.100/`**（80 端口，nginx 反代 `/api/`、`/stream`）
-2. 页面即 `console.html`：左侧画面 + 右侧「摄像头 / 预处理 / 画面 / 标注 / 云台」页签
-3. 地址会记在 `localStorage`，下次自动填
+### 方式 A（推荐）：本地网页 `mipi_viewer.html`
+1. 把 `mipi_viewer.html` 拷到 PC，**双击打开**（`file://` 直接可用，不需要起服务器）
+2. 顶部地址框填 **`192.168.137.100:9012`**（RK 的 IP:端口），点「连接」
+3. 左侧出画面，右侧调参
 
-> 只有一个页面要维护（`rk/relay/web/console.html`），不存在“改了一个端口不生效”的问题。
+> 也可以用 `mipi_viewer.html#192.168.137.100:9012` 直接带上地址打开。
+> 地址会记在 `localStorage`，下次自动填。
 
 ### 方式 B：直接开 RK 上的页面
 ```
@@ -283,7 +280,7 @@ PC 上需要先起一个接收端（例如装了 GStreamer 的话）：
 gst-launch-1.0 tcpserversrc port=9012 ! multipartdemux ! jpegdec ! autovideosink
 ```
 
-这种模式 **浏览器无法直接接收**（没有 HTTP 头），所以控制台
+这种模式 **浏览器无法直接接收**（没有 HTTP 头），所以 `mipi_viewer.html`
 默认走的是第 3 节的「RK 当服务端」模式 —— 效果一样，而且更通用。
 
 ---
@@ -339,7 +336,7 @@ PYTHON=python3 ./start_webstream.sh /dev/video22 9012 --backend gstlive   # 走�
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET | `/` | 纯画面兜底页（完整控制台在 80 端口的 `console.html`）|
+| GET | `/` | 内置页面（若同目录有 `mipi_viewer.html` 则直接返回它）|
 | GET | `/stream` | `multipart/x-mixed-replace` MJPEG 流 |
 | GET | `/snapshot.jpg` | 取当前一帧 JPEG |
 | GET | `/api/params` | 读取当前软件参数 |
@@ -407,8 +404,13 @@ vlc http://192.168.137.100:9012/stream
   另外自动加上这一帧结果已经过时的 `age_ms`，封顶 0.6 s）做前瞻 —— 相机领着人走，
   而不是一步一超。速度指令统一走**加速度斜坡**（默认 250 °/s²），不再阶跃。
   死区 0.015（原来 0.07，加上框抖动就是"走一下停一下"）；|误差|≥0.35 给满速。
-  控制周期 25 ms；`status` 只在**空闲**时 0.3 s 读一次，运动中降到 1 s
-  （每次 status 占 15~40 ms 总线，0.3 s 一读就是 3 Hz 的卡顿）。
+  控制周期 25 ms；**姿态回读 10 Hz**（`TELEMETRY = 0.10`，贴限位 0.06 s）。
+  早先回读是 0.3 s、运动中降到 1 s —— 那是**角度模式**下的妥协（每次 status 会让
+  指令流空一拍，3 Hz 卡顿）。现在速度模式下固件按最后一条 `ctrl speed` 持续转，
+  读 status 不再打断运动，所以放开了：实测单次 status 只用 3.6 ms，10 Hz 占 3.6% 总线。
+  固件忙时由 `_tel_cost` 自适应把间隔拉到 ≥4 倍实测耗时，避免挤掉 100 ms 速度心跳。
+  `/api/gimbal` 的 `telemetry_ms`（单次耗时）/ `ctrl.age_ms`（姿态有多旧）可直接看。
+  页面按 250 ms 轮询（页面隐藏或切到建图页时不拉）。
   目标丢失时卡尔曼停止外推、速度按斜坡降下来。
 * **瞄准点（试探位移 → 能否全包）**：`ai_overlay` 先从**已有关节比例**反推
   **完整身高**（躯干 0.29H / 大腿 0.25H / 小腿 0.23H / 头中心-踝 0.88H 取中位数，
@@ -448,19 +450,17 @@ vlc http://192.168.137.100:9012/stream
 离线自测：`python tools/test_gimbal_web.py`（假串口，验证限幅/看门狗/追踪收敛；
 第 11 段专门测连续控制：速度指令、软限位不越界、关追踪归零、看门狗补 0）。
 
-### 7.2 ★ 只有一份页面：`console.html`
+### 7.2 ★ 两个页面的「云台」页签要保持同步
 
 | 页面 | 谁在用 | 维护方式 |
 |---|---|---|
-| `rk/relay/web/console.html` → 板上 `/var/www/ros-relay/console.html` | **`http://<板子>/`（80 端口）** | 直接改；覆盖板上那份前先备份（`cp console.html console.html.bak_$(date +%s)`）|
+| `rk/web/mipi_viewer.html` | 直接开 `http://<板子>:9012/` | 直接改 |
+| `rk/relay/web/console.html` → 板上 `/var/www/ros-relay/console.html` | **`http://<板子>/`（80 端口，用户默认打开的就是这个）** | `python tools/patch_console_gimbal.py <console.html>` 打补丁，**不要整文件覆盖** |
 
-它是视频工作台 + 建图导航的**合并版**。原先并存的单页 `mipi_viewer.html` 已于
-2026-10-28 移除（留档在 git 提交 `9323912`），所以“改了一处、另一个端口不生效”
-这个坑不会再出现。
-
-> **板上那份可能比仓库里的新**（历史上多过白平衡/反色/中值滤波等）。需要合并时用
-> `python tools/patch_console_gimbal.py --src <仓库版> <板上版> [out.html]` 按锚点插入，
-> 整文件覆盖会冲掉板上的独有改动。该脚本现已默认从 `console.html` 自身抽取，正常改页面不需要它。
+`console.html` 是把 `mipi_viewer.html` 整段并进来的合并版（视频采集 + 建图导航）。
+只改 `mipi_viewer.html` 的话，**打开 80 端口看不到任何变化** —— 这是踩过的坑。
+而且板上的 `console.html` 比仓库里的新（多了白平衡/反色/中值滤波等），
+所以只能用补丁脚本按锚点插入，覆盖会把这些功能冲掉。
 
 改完 80 端口记得让浏览器硬刷新（Ctrl+F5）：这个站点没给 HTML 加 `no-store`。
 
@@ -477,7 +477,7 @@ vlc http://192.168.137.100:9012/stream
 | `<img>` 一直黑 | 用 `curl -I http://<RK>:9012/stream` 确认返回 200 + `multipart/x-mixed-replace` |
 | 抓到的帧全黑（但有噪点）| 图像数据是通的，通常是**镜头对着暗处/被挡住**，或 IMX415 曝光偏低。可先把「亮度/对比度」拉高确认；网页有画面后即可判断 |
 | 提示打开 `/dev/video22` 失败 | 先跑 `../deploy/rk_mipi_selftest.sh` 确认节点；或 `../deploy/env_check.sh` 看环境 |
-| 想让 PC 开机自动看 | 浏览器快捷键 / 用 `http://<RK_IP>/` 做快捷方式 |
+| 想让 PC 开机自动看 | 浏览器快捷键 / 用 `mipi_viewer.html#<RK_IP>:9012` 做快捷方式 |
 
 ---
 
