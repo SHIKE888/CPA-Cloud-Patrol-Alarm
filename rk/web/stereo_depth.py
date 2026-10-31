@@ -97,6 +97,35 @@ TARGET_PTS = 2200           # 输出点数（每点 9 字节, 2200 点 ≈ 20KB/
 HEAT_DIV = 2
 OUT_HZ = 10.0               # 引擎最高计算频率(双目 30fps 输入, 每 3 帧取 1 对)
 WANT_TTL = 6.0              # 多久没人拉 /api/depth 就停机(秒)
+# ---- 最近可测距离（直接决定视差搜索范围 numDisparities）-------------------
+#   nd = ceil(f*B/z_near/16)*16，而且 max(nd,32)。所以：
+#     z_near=0.50 -> nd=48  -> 最近只能测 0.34 m（20~30cm 的东西视差 60~82px，
+#                              超过 nd 直接被丢掉，表现就是“太近的物体匹配不上”）
+#     z_near=0.25 -> nd=80  -> 0.20 m
+#     z_near=0.15 -> nd=112 -> 0.15 m，但 SGBM 会慢 ~30ms
+#   热调：改 /root/rk/web/depth_z_near 一个浮点数即可（1s 内生效，不用重启）。
+Z_NEAR_FILE = os.environ.get("DEPTH_Z_NEAR_FILE", "/root/rk/web/depth_z_near")
+_ZN = {"mtime": None, "v": float(os.environ.get("DEPTH_Z_NEAR", "0.25"))}
+
+
+def z_near():
+    """最近可测距离(m)。文件优先，否则用环境变量/默认值。"""
+    try:
+        st = os.stat(Z_NEAR_FILE)
+    except OSError:
+        return float(os.environ.get("DEPTH_Z_NEAR", "0.25"))
+    if _ZN["mtime"] == st.st_mtime:
+        return _ZN["v"]
+    try:
+        with open(Z_NEAR_FILE) as f:
+            v = float(f.read().strip().split()[0])
+        v = max(0.12, min(1.0, v))
+    except Exception:                                          # noqa: BLE001
+        return _ZN["v"]
+    _ZN["mtime"] = st.st_mtime
+    _ZN["v"] = v
+    return v
+
 # ---- 运动视差偏置补偿（2026-11-01）-----------------------------------------
 #   两目是 FPGA **交替出帧**拼成 3840x1080 的：同一对里左右半幅相差约一个帧周期
 #   (SKEW_S)。云台/车体在动时, 后出的那一半看到的世界已经转过 ω·SKEW_S,
@@ -642,7 +671,7 @@ class StereoDepth(threading.Thread):
 
         # ---- 视差搜索范围：按最近可测距离 Z_NEAR 算，并按 nd 左补再裁回 ----
         #   0.5 m 在 45mm 基线下 => d = f*B/z。f 越小(视角越宽)需要的 nd 越小。
-        d_near = f * base_m / max(Z_NEAR, 1e-3)          # 处理分辨率下的像素数
+        d_near = f * base_m / max(z_near(), 1e-3)          # 处理分辨率下的像素数
         nd = int(np.ceil(d_near / 16.0)) * 16
         nd = max(32, min(MAX_DISP, nd))
         gl_p = np.pad(gl, ((0, 0), (nd, 0)), mode="edge")
