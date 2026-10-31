@@ -1269,7 +1269,18 @@ class JpegMode:
             return self._hw
 
 
-HW_JPEG = JpegMode(True)   # 2026-10-27: 硬件编码是唯一通路(赛题不允许软件压缩)
+# 2026-10-31 用户拍板: **移除硬件 JPEG, 一律软件编码 (cv2.imencode)**。
+#
+#  FPGA 侧已回档到 V47.8(0x4708): MIPI 上走的是 NV16 原始 YUV422,
+#  既没有 0x0B[0] 直通码流(V51 之后才有), FPGA 硬件编码器的输出也没接到链路上。
+#  所以 RK 端不再需要两条硬件捷径:
+#    1) FPGA 直通"帧首是 FFD8 就原样推给浏览器" —— 已删除(见 _capture_loop)
+#    2) mppjpegenc 的 NV12 硬件快路 —— 已删除(见 _conv_loop)
+#
+#  ⚠ 压缩比显示不受影响, 也【不要】跟着删:
+#     /api/status 的 mipi.ratio = (该帧像素数 x2) / (该帧 JPEG 字节数),
+#     数据源是 FrameHub.publish() 记下的 _jpeg_bytes / _jpeg_wh, 与谁编码无关。
+HW_JPEG = JpegMode(False)
 
 JPEG_STAT = {"hw_ok": 0, "hw_bad": 0, "sw_fallback": 0, "rebuild": 0,
              "direct": 0, "direct_bad": 0, "direct_on": False}
@@ -1638,38 +1649,9 @@ class OpenCVCapture(threading.Thread):
         if rest > 0.0005:
             time.sleep(rest)
 
-    def _jpeg_in_frame(self, frame):
-        """从一帧原始缓冲里取出 JPEG。返回 (是否 JPEG 帧, jpg bytes 或 None)。
-
-        FPGA 直通模式下帧缓冲内容 = 编码器输出的字节流:
-          前 ~100KB 是完整 JPEG, 后面是补零(0x0B[2]=1)或上一帧残留。
-        首字节不是 FFD8 => 说明还在 NV16 通路, 返回 (False, None)。
-        """
-        try:
-            buf = frame.reshape(-1)
-            if buf.size < 4 or buf[0] != 0xFF or buf[1] != 0xD8:
-                return False, None
-            b = buf.tobytes()
-        except Exception:                                          # noqa: BLE001
-            return False, None
-        # 熵编码数据里的 FF 都做了 0x00 填充, 所以第一个 FF D9 就是 EOI
-        e = b.find(b"\xff\xd9", 2)
-        if e < 1024:                # 没找到, 或小到不像一帧 JPEG
-            return True, None
-        return True, b[:e + 2]
-
-    def _publish_direct(self, seq, jpg, t_cap):
-        """零重编码发布。
-
-        ⚠ 必须把按序发布指针推过本帧: _results/_next_pub 是和 _enc_loop
-          共用的一套, 直通帧不进队列, _next_pub 会卡在旧序号上,
-          之后一旦回到队列通路就永远发不出去(整个推流卡死)。
-        """
-        with self._seq_cond:
-            while self._next_pub <= seq:
-                self._results.pop(self._next_pub, None)
-                self._next_pub += 1
-            self.hub.publish(jpg, ts=t_cap)
+    # 2026-10-31: 原 _jpeg_in_frame() / _publish_direct() 两个"FPGA 直通 JPEG"
+    #   的辅助函数已随该通路一并删除(需要时可从 git 历史里找回)。
+    #   现在所有帧都走 _raw_q -> _conv_loop -> _bgr_q -> _enc_loop 的软件编码链路。
 
     def request_reopen(self):
         """请求采集线程释放并重开 V4L2 设备 (切换分辨率/帧率后用)。"""
@@ -1755,36 +1737,11 @@ class OpenCVCapture(threading.Thread):
             self._last_raw = (seq, frame)
             # t_cap: 这一帧从 V4L2 拿到的时刻, 一路传到发布, 用来算传输延时
 
-            # ---- 2026-10-27: FPGA 直通 JPEG (整条链路零解码零重编码) ----
-            #   FPGA 开了 0x0B[0]=1 后, MIPI 帧缓冲里装的就是编码器码流。
-            #   参数全默认 + 单目 + 没开 AI -> 直接把那几十 KB 推给浏览器,
-            #   CPU 占用接近 0, 延时只剩链路+DMA。
-            #   需要逐像素处理(缩放/旋转/几何/AI 叠加)时, 在这里解码一次再走原路。
-            _is_jpg, _jpg = self._jpeg_in_frame(frame)
-            if _is_jpg:
-                now_cap = time.time()
-                if _jpg is None:
-                    JPEG_STAT["direct_bad"] += 1
-                    self._pace(t_start)
-                    continue
-                _p = self.params.get()
-                _ai = AI_OVERLAY
-                if (_params_plain(_p) and not self._dual_now
-                        and abs(float(_p.get("scale", 1.0)) - 1.0) < 1e-3
-                        and not (_ai is not None and _ai.active)):
-                    JPEG_STAT["direct"] += 1
-                    JPEG_STAT["direct_on"] = True
-                    self._publish_direct(seq, _jpg, now_cap)
-                    self._pace(t_start)
-                    continue
-                # 效果模式: 解码一次, 交给原来的 BGR 队列(尺寸/几何/AI)
-                JPEG_STAT["direct_on"] = False
-                _bgr = cv2.imdecode(np.frombuffer(_jpg, np.uint8),
-                                    cv2.IMREAD_COLOR)
-                if _bgr is not None:
-                    self._put(self._bgr_q, (seq, _bgr, now_cap, "bgr", 0))
-                self._pace(t_start)
-                continue
+            # ---- 2026-10-31: FPGA 直通 JPEG 通路已移除 ----
+            #   V47.8(0x4708) 的 MIPI 上只有 NV16 原始 YUV422(没有 0x0B[0] 直通),
+            #   而且用户已决定"一律软件编码", 所以这里不再保留
+            #   "帧首是 FF D8 就原样推给浏览器" 的旁路 —— 每一帧都进 _raw_q,
+            #   走同一条 转换 -> (可选 AI/特效) -> cv2.imencode 的流水线。
             JPEG_STAT["direct_on"] = False
 
             # ---- 双目: 先读帧标记, 决定这一帧来自哪一路 ----
@@ -1942,36 +1899,11 @@ class OpenCVCapture(threading.Thread):
                 continue
             p = self.params.get()
 
-            _ai = AI_OVERLAY
-            # 双目不做 NV12 硬件快路: 拼接得在 BGR 域做(cv2.hconcat), 而且
-            # mppjpegenc 的管道尺寸会变。软编 3840x1080x30 约 12MB/s,
-            # 与单目 1920x1080x60 同量级(总像素率一样), 够用。
-            if (HW_JPEG.get() and _params_plain(p) and not self._dual_now
-                    and not (_ai is not None and _ai.active)):
-                nv12 = self._nv12_scaled(raw, p)
-                if nv12 is not None:
-                    tw, th = self._target_size(p["scale"])
-                    enc = self._hw_encoder(tw, th, True)
-                    if enc is not None:
-                        jpg = enc.encode(nv12, timeout=0.6)
-                        # ★ 熔断: 失败时会从头再走一遍软件路径
-                        #   (_nv12_scaled 白做 + _to_bgr + _process), 实测
-                        #   hw+预处理 会掉到 5.9fps。连续失败就自动关掉。
-                        if jpg is None:
-                            _fr = JPEG_STAT.get("hw_fail_run", 0) + 1
-                            JPEG_STAT["hw_fail_run"] = _fr
-                            if _fr >= 5 and HW_JPEG.get():
-                                HW_JPEG.set(False)
-                                print("[jpeg] 硬件编码连续失败 %d 次, "
-                                      "已自动关闭(改回软件编码)" % _fr,
-                                      file=sys.stderr)
-                        else:
-                            JPEG_STAT["hw_fail_run"] = 0
-                        if jpg is not None:
-                            self._put(self._bgr_q,
-                                      (seq, jpg, t_cap, "jpg", src))
-                            continue
-                JPEG_STAT["sw_fallback"] += 1
+            # 2026-10-31: 硬件编码快路(mppjpegenc: NV16 -> NV12 -> VPU)已移除,
+            #   一律走 _to_bgr -> (可选 AI/特效) -> cv2.imencode 的纯软件编码。
+            #   当年这条捷径只在"参数全默认 + 单目 + 不开 AI"时生效, 收益有限;
+            #   而且本板 mppjpegenc 连续出帧会吐全灰图(见 HwJpegEncoder 注释)。
+            #   双目的 hconcat 本来也只能在 BGR 域做, 统一走软编反而少一路分支。
 
             try:
                 frame = self._to_bgr(raw, p)
@@ -4062,19 +3994,14 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if path == "/api/jpeg":
                 body = self._read_json()
-                # 2026-10-27: 赛题不允许软件压缩, 硬件编码已成**唯一通路**。
-                #   这里不再接受 hw=0(传了也忽略), 避免有人把链路退回软编。
-                _want = bool(body.get("hw", True))
-                if not _want:
-                    print("[jpeg] 忽略 hw=0: 硬件编码是唯一通路(赛题不允许软件压缩)")
-                HW_JPEG.set(True)
-                cap = Handler.capture
-                active = bool(cap is not None
-                              and getattr(cap, "_hw", None) is not None
-                              and cap._hw.ok)
-                print("[jpeg] 硬件编码 强制开启 (当前生效=%s)" % active)
-                return self._json({"ok": True, "hw": True,
-                                   "active": active,
+                # 2026-10-31: 硬件 JPEG 通路已移除 —— 不管前端传什么都保持软编。
+                #   (以前这里是"强制开硬件", 现在反过来: 强制关, 只打个日志)
+                #   网页上的那组按钮先留着(用户要求不删按键), 但打不开硬件通路。
+                if body.get("hw"):
+                    print("[jpeg] 忽略 hw=1: 硬件编码已移除, 一律软件编码")
+                HW_JPEG.set(False)
+                return self._json({"ok": True, "hw": False, "active": False,
+                                   "note": "硬件 JPEG 已移除, 当前为软件编码",
                                    "stat": dict(JPEG_STAT)})
             if path == "/api/params":
                 body = self._read_json()
@@ -4744,10 +4671,10 @@ def main():
     else:
         cap = GstCapture(hub, params, args)
 
-    # 硬件 JPEG 编码开关 (默认关; 且仅 OpenCV 后端支持)
+    # 硬件 JPEG 编码 (mppjpegenc/VPU) —— 2026-10-31 已移除, 一律软件编码。
+    #   --hw-jpeg 参数保留只为兼容老启动脚本, 传了也只打一句提示, 不会真的开。
     if getattr(args, "hw_jpeg", False):
-        HW_JPEG.set(True)
-        print("[jpeg] 启动参数要求硬件编码 (mppjpegenc/VPU)")
+        print("[jpeg] 忽略 --hw-jpeg: 硬件编码通路已移除, 一律软件编码")
 
     # ---- 可选: AI 叠加 (必须在 cap.start() 之前就位, 好让第一帧就能画) ----
     global AI_OVERLAY

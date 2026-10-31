@@ -630,8 +630,10 @@ html, body{overflow:hidden}
           </div>
         </div>
         <div class="row" style="font-size:11px;opacity:.65">
-          <span>硬件 JPEG 编码器已通过逐字节仿真(有损 12 尺寸 / 无损 6 尺寸)；
-                需烧写含 jpeg_encoder_top 的 bitstream 后本组参数才在板上生效。</span>
+          <span>2026-10-31 起 RK 侧改为<b>软件编码</b>（cv2.imencode）：
+                V47.8 bit 只出 NV16 原始 YUV，FPGA 直通码流与 mpp 硬件编码均已移除。
+                本组参数为 FPGA 硬件编码器预留，当前不生效；
+                <b>压缩比仍在「链路负载」栏显示</b>（按每帧 JPEG 字节 / 该帧像素×2 计算）。</span>
         </div>
 
         <div class="sep"></div>

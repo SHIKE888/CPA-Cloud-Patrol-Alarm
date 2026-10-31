@@ -905,9 +905,18 @@
     </Configurations>
     <Runs>
         <Run Name="syn_1" Type="Synthesis" ConstraintSet="constraint_1" Description="" Active="true">
-            <Strategy Name="Default_Synthesis_Strategy">
+            <Strategy Name="LogicLevelOptimize">
+                <GateProperty>
+                    <map_mode>balance_explore</map_mode>
+                    <mapper_lut_delay>2200</mapper_lut_delay>
+                </GateProperty>
+                <RtlProperty>
+                    <infer_fsm>one_hot</infer_fsm>
+                    <min_ripple_len>18</min_ripple_len>
+                </RtlProperty>
             </Strategy>
             <UserParams>
+                <param>set_param gate merge_tiny_lut on</param>
             </UserParams>
         </Run>
         <Run Name="phy_1" Type="PhysicalDesign" ConstraintSet="constraint_1" Description="" SynRun="syn_1" Active="true">
