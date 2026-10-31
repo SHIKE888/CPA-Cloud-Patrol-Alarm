@@ -678,8 +678,8 @@ html, body{overflow:hidden}
           </div>
         </div>
         <div class="row"><label>质量 Q</label>
-          <input type="range" id="p_jpeg_q" min="1" max="100" step="1" value="75">
-          <span class="val" id="v_jpeg_q">75</span></div>
+          <input type="range" id="p_jpeg_q" min="30" max="95" step="1" value="80">
+          <span class="val" id="v_jpeg_q">80</span></div>
         <div class="row"><label>目标码率</label>
           <input type="range" id="p_jpeg_kb" min="10" max="600" step="10" value="120">
           <span class="val" id="v_jpeg_kb">120 KB/帧</span></div>
@@ -3594,9 +3594,9 @@ function syncToggles() {
       const el = $(id); if (!el) return;
       el.disabled = ll; el.parentElement.style.opacity = ll ? ".4" : "1";
     });
-    if ($("v_jpeg_q"))  $("v_jpeg_q").textContent  = String(params.jpeg_q ?? 75);
+    if ($("v_jpeg_q"))  $("v_jpeg_q").textContent  = String(Math.round(params.quality ?? 80));
     if ($("v_jpeg_kb")) $("v_jpeg_kb").textContent = (params.jpeg_kb ?? 120) + " KB/帧";
-    if ($("p_jpeg_q"))  $("p_jpeg_q").value  = params.jpeg_q ?? 75;
+    if ($("p_jpeg_q"))  $("p_jpeg_q").value  = Math.round(params.quality ?? 80);
     if ($("p_jpeg_kb")) $("p_jpeg_kb").value = params.jpeg_kb ?? 120;
   }
   syncQuad();        // 双目/单目切换时重排：四宫格 <-> 单画面
@@ -3610,6 +3610,16 @@ function schedulePush() {
   }, 60);
 }
 
+/* 质量 Q 与画面 tab 的「JPEG 质量」是同一个参数 quality：两个滑块互相跟随 */
+function syncQ(v) {
+  v = Math.max(30, Math.min(95, Math.round(Number(v) || 80)));
+  params.quality = v;
+  [["p_jpeg_q", "v_jpeg_q"], ["p_quality", "v_quality"]].forEach(([a, b]) => {
+    const el = $(a); if (el) el.value = v;
+    const lb = $(b); if (lb) lb.textContent = String(v);
+  });
+}
+
 /* 滑块绑定 */
 ["brightness","contrast","saturation","hue","gamma","scale","quality","fps"]
 .forEach(k => {
@@ -3617,6 +3627,7 @@ function schedulePush() {
   el.addEventListener("input", () => {
     params[k] = parseFloat(el.value);
     syncLabel(k);
+    if (k === "quality") syncQ(params[k]);
     schedulePush();
   });
 });
@@ -3642,8 +3653,13 @@ document.querySelectorAll("#viewVideo [data-jll]").forEach(b => {
 document.querySelectorAll("#viewVideo [data-jrc]").forEach(b => {
   b.onclick = () => { params.jpeg_rc = Number(b.dataset.jrc); syncToggles(); schedulePush(); };
 });
-[["p_jpeg_q", "jpeg_q", v => String(v)],
- ["p_jpeg_kb", "jpeg_kb", v => v + " KB/帧"]].forEach(([id, key, fmt]) => {
+if ($("p_jpeg_q")) {
+  $("p_jpeg_q").addEventListener("input", () => {
+    syncQ($("p_jpeg_q").value);
+    schedulePush();
+  });
+}
+[["p_jpeg_kb", "jpeg_kb", v => v + " KB/帧"]].forEach(([id, key, fmt]) => {
   const el = $(id);
   if (!el) return;
   el.addEventListener("input", () => {
