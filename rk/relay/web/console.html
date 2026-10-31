@@ -1218,9 +1218,17 @@ html, body{overflow:hidden}
           <span>云台零点偏置</span><input id="gYawOff" type="number" min="-180" max="180" step="1" value="0">
           <span>°（云台零点相对车头）</span>
         </div>
+        <div class="popt2" style="margin-top:6px">
+          <span>雷达方位窗口</span><input id="gWinDeg" type="number" min="2" max="30" step="1" value="7">
+          <span>°</span>
+        </div>
         <div class="btnrow wide" style="margin-top:8px">
           <button id="btnGuardReport" class="tool on" title="关掉只在本页弹提示，不往云端上报">上报云端</button>
           <button id="btnGuardClear" class="tool">清空区域</button>
+        </div>
+        <div class="btnrow wide" style="margin-top:8px">
+          <button id="btnGuardLidar" class="tool on" title="用 /scan 在该方位最近的归波修正双目距离（水平面距离以雷达为准）：单靠双目几何算人脚位置误差偏大">融合雷达</button>
+          <button id="btnGuardDbg" class="tool" title="在浏览器控制台打一下这一拍用到的原始数据">打印调试</button>
         </div>
         <div class="hint"><span id="stGuard">未开始</span><b id="stGuard2">—</b></div>
       </section>
@@ -3221,7 +3229,8 @@ html, body{overflow:hidden}
   const GUARD_ZKEY = 'guard:zones';
   // ⚠ 这几个用 var：draw() 可能在这场脚本还没跑到这里时就被 ResizeObserver 调到，
   //   用 let 会踩「暂时性死区」(Cannot access 'gData' before initialization)。
-  var gCfg = { poll: 1.0, cool: 60, yawOff: 0, report: true };
+  var gCfg = { poll: 1.0, cool: 60, yawOff: 0, report: true,
+               lidar: true, win: 7 };   // lidar=融合/scan，win=雷达方位窗口(度)
   var gDraft = null;             // 圆形草稿 {cx, cy, r}：点一下定圆心，再拖定半径
   var gPrev = null;              // 矩形预览 {x0,y0,x1,y1}
   var gData = null;              // 最近一次 /api/targets
@@ -3239,12 +3248,16 @@ html, body{overflow:hidden}
         if (isFinite(o.cool)) gCfg.cool = Math.min(3600, Math.max(5, +o.cool));
         if (isFinite(o.yawOff)) gCfg.yawOff = +o.yawOff;
         if (typeof o.report === 'boolean') gCfg.report = o.report;
+        if (typeof o.lidar === 'boolean') gCfg.lidar = o.lidar;
+        if (isFinite(o.win)) gCfg.win = Math.min(30, Math.max(2, +o.win));
       }
     } catch (e) {}
     if ($('gPollSec')) $('gPollSec').value = gCfg.poll;
     if ($('gCoolSec')) $('gCoolSec').value = gCfg.cool;
     if ($('gYawOff')) $('gYawOff').value = gCfg.yawOff;
+    if ($('gWinDeg')) $('gWinDeg').value = gCfg.win;
     if ($('btnGuardReport')) $('btnGuardReport').classList.toggle('on', gCfg.report);
+    if ($('btnGuardLidar')) $('btnGuardLidar').classList.toggle('on', gCfg.lidar !== false);
   }
   function guardCfgSave() {
     try { localStorage.setItem(GUARD_CKEY, JSON.stringify(gCfg)); } catch (e) {}
@@ -3363,18 +3376,110 @@ html, body{overflow:hidden}
     return Math.hypot(dx, dy);
   }
 
+  // ── 激光雷达点的车体坐标缓存 ────────────────────────────────────────
+  //   /scan 是 laser 帧，先按 /tf_static 的 laser->base 换到车体系（和画点云
+  //   用的是同一套变换），这样点的"方位角"可以直接和 rel(x 前 / y 左) 比。
+  //   msg.ranges 每帧都是新数组，用它的引用当 key 就知道要不要重算。
+  var gScan = { src: null, bx: null, by: null, n: 0, t: 0 };
+  function scanPointsBase() {
+    const sc = S.scan;
+    if (!sc || !sc.ranges || !sc.ranges.length) return null;
+    if (gScan.src === sc.ranges && Date.now() - gScan.t < 1500) return gScan;
+    const bl = S.tfStatic[sc.frame] || S.baseLaser;
+    const cb = Math.cos(bl.yaw), sb = Math.sin(bl.yaw);
+    const n = sc.ranges.length;
+    const bx = new Float32Array(n), by = new Float32Array(n);
+    let k = 0;
+    for (let i = 0; i < n; i++) {
+      const r = sc.ranges[i];
+      if (!isFinite(r) || r <= sc.rmin || r >= sc.rmax) continue;
+      const a = sc.amin + i * sc.ainc;
+      const lx = r * Math.cos(a), ly = r * Math.sin(a);
+      bx[k] = bl.x + lx * cb - ly * sb;
+      by[k] = bl.y + lx * sb + ly * cb;
+      k++;
+    }
+    gScan = { src: sc.ranges, bx: bx, by: by, n: k, t: Date.now() };
+    return gScan;
+  }
+
+  // ── 雷达辅助：在"人的方位"上找最近的回波 ────────────────────────────
+  //   为什么能这么用：2D 激光扫的是约 0.2m 高的一圈水平面，站着的人的腿一定
+  //   会打断激光，所以"那个方位上最近的一簇点"就是人。双目给的是**人身上某点**
+  //   （头/胸）的斜距，投影到地面会受俯仰、身体厚度、框中心位置影响，
+  //   3m 外差 0.3~0.6m 很常见；雷达给的是水平面真距，所以融合时以它为准。
+  //   前提：扫描窗口里没有比人更近的东西。
+  //   ⚠ 0.35m 以下一律丢：激光装在前部，最近的那几个点常常是**车体自己**
+  //   （实测在 0.26m/96° 处就有一腋回波），拿来当“人”会系统性偏近。
+  function lidarProbe(bear, rHint) {
+    const P = scanPointsBase();
+    if (!P || P.n < 30) return { ok: false, why: '无激光数据' };
+    const RMIN = 0.35, RMAX = 8.0;
+    const win = Math.min(30, Math.max(2, Number(gCfg.win) || 7)) * Math.PI / 180;
+    // 只在双目值附近找：避免把"人背后 8m 的墙"当成目标
+    const gate = Math.max(0.8, (rHint || 3) * 0.45);
+    let bestR = Infinity;
+    for (let i = 0; i < P.n; i++) {
+      const x = P.bx[i], y = P.by[i];
+      const d = Math.hypot(x, y);
+      if (d < RMIN || d > RMAX) continue;
+      if (Math.abs(angDiff(Math.atan2(y, x), bear)) > win) continue;
+      if (rHint && Math.abs(d - rHint) > gate) continue;
+      if (d < bestR) bestR = d;
+    }
+    if (!isFinite(bestR)) return { ok: false, why: '该方位无回波' };
+    // 最近点 ±0.6m 内算一簇，取中位距离 + 圆均值方位
+    const ds = [];
+    let ss = 0, cc = 0, cnt = 0;
+    for (let i = 0; i < P.n; i++) {
+      const x = P.bx[i], y = P.by[i];
+      const d = Math.hypot(x, y);
+      if (d < RMIN || d > bestR + 0.6) continue;
+      const ang = Math.atan2(y, x);
+      if (Math.abs(angDiff(ang, bear)) > win) continue;
+      ds.push(d); ss += Math.sin(ang); cc += Math.cos(ang); cnt++;
+    }
+    if (cnt < 3) return { ok: false, why: '回波太少(' + cnt + ')' };
+    ds.sort(function (a, b) { return a - b; });
+    return { ok: true, r: ds[ds.length >> 1], b: Math.atan2(ss, cc),
+             n: cnt, dmin: bestR };
+  }
+
   // ---- 车体系 → 地图系 ----
   //  板端给的 rel 已经把云台 yaw/pitch 算进去了，这里只需补「云台零点相对车头」
   //  的安装偏置（gCfg.yawOff，绕 z 再转一次）和小车位姿。
+  //  有雷达回波时按"水平面最近回波"修正距离与方位（7:3 融合，雷达权重高）。
   function targetWorld(t, pose) {
     if (!t || !t.ok || !t.rel || !pose) return null;
     const a = (Number(gCfg.yawOff) || 0) * Math.PI / 180;
     const ca = Math.cos(a), sa = Math.sin(a);
-    const rx = t.rel.x * ca - t.rel.y * sa;
-    const ry = t.rel.x * sa + t.rel.y * ca;
+    const rx0 = t.rel.x * ca - t.rel.y * sa;
+    const ry0 = t.rel.x * sa + t.rel.y * ca;
+    let r = Math.hypot(rx0, ry0);
+    let bear = Math.atan2(ry0, rx0);
+    const rStereo = r;
+    let src = '双目', ld = null, conflict = false;
+    if (gCfg.lidar !== false) {
+      ld = lidarProbe(bear, r);
+      if (ld && ld.ok) {
+        const tol = Math.max(0.6, r * 0.3);
+        if (Math.abs(ld.r - r) <= tol) {
+          r = r * 0.3 + ld.r * 0.7;                  // 水平距离以雷达为准
+          bear += angDiff(ld.b, bear) * 0.5;         // 方位也往点簇中心修一半
+          src = '双目+雷达';
+        } else {
+          conflict = true;                           // 两者差太多：以双目为准但降权
+          src = '双目(雷达 ' + ld.r.toFixed(2) + 'm 不符)';
+        }
+      } else if (ld && ld.why) {
+        src = '双目(' + ld.why + ')';
+      }
+    }
+    const nx = r * Math.cos(bear), ny = r * Math.sin(bear);
     const c = Math.cos(pose.yaw), s = Math.sin(pose.yaw);
-    return { x: pose.x + rx * c - ry * s, y: pose.y + rx * s + ry * c,
-             r: Math.hypot(rx, ry) };
+    return { x: pose.x + nx * c - ny * s, y: pose.y + nx * s + ny * c,
+             r: r, rStereo: rStereo, src: src, lidar: ld, conflict: conflict,
+             bear: bear };
   }
 
   // ---- 绘制（动态层，每帧调用，区域数量很少，开销可忽略）----
@@ -3464,7 +3569,8 @@ html, body{overflow:hidden}
       ctx.fillStyle = col;
       ctx.font = '11px ui-monospace, monospace';
       ctx.fillText('ID' + (t.tid == null ? '-' : t.tid) + ' ' +
-                   (t.dist_m == null ? '?' : t.dist_m.toFixed(2) + 'm') +
+                   (w.r == null ? '?' : w.r.toFixed(2) + 'm') +
+                   (w.lidar && w.lidar.ok ? '⊕L' : '') +
                    (inZone ? ' 越界' : ''), p[0] + 8, p[1] - 7);
     }
   }
@@ -3479,9 +3585,8 @@ html, body{overflow:hidden}
     for (let i = 0; i < list.length; i++) {
       const t = list[i];
       if (!t.ok) continue;
-      const w = targetWorld(t, S.pose);
+      const w = t._w;                 // 已在 guardPoll 里算好（含雷达融合）
       if (!w) continue;
-      t._w = w;
       // 目标键：优先用 AI 的 tid（跨帧稳定）；没有 tid 就按 0.1m 网格凑一个
       const key = (t.tid === null || t.tid === undefined)
         ? ('p' + Math.round(w.x * 10) + '_' + Math.round(w.y * 10))
@@ -3519,8 +3624,10 @@ html, body{overflow:hidden}
   }
 
   function guardReport(z, t, w) {
-    const dist = (t.dist_m == null) ? '距离未知' : t.dist_m.toFixed(2) + ' m';
-    const note = z.name + ' · ID' + (t.tid == null ? '-' : t.tid) + ' · ' + dist +
+    const dist = (w && w.r != null) ? w.r.toFixed(2) + ' m'
+                                    : ((t.dist_m == null) ? '距离未知' : t.dist_m.toFixed(2) + ' m');
+    const src = (w && w.src) ? ('[' + w.src + ']') : '';
+    const note = z.name + ' · ID' + (t.tid == null ? '-' : t.tid) + ' · ' + dist + src +
                  ' · (' + w.x.toFixed(2) + ', ' + w.y.toFixed(2) + ')';
     toast('越界告警：' + note, true);
     if (!gCfg.report) return;
@@ -3530,7 +3637,9 @@ html, body{overflow:hidden}
       score: t.score || 0,
       note: note,
       m: { zone_id: z.id, zone: z.name, kind: z.type,
-           dist: (t.dist_m == null ? null : t.dist_m),
+           dist: (w && w.r != null) ? +w.r.toFixed(2) : null,
+           dist_stereo: (w && w.rStereo != null) ? +w.rStereo.toFixed(2) : null,
+           src: (w && w.src) || '',
            x: +w.x.toFixed(2), y: +w.y.toFixed(2), conf: t.conf }
     };
     fetch('/api/alarm', {
@@ -3558,8 +3667,11 @@ html, body{overflow:hidden}
                                       : (ai.ok ? '未运行' : '未启用')) +
                     ' · 可定位 ' + okT.length + '/' + list.length;
     if (locked) {
+      const lw = locked._w;
+      const rr = (lw && lw.r != null) ? lw.r : locked.dist_m;
       b.textContent = 'ID' + (locked.tid == null ? '-' : locked.tid) + ' ' +
-                      locked.dist_m.toFixed(2) + 'm ' +
+                      rr.toFixed(2) + 'm ' +
+                      (lw && lw.src ? '·' + lw.src + ' ' : '') +
                       (locked.locked ? '（锁定）' : '');
     } else if (!ai.active) {
       b.textContent = ai.ok ? 'AI 未运行（切「AI 标注」或「仅推理」）' : 'AI 未启用';
@@ -3578,6 +3690,12 @@ html, body{overflow:hidden}
       if (!r.ok) throw new Error('HTTP ' + r.status);
       const d = await r.json();
       gData = d; gDataT = Date.now();
+      // 每拍先把每个人算成地图坐标（含雷达融合）：区域为空也要算，
+      //  面板/调试口/画图都要用它，而且只算一次最省。
+      const list = d.targets || [];
+      for (let i = 0; i < list.length; i++) {
+        list[i]._w = (list[i].ok && S.pose) ? targetWorld(list[i], S.pose) : null;
+      }
       guardEval();
       guardStatus(d);
       draw();
@@ -3627,7 +3745,42 @@ html, body{overflow:hidden}
       if (!confirm('清空这张图上的全部警戒区？')) return;
       S.zones = []; guardSave(); renderZones(); S.sceneRev++; draw();
     };
+    if ($('gWinDeg')) $('gWinDeg').onchange = function () {
+      gCfg.win = Math.min(30, Math.max(2, Number($('gWinDeg').value) || 7));
+      $('gWinDeg').value = gCfg.win; guardCfgSave(); guardPoll();
+    };
+    if ($('btnGuardLidar')) $('btnGuardLidar').onclick = function () {
+      gCfg.lidar = (gCfg.lidar === false);      // 取反
+      guardCfgSave();
+      this.classList.toggle('on', gCfg.lidar !== false);
+      toast(gCfg.lidar !== false
+        ? '已开启雷达融合：水平距离以 /scan 最近回波为准'
+        : '已关闭雷达融合：只用双目几何');
+      guardPoll();
+    };
+    if ($('btnGuardDbg')) $('btnGuardDbg').onclick = function () {
+      const s = (typeof window.__guardSnapshot === 'function')
+        ? window.__guardSnapshot() : null;
+      if (console && console.log) console.log('[guard]', s);
+      toast('已把这一拍的数据打到浏览器控制台');
+    };
   })();
+
+  // 只读调试口：现场/自动化查"这一拍用了什么数据"（不改任何状态）。
+  window.__guardSnapshot = function () {
+    return {
+      cfg: JSON.parse(JSON.stringify(gCfg)),
+      pose: S.pose ? { x: S.pose.x, y: S.pose.y, yaw: S.pose.yaw } : null,
+      zones: S.zones.map(function (z) { return { id: z.id, name: z.name, type: z.type, on: z.on }; }),
+      scan: { n: gScan.n, age_ms: gScan.t ? (Date.now() - gScan.t) : null },
+      targets: (gData && gData.targets || []).map(function (t) {
+        return { tid: t.tid, ok: t.ok, dist_stereo: t.dist_m, rel: t.rel,
+                 w: t._w ? { x: t._w.x, y: t._w.y, r: t._w.r, rStereo: t._w.rStereo,
+                             src: t._w.src, lidar: t._w.lidar } : null };
+      }),
+      dataAge_ms: gData ? (Date.now() - gDataT) : null,
+    };
+  };
 
   // ── 鼠标交互（2026-10-28 按需求重写）──────────────────────────────
   //   · 右键不再放置任何东西（原来右键两步定「小车位姿」的流程整个删掉）
