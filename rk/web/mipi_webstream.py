@@ -3701,6 +3701,15 @@ _MODULE_CACHE = {"t": 0.0, "val": None}
 _MODULE_CACHE_TTL = 5.0            # 秒: 探测要写 CAM_TRIG, 别每帧都做
 
 
+# ★ 2026-10-31: 这个在线探测在 0x4708 上实测【不可信】——
+#   cam1 明明在 59fps 出图, 0xEA/0xEB/0xEC 依旧报 cfg_done=0 / ae_cnt=0 /
+#   alive=false, 两路全报"不在线"。所以它只能当提示:
+#     * 不拿它拒绝 RX_SEL 切换(会让人永远切不过去, 反而没法排查)
+#     * 不拿它把页面按钮置灰(console.html 同步改掉了)
+#   等 RTL 里那几个计数器真正接对之后再改回 True。
+MODULE_PROBE_TRUSTED = False
+
+
 def probe_modules(fpga, force=False):
     """探测 cam0/cam1 是否都有模组。
 
@@ -4171,7 +4180,7 @@ class Handler(BaseHTTPRequestHandler):
                                 break
                         if _want != _old_sel:
                             _mods = probe_modules(self.fpga, force=True)
-                            if _mods.get("supported"):
+                            if _mods.get("supported") and MODULE_PROBE_TRUSTED:
                                 _tgt = _mods.get("cam%d" % _want) or {}
                                 if not _tgt.get("alive"):
                                     return self._json({
