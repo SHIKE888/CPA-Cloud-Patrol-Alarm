@@ -330,9 +330,9 @@ body{
 #viewVideo .qb canvas,#viewVideo .qb img{max-width:100%; max-height:100%;
                       object-fit:contain; display:block}
 #viewVideo .dph{color:var(--dim); font-size:12px; text-align:center; line-height:1.8}
-/* 深度点云: canvas 直接写像素, 不缩不平滑(平滑会把 1px 点糊成一片灰) */
-#viewVideo #cvDepth{width:100%; height:100%; display:block; cursor:grab;
-        image-rendering:pixelated}
+/* 深度热力图: canvas 直接写像素后双线性放大（要平滑，不要马赛克） */
+#viewVideo #cvDepth{width:100%; height:100%; display:block; cursor:default;
+        image-rendering:auto}
 #viewVideo .qc>b i{font-style:normal; font-weight:400; font-size:10px;
         color:#8fb8d8; margin-left:6px; letter-spacing:0}
 /* 未连接提示：做成覆盖层，单目/双目都能看到，也不会被 img 挤到左边 */
@@ -624,9 +624,9 @@ html, body{overflow:hidden}
             <div class="qb"><canvas id="cvR"></canvas></div></div>
           <div class="qc"><b>骨架</b>
             <div class="qb"><canvas id="cvSkel"></canvas></div></div>
-          <div class="qc"><b>深度点云 <i id="dHud">—</i></b>
+          <div class="qc"><b>深度热力图 <i id="dHud">—</i></b>
             <div class="qb"><canvas id="cvDepth"
-                 title="正视方向固定显示 / 拖动可临时旋转 / 双击复位 / 右键改水平视场角"></canvas></div></div>
+                 title="固定视角深度热力图（近红远蓝）· 右键改水平视场角"></canvas></div></div>
         </div>
       </div>
       <!-- 画面下方指标区: 等分网格, 整齐对齐 -->
@@ -3730,16 +3730,14 @@ async function skelTick() {
   try { drawPose(await api("/api/pose")); } catch (e) { /* 静默 */ }
 }
 
-/* ---------------- 双目深度点云（下右框） ----------------
-   链路: 板端 stereo_depth.py 在 512 宽上跑 SGBM -> 抽 ~1500 点(9 字节/点)
-         -> /api/depth(JSON+base64) -> 这里解码、做可旋转的透视投影、
-         直接写 ImageData 像素。
+/* ---------------- 双目深度热力图（下右框，固定视角） ----------------
+   链路: 板端 stereo_depth.py 在 512 宽上跑 SGBM -> 每像素深度量化成 8bit
+         -> /api/depth(JSON: heat=base64 图 + hw/hh/zlo/zhi) -> 这里查色表、
+         双线性放大铺满框。旧版服务没有 heat 字段时退回点云渲染。
    为什么不在浏览器算: 两路 1920x1080 原始像素约 12MB/帧, 搬进 JS 反而更重;
-         板端算完只传 ~18KB/帧(10Hz 也就 180KB/s)。
-   自适应量程: 服务端给 z 的 8%/92% 分位, 这里再做 EMA 平滑 —— 近处有人时
-         点云不会被远处背景压扁, 颜色也始终用满整个色标。
-   比例: 与上方视频同一比例尺 —— 按相机水平视场角定标 (fit = (W/2)/tan(fov/2)),
-         而不是按点云包围盒拉伸；盒子与相机比例不符时留黑边(contain)。
+         板端算完只传 heat(~49KB/帧) + pts(~20KB/帧)。
+   自适应量程: 服务端对 z 的 8%/92% 分位做 EMA, 颜色始终用满整个色标。
+   视角: 固定正视 —— 不做投影/旋转, 像素位置即视频位置。
    坐标系: 左目光心为原点, x 右 / y 下 / z 前 (单位 m)。
    -------------------------------------------------------- */
 const DPN = 4000;
@@ -3753,11 +3751,13 @@ const _dp = {
 // 2026-10-31 用户要求：点云**固定正视方向**（yaw/pitch 都 0, 且不再自动慢转）。
 // 之前是初始 yaw=0.55(约 32°斜看) + 每帧 +0.28 rad/s 自转，看着像掉帧的旋转视频，
 // 也不方便“按画面对准物理方向”。现在默认就是正前方；想看侧面可以拖，双击复位。
+// 回退点云渲染用的视角变量：2026-10-31 改成固定视角热力图后不再有交互，
+// 永久为 0（=正视）。保留是为了旧版服务（没有 heat 字段）也能画出东西。
 let _dYaw = 0, _dPitch = 0;
 let _dZinit = false;                   // 量程只首帧直接取，之后 EMA 平滑
 let _dZlo = 0.4, _dZhi = 2.2;          // 自适应量程(平滑后)
 let _dInfo = null;
-let _depthTimer = null, _dDrag = null;
+let _depthTimer = null;
 
 const _CRAMP = [[255, 72, 48], [255, 196, 64], [128, 232, 128],
                 [72, 196, 255], [104, 112, 255]];
@@ -3783,6 +3783,60 @@ function _depthText(g, W, H, msg) {
   g.textAlign = "start"; g.textBaseline = "alphabetic";
 }
 
+/* ---- 固定视角深度热力图 ----
+   服务端把每帧深度量化成 8bit(0=无效, 1..255 由近到远, 256x144)，这里查色表
+   直接上色、按 contain 放大铺满框。固定视角 = 不做任何投影/旋转：像素位置就是
+   视频里的像素位置，所以比例天然与上面两路视频一致；而且比点云稠密得多
+   （每像素一个深度，不是抽 2000 个点）。
+   变量都带 _h 前缀，避免与下面点云回退路径(_dp/_dYaw)互相污染。 */
+const _HEAT_LUT = new Uint32Array(256);
+_HEAT_LUT[0] = 0xff0a0e14;                    // 无效像素 = 深蓝黑底
+for (let _hi = 1; _hi < 256; _hi++) {
+  const _hc = _cmap((_hi - 1) / 254);
+  _HEAT_LUT[_hi] = (255 << 24) | (_hc[2] << 16) | (_hc[1] << 8) | _hc[0];
+}
+let _hCv = null, _hCtx = null, _hImg = null, _hU32 = null;
+
+function drawHeatInto(g, W, H, d) {
+  const hw = +d.hw | 0, hh = +d.hh | 0;
+  const bytes = _b64u8(d.heat);
+  if (bytes.length < hw * hh) { _depthText(g, W, H, "热力图数据不完整"); return; }
+  if (!_hCv || _hCv.width !== hw || _hCv.height !== hh) {
+    _hCv = document.createElement("canvas");
+    _hCv.width = hw; _hCv.height = hh;
+    _hCtx = _hCv.getContext("2d");
+    _hImg = _hCtx.createImageData(hw, hh);
+    _hU32 = new Uint32Array(_hImg.data.buffer);
+  }
+  const px = _hU32, LUT = _HEAT_LUT, npx = hw * hh;
+  for (let i = 0; i < npx; i++) px[i] = LUT[bytes[i]];
+  _hCtx.putImageData(_hImg, 0, 0);
+
+  g.imageSmoothingEnabled = true;   // 双线性放大：热力图要平滑，不要马赛克
+  const s = Math.min(W / hw, H / hh);
+  const dw = hw * s, dh = hh * s;
+  g.fillStyle = "#05070c"; g.fillRect(0, 0, W, H);
+  g.drawImage(_hCv, (W - dw) / 2, (H - dh) / 2, dw, dh);
+
+  if ($("dHud")) {
+    const tag = d.calib ? ("fx" + Math.round(+d.focal_px || 0))
+                        : ((d.fov_deg || 0) + "°估");
+    $("dHud").textContent = (d.stale ? "停更 · " : "") + tag + " / " +
+      (d.ms || 0) + "ms";
+  }
+  const hud = "近 " + (+d.zlo || 0).toFixed(2) + "m  远 " + (+d.zhi || 0).toFixed(2) +
+    "m · 有效 " + Math.round((+d.valid || 0) * 100) + "% · " + (d.fps || 0) +
+    "fps · 基线 " + Math.round((+d.baseline_m || 0.045) * 1000) + "mm";
+  g.fillStyle = "rgba(0,0,0,.5)"; g.fillRect(0, H - 17, W, 17);
+  g.fillStyle = "#9fe"; g.font = "11px sans-serif"; g.textBaseline = "middle";
+  g.fillText(hud, 5, H - 9);
+  if (d.warn) {
+    g.fillStyle = "rgba(120,20,10,.72)"; g.fillRect(0, 0, W, 16);
+    g.fillStyle = "#ffd2c8"; g.fillText(d.warn, 5, 8);
+  }
+  g.textBaseline = "alphabetic";
+}
+
 function drawCloud(d) {
   const c = $("cvDepth"); if (!c) return;
   const W = Math.max(80, c.clientWidth | 0), H = Math.max(60, c.clientHeight | 0);
@@ -3791,6 +3845,12 @@ function drawCloud(d) {
   if (!c._img) {
     c._img = g.createImageData(W, H);
     c._u32 = new Uint32Array(c._img.data.buffer);
+  }
+
+  // ---- 优先走深度热力图（固定视角）；旧版服务没有 heat 字段时退回点云渲染 ----
+  if (d && d.ok && d.heat && (+d.hw > 0) && (+d.hh > 0)) {
+    drawHeatInto(g, W, H, d);
+    return;
   }
 
   if (!d || !d.ok || !d.pts || !(+d.n)) {
@@ -3916,32 +3976,11 @@ async function depthTick() {
   } catch (e) { /* 静默: 服务重启/换源时不出图是正常的 */ }
 }
 
-/* 点云交互：
-     默认就是**正视**(yaw=pitch=0)，且**不会自动转** —— 用户要求固定正视方向。
-     拖动 = 临时转个角度看立体感；双击 = 复位正视；
-     右键 = 改水平视场角（未标定前用它把比例调对；标定后引擎直接用标定焦距）。 */
+/* 深度框交互：只保留「右键改水平视场角」。
+   2026-10-31 用户要求固定视角热力图 —— 拖动旋转/双击复位全部去掉，
+   画面永远是从左目看的正视，像素位置即视频位置。 */
 (function () {
   const c = $("cvDepth"); if (!c) return;
-  c.addEventListener("pointerdown", e => {
-    if (e.button !== 0) return;
-    _dDrag = { x: e.clientX, y: e.clientY, yaw: _dYaw, pitch: _dPitch };
-    try { c.setPointerCapture(e.pointerId); } catch (err) { /* 老浏览器 */ }
-  });
-  c.addEventListener("pointermove", e => {
-    if (!_dDrag) return;
-    _dYaw = _dDrag.yaw + (e.clientX - _dDrag.x) * 0.006;
-    _dPitch = Math.max(-0.9,
-      Math.min(0.9, _dDrag.pitch + (e.clientY - _dDrag.y) * 0.005));
-  });
-  const up = () => { _dDrag = null; };
-  window.addEventListener("pointerup", up);
-  window.addEventListener("blur", up);
-  // 双击复位到正视方向
-  c.addEventListener("dblclick", () => {
-    _dYaw = 0; _dPitch = 0;
-    toast("点云已复位：正视方向");
-  });
-  // 右键改水平视场角（原来是双击，现在双击留给"复位"）
   c.addEventListener("contextmenu", e => {
     e.preventDefault();
     const cur = (_dInfo && _dInfo.fov_deg) || params.depth_fov || 60;

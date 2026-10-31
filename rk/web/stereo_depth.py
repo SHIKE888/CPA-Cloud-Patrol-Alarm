@@ -90,6 +90,10 @@ MAX_DISP = 128              # 视差搜索上限(必须是 16 的倍数)
 #   而 128 对应 0.16 m 的最近距离，根本用不上。
 Z_NEAR = float(os.environ.get("DEPTH_Z_NEAR", "0.5"))   # 希望最近能测到多少(m)
 TARGET_PTS = 2200           # 输出点数（每点 9 字节, 2200 点 ≈ 20KB/帧）
+# 热力图降采样倍数：处理分辨率 512x288 -> 热力图 256x144（8bit，36KB，base64 ≈ 49KB）
+# 不做 zlib 压缩：浏览器端的 DecompressionStream 在老 WebView / Safari 上没有，
+# 宁可多传 40KB（相比视频链路 9MB/s 可忽略）。
+HEAT_DIV = 2
 OUT_HZ = 10.0               # 引擎最高计算频率(双目 30fps 输入, 每 3 帧取 1 对)
 WANT_TTL = 6.0              # 多久没人拉 /api/depth 就停机(秒)
 Z_MIN, Z_MAX = 0.15, 4.0    # 有效深度窗口(m)，45mm 基线在这个范围内才有意义
@@ -201,6 +205,8 @@ class StereoDepth(threading.Thread):
         self._npts = 0
         self._sgbm = None
         self._sgbm_key = None
+        # 热力图的量化量程 EMA（近/远），避免逐帧跳变导致颜色闪
+        self._qrt = None
         # 输入侧诊断: 半幅每行累积偏移(px/row)。0 = 正常。
         self._shear = [0.0, 0.0]
         self._shear_tick = 0
@@ -593,6 +599,27 @@ class StereoDepth(threading.Thread):
         yy = (v - cy_p) * zz / f
         cols = sl.reshape(-1, 3)[idx]
 
+        # ---- 热力图：1/2 分辨率的 8bit 深度索引（0=无效，1..255 由近到远）----
+        #   点云是抽样的(<=2200 点)，铺不成连续色带；热力图要的是"每像素一个深度"。
+        #   量化范围用 8%/92% 分位的 EMA，和以前点云配色用的是同一套自适应量程。
+        if self._qrt is None:
+            self._qrt = [float(lo), float(hi)]
+        else:
+            self._qrt[0] = self._qrt[0] * 0.85 + float(lo) * 0.15
+            self._qrt[1] = self._qrt[1] * 0.85 + float(hi) * 0.15
+        q_lo, q_hi = float(self._qrt[0]), float(self._qrt[1])
+        if q_hi - q_lo < 0.05:
+            q_hi = q_lo + 0.05
+        hh2 = max(2, ph // HEAT_DIV)
+        hw2 = max(2, pw // HEAT_DIV)
+        z2 = z[:hh2 * HEAT_DIV:HEAT_DIV, :hw2 * HEAT_DIV:HEAT_DIV]
+        ok2 = ok[:hh2 * HEAT_DIV:HEAT_DIV, :hw2 * HEAT_DIV:HEAT_DIV]
+        zs = np.nan_to_num(z2, nan=q_hi, posinf=q_hi, neginf=q_lo)
+        vv = np.clip((zs - q_lo) / (q_hi - q_lo), 0.0, 1.0)
+        qimg = np.zeros((z2.shape[0], z2.shape[1]), np.uint8)
+        qimg[ok2] = (1.0 + vv[ok2] * 254.0).astype(np.uint8)
+        heat_b64 = base64.b64encode(qimg.tobytes()).decode("ascii")
+
         arr = np.empty(n, PACK_DT)
         for name, val in (("x", xx), ("y", yy), ("z", zz)):
             mm = np.clip(val * 1000.0, -32767, 32767).astype(np.int32)
@@ -639,6 +666,10 @@ class StereoDepth(threading.Thread):
             "shear_l": round(float(shear_l), 2),
             "shear_r": round(float(shear_r), 2),
             "warn": warn,
+            # 热力图（固定视角直接上色）: hw×hh 的 8bit 图，0=无效
+            "heat": heat_b64,
+            "hw": int(qimg.shape[1]), "hh": int(qimg.shape[0]),
+            "zlo": round(q_lo, 2), "zhi": round(q_hi, 2),
             "pts": base64.b64encode(arr.tobytes()).decode("ascii"),
         }
 
