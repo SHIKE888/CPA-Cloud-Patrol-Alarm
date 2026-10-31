@@ -3839,8 +3839,26 @@ function drawHeatInto(g, W, H, d) {
   g.font = "9.5px ui-monospace,SFMono-Regular,monospace";
   g.fillStyle = "#dbe7f3"; g.textBaseline = "middle"; g.textAlign = "left";
   const lx = bx0 + bw + 4;
+  // 对数刻度（与服务端量化一致）：0.1~10 m 内挑几个整刻度，按 log 位置标
+  const lzd = Math.log(zhi) - Math.log(zlo);
+  const ly = v => by0 + bh * (1 - (Math.log(v) - Math.log(zlo)) / lzd);
+  const tick = [0.1, 0.2, 0.3, 0.5, 0.7, 1, 1.5, 2, 3, 5, 7, 10];
+  const step = lzd > Math.log(5) ? 3 : 1;          // 跨度大就少标几个
+  let shown = 0;
+  for (let ti = 0; ti < tick.length; ti++) {
+    const v = tick[ti];
+    if (v <= zlo * 1.02 || v >= zhi * 0.98) continue;
+    if (ti % step) continue;
+    const y = ly(v);
+    g.strokeStyle = "rgba(255,255,255,.45)";
+    g.beginPath(); g.moveTo(bx0 + bw, y); g.lineTo(bx0 + bw + 3, y); g.stroke();
+    g.fillStyle = "#dbe7f3";
+    g.fillText(fmt(v), lx, y);
+    shown++;
+  }
+  // 上下端点值始终标出
+  g.fillStyle = "#9fe";
   g.fillText(fmt(zhi), lx, by0 + 4);
-  g.fillText(fmt((zhi + zlo) / 2), lx, by0 + bh / 2);
   g.fillText(fmt(zlo), lx, by0 + bh - 4);
   g.fillStyle = "#7e8b9b";
   g.fillText("m", lx, by0 + bh + 8);

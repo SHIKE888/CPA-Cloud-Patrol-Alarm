@@ -79,7 +79,8 @@ CALIB_PATH = os.environ.get(
     "DEPTH_CALIB",
     os.path.join(os.path.dirname(os.path.abspath(__file__)),
                  "stereo_calib.json"))
-DEFAULT_FOV = 60.0          # 水平视场角(度) —— 未标定时的估算
+DEFAULT_FOV = 67.0          # 水平视场角(度)。本机镜头 4.2mm + IMX415 16:9 => 67°
+#   来源：2*atan(5.603/2/4.2)=67.4°；点云 ax 实测 ±0.66 -> 66.9°；focal_px 报 1450。
 PROC_W_DEF = 512            # SGBM 处理宽度
 PROC_W_MIN, PROC_W_MAX = 384, 640
 MAX_DISP = 128              # 视差搜索上限(必须是 16 的倍数)
@@ -611,17 +612,24 @@ class StereoDepth(threading.Thread):
             self._qrt[0] = self._qrt[0] * 0.85 + float(lo) * 0.15
             self._qrt[1] = self._qrt[1] * 0.85 + float(hi) * 0.15
         q_lo, q_hi = float(self._qrt[0]), float(self._qrt[1])
-        # 限定到色标量程 0.1~10 m（自适应量程也不能跑出这个范围）
-        q_lo = min(max(q_lo, Z_RANGE_MIN), Z_RANGE_MAX)
+        # 量程策略（2026-11-01 改）：
+        #   * 配色用【对数刻度】—— 0.1~10 m 跨越 2 个数量级，线性刻度会把近处
+        #     全挤成一色（实测：画面 90% 是远景时，1 m 的柜子直接沉到色标底部）。
+        #   * 下限最多到 1.0 m：自适应量程只看远景 8% 分位时，强制把 0.1~1 m 包进来，
+        #     否则近处永远落在色标外。上限最多到 10 m。
+        q_lo = min(max(q_lo, Z_RANGE_MIN), 1.0)
+        q_hi = min(max(q_hi, q_lo * 2.0, 2.0), Z_RANGE_MAX)
         if q_hi - q_lo < 0.05:
             q_hi = q_lo + 0.05
-        q_hi = min(max(q_hi, q_lo + 0.05), Z_RANGE_MAX)
         hh2 = max(2, ph // HEAT_DIV)
         hw2 = max(2, pw // HEAT_DIV)
         z2 = z[:hh2 * HEAT_DIV:HEAT_DIV, :hw2 * HEAT_DIV:HEAT_DIV]
         ok2 = ok[:hh2 * HEAT_DIV:HEAT_DIV, :hw2 * HEAT_DIV:HEAT_DIV]
         zs = np.nan_to_num(z2, nan=q_hi, posinf=q_hi, neginf=q_lo)
-        vv = np.clip((zs - q_lo) / (q_hi - q_lo), 0.0, 1.0)
+        # 对数刻度：近处细节多、远处压缩（与页面色标的刻度一致）
+        llo, lhi = np.log(max(q_lo, 1e-3)), np.log(max(q_hi, q_lo * 1.0001))
+        vv = np.clip((np.log(np.clip(zs, q_lo, q_hi)) - llo) / (lhi - llo),
+                     0.0, 1.0)
         qimg = np.zeros((z2.shape[0], z2.shape[1]), np.uint8)
         qimg[ok2] = (1.0 + vv[ok2] * 254.0).astype(np.uint8)
         heat_b64 = base64.b64encode(qimg.tobytes()).decode("ascii")
