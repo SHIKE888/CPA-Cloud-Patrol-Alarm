@@ -1773,9 +1773,20 @@ class OpenCVCapture(threading.Thread):
                         _hdr = "<读取失败>"
                     print("[dual] 未找到帧标记, 帧首 8 字节 = %s" % _hdr,
                           file=sys.stderr)
-                # ★ 2026-10-31: 没有帧标记(MARK_EN=0 / FPGA 刚重载 bit 后 0xDB 归零)时
-                #   不能一律当 cam0 —— 单目通路实际取的是 0xDB[0](RX_SEL) 那一路。
-                #   以前写死 0, 结果"唯一活的那路"被当成右目塞到右半边, 左半边全黑。
+                # ★ 2026-10-31: 双目下**没有标记的帧一律丢掉**, 不要按 RX_SEL 硬判来源。
+                #
+                #   板上实测(0x4708, DUAL_EN=1): dual.stat 里
+                #     有标记 cam0=2852 / cam1=2820 (完美 1:1, 说明交替正常),
+                #     而 nomark=5952 ≈ 两者之和 -> 每个物理帧被读到两遍, 第二遍没标记。
+                #   把这些帧标成 cam0 会覆盖 slot[0]:
+                #      紧跟 cam1 帧后面的那份"无标记副本"被标成 cam0 -> 右半边=cam1 画面
+                #      -> 拼出来左右两半是同一张图(快照实测 meanAbsDiff≈2.9, 肉眼就是
+                #         "两边都是同一路图像")
+                #   丢掉无标记帧不影响帧率: 带标记的正好 30+30=60fps。
+                if int(self.params.get().get("dual", 0)):
+                    self._pace(t_start)
+                    continue
+                # 单目: 没有标记时就按 0xDB[0](RX_SEL) 判定来源
                 src = self._cur_rx_sel()      # 无标记 -> 按 RX_SEL 判定
             else:
                 self._dualmk_logged = False
