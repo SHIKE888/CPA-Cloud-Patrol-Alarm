@@ -492,7 +492,8 @@ module csi2_frame_tx_var #(
     // ---------------- 发侧 ----------------
     reg          tx_busy;
     reg          tx_bank;
-    reg [15:0]   t_wc;
+    reg [15:0]   t_wc;          // ★V54r: 已 4 字节对齐的 WC (写进包头)
+    reg [15:0]   t_real;        // ★V54r: 真实字节数 (判断 padding 用)
     reg          t_fe;
     reg          frame_started;
 
@@ -558,19 +559,43 @@ module csi2_frame_tx_var #(
     wire [WW-1:0] ri3 = ridx[WW-1:0] + 2'd3;
 
     wire [31:0] pl_word = {
-        (ridx + 16'd3 < t_wc) ? pbuf[{tx_bank, ri3}] : 8'h00,
-        (ridx + 16'd2 < t_wc) ? pbuf[{tx_bank, ri2}] : 8'h00,
-        (ridx + 16'd1 < t_wc) ? pbuf[{tx_bank, ri1}] : 8'h00,
+        (ridx + 16'd3 < t_real) ? pbuf[{tx_bank, ri3}] : 8'h00,
+        (ridx + 16'd2 < t_real) ? pbuf[{tx_bank, ri2}] : 8'h00,
+        (ridx + 16'd1 < t_real) ? pbuf[{tx_bank, ri1}] : 8'h00,
         pbuf[{tx_bank, ri0}]
     };
 
-    // ★★ V54o: CRC 只累加真实字节 (ridx+k < t_wc), 越界补齐的 0 不计入 ★★
-    //    否则 WC%4!=0 的包 (每帧的 EOI 末包就是) CRC 必错。
-    //    第 0 字节一定有效 (进入 S_PL 时 ridx < t_wc), 后三个按范围条件累加。
+    //==========================================================================
+    //  ★★★ V54r (2026-11-01): 变长包的 WC 必须 4 字节对齐 ★★★
+    //
+    //  V54o 让 CRC 只累加真实字节, 方向是对的但**没有解决根本问题**:
+    //  D-PHY 的 HS 接口是 4 字节并行的, 一拍的 4 字节无法只发 1~3 个。
+    //  末拍的 hs_last 在 S_CRC 才拉, 所以 payload 的 padding 字节
+    //  **一定会被物理发出去**。于是接收端实际收到 words*4 字节,
+    //  而包头 WC = 真实字节数 => 多出的 1~3 字节被当成下一个包头解析
+    //  => 整包 CRC 错 + 后续若干包全错。
+    //
+    //  而且 PKT_BYTES=1024 虽然 4 对齐, 但每引擎每帧只有约 513 字节,
+    //  所以**每引擎每帧恰好 1 个包, 且 100% 是非对齐末包** —— 这就是
+    //  板上「约 79% 的数据包 CRC 错」的直接来源 (648 CRC / 约 820 包 / 5s)。
+    //
+    //  对照实验也完全吻合: TPG 自测走定长通道 (3840x1080 NV16,
+    //  418MB/s 是现在的 144 倍), CRC=0 —— 因为定长包天然 4 对齐。
+    //  所以与本板 D-PHY 电气裕量、带宽、电源都无关。
+    //
+    //  修法(与 MIPI CSI-2 规范一致):
+    //    包头 WC = 4 字节对齐后的长度 t_wc = (real+3) & ~3
+    //    物理发送 words*4 字节 == t_wc 字节 (完全相等, 无多余字节)
+    //    padding 字节填 0x00 并**参与 CRC** (接收端按 WC 校验, 必须一致)
+    //    t_real 只用来决定哪些字节是 padding
+    //
+    //  对 JPEG 的影响: padding 的 0x00 落在 EOI(FF D9) 之后, 按 JPEG 规范
+    //  解码器会忽略 EOI 之后的填充字节, 所以画面不受影响。
+    //==========================================================================
     wire [15:0] crc_a  = crc16_byte(crc,             pl_word[ 7: 0]);
-    wire [15:0] crc_b  = (ridx + 16'd1 < t_wc) ? crc16_byte(crc_a, pl_word[15: 8]) : crc_a;
-    wire [15:0] crc_c  = (ridx + 16'd2 < t_wc) ? crc16_byte(crc_b, pl_word[23:16]) : crc_b;
-    wire [15:0] crc_nx = (ridx + 16'd3 < t_wc) ? crc16_byte(crc_c, pl_word[31:24]) : crc_c;
+    wire [15:0] crc_b  = crc16_byte(crc_a,           pl_word[15: 8]);
+    wire [15:0] crc_c  = crc16_byte(crc_b,           pl_word[23:16]);
+    wire [15:0] crc_nx = crc16_byte(crc_c,           pl_word[31:24]);
 
     //==========================================================================
     //  写侧: 与状态机完全独立, 只有撞 bank 时才停
@@ -626,6 +651,7 @@ module csi2_frame_tx_var #(
             tx_bank       <= 1'b0;
             d_rd          <= 1'b0;
             t_wc          <= 16'd0;
+            t_real        <= 16'd0;
             t_fe          <= 1'b0;
             frame_started <= 1'b0;
             frame_cnt     <= 32'd0;
@@ -657,7 +683,8 @@ module csi2_frame_tx_var #(
             // (bank 的所有权在 tx_busy 期间由 tx_bank 保护, 写侧不会误写)
             S_IDLE: begin
                 if (pend_v) begin
-                    t_wc    <= pend_wc;
+                    t_real  <= pend_wc;
+                    t_wc    <= (pend_wc + 16'd3) & 16'hFFFC;   // ★V54r: 4 字节对齐
                     t_fe    <= pend_fe;
                     tx_bank <= pend_bank;
                     tx_busy <= 1'b1;
@@ -722,7 +749,7 @@ module csi2_frame_tx_var #(
                 hs_data    <= {16'h0000, crc};
                 hs_last    <= 1'b1;
                 packet_cnt <= packet_cnt + 32'd1;
-                byte_cnt   <= byte_cnt + {16'd0, t_wc};
+                byte_cnt   <= byte_cnt + {16'd0, t_real};   // ★V54r: 统计真实码流字节
                 tx_busy    <= 1'b0;
                 gap_cnt    <= 16'd0;
                 if (t_fe) begin
