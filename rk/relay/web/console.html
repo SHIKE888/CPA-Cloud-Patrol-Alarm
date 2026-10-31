@@ -1168,8 +1168,8 @@ html, body{overflow:hidden}
           <button class="tool on" data-tool="waypoint">无向目标</button>
           <button class="tool" data-tool="goal">有向目标</button>
           <button class="tool" data-tool="pose">小车位姿</button>
-          <button class="tool" data-tool="rect">矩形警戒</button>
-          <button class="tool" data-tool="circle">圆形警戒</button>
+          <button class="tool" data-tool="rect" title="按住左键从一角拖到对角，松手即生成矩形警戒区">矩形警戒</button>
+          <button class="tool" data-tool="circle" title="按住左键点一下定圆心，再按住往外拖定半径">圆形警戒</button>
           <button class="tool" data-tool="pan">平移</button>
         </div>
         <div class="btnrow wide">
@@ -1200,6 +1200,29 @@ html, body{overflow:hidden}
           <button id="btnPatrolStart" class="primary" style="grid-column:2 / -1" disabled>开始巡检</button>
         </div>
         <div class="hint"><span id="stPatrol">未开始</span><b id="stPatrolInfo">—</b></div>
+      </section>
+
+      <!-- 2026-11-01: 警戒区域 + 人员上图 + 越界告警。
+           数据流：板端 /api/targets（AI 框 + 双目深度 + 云台角度 => 车体系相对位置）
+                   → 这里叠上小车位姿 → 地图坐标 → 判越界 → /api/alarm 入队
+                   → cloud_agent 取走并上报云端（抓拍/录像/入库全复用原通道）。 -->
+      <section id="guardbox">
+        <h3>警戒区域 / 人员定位</h3>
+        <div class="plist" id="zlist"></div>
+        <div class="popt2" style="margin-top:8px">
+          <span>刷新</span><input id="gPollSec" type="number" min="0.3" max="10" step="0.1" value="1">
+          <span>秒 · 冷却</span><input id="gCoolSec" type="number" min="5" max="3600" step="5" value="60">
+          <span>秒</span>
+        </div>
+        <div class="popt2" style="margin-top:6px">
+          <span>云台零点偏置</span><input id="gYawOff" type="number" min="-180" max="180" step="1" value="0">
+          <span>°（云台零点相对车头）</span>
+        </div>
+        <div class="btnrow wide" style="margin-top:8px">
+          <button id="btnGuardReport" class="tool on" title="关掉只在本页弹提示，不往云端上报">上报云端</button>
+          <button id="btnGuardClear" class="tool">清空区域</button>
+        </div>
+        <div class="hint"><span id="stGuard">未开始</span><b id="stGuard2">—</b></div>
       </section>
 
       <section>
@@ -1321,6 +1344,7 @@ html, body{overflow:hidden}
     patrolDwellEnd: 0, patrolNear: 0, patrolTimer: null, patrolLoop: false,
     patrolArriveT: 0, patrolCanceled: false,
     navStack: false,                                // 车端导航栈在跑（relay 的 /amcl 探测）
+    zones: [],                                      // 警戒区域（圆形/矩形），跟地图存
     sceneRev: 0                                     // 静态层失效计数（地图/路径/视图变更时 ++）
   };
 
@@ -1441,6 +1465,9 @@ html, body{overflow:hidden}
     requestAnimationFrame(function () { requestAnimationFrame(doFit); });
     setTimeout(doFit, 180);
     dPrevStart();
+    // 2026-11-01: 调度页可见时才拉 /api/targets（人员位置）。
+    //   它会让板端深度引擎保持"有人在看"，没人看就不该白白算 SGBM。
+    guardStart();
     // 2026-10-30: 调度界面的云台雷达已去掉（云台方向看「视频采集→云台」页签），
     //   所以这里也不再拉 1.5s 的 /api/gimbal 空轮询。
   });
@@ -1480,6 +1507,8 @@ html, body{overflow:hidden}
     if (dPrevTimer) { clearTimeout(dPrevTimer); dPrevTimer = null; }
   }
   window.addEventListener('video:show', dPrevStop);
+  // 切到视频页就不必再拉人员位置了（地图看不见），深度引擎自己会睡下去
+  window.addEventListener('video:show', function () { guardStop(); });
 
   function drawPolylineOn(g, pts, color, lw) {
     if (!pts || pts.length < 2) return;
@@ -1649,6 +1678,10 @@ html, body{overflow:hidden}
         ctx.fillText(String(i + 1), q[0] - (i + 1 > 9 ? 6.5 : 3), q[1] + 4);
       }
     }
+
+    // 2026-11-01: 警戒区域 + 人员位置（越界的人画红）
+    drawZones();
+    drawTargets();
 
     // 2026-10-28: 拖动中的橡皮筋（有向目标 / 小车位姿）
     //   起点 = 目标点/车的位置，箭头方向 = 将要下发的朝向；鼠标一动就跟着走。
@@ -2396,7 +2429,8 @@ html, body{overflow:hidden}
     // 2026-10-28: 六个工具按钮改成常驻显示（去掉 .navOnly），不再随模式隐藏/显示。
     // 是否真能放目标/位姿，由 S.navMode 在鼠标事件里把关：建图模式下点了
     // 只会提示“先进入导航”，不会真发 /goal_pose。/goal_pose。
-    if (!on) { S.waypoints = []; S.zones = []; }
+    // 2026-11-01: 警戒区域不再随模式清空 —— 它是跟地图存下来的配置，
+    //   建图/导航来回切不该把用户画的区域弄丢。
     selectTool('waypoint');       // 默认「无向目标」
     S.sceneRev++;
     draw();
@@ -2468,6 +2502,7 @@ html, body{overflow:hidden}
       // 地图身份：位姿记忆按它归类（和导航模式共用同一张图）
       if (st.map_base) S.mapBase = st.map_base;
       patrolSyncToMap();     // ★ 地图身份可能刚拿到/刚变 -> 把这张图的巡检点换回来
+      guardSyncToMap();      // ★ 警戒区域同样跟地图走（2026-11-01）
       // 导航栈是否在跑（车端 /amcl 节点存在）—— 决定能不能放目标 / 跑巡检
       S.navStack = !!st.nav;
 
@@ -3164,12 +3199,443 @@ html, body{overflow:hidden}
     }));
   }
 
+  // ═══════════════════════════════════════════════════════════════════════
+  //  警戒区域（圆形 / 矩形）+ 人员上图 + 越界告警        （2026-11-01）
+  //
+  //  分工：
+  //    · 板端 `/api/targets` 只回答「这个人相对**车**在哪」——
+  //      AI 检测框 + 双目深度热力图 + 云台 yaw/pitch（车体系 x 前 / y 左，米）；
+  //    · 本页负责「车在地图的哪」(`/relay/robot_pose`)，把相对位置转到地图系；
+  //    · 越界判定、去抖、上报都在本页 —— 区域和规则属于调度侧，不该写进板端。
+  //
+  //  去抖（同一个目标不要反复上报）：
+  //    1) 「进入」要连续 2 次采样都在区内（边界抖动不算）；
+  //    2) 只在「外 → 内」的**跳变**上报，人待在区里不重复报；
+  //    3) 离开要超出边界 0.4 m 才算离开（滞回），否则来回擦边会反复触发；
+  //    4) 同一 (区域, 目标) 再加冷却（默认 60 s，可调）；
+  //    5) 板端 `/api/alarm` 入队时还有一层 20 s 去重。
+  //  上报路径：这里 POST /api/alarm 入队 → cloud_agent 取走 → 云端（抓拍/录像/入库
+  //  复用原来那条报警通道，网页侧不需要云端 token）。
+  // ═══════════════════════════════════════════════════════════════════════
+  const GUARD_CKEY = 'guard:cfg';
+  const GUARD_ZKEY = 'guard:zones';
+  // ⚠ 这几个用 var：draw() 可能在这场脚本还没跑到这里时就被 ResizeObserver 调到，
+  //   用 let 会踩「暂时性死区」(Cannot access 'gData' before initialization)。
+  var gCfg = { poll: 1.0, cool: 60, yawOff: 0, report: true };
+  var gDraft = null;             // 圆形草稿 {cx, cy, r}：点一下定圆心，再拖定半径
+  var gPrev = null;              // 矩形预览 {x0,y0,x1,y1}
+  var gData = null;              // 最近一次 /api/targets
+  var gDataT = 0;
+  var gTimer = null, gBusy = false;
+  var gMapSeen = null;           // 上次绑定的地图身份（区域跟地图走）
+  var gState = {};               // '区域ID|目标键' -> {n, in, t}
+
+  // ---- 配置存取 ----
+  function guardCfgLoad() {
+    try {
+      const o = JSON.parse(localStorage.getItem(GUARD_CKEY) || '{}');
+      if (o && typeof o === 'object') {
+        if (isFinite(o.poll)) gCfg.poll = Math.min(10, Math.max(0.3, +o.poll));
+        if (isFinite(o.cool)) gCfg.cool = Math.min(3600, Math.max(5, +o.cool));
+        if (isFinite(o.yawOff)) gCfg.yawOff = +o.yawOff;
+        if (typeof o.report === 'boolean') gCfg.report = o.report;
+      }
+    } catch (e) {}
+    if ($('gPollSec')) $('gPollSec').value = gCfg.poll;
+    if ($('gCoolSec')) $('gCoolSec').value = gCfg.cool;
+    if ($('gYawOff')) $('gYawOff').value = gCfg.yawOff;
+    if ($('btnGuardReport')) $('btnGuardReport').classList.toggle('on', gCfg.report);
+  }
+  function guardCfgSave() {
+    try { localStorage.setItem(GUARD_CKEY, JSON.stringify(gCfg)); } catch (e) {}
+  }
+
+  // ---- 区域存取（跟地图走：换一张图 = 换一批警戒区）----
+  function guardKey() { return S.mapBase ? (GUARD_ZKEY + ':' + S.mapBase) : GUARD_ZKEY; }
+  function guardParse(raw) {
+    const out = [];
+    try {
+      const a = JSON.parse(raw || '[]');
+      if (Array.isArray(a)) {
+        for (let i = 0; i < a.length; i++) {
+          const z = a[i];
+          if (!z || (z.type !== 'circle' && z.type !== 'rect')) continue;
+          const o = { id: String(z.id || ('z' + (i + 1))), type: z.type,
+                      name: String(z.name || (z.type === 'circle' ? '圆形警戒' : '矩形警戒')),
+                      on: z.on !== false };
+          if (z.type === 'circle') {
+            if (!isFinite(z.cx) || !isFinite(z.cy) || !isFinite(z.r) || z.r <= 0) continue;
+            o.cx = +z.cx; o.cy = +z.cy; o.r = +z.r;
+          } else {
+            if (![z.x0, z.y0, z.x1, z.y1].every(isFinite)) continue;
+            o.x0 = +z.x0; o.y0 = +z.y0; o.x1 = +z.x1; o.y1 = +z.y1;
+          }
+          out.push(o);
+        }
+      }
+    } catch (e) { return []; }
+    return out;
+  }
+  function guardSave() {
+    try { localStorage.setItem(guardKey(), JSON.stringify(S.zones)); } catch (e) {}
+  }
+  function guardLoad() {
+    let raw = null;
+    try { raw = localStorage.getItem(guardKey()); } catch (e) { raw = null; }
+    S.zones = guardParse(raw);
+    renderZones();
+  }
+  // 地图身份变了 -> 换一批警戒区（和巡检点同样的规则）
+  function guardSyncToMap() {
+    if (!S.mapBase || S.mapBase === gMapSeen) return;
+    gMapSeen = S.mapBase;
+    guardLoad();
+    S.sceneRev++;
+    draw();
+  }
+
+  function zoneAdd(o) {
+    const n = S.zones.filter(function (z) { return z.type === o.type; }).length + 1;
+    o.id = o.id || ('z' + Date.now().toString(36) + n);
+    o.name = o.name || ((o.type === 'circle' ? '圆形警戒' : '矩形警戒') + n);
+    o.on = (o.on !== false);
+    S.zones.push(o);
+    guardSave(); renderZones(); S.sceneRev++; draw();
+    toast('已添加 ' + o.name + '（' + S.zones.length + ' 个区域）');
+  }
+
+  function renderZones() {
+    const box = $('zlist');
+    if (!box) return;
+    if (!S.zones.length) {
+      box.innerHTML = '<div class="pempty">还没有警戒区：选「矩形警戒」从一角拖到对角；' +
+        '或选「圆形警戒」点一下定圆心、再按住往外拖定半径。<br>' +
+        '人员位置来自「云台锁定 + 双目深度」，人进区就提示并上报云端。</div>';
+      return;
+    }
+    let h = '';
+    for (let i = 0; i < S.zones.length; i++) {
+      const z = S.zones[i];
+      const on = (z.on !== false);
+      let desc;
+      if (z.type === 'circle') {
+        desc = '(' + z.cx.toFixed(1) + ', ' + z.cy.toFixed(1) + ') r=' + z.r.toFixed(2) + 'm';
+      } else {
+        desc = Math.abs(z.x1 - z.x0).toFixed(1) + '×' + Math.abs(z.y1 - z.y0).toFixed(1) +
+               'm @(' + Math.min(z.x0, z.x1).toFixed(1) + ', ' +
+               Math.min(z.y0, z.y1).toFixed(1) + ')';
+      }
+      h += '<div class="pitem">' +
+        '<div class="pl"><b class="pno">' + (i + 1) + '</b>' +
+        '<span class="pk' + (on ? '' : ' free') + '">' + (z.type === 'circle' ? '圆' : '矩') +
+        '</span><span class="pc" title="' + z.name + '">' + z.name + ' ' + desc + '</span></div>' +
+        '<div class="pd"><label style="display:flex;align-items:center;gap:4px;color:#8b949e;' +
+        'cursor:pointer"><input type="checkbox" data-zt="' + i + '"' +
+        (on ? ' checked' : '') + '>启用</label></div>' +
+        '<div class="pops"><button class="pdel" data-zd="' + i + '" title="删除这个区域">✕</button></div>' +
+        '</div>';
+    }
+    box.innerHTML = h;
+    box.querySelectorAll('[data-zt]').forEach(function (el) {
+      el.onchange = function () {
+        S.zones[+el.getAttribute('data-zt')].on = !!el.checked;
+        guardSave(); renderZones(); S.sceneRev++; draw();
+      };
+    });
+    box.querySelectorAll('[data-zd]').forEach(function (el) {
+      el.onclick = function () {
+        S.zones.splice(+el.getAttribute('data-zd'), 1);
+        guardSave(); renderZones(); S.sceneRev++; draw();
+      };
+    });
+  }
+
+  // ---- 几何判定 ----
+  function zoneInside(z, x, y) {
+    if (z.type === 'circle') return Math.hypot(x - z.cx, y - z.cy) <= z.r;
+    return x >= Math.min(z.x0, z.x1) && x <= Math.max(z.x0, z.x1) &&
+           y >= Math.min(z.y0, z.y1) && y <= Math.max(z.y0, z.y1);
+  }
+  function zoneOutDist(z, x, y) {          // 点在区外多远（区内 = 0）
+    if (z.type === 'circle') return Math.max(0, Math.hypot(x - z.cx, y - z.cy) - z.r);
+    const dx = Math.max(Math.min(z.x0, z.x1) - x, 0, x - Math.max(z.x0, z.x1));
+    const dy = Math.max(Math.min(z.y0, z.y1) - y, 0, y - Math.max(z.y0, z.y1));
+    return Math.hypot(dx, dy);
+  }
+
+  // ---- 车体系 → 地图系 ----
+  //  板端给的 rel 已经把云台 yaw/pitch 算进去了，这里只需补「云台零点相对车头」
+  //  的安装偏置（gCfg.yawOff，绕 z 再转一次）和小车位姿。
+  function targetWorld(t, pose) {
+    if (!t || !t.ok || !t.rel || !pose) return null;
+    const a = (Number(gCfg.yawOff) || 0) * Math.PI / 180;
+    const ca = Math.cos(a), sa = Math.sin(a);
+    const rx = t.rel.x * ca - t.rel.y * sa;
+    const ry = t.rel.x * sa + t.rel.y * ca;
+    const c = Math.cos(pose.yaw), s = Math.sin(pose.yaw);
+    return { x: pose.x + rx * c - ry * s, y: pose.y + rx * s + ry * c,
+             r: Math.hypot(rx, ry) };
+  }
+
+  // ---- 绘制（动态层，每帧调用，区域数量很少，开销可忽略）----
+  function drawZones() {
+    // 已保存的区域
+    for (let i = 0; i < S.zones.length; i++) {
+      const z = S.zones[i];
+      const on = (z.on !== false);
+      ctx.strokeStyle = on ? 'rgba(248,81,73,.92)' : 'rgba(139,148,158,.55)';
+      ctx.fillStyle = on ? 'rgba(248,81,73,.10)' : 'rgba(139,148,158,.06)';
+      ctx.lineWidth = 2;
+      if (z.type === 'circle') {
+        const c = w2s(z.cx, z.cy);
+        const rp = Math.max(3, z.r * S.scale);
+        ctx.beginPath(); ctx.arc(c[0], c[1], rp, 0, Math.PI * 2);
+        ctx.fill(); ctx.stroke();
+        ctx.fillStyle = on ? '#ff9c94' : '#8b949e';
+        ctx.font = '11px ui-monospace, monospace';
+        ctx.fillText(z.name, c[0] + rp + 4, c[1] - 4);
+      } else {
+        const a = w2s(Math.min(z.x0, z.x1), Math.max(z.y0, z.y1));
+        const b = w2s(Math.max(z.x0, z.x1), Math.min(z.y0, z.y1));
+        ctx.beginPath();
+        ctx.rect(a[0], a[1], Math.max(1, b[0] - a[0]), Math.max(1, b[1] - a[1]));
+        ctx.fill(); ctx.stroke();
+        ctx.fillStyle = on ? '#ff9c94' : '#8b949e';
+        ctx.font = '11px ui-monospace, monospace';
+        ctx.fillText(z.name, a[0] + 4, a[1] - 4);
+      }
+    }
+    // 正在拖的矩形
+    if (gPrev) {
+      const a = w2s(gPrev.x0, gPrev.y0), b = w2s(gPrev.x1, gPrev.y1);
+      ctx.strokeStyle = '#f85149'; ctx.fillStyle = 'rgba(248,81,73,.13)';
+      ctx.lineWidth = 2;
+      if (ctx.setLineDash) ctx.setLineDash([6, 4]);
+      ctx.beginPath();
+      ctx.rect(Math.min(a[0], b[0]), Math.min(a[1], b[1]),
+               Math.abs(b[0] - a[0]), Math.abs(b[1] - a[1]));
+      ctx.fill(); ctx.stroke();
+      if (ctx.setLineDash) ctx.setLineDash([]);
+      ctx.fillStyle = '#ff9c94';
+      ctx.font = '11px ui-monospace, monospace';
+      ctx.fillText(Math.abs(gPrev.x1 - gPrev.x0).toFixed(2) + ' × ' +
+                   Math.abs(gPrev.y1 - gPrev.y0).toFixed(2) + ' m',
+                   Math.min(a[0], b[0]), Math.min(a[1], b[1]) - 6);
+    }
+    // 圆形草稿：圆心 + 半径
+    if (gDraft) {
+      const c = w2s(gDraft.cx, gDraft.cy);
+      const rp = Math.max(2, gDraft.r * S.scale);
+      ctx.strokeStyle = '#f85149'; ctx.lineWidth = 2;
+      if (ctx.setLineDash) ctx.setLineDash([6, 4]);
+      ctx.beginPath(); ctx.arc(c[0], c[1], rp, 0, Math.PI * 2); ctx.stroke();
+      if (ctx.setLineDash) ctx.setLineDash([]);
+      ctx.fillStyle = '#f85149';
+      ctx.beginPath(); ctx.arc(c[0], c[1], 3, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#ff9c94';
+      ctx.font = '11px ui-monospace, monospace';
+      ctx.fillText('r=' + gDraft.r.toFixed(2) + ' m', c[0] + rp + 4, c[1] - 4);
+    }
+  }
+
+  // 人员上图：机器人→人的连线 + 圆点 + 距离标签
+  function drawTargets() {
+    if (!gData || !S.pose) return;
+    if (Date.now() - gDataT > 6000) return;          // 数据太旧就不画（免得画个"鬼影"）
+    const list = gData.targets || [];
+    for (let i = 0; i < list.length; i++) {
+      const t = list[i];
+      if (!t.ok) continue;
+      const w = t._w || targetWorld(t, S.pose);
+      if (!w) continue;
+      const inZone = S.zones.some(function (z) {
+        return z.on !== false && zoneInside(z, w.x, w.y);
+      });
+      const col = inZone ? '#f85149' : (t.locked ? '#ffd33d' : '#3fb950');
+      const p = w2s(w.x, w.y);
+      const r = w2s(S.pose.x, S.pose.y);
+      ctx.strokeStyle = col; ctx.lineWidth = inZone ? 2 : 1.4;
+      if (ctx.setLineDash) ctx.setLineDash([4, 4]);
+      ctx.beginPath(); ctx.moveTo(r[0], r[1]); ctx.lineTo(p[0], p[1]); ctx.stroke();
+      if (ctx.setLineDash) ctx.setLineDash([]);
+      ctx.fillStyle = col;
+      ctx.beginPath(); ctx.arc(p[0], p[1], t.locked ? 6 : 4.5, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = '#010409'; ctx.lineWidth = 1; ctx.stroke();
+      ctx.fillStyle = col;
+      ctx.font = '11px ui-monospace, monospace';
+      ctx.fillText('ID' + (t.tid == null ? '-' : t.tid) + ' ' +
+                   (t.dist_m == null ? '?' : t.dist_m.toFixed(2) + 'm') +
+                   (inZone ? ' 越界' : ''), p[0] + 8, p[1] - 7);
+    }
+  }
+
+  // ---- 越界判定 + 上报 ----
+  function guardEval() {
+    if (!gData || !S.pose || !S.zones.length) return;
+    const now = Date.now();
+    const seen = {};
+    const cold = Math.max(5, Number(gCfg.cool) || 60) * 1000;
+    const list = gData.targets || [];
+    for (let i = 0; i < list.length; i++) {
+      const t = list[i];
+      if (!t.ok) continue;
+      const w = targetWorld(t, S.pose);
+      if (!w) continue;
+      t._w = w;
+      // 目标键：优先用 AI 的 tid（跨帧稳定）；没有 tid 就按 0.1m 网格凑一个
+      const key = (t.tid === null || t.tid === undefined)
+        ? ('p' + Math.round(w.x * 10) + '_' + Math.round(w.y * 10))
+        : String(t.tid);
+      for (let j = 0; j < S.zones.length; j++) {
+        const z = S.zones[j];
+        if (z.on === false) continue;
+        const k = z.id + '|' + key;
+        seen[k] = 1;
+        const st = gState[k] || (gState[k] = { n: 0, in: false, t: 0 });
+        if (zoneInside(z, w.x, w.y)) {
+          st.n++;
+          if (!st.in && st.n >= 2) {            // 连续两拍在区内才算「进入」
+            st.in = true;
+            if (now - (st.t || 0) >= cold) {
+              st.t = now;
+              guardReport(z, t, w);
+            }
+          }
+        } else if (st.in && zoneOutDist(z, w.x, w.y) > 0.4) {
+          st.in = false; st.n = 0;              // 超出 0.4m 才算离开（滞回）
+        } else if (!st.in) {
+          st.n = 0;
+        }
+      }
+    }
+    // 人走了 / 区域被删了 / 关了：把状态清掉，下次进来算新的一次
+    for (const k in gState) {
+      if (!seen[k]) {
+        gState[k].in = false;
+        gState[k].n = 0;
+        if (now - (gState[k].t || 0) > 600000) delete gState[k];
+      }
+    }
+  }
+
+  function guardReport(z, t, w) {
+    const dist = (t.dist_m == null) ? '距离未知' : t.dist_m.toFixed(2) + ' m';
+    const note = z.name + ' · ID' + (t.tid == null ? '-' : t.tid) + ' · ' + dist +
+                 ' · (' + w.x.toFixed(2) + ', ' + w.y.toFixed(2) + ')';
+    toast('越界告警：' + note, true);
+    if (!gCfg.report) return;
+    const body = {
+      label: 'intrude', cn: '越界入侵事件', lvl: 2, src: 'guard',
+      tid: (t.tid == null ? null : t.tid),
+      score: t.score || 0,
+      note: note,
+      m: { zone_id: z.id, zone: z.name, kind: z.type,
+           dist: (t.dist_m == null ? null : t.dist_m),
+           x: +w.x.toFixed(2), y: +w.y.toFixed(2), conf: t.conf }
+    };
+    fetch('/api/alarm', {
+      method: 'POST', cache: 'no-store',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    }).then(function (r) { return r.json(); }).then(function (j) {
+      if (j && j.ok && j.dup) toast('云端上报去重（20s 内同目标同区域）');
+    }).catch(function (e) {
+      toast('上报入队失败：' + e.message, true);
+    });
+  }
+
+  // ---- 轮询 /api/targets ----
+  function guardStatus(d, err) {
+    const a = $('stGuard'), b = $('stGuard2');
+    if (!a || !b) return;
+    if (err) { a.textContent = '读取失败'; b.textContent = err; return; }
+    if (!d) { a.textContent = '未开始'; b.textContent = '—'; return; }
+    const list = d.targets || [];
+    const okT = list.filter(function (t) { return t.ok; });
+    const locked = okT.find ? (okT.find(function (t) { return t.locked; }) || okT[0]) : okT[0];
+    const ai = d.ai || {};
+    a.textContent = 'AI ' + (ai.active ? (ai.persons != null ? ai.persons + ' 人' : '运行中')
+                                      : (ai.ok ? '未运行' : '未启用')) +
+                    ' · 可定位 ' + okT.length + '/' + list.length;
+    if (locked) {
+      b.textContent = 'ID' + (locked.tid == null ? '-' : locked.tid) + ' ' +
+                      locked.dist_m.toFixed(2) + 'm ' +
+                      (locked.locked ? '（锁定）' : '');
+    } else if (!ai.active) {
+      b.textContent = ai.ok ? 'AI 未运行（切「AI 标注」或「仅推理」）' : 'AI 未启用';
+    } else if (!list.length) {
+      b.textContent = '当前画面无人';
+    } else {
+      b.textContent = (list[0] && list[0].reason) || d.error || '无有效深度';
+    }
+  }
+
+  async function guardPoll() {
+    if (gBusy) return;
+    gBusy = true;
+    try {
+      const r = await fetch('/api/targets', { cache: 'no-store' });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const d = await r.json();
+      gData = d; gDataT = Date.now();
+      guardEval();
+      guardStatus(d);
+      draw();
+    } catch (e) {
+      gData = null;
+      guardStatus(null, e.message);
+    } finally {
+      gBusy = false;
+    }
+  }
+  function guardStart() {
+    guardStop();
+    const ms = Math.min(10000, Math.max(300, (Number(gCfg.poll) || 1) * 1000));
+    guardPoll();
+    gTimer = setInterval(guardPoll, ms);
+  }
+  function guardStop() {
+    if (gTimer) { clearTimeout(gTimer); clearInterval(gTimer); gTimer = null; }
+  }
+
+  // ---- 面板交互 ----
+  (function bindGuard() {
+    guardCfgLoad();
+    // 延后一次：map_base 还没拿到时先用全局键
+    renderZones();
+    const poll = $('gPollSec'), cool = $('gCoolSec'), off = $('gYawOff');
+    if (poll) poll.onchange = function () {
+      gCfg.poll = Math.min(10, Math.max(0.3, Number(poll.value) || 1));
+      poll.value = gCfg.poll; guardCfgSave();
+      if (gTimer) guardStart();
+    };
+    if (cool) cool.onchange = function () {
+      gCfg.cool = Math.min(3600, Math.max(5, Number(cool.value) || 60));
+      cool.value = gCfg.cool; guardCfgSave();
+    };
+    if (off) off.onchange = function () {
+      gCfg.yawOff = Math.max(-180, Math.min(180, Number(off.value) || 0));
+      off.value = gCfg.yawOff; guardCfgSave(); draw();
+    };
+    if ($('btnGuardReport')) $('btnGuardReport').onclick = function () {
+      gCfg.report = !gCfg.report; guardCfgSave();
+      this.classList.toggle('on', gCfg.report);
+      toast(gCfg.report ? '越界告警会上报云端' : '只在本页提示，不上报云端');
+    };
+    if ($('btnGuardClear')) $('btnGuardClear').onclick = function () {
+      if (!S.zones.length) return;
+      if (!confirm('清空这张图上的全部警戒区？')) return;
+      S.zones = []; guardSave(); renderZones(); S.sceneRev++; draw();
+    };
+  })();
+
   // ── 鼠标交互（2026-10-28 按需求重写）──────────────────────────────
   //   · 右键不再放置任何东西（原来右键两步定「小车位姿」的流程整个删掉）
   //   · 无向目标：左键**单击**就放点；拖动超过 4px 当作平移地图，松手不放
   //   · 有向目标：必须「左键按下 + 拖动」——拖出去的方向就是目标朝向，
   //               只单击一下不放（提示一下），避免误发一个朝向失控的目标
   //   · 小车位姿：同有向目标，按下点 = 车的位置，拖向车头
+  //   · 警戒区（2026-11-01）：矩形 = 按下拖到对角松手；圆形 = 点一下定圆心再拖半径
   //   · 平移：选「平移」工具，或直接中键/右键/按住 Shift 拖
   let drag = null;
   const CLICK_PX = 4;        // 位移小于它算“单击”，大于算“拖动”
@@ -3203,9 +3669,26 @@ html, body{overflow:hidden}
       return;
     }
 
-    if (tool === 'rect' || tool === 'circle') {
-      toast('「' + (tool === 'rect' ? '矩形' : '圆形') + '警戒」还没实现，先别选它', true);
-      startPan(e);
+    if (tool === 'rect') {
+      // 矩形警戒：按住左键从一角拖到对角，松手即生成
+      if (!S.map) { toast('还没有地图，警戒区要画在地图上', true); startPan(e); return; }
+      drag = { zoneRect: true, x: e.clientX, y: e.clientY, w0: w };
+      gPrev = { x0: w[0], y0: w[1], x1: w[0], y1: w[1] };
+      draw();
+      return;
+    }
+
+    if (tool === 'circle') {
+      // 圆形警戒：还没有圆心 -> 这一下就是圆心；已有圆心 -> 这一拖就是半径
+      if (!S.map) { toast('还没有地图，警戒区要画在地图上', true); startPan(e); return; }
+      if (!gDraft) {
+        gDraft = { cx: w[0], cy: w[1], r: 0 };
+        drag = { zoneCircle: true, x: e.clientX, y: e.clientY, fresh: true };
+        toast('圆心已放下，继续按住往外拖定半径');
+        draw();
+        return;
+      }
+      drag = { zoneCircle: true, x: e.clientX, y: e.clientY };
       return;
     }
 
@@ -3228,6 +3711,18 @@ html, body{overflow:hidden}
       draw();
       return;
     }
+    if (drag.zoneRect) {
+      const w = evW(e);
+      gPrev = { x0: drag.w0[0], y0: drag.w0[1], x1: w[0], y1: w[1] };
+      draw();
+      return;
+    }
+    if (drag.zoneCircle && gDraft) {
+      const w = evW(e);
+      gDraft.r = Math.hypot(w[0] - gDraft.cx, w[1] - gDraft.cy);
+      draw();
+      return;
+    }
     const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
     if (drag.click) {
       drag.moved = Math.max(drag.moved, Math.hypot(dx, dy));
@@ -3242,6 +3737,34 @@ html, body{overflow:hidden}
   window.addEventListener('mouseup', function (e) {
     const d = drag; drag = null;
     if (!d) return;
+
+    if (d.zoneRect) {
+      if (gPrev) {
+        const x0 = gPrev.x0, y0 = gPrev.y0, x1 = gPrev.x1, y1 = gPrev.y1;
+        gPrev = null;
+        if (Math.abs(x1 - x0) < 0.3 || Math.abs(y1 - y0) < 0.3) {
+          toast('矩形太小（' + Math.abs(x1 - x0).toFixed(2) + '×' +
+                Math.abs(y1 - y0).toFixed(2) + ' m），没有生成', true);
+        } else {
+          zoneAdd({ type: 'rect', x0: x0, y0: y0, x1: x1, y1: y1 });
+        }
+      }
+      draw();
+      return;
+    }
+
+    if (d.zoneCircle) {
+      if (gDraft) {
+        if (gDraft.r >= 0.25) {
+          zoneAdd({ type: 'circle', cx: gDraft.cx, cy: gDraft.cy, r: gDraft.r });
+          gDraft = null;
+        } else if (!d.fresh) {
+          toast('半径太小（' + gDraft.r.toFixed(2) + ' m），再往外拖一点', true);
+        }
+      }
+      draw();
+      return;
+    }
 
     if (d.place) {
       const wEnd = evW(e);

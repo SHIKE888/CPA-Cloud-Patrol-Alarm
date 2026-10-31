@@ -487,6 +487,19 @@ except Exception as _e:                                   # pragma: no cover
 else:
     _DEPTH_IMPORT_ERR = ""
 
+# ------------------------------------------------------------------ 人员测距
+# 把 /api/ai 的检测框和 /api/depth 的热力图对上，算出每个人到相机（云台）的
+# 距离与方位。纯几何换算，不额外跑模型。给 /api/targets 用。
+try:
+    if SCRIPT_DIR not in sys.path:
+        sys.path.insert(0, SCRIPT_DIR)
+    from person_dist import match_targets as _match_targets
+except Exception as _e:                                   # pragma: no cover
+    _match_targets = None
+    _PERSON_DIST_IMPORT_ERR = "%s: %s" % (type(_e).__name__, _e)
+else:
+    _PERSON_DIST_IMPORT_ERR = ""
+
 # ------------------------------------------------------------------ 默认参数
 DEFAULT_PARAMS = {
     "brightness": 0,      # -100 .. 100        (加减偏移)
@@ -3984,6 +3997,188 @@ def shrink_jpeg(jpeg, max_w=0, quality=80):
 
 
 # ============================================================================
+#  人员位置（给调度页「人员上图 + 越界告警」用）
+# ============================================================================
+def _person_targets(cap, gz, want_depth=True):
+    """AI 检测框 + 双目深度 → 每个人相对**车体**的位置。
+
+    返回的 `targets[i].rel` 是车体系向量（x 前 / y 左，米），已经算进云台
+    yaw/pitch；前端只要再用小车位姿（map 系）旋转+平移就能画到地图上。
+    云台零点与车头之间的安装偏差不在板端猜，由页面参数 `gimbal_off` 补。
+    """
+    out = {"ok": True, "ts": round(time.time(), 3)}
+    ai = AI_OVERLAY.status() if AI_OVERLAY is not None else None
+    dets, ai_wh = [], None
+    out["ai"] = None
+    if ai is not None:
+        dets = ai.get("detections") or []
+        ai_wh = ai.get("frame")
+        out["ai"] = {"ok": bool(ai.get("ok")), "active": bool(ai.get("active")),
+                     "frame": ai_wh, "persons": len(dets),
+                     "age_ms": ai.get("age_ms"),
+                     "fps": ai.get("fps")}
+
+    # ---- 云台角度（拿不到就按 0，并在 gimbal.ok=False 里说清楚）----
+    yaw_deg = pitch_deg = 0.0
+    gz_info = {"ok": False, "tracking": False, "track_tid": None}
+    locked = None
+    if gz is not None:
+        try:
+            g = gz.status()
+            trk = g.get("track") or {}
+            gz_info = {
+                "ok": bool(g.get("connected")),
+                "connected": bool(g.get("connected")),
+                "yaw_rel_deg": g.get("yaw_rel_deg"),
+                "pitch_rel_deg": g.get("pitch_rel_deg"),
+                "tracking": bool(g.get("tracking")),
+                "state": trk.get("state"),
+                "track_tid": trk.get("tid"),
+                "track_aim": trk.get("aim"),
+            }
+            yaw_deg = float(g.get("yaw_rel_deg") or 0.0)
+            pitch_deg = float(g.get("pitch_rel_deg") or 0.0)
+            if g.get("tracking"):
+                locked = trk.get("tid")
+        except Exception as e:                               # noqa: BLE001
+            gz_info = {"ok": False, "error": "%s: %s" % (type(e).__name__, e)}
+    out["gimbal"] = gz_info
+    out["yaw_deg"] = round(yaw_deg, 2)
+    out["pitch_deg"] = round(pitch_deg, 2)
+    out["locked_tid"] = locked
+
+    # ---- 深度：顺手 snapshot() 续期，否则引擎会在 6s 后自己睡下去 ----
+    depth = None
+    dep = getattr(cap, "_depth", None) if cap is not None else None
+    if dep is not None and want_depth:
+        try:
+            depth = dep.snapshot()
+        except Exception:                                    # noqa: BLE001
+            depth = None
+    dbrief = {"ok": False, "reason": "深度不可用"}
+    if isinstance(depth, dict):
+        dbrief = {k: depth.get(k) for k in
+                  ("ok", "reason", "age", "stale", "zlo", "zhi", "focal_px",
+                   "cx_full", "cy_full", "cam_fx", "cam_cy", "w", "h", "pw",
+                   "ph", "valid", "zmed", "calib", "warn")}
+        dbrief["reason"] = depth.get("reason") or ""
+    out["depth"] = dbrief
+    try:
+        _p = Handler.params.get()
+        out["dual"] = int(_p.get("dual", 0))
+        _ai_src = int(_p.get("ai_src", DUAL_RIGHT_SRC))
+    except Exception:                                        # noqa: BLE001
+        out["dual"] = None
+        _ai_src = DUAL_RIGHT_SRC
+    # AI 跑在左半幅还是右半幅：右半幅喂 AI 时要用视差把 u 折算到左目
+    out["ai_src"] = _ai_src
+    out["ai_on_left"] = (_ai_src == DUAL_LEFT_SRC)
+
+    if _match_targets is None:
+        out["ok"] = False
+        out["error"] = "person_dist 不可用: %s" % _PERSON_DIST_IMPORT_ERR
+        out["targets"] = []
+        return out
+    if not ai_wh:
+        out["ok"] = False
+        out["error"] = ("AI 没有画面尺寸（AI 未运行？）"
+                        if ai is not None else "AI 未启用")
+        out["targets"] = []
+        return out
+
+    try:
+        out["targets"] = _match_targets(dets, depth or {}, ai_wh,
+                                        yaw_deg, pitch_deg, locked,
+                                        ai_on_left=out["ai_on_left"])
+    except Exception as e:                                   # noqa: BLE001
+        out["ok"] = False
+        out["error"] = "匹配异常 %s: %s" % (type(e).__name__, e)
+        out["targets"] = []
+    return out
+
+
+class AlarmQueue(object):
+    """浏览器 → cloud_agent 的报警中转队列。
+
+    为什么不从网页直接连云：板子只有 `cloud_agent` 带 token，也只有它能抓拍小图 /
+    合成事件视频；浏览器那边通常也没有公网出口。所以网页 POST `/api/alarm` 只是
+    **入队**，cloud_agent 用 `/api/alarm_pending` 取走，走它原来那条
+    `/api/alarm` 通道（去抖、抓拍、录像、云端入库全都复用）。
+    """
+
+    def __init__(self, maxlen=50, dedupe_s=20.0):
+        self._lock = threading.Lock()
+        self._items = []                  # [{seq, t, ...}]
+        self._seq = 0
+        self._last = {}                   # dedupe key -> 上次入队时刻
+        self._maxlen = int(maxlen)
+        self._dedupe_s = float(dedupe_s)
+        self.boot = "%08x" % (int(time.time() * 1000) & 0xffffffff)
+
+    def push(self, body):
+        if not isinstance(body, dict):
+            body = {}
+        label = str(body.get("label") or "intrude")[:32]
+        cn = str(body.get("cn") or "越界入侵事件")[:40]
+        try:
+            lvl = int(body.get("lvl", 2))
+        except (TypeError, ValueError):
+            lvl = 2
+        lvl = max(1, min(3, lvl))
+        tid = body.get("tid")
+        try:
+            score = float(body.get("score") or 0.0)
+        except (TypeError, ValueError):
+            score = 0.0
+        note = str(body.get("note") or "")[:180]
+        m = body.get("m") if isinstance(body.get("m"), dict) else {}
+        # 目标/区域唯一键：同一个目标在同一个区域里 20s 内只入队一次
+        key = (label, str(tid), str(m.get("zone_id") or m.get("zone") or ""))
+        t = time.time()
+        with self._lock:
+            last = self._last.get(key)
+            if last is not None and (t - last) < self._dedupe_s:
+                return {"ok": True, "queued": 0, "dup": True, "seq": self._seq}
+            self._last[key] = t
+            if len(self._last) > 400:
+                cut = t - max(600.0, self._dedupe_s * 4)
+                self._last = {k: v for k, v in self._last.items() if v > cut}
+            self._seq += 1
+            self._items.append({
+                "seq": self._seq, "t": round(t, 3),
+                "label": label, "cn": cn, "lvl": lvl, "src": "guard",
+                "tid": tid, "score": round(score, 3), "note": note,
+                "m": m,
+                "with_img": bool(body.get("with_img", True)),
+            })
+            while len(self._items) > self._maxlen:
+                self._items.pop(0)
+            return {"ok": True, "queued": 1, "seq": self._seq, "dup": False}
+
+    def since(self, seq=0, limit=20):
+        """取 seq 之后的条目。`seq>0` 视为**已确认水位**：它以前的条目直接丢掉。
+
+        为什么要丢：消费方（cloud_agent）重启后 `since` 会从 0 重新开始，
+        如果队列一直保留旧条目，就会把历史告警再推一遍（实测：agent 重启
+        一次，云端收到重复的越界记录）。进程内保留一份"未确认"的队列即可。
+        """
+        seq = int(seq or 0)
+        with self._lock:
+            if seq > 0:
+                self._items = [x for x in self._items if int(x["seq"]) > seq]
+            items = [dict(x) for x in self._items]
+            return items[:limit], self._seq
+
+    def info(self):
+        with self._lock:
+            return {"pending": len(self._items), "seq": self._seq,
+                    "boot": self.boot}
+
+
+ALARM_Q = AlarmQueue()
+
+
+# ============================================================================
 #  HTTP 服务
 # ============================================================================
 class Handler(BaseHTTPRequestHandler):
@@ -4068,6 +4263,28 @@ class Handler(BaseHTTPRequestHandler):
                 if not int(self.params.get().get("dual", 0)):
                     return self._json({"ok": False, "reason": "dual-off"})
                 return self._json(d.snapshot())
+            if path == "/api/targets":
+                # 人员位置：AI 框 + 深度热力图 + 云台角度 -> 车体系相对位置。
+                # 调度页按「页面设置的频率」拉（默认 1s 一次），没人拉就不会
+                # 续期深度引擎，链路零额外开销。
+                #   ?depth=0  只读 AI/云台，不碰深度（调试用）
+                _qs = self.path.split("?", 1)[1] if "?" in self.path else ""
+                _wd = "depth=0" not in _qs
+                return self._json(_person_targets(Handler.capture,
+                                                  Handler.gimbal, _wd))
+            if path == "/api/alarm_pending":
+                # cloud_agent 取报警队列（网页里发生的越界告警）
+                qs = self.path.split("?", 1)[1] if "?" in self.path else ""
+                since = 0
+                for kv in qs.split("&"):
+                    if kv.startswith("since="):
+                        try:
+                            since = int(float(kv[6:]))
+                        except ValueError:
+                            since = 0
+                items, latest = ALARM_Q.since(since)
+                return self._json({"ok": True, "items": items,
+                                   "latest": latest, "boot": ALARM_Q.boot})
             if path == "/skel.jpg":
                 # 双目下左框: 黑底纯骨架。图片很小(640x360), 前端用
                 # setInterval 拉, 不走 MJPEG 长连接 —— 这样不用动 hub 的
@@ -4332,6 +4549,16 @@ class Handler(BaseHTTPRequestHandler):
                     return self._json({"ok": False, "available": False,
                                        "error": "云台控制未启用"}, 503)
                 return self._json(gz.apply(self._read_json()))
+            if path == "/api/alarm":
+                # 网页侧的越界告警入队（由 cloud_agent 取走并上报云端）。
+                # 只做入队 + 去抖，不在这里联网。
+                body = self._read_json()
+                out = ALARM_Q.push(body)
+                if out.get("queued"):
+                    print("[alarm] 入队 #%d %s tid=%s %s"
+                          % (out["seq"], body.get("label"),
+                             body.get("tid"), body.get("note") or ""))
+                return self._json(out)
             if path == "/api/fpga":
                 if self.fpga is None:
                     return self._json(

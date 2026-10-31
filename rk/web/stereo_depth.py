@@ -322,6 +322,10 @@ class StereoDepth(threading.Thread):
         # 标定: (key, maps)。maps 是处理分辨率下的极线校正查找表。
         self._rect = None
         self._rect_key = None
+        # 原图 -> 校正图 的单应（全分辨率），给 person_dist 把"视频坐标"换成
+        # "热力图坐标"用（极线校正不是恒等变换：横向会缩放/旋转）
+        self._h_key = None
+        self._h_mat = None
         # 运动视差偏置补偿: 上一帧左目(处理分辨率灰度) + 它的捕获时刻
         self._pan_prev = None
         self._pan_prev_t = 0.0
@@ -504,6 +508,35 @@ class StereoDepth(threading.Thread):
         self._rect_key = key
         return self._rect
 
+    def _img2rect(self, cal, w, h):
+        """原图(左目)像素 -> 极线校正图 像素 的单应矩阵（全分辨率，3x3）。
+
+        为什么需要它：极线校正**不是恒等变换**。本工程标定的 R 里带着十几度
+        偏航（起因是 T_z 定不准），stereoRectify 会把左图横向压掉约 15% 再转
+        0.8°，于是"热力图上的 u"和"视频上的 u"根本不是同一个坐标。
+        AI 的检测框在**视频坐标**上，要取样深度就得先经这个单应换到校正坐标。
+
+        反过来，方位角要用**原始内参**在视频坐标上算，不能用校正后的主点
+        （P1 的 cx 被挪到 1653/1920，拿它当"正前方"会整体偏 27°）。
+        """
+        key = ("H", cal.get("created"), float(cal["baseline_m"]),
+               int(w), int(h))
+        if self._h_key == key and self._h_mat is not None:
+            return self._h_mat
+        try:
+            R1, _R2, P1, _P2, _Q, _r1, _r2 = cv2.stereoRectify(
+                cal["K"], cal["D"], cal["K_r"], cal["D_r"], (int(w), int(h)),
+                cal["R"], cal["T"],
+                flags=cv2.CALIB_ZERO_DISPARITY, alpha=-1)
+            H = np.dot(np.dot(P1[:, :3], R1), np.linalg.inv(cal["K"]))
+            H = H / H[2, 2]
+        except Exception as e:                                 # noqa: BLE001
+            if not self._quiet:
+                print("[depth] img2rect 计算失败: %s" % e, file=sys.stderr)
+            return None
+        self._h_key, self._h_mat = key, H
+        return H
+
     # ------------------------------------------------------------ 输入诊断
     def _estimate_shear(self, g, maxs=8):
         """估计图中"每行累积平移 k(px/row)"。0 = 正常/不可信。
@@ -658,6 +691,7 @@ class StereoDepth(threading.Thread):
                          % (cal["size"][0], cal["size"][1], w, h))
             return None
         rc = self._rect_maps(cal, pw, ph) if cal is not None else None
+        H = None
         if rc is not None:
             sl = cv2.remap(sl, rc[0], rc[1], cv2.INTER_LINEAR)
             sr = cv2.remap(sr, rc[2], rc[3], cv2.INTER_LINEAR)
@@ -667,6 +701,11 @@ class StereoDepth(threading.Thread):
             base_m = float(cal["baseline_m"])
             fov = 2.0 * np.rad2deg(np.arctan2(w * 0.5, f_full)) if f_full > 0 else 0.0
             ck = True
+            # 原图(视频) -> 校正图(热力图) 的单应 + 原始左目内参
+            H = self._img2rect(cal, w, h)
+            Kc = cal["K"]
+            cam_fx, cam_fy = float(Kc[0, 0]), float(Kc[1, 1])
+            cam_cx, cam_cy = float(Kc[0, 2]), float(Kc[1, 2])
         else:
             fov = self._fov()
             f_full = estimate_focal(w, fov)
@@ -674,6 +713,8 @@ class StereoDepth(threading.Thread):
             cx_p, cy_p = pw * 0.5, ph * 0.5
             base_m = BASELINE_M
             ck = False
+            cam_fx = cam_fy = f_full
+            cam_cx, cam_cy = w * 0.5, h * 0.5
         gl = cv2.cvtColor(sl, cv2.COLOR_BGR2GRAY)
         gr = cv2.cvtColor(sr, cv2.COLOR_BGR2GRAY)
 
@@ -809,6 +850,17 @@ class StereoDepth(threading.Thread):
             "pw": int(pw), "ph": int(ph),
             "ndisp": int(nd),
             "focal_px": round(float(f_full), 1),
+            # 主点（**全分辨率**像素，校正后的）。只用于诊断：
+            # 极线校正会把 cx 挪到很偏的位置，方位角要用下面的 cam_*（原始内参）。
+            "cx_full": round(float(cx_p) * float(w) / float(pw), 1),
+            "cy_full": round(float(cy_p) * float(h) / float(ph), 1),
+            # 原始左目内参（全分辨率）与"原图 -> 校正图"单应（给 person_dist 用）
+            "cam_fx": round(float(cam_fx), 2),
+            "cam_fy": round(float(cam_fy), 2),
+            "cam_cx": round(float(cam_cx), 2),
+            "cam_cy": round(float(cam_cy), 2),
+            "img2rect": ([round(float(v), 6) for v in H.ravel()]
+                         if H is not None else None),
             "fov_deg": round(fov, 1),
             "baseline_m": base_m,
             "calib": ck,

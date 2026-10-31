@@ -467,7 +467,7 @@ PP_KEYS = ("PP_EN", "ADV_MODE", "ADV_SOBEL_SH", "ADV_THRESH", "ADV_MORPH_SEL",
            "ADV_MORPH_TH", "ADV_LAP_SH", "ADV_PREW_SH", "ADV_EMBOSS_GAIN",
            "ADV_EMBOSS_BIAS", "ADV_SHARP_GAIN", "BASIC_EN", "BASIC_GRAY",
            "BASIC_GAUSS", "BASIC_HE", "BASIC_CONTRAST", "BASIC_KER",
-           "BASIC_HE_CLIP", "BASIC_LINEFIX")
+           "BASIC_HE_CLIP", "BASIC_HE_TEMP", "BASIC_LINEFIX")
 
 
 class Agent(object):
@@ -745,6 +745,66 @@ class Agent(object):
             cut = t - 300
             self.seen_events = {k: v for k, v in self.seen_events.items() if v > cut}
 
+    # ---------------- 网页侧的越界告警 ----------------
+    def alarm_pump(self):
+        """把网页入队的越界告警转成云端报警。
+
+        调度页在浏览器里判断"人进了警戒区"，但它没有云端 token，也没有抓拍/录像
+        能力，所以只是 POST 到板端 `/api/alarm` **入队**；这里每 1.5s 取一条，
+        走和 AI 事件完全同一条通道（`alarm()`：去抖 + 抓拍小图 + 事件视频 + 云端入库）。
+
+        一次只处理一条：`since` 是单水位线，若同时推进多条，某条推送失败就会
+        被后面的序号"跨过去"而丢掉。失败的条目挂 20s 再放弃（云端按 label 去抖，
+        同一时刻多条同类告警本来也会合并）。
+        """
+        since, boot = 0, None
+        hold = {}
+        while True:
+            try:
+                d = self.local.get_json(
+                    "/api/alarm_pending?since=%d" % since, timeout=6)
+                if isinstance(d, dict):
+                    nb = d.get("boot")
+                    if boot is not None and nb and nb != boot:
+                        # 板端进程重启过 -> seq 归零，必须从头取
+                        log("报警队列已重启(boot=%s)，从头取" % nb)
+                        since = 0
+                        hold.clear()
+                    boot = nb or boot
+                    items = d.get("items") or []
+                    if items:
+                        it = items[0]
+                        try:
+                            seq = int(it.get("seq") or 0)
+                        except (TypeError, ValueError):
+                            seq = 0
+                        ok = False
+                        try:
+                            ok = self.alarm(
+                                str(it.get("label") or "intrude"),
+                                str(it.get("cn") or "越界入侵事件"),
+                                int(it.get("lvl") or 2),
+                                str(it.get("src") or "guard"),
+                                tid=it.get("tid"),
+                                score=float(it.get("score") or 0),
+                                note=str(it.get("note") or ""),
+                                with_img=bool(it.get("with_img", True)),
+                                metrics=(it.get("m") or {}))
+                        except Exception as e:                # noqa: BLE001
+                            log("报警队列条目异常: %s" % e)
+                        if ok:
+                            since = max(since, seq)
+                            hold.pop(seq, None)
+                        else:
+                            t0 = hold.setdefault(seq, now())
+                            if now() - t0 > 20:
+                                log("报警 #%d 20s 未送达，跳过" % seq)
+                                since = max(since, seq)
+                                hold.pop(seq, None)
+            except Exception:                                 # noqa: BLE001
+                pass
+            time.sleep(1.5)
+
     # ---------------- 报警 ----------------
     def alarm(self, label, cn, lvl=2, src="ai", tid=None, score=0.0,
               note="", with_img=True, metrics=None):
@@ -925,6 +985,7 @@ class Agent(object):
         log("%s %s → %s (local %s, interval %ss)"
             % (APP, VER, self.a.server, self.a.local, self.a.interval))
         threading.Thread(target=self.cmd_loop, daemon=True, name="cmd").start()
+        threading.Thread(target=self.alarm_pump, daemon=True, name="alarm").start()
         self.seed_health()
         if getattr(self.a, "clip_on", True):
             self.clips.start()
