@@ -1010,13 +1010,29 @@ wire S_src_rx_rst = (S_src_rx_hold != 20'd0);
 
 reg  [1:0]  S_res_chg_d;
 reg  [23:0] S_res_hold25;
+reg         S_res_pwrup;                 // 上电复位窗一次性标志
 always @(posedge I_sysclk_25m or negedge S_pll_lock) begin
 	if (!S_pll_lock) begin
 		S_res_chg_d  <= 2'b00;
+		S_res_pwrup  <= 1'b0;
 		S_res_hold25 <= 24'd0;
 	end else begin
 		S_res_chg_d <= {S_res_chg_d[0], S_res_chg};
-		if (S_res_chg_d == 2'b01)          S_res_hold25 <= RES_RST_CYCLES;
+		// ★★ 2026-10-31: 上电后**必须**补一次写侧复位窗。
+		//   在 V47.8 里这一次是“换源窗”顺带产生的：S_rx_sel 复位值=1 而
+		//   S_rx_sel_d 复位值=0，所以上电后 S_src_chg 会脉冲一次 -> 一个
+		//   完整的 RES_RST_CYCLES 写侧复位窗，把 ISP/preproc/ui_dbuf 的
+		//   状态机干净地拉起来。
+		//   固定时钟架构把这个顺带效果去掉了，结果 ui_dbuf 写侧状态机
+		//   （要等 wfifo_rst_done & w_fs=S_yuv_sof）起不来，0xE1/0xE2
+		//   冻结，DDR 里永远是上电残留的垃圾；而读侧 VTC 还在 60fps
+		//   反反复复读同一块，现象就是“花屏 + 切源不变 + 帧率正常”。
+		//   这里做成**只在上电后给一次**，不跟随换源，丢掉无缝切换效果。
+		if (!S_res_pwrup) begin
+			S_res_pwrup  <= 1'b1;
+			S_res_hold25 <= RES_RST_CYCLES;
+		end
+		else if (S_res_chg_d == 2'b01)          S_res_hold25 <= RES_RST_CYCLES;
 		// ★ 2026-10-31: 固定时钟架构下换源**只切数据 mux**, 不换时钟也不复位 RX,
 		//   否则每次切源都会黑/花一下(20ms RX 窗 + 120ms 写侧窗)。
 		else if (!USE_FIXED_RX_CLK && (S_src_chg || S_clk_chg))   S_res_hold25 <= SRC_RST_CYCLES;  // 2026-10-21 换源
@@ -1344,14 +1360,12 @@ assign S_hs_rx_clk_mux = S_clk_sel_r ? S_hs_clk1 : S_hs_clk0;
 
 // cam1 支路时钟: 固定模式下直接用 cam1 自己的恢复时钟（真异步, 靠 sched 的
 // 格雷码指针 + 异步 BRAM 跨时钟, 不再靠"时钟 mux 跟着源走"）
-// ⚠ 必须再过一个 BUFG: O_hs_div_clk 是 IP 内部组合出来的, 直接拖 3 个负载
-//   (RX#1 AXIS / image_correction1 / sched 写侧) 布线偏斜会丢拍。
-wire S_hs_clk1_buf;
-PH1_LOGIC_BUFG X_bufg_rx1_clk (
-	.i ( S_hs_clk1     ),
-	.o ( S_hs_clk1_buf )
-);
-assign S_rx1_aclk = USE_FIXED_RX_CLK ? S_hs_clk1_buf : S_hs_rx_clk;
+// ⚠ 2026-10-31: 这里原来插了一个显式 PH1_LOGIC_BUFG。时序报告里看到 TD
+//   在它后面又自动生成了一个 sclk（X_bufg_rx1_clk_auto_created_sclk_*），
+//   等于同一路时钟被缓冲了两次，平白给时钟树加负载；而恢复时钟域在 SDC
+//   里是**未约束**的（STA 覆盖率只有 12.95%），出问题也看不出来。
+//   这里直接用原始网，让 TD 自行决定缓冲。
+assign S_rx1_aclk = USE_FIXED_RX_CLK ? S_hs_clk1 : S_hs_rx_clk;
 
 PH1_LOGIC_BUFG X_bufg_rx_clk (
 	.i ( S_hs_rx_clk_mux ),
