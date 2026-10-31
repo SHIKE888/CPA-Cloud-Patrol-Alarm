@@ -372,26 +372,9 @@ wire 							S_ae_req		;
 //    改动时 system_top 会给写侧一个 120ms 复位窗，让行/帧计数重新对齐。
 //=============================================================================
 wire          					S_hs_clk0		;   // cam0 RX 恢复时钟
-wire          					S_hs_clk1		;   // cam1 RX 恢复时钟
+wire          					S_hs_clk1		;   // cam1 RX 恢复时钟 (仅作 mux 输入)
 wire          					S_hs_rx_clk_mux	;   // 二选一（LUT）
-wire          					S_hs_rx_clk		;   // BUFG 后的全局 byte clock
-wire          					S_rx1_aclk		;   // cam1 支路时钟（固定模式下 = S_hs_clk1）
-
-//=============================================================================
-//  ★ 2026-10-31 无缝切换架构开关
-//  USE_FIXED_RX_CLK = 1:
-//    - S_hs_rx_clk 永远锁在 cam0 的恢复时钟上（时钟 mux 选择位恒 0）
-//    - cam1 整条支路 (RX#1 AXIS / image_correction1 / sched 写侧) 跑 S_hs_clk1
-//    - 单目/双目的源切换**只切换数据 mux**, 不换时钟、不复位 RX
-//  USE_FIXED_RX_CLK = 0: 回退到 0x4709/V47.8 行为（时钟 mux 跟随源）
-//
-//  ⚠ 2026-10-31 诊断版 0x470C: 先置 0。0x470A/0x470B(=1) 上板都是花屏，
-//    而 flash 兜底 0x4600 画面完全正常。这一版 RTL 与 V47.8 等价（除了
-//    S_res_pwrup 多给一个上电窗，无害），用来判定“到底是不是这次改动引起的”：
-//      - 置 0 画面正常 => 问题就在这个固定时钟架构（cam1 时钟域）
-//      - 置 0 画面还花 => 与我的改动无关，要往 V47.8 本身查
-//=============================================================================
-localparam USE_FIXED_RX_CLK = 1'b0;
+wire          					S_hs_rx_clk		;   // BUFG 后的全局 byte clock (= HS clk / 4)
 
 	//---- LP-free CSI-2 RX (03_ip/mipi_csi_lpfree) 的 AXIS 输出 ----
 	wire							S_rx_rstn		;
@@ -425,8 +408,6 @@ localparam USE_FIXED_RX_CLK = 1'b0;
 	wire							S_out_src		;   // 当前输出帧的来源 0/1
 	wire							S_frame_parity	;
 	wire							S_ch1_lost		;   // cam1 行缓冲没跟上
-    wire [15:0]                                                S_dbg_c1wr     ;   // 2026-10-31 诊断: cam1 环形缓冲写入行数
-    wire [7:0]                                                 S_dbg_c1lost   ;   // 2026-10-31 诊断: cam1 丢行数
 	wire							S_sensor_rst_n	;   // 两颗传感器的 RSTn (同步启动)
 	wire							S_cfg_hold		;   // 1 = 两个 cfg 模块保持在复位
 
@@ -1014,32 +995,14 @@ wire S_src_rx_rst = (S_src_rx_hold != 20'd0);
 
 reg  [1:0]  S_res_chg_d;
 reg  [23:0] S_res_hold25;
-reg         S_res_pwrup;                 // 上电复位窗一次性标志
 always @(posedge I_sysclk_25m or negedge S_pll_lock) begin
 	if (!S_pll_lock) begin
 		S_res_chg_d  <= 2'b00;
-		S_res_pwrup  <= 1'b0;
 		S_res_hold25 <= 24'd0;
 	end else begin
 		S_res_chg_d <= {S_res_chg_d[0], S_res_chg};
-		// ★★ 2026-10-31: 上电后**必须**补一次写侧复位窗。
-		//   在 V47.8 里这一次是“换源窗”顺带产生的：S_rx_sel 复位值=1 而
-		//   S_rx_sel_d 复位值=0，所以上电后 S_src_chg 会脉冲一次 -> 一个
-		//   完整的 RES_RST_CYCLES 写侧复位窗，把 ISP/preproc/ui_dbuf 的
-		//   状态机干净地拉起来。
-		//   固定时钟架构把这个顺带效果去掉了，结果 ui_dbuf 写侧状态机
-		//   （要等 wfifo_rst_done & w_fs=S_yuv_sof）起不来，0xE1/0xE2
-		//   冻结，DDR 里永远是上电残留的垃圾；而读侧 VTC 还在 60fps
-		//   反反复复读同一块，现象就是“花屏 + 切源不变 + 帧率正常”。
-		//   这里做成**只在上电后给一次**，不跟随换源，丢掉无缝切换效果。
-		if (!S_res_pwrup) begin
-			S_res_pwrup  <= 1'b1;
-			S_res_hold25 <= RES_RST_CYCLES;
-		end
-		else if (S_res_chg_d == 2'b01)          S_res_hold25 <= RES_RST_CYCLES;
-		// ★ 2026-10-31: 固定时钟架构下换源**只切数据 mux**, 不换时钟也不复位 RX,
-		//   否则每次切源都会黑/花一下(20ms RX 窗 + 120ms 写侧窗)。
-		else if (!USE_FIXED_RX_CLK && (S_src_chg || S_clk_chg))   S_res_hold25 <= SRC_RST_CYCLES;  // 2026-10-21 换源
+		if (S_res_chg_d == 2'b01)          S_res_hold25 <= RES_RST_CYCLES;
+		else if (S_src_chg || S_clk_chg)   S_res_hold25 <= SRC_RST_CYCLES;  // 2026-10-21 换源
 		else if (S_res_hold25 != 24'd0)    S_res_hold25 <= S_res_hold25 - 24'd1;
 	end
 end
@@ -1054,10 +1017,10 @@ always @(posedge S_hs_rx_clk or negedge S_pll_lock) begin
 	if (!S_pll_lock) S_res_win_rx <= 2'b00;
 	else             S_res_win_rx <= {S_res_win_rx[0], S_res_win25};
 end
-// 2026-10-31: cam1 裁剪模块跟 cam1 自己的时钟域走（USE_FIXED_RX_CLK=1 时
-// 与 S_hs_rx_clk 真异步）。复位窗同步到 S_rx1_aclk。
+// 2026-10-21 双目: cam1 裁剪模块现在与 cam0 同域(都是 S_hs_rx_clk),
+// 但复位窗仍单独同步一份, 方便以后真要做双时钟时直接切。
 reg [1:0] S_res_win_rx1;
-always @(posedge S_rx1_aclk or negedge S_pll_lock) begin
+always @(posedge S_hs_rx_clk or negedge S_pll_lock) begin
 	if (!S_pll_lock) S_res_win_rx1 <= 2'b00;
 	else             S_res_win_rx1 <= {S_res_win_rx1[0], S_res_win25};
 end
@@ -1310,11 +1273,10 @@ mipi_csi_rx #(
 
 	.O_hs_div_clk          ( S_hs_clk1   ),
 
-	// 2026-10-31 (0x470A): cam1 的 AXIS 输出改跑自己的恢复时钟 S_rx1_aclk。
-	//   选源/双目标切换不再依赖"时钟 mux 跟随源", 切换只切数据 mux => 无缝。
-	//   跨时钟由 dual_frame_sched 的 4 行环形缓冲(异步 BRAM + 格雷码指针)完成。
-	//   回退: 把 USE_FIXED_RX_CLK 置 0 即恢复 0x4709 行为。
-	.m_axis_video_aclk     ( S_rx1_aclk ),
+	// 2026-10-21: 两路 AXIS 输出时钟都用 S_hs_rx_clk (与 0x4601 一致)。
+	//   选中的那一路的恢复时钟就是 S_hs_rx_clk 的来源，所以下游全部同域；
+	//   没选中的那一路靠 RX 内部 FIFO 做 CDC，数据丢弃即可。
+	.m_axis_video_aclk     ( S_hs_rx_clk   ),
 	.m_axis_video_aresetn  ( S_rx_rstn     ),
 	.m_axis_video_tready   ( 1'b1          ),
 	.m_axis_video_tuser    ( S_rx1_tuser   ),
@@ -1357,19 +1319,9 @@ sensor_sync_start #(
 //   (声明在文件前部信号区, 这里只放逻辑)
 always @(posedge I_sysclk_25m or negedge S_pll_lock) begin
 	if (!S_pll_lock) S_clk_sel_r <= 1'b0;
-	else if (USE_FIXED_RX_CLK) S_clk_sel_r <= 1'b0;          // 固定 cam0 时钟
 	else             S_clk_sel_r <= S_dual_eff ? 1'b0 : S_rx_sel;
 end
 assign S_hs_rx_clk_mux = S_clk_sel_r ? S_hs_clk1 : S_hs_clk0;
-
-// cam1 支路时钟: 固定模式下直接用 cam1 自己的恢复时钟（真异步, 靠 sched 的
-// 格雷码指针 + 异步 BRAM 跨时钟, 不再靠"时钟 mux 跟着源走"）
-// ⚠ 2026-10-31: 这里原来插了一个显式 PH1_LOGIC_BUFG。时序报告里看到 TD
-//   在它后面又自动生成了一个 sclk（X_bufg_rx1_clk_auto_created_sclk_*），
-//   等于同一路时钟被缓冲了两次，平白给时钟树加负载；而恢复时钟域在 SDC
-//   里是**未约束**的（STA 覆盖率只有 12.95%），出问题也看不出来。
-//   这里直接用原始网，让 TD 自行决定缓冲。
-assign S_rx1_aclk = USE_FIXED_RX_CLK ? S_hs_clk1 : S_hs_rx_clk;
 
 PH1_LOGIC_BUFG X_bufg_rx_clk (
 	.i ( S_hs_rx_clk_mux ),
@@ -1447,16 +1399,18 @@ ui_image_correction #(
 );
 
 //图像大小裁剪模块 (cam1)
-//  ⚠ 时钟必须与 S_rx1_* 同域。0x470A 起 cam1 的 AXIS 输出跑 S_rx1_aclk
-//    (固定模式 = cam1 自己的恢复时钟), 所以这里也必须用 S_rx1_aclk。
-//    (0x4700 曾经踩过: 时钟不同域 -> frame_start 漏採 -> 画面冻结)
+//  ⚠ 时钟必须是 S_hs_rx_clk。这个模块靠 I_raw_valid 数行/列, 再对比
+//    I_raw_frame_start( = S_rx1_tvalid & S_rx1_tuser ) 复位行号。
+//    一旦它的时钟和 S_rx1_* (m_axis_video_aclk = S_hs_rx_clk) 不同域,
+//    frame_start 会漏採 -> v_cnt 失控 -> O_raw_tuser 永不出来 -> 下游
+//    dbuf 写状态机不再推进 -> 画面冻结。
 ui_image_correction #(
     .DATA_WIDTH  (40),
     .TDEST_WIDTH (10)
 )X_ui_image_correction1
 (
     .O_line_groups    (S_line_groups1    ),
-    .I_clk            (S_rx1_aclk		  ),
+    .I_clk            (S_hs_rx_clk		  ),
     .I_rst_n          (S_pll_lock & S_res_rstn_rx1 ),
     .I_img_width      (S_h_active		  ),
     .I_img_height     (S_v_active		  ),
@@ -1488,11 +1442,10 @@ dual_frame_sched #(
     .LINE_GRP   (480)          // 1080p: 1920px / 4
 ) X_dual_sched (
     .I_clk        (S_hs_rx_clk      ),
-    // 2026-10-31 (0x470A): 写侧跑 cam1 自己的恢复时钟（真异步）。
-    //   环形缓冲现在是异步 BRAM + 格雷码指针, 不再要求 I_clk1 与 I_clk 同域;
-    //   d1_r/v1_r/u1_r/l1_r 已经不再参与输出, 所以不会再有
-    //   "cam1 的 tuser 被漏採 -> 画面冻结" 那个坑。
-    .I_clk1       (S_rx1_aclk       ),
+    // ⚠ 和 I_clk 用同一个时钟: dual_frame_sched 内部 d1_r/v1_r/u1_r/l1_r
+    //    都用 I_clk 采样, I_clk1 只用作行组环形缓冲的写时钟。两者必须同域,
+    //    否则 cam1 的 tuser 会被漏採 -> dbuf 不轮转 -> 画面冻结。
+    .I_clk1       (S_hs_rx_clk      ),
     .I_rst_n      (S_pll_lock       ),
     .I_dual_en    (S_dual_eff       ),
     .I_sel        (S_rx_sel_rx      ),
@@ -1510,9 +1463,7 @@ dual_frame_sched #(
     .O_l          (S_axis_tlast     ),
     .O_src        (S_out_src        ),
     .O_ch1_lost   (S_ch1_lost       ),
-    .O_parity     (S_frame_parity   ),
-    .O_dbg_wr_lines  (S_dbg_c1wr    ),
-    .O_dbg_lost_lines(S_dbg_c1lost  )
+    .O_parity     (S_frame_parity   )
 );
 
 
@@ -1666,8 +1617,6 @@ cfg_ctrl_top #(
 	.i_diag_rxck  (D_rxck_s2),
 	.i_diag_c1ck  (D_c1ck_s2),
 	.i_diag_rtv   (D_rtv_s2),
-   .i_diag_c1wr  (S_dbg_c1wr),
-   .i_diag_c1lost(S_dbg_c1lost),
 	.i_fs_corr    (S_axis_tuser),        // 裁剪模块输出帧首
 	.i_last_corr  (S_axis_tlast),        // 裁剪模块输出行尾
 	// 2026-10-20: LP-free RX 调试总线 (只读 0xD6/0xD7/0xD8) = 固定 cam0
