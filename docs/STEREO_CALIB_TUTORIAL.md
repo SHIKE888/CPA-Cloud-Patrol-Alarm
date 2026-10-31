@@ -158,6 +158,69 @@ ls -l /root/rk/web/stereo_calib.json     # 默认路径 = stereo_depth.py 同目
 
 ---
 
+## 5.5 怎么知道 FOV（没标定之前）
+
+网页上点云比例尺直接取决于 `depth_fov`：**填小了整个点云比视频大一圈，填大了就小一圈**
+（HUD 里那个 `45°估` 的「估」就是提醒）。三条路，从准到快：
+
+### A. 看镜头焦距（最快，误差 <2%，只要知道镜头 mm 数）
+
+IMX415 有效像素 3864×2192、像元 1.45 µm（`docs/IMX415_datasheet.txt`），传感器有效宽
+**5.603 mm**，所以：
+
+$$\text{FOV}_h = 2\arctan\frac{5.603}{2 f_{mm}}$$
+
+```bash
+python3 tools/fov_estimate.py --lens 3.6     # -> 75.8°
+python3 tools/fov_estimate.py --lens 6       # -> 50.0°
+```
+
+| 镜头焦距 | 水平 FOV | 说明 |
+|---|---|---|
+| 2.8 mm | 90° | 广角，畸变明显 |
+| 3.6 mm | 75.8° | 常见安防镜头 |
+| 4 mm | 70.0° | |
+| 6 mm | 50.0° | 视场偏窄、远处更准 |
+| 8 mm | 38.6° | 长焦 |
+| 12 mm | 26.3° | 远距 |
+
+⚠ 规格书常标的是**对角** FOV，别直接填：`python3 tools/fov_estimate.py --diag 90` 会换算成水平。
+
+### B. 量尺法（不用知道镜头，误差 1~3%，5 分钟）
+
+把镜头对着墙，用卷尺量出**画面左右边缘正好对上**的两个点之间的实际宽度 $W$（墙到镜头
+距离 $L$）：
+
+$$\text{FOV}_h = 2\arctan\frac{W}{2L}$$
+
+```bash
+python3 tools/fov_estimate.py --ruler 1180 --dist 1000   # 1 m 处看到 1.18 m -> 61°
+```
+
+要点：量的是**画面左右边缘**（不是墙上的任意两点）；$L$ 从镜头前主面算，误差 2 cm 可忽略。
+
+### C. 已知物体法（只有一张抓拍也行）
+
+画面里放个已知宽度的东西（A4 纸宽 210 mm 最好，横放），量它在抓拍图里占多少像素：
+
+$$f_{px} = \frac{p_{px}\cdot L}{W_{obj}},\qquad \text{FOV}_h = 2\arctan\frac{W_{img}}{2 f_{px}}$$
+
+```bash
+python3 tools/fov_estimate.py --obj 210 --dist 800 --px 520   # A4 纸 0.8m 处占 520px
+```
+
+### D. 目视对齐（30 秒，只保证“看起来一致”）
+
+右键点云框改 FOV，让点云里某个物体的左右边缘和视频里同一物体对齐即可。快，但数值不可信，
+事后还是建议按 A/B 定下来。
+
+### E. 标定之后就不用猜了
+
+`stereo_calib_solve.py` 现在会直接打印 `水平视场角 = 2*atan(W/2/fx)`；引擎读到标定文件后
+用 `fx` 反算 FOV，`depth_fov` 被忽略（HUD 从 `45°估` 变成 `fx1663`）。
+
+---
+
 ## 6. 先自证工具链（不连板也能跑）
 
 ```bash

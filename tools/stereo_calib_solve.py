@@ -26,6 +26,7 @@ from __future__ import print_function
 import argparse
 import glob
 import json
+import math
 import os
 import sys
 import tempfile
@@ -142,6 +143,9 @@ def report(out, extra):
     print("  图像尺寸      : %d x %d" % tuple(out["image_size"]))
     print("  左目 fx/fy    : %.2f / %.2f px     主点 (%.2f, %.2f)"
           % (fx, fy, K[0][2], K[1][2]))
+    hfov = 2.0 * math.degrees(math.atan(out["image_size"][0] * 0.5 / fx))
+    print("  水平视场角    : %.1f°  (=2*atan(W/2/fx); 有了它就不必再填 depth_fov)"
+          % hfov)
     print("  畸变(左)      : %s" % np.round(out["left"]["D"], 4).tolist())
     print("  基线 |T|      : %.2f mm  (T=%s mm)"
           % (B * 1000.0, np.round(np.array(out["stereo"]["T"]) * 1000.0, 2).tolist()))
