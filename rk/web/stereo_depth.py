@@ -83,6 +83,12 @@ DEFAULT_FOV = 60.0          # 水平视场角(度) —— 未标定时的估算
 PROC_W_DEF = 512            # SGBM 处理宽度
 PROC_W_MIN, PROC_W_MAX = 384, 640
 MAX_DISP = 128              # 视差搜索上限(必须是 16 的倍数)
+# ★ 2026-10-31: 视差范围不再固定 128，而是按"最短可测距离"算。
+#   原因：OpenCV 的 SGBM 是左参考，需要右图在 x-d 处采样，x < numDisparities 的
+#   列永远拿不到有效视差。512 宽配 128 就是【左侧 25% 全空】—— 合成图实测
+#   0%~0%~100%... 分界恰好在第 128 列，这就是“点云左边一条填不满”的真凶之一。
+#   而 128 对应 0.16 m 的最近距离，根本用不上。
+Z_NEAR = float(os.environ.get("DEPTH_Z_NEAR", "0.5"))   # 希望最近能测到多少(m)
 TARGET_PTS = 2200           # 输出点数（每点 9 字节, 2200 点 ≈ 20KB/帧）
 OUT_HZ = 10.0               # 引擎最高计算频率(双目 30fps 输入, 每 3 帧取 1 对)
 WANT_TTL = 6.0              # 多久没人拉 /api/depth 就停机(秒)
@@ -90,6 +96,7 @@ Z_MIN, Z_MAX = 0.15, 4.0    # 有效深度窗口(m)，45mm 基线在这个范围
 DISP_MIN = 0.4              # 小于这个(亚像素)视差当无效，避免"无穷远"噪声
 MIN_VALID = 0.015           # 有效像素低于这个比例就当"没匹配上"
 SHEAR_WARN = 0.6            # 半幅每行偏移超过这个(px/row)就报输入异常
+ALIGN_MIN_RESP = 0.15       # 两目对齐估计的相关峰低于它就不采信(纹理太差)
 
 # 每个点: x,y,z (int16, mm) + r,g,b (u8) = 9 字节
 PACK_DT = np.dtype([("x", "<i2"), ("y", "<i2"), ("z", "<i2"),
@@ -197,6 +204,9 @@ class StereoDepth(threading.Thread):
         # 输入侧诊断: 半幅每行累积偏移(px/row)。0 = 正常。
         self._shear = [0.0, 0.0]
         self._shear_tick = 0
+        # 两目整体错位: (dx, dy) 全分辨率像素。dx>0 => 当前"左"其实是物理右目(视差符号反)
+        self._align = [0.0, 0.0]
+        self._swap = False
         # 标定: (key, maps)。maps 是处理分辨率下的极线校正查找表。
         self._rect = None
         self._rect_key = None
@@ -252,6 +262,9 @@ class StereoDepth(threading.Thread):
             "baseline_m": BASELINE_M,
             "shear_l": round(self._shear[0], 2),
             "shear_r": round(self._shear[1], 2),
+            "swap": bool(self._swap),
+            "align_dx": round(float(self._align[0]), 1),
+            "align_dy": round(float(self._align[1]), 1),
         }
         st.update(calib_brief())
         return st
@@ -314,17 +327,15 @@ class StereoDepth(threading.Thread):
                 fov = DEFAULT_FOV
         return min(150.0, max(20.0, fov))
 
-    def _get_sgbm(self, pw):
-        key = int(pw)
+    def _get_sgbm(self, nd):
+        """按视差搜索范围 nd 取一个 SGBM（缓存）。"""
+        key = int(nd)
         if self._sgbm is not None and self._sgbm_key == key:
             return self._sgbm
         bs = 5
-        # 视差上限给足 128：45mm 基线下 128 视差 ≈ 0.16m 最近可测距离。
-        # 搜索范围越大越慢，所以靠下面的自适应处理宽度来控负载。
-        nd = min(MAX_DISP, max(16, (key // 16) * 16))
         self._sgbm = cv2.StereoSGBM_create(
             minDisparity=0,
-            numDisparities=nd,
+            numDisparities=key,
             blockSize=bs,
             P1=8 * bs * bs,
             P2=32 * bs * bs,
@@ -433,6 +444,37 @@ class StereoDepth(threading.Thread):
         return med
 
     # ------------------------------------------------------------ 核心
+    def _estimate_align(self, gl, gr):
+        """估计左右两目的整体错位 (dx, dy)，单位=全分辨率像素。
+
+        为什么必须估：
+          1) **符号（自动交换）**：phaseCorrelate(a,b)=(dx,dy) 表示"b 内容相对 a 偏右 dx"。
+             物理上左相机看到同一物点在更大 u，所以 dx>0 说明当前第二张（右半幅）
+             才是物理左目。不交换的直接后果：视差符号反了，SGBM(minDisparity=0)
+             只能匹配出噪声 —— 2026-10-31 板上 A/B：不交换 10.8% 有效，
+             交换 56.8%，点云从"星星点点"变成铺满整帧。
+          2) dy 只作诊断：实测 sweep s=-8..+8 后 s=0 最优，这个估计量会偏 ~1.7px，
+             拿它去平移右图反而掉点，所以**不**做垂直补偿。
+        """
+        if cv2 is None:
+            return 0.0, 0.0, 0.0
+        h, w = gl.shape[:2]
+        y0, y1 = int(h * 0.40), int(h * 0.88)
+        x0, x1 = int(w * 0.08), int(w * 0.92)
+        if y1 - y0 < 32 or x1 - x0 < 64:
+            return 0.0, 0.0, 0.0
+        a = gl[y0:y1, x0:x1]
+        b = gr[y0:y1, x0:x1]
+        s = 4
+        a4 = cv2.resize(a, (max(32, (x1 - x0) // s),
+                            max(16, (y1 - y0) // s))).astype(np.float32)
+        b4 = cv2.resize(b, (a4.shape[1], a4.shape[0])).astype(np.float32)
+        if a4.std() < 3.0 or b4.std() < 3.0:
+            return 0.0, 0.0, 0.0                      # 画面太素，不可信
+        win = cv2.createHanningWindow((a4.shape[1], a4.shape[0]), cv2.CV_32F)
+        (dx, dy), resp = cv2.phaseCorrelate(a4 * win, b4 * win)
+        return float(dx) * s, float(dy) * s, float(resp)
+
     def _compute(self, L, R, tsp=None):
         t_begin = time.time()
         h, w = L.shape[:2]
@@ -442,10 +484,19 @@ class StereoDepth(threading.Thread):
         # 全分辨率上测"每行偏移"（低分辨率会因搜索窗饱和而误报 4px）
         # 前 3 帧立即测一次（一开就来），之后每 30 帧（~3s）复测。
         if self._shear_tick < 3 or self._shear_tick % 30 == 0:
-            self._shear[0] = self._estimate_shear(
-                cv2.cvtColor(L, cv2.COLOR_BGR2GRAY))
-            self._shear[1] = self._estimate_shear(
-                cv2.cvtColor(R, cv2.COLOR_BGR2GRAY))
+            gl_f = cv2.cvtColor(L, cv2.COLOR_BGR2GRAY)
+            gr_f = cv2.cvtColor(R, cv2.COLOR_BGR2GRAY)
+            self._shear[0] = self._estimate_shear(gl_f)
+            self._shear[1] = self._estimate_shear(gr_f)
+            adx, ady, aresp = self._estimate_align(gl_f, gr_f)
+            if aresp >= ALIGN_MIN_RESP:
+                # ★ 符号约定（已用合成图验证）: phaseCorrelate(a,b)=(dx,dy) 表示
+                #   "b 的内容相对 a 偏右 dx / 偏下 dy"。
+                #   物理上左边的相机看到同一物点在**更大**的 u（x_L = x_R + f*B/z），
+                #   所以 dx>0 说明 gr（右半幅）才是物理左目 -> 必须交换。
+                #   板上 A/B: 不交换 10.8% 有效, 交换 56.8%（差 5 倍）。
+                self._swap = adx > 0.0
+                self._align = [adx, ady]
         self._shear_tick += 1
         shear_l, shear_r = self._shear
         if max(abs(shear_l), abs(shear_r)) > SHEAR_WARN:
@@ -456,6 +507,9 @@ class StereoDepth(threading.Thread):
             self._err = "%s数据异常(每行 %.1f px 斜移), 请查 FPGA 行打包" \
                 % (who, abs(k))
             return None
+        # 物理左目当参考图：视差符号反了整张图都是噪声（见 _estimate_align）
+        if self._swap:
+            L, R = R, L
 
         pw = int(min(self._proc_w, w))
         ph = int(round(h * pw / float(w))) & ~1
@@ -465,6 +519,9 @@ class StereoDepth(threading.Thread):
         # 见 mipi_webstream._to_bgr 的实测注释（慢 17~20 倍）。
         sl = cv2.resize(L, (pw, ph), interpolation=cv2.INTER_LINEAR)
         sr = cv2.resize(R, (pw, ph), interpolation=cv2.INTER_LINEAR)
+        # ⚠ 不做"按 align_dy 平移右图"的垂直补偿：实测该估计量偏差 ~1.7 px(处理
+        #   分辨率)，扫描 s=-8..+8 后 s=0 才是最优（56.8%，s=-2 只有 56.5%，
+        #   s=+2 掉到 46.3%）——拿它去补偿反而掉点。align_dy 只上报作诊断。
 
         # ---- 标定：有 stereo_calib.json 就做极线校正 + 用标定内参 ----
         cal = load_calib()
@@ -493,10 +550,19 @@ class StereoDepth(threading.Thread):
         gl = cv2.cvtColor(sl, cv2.COLOR_BGR2GRAY)
         gr = cv2.cvtColor(sr, cv2.COLOR_BGR2GRAY)
 
+        # ---- 视差搜索范围：按最近可测距离 Z_NEAR 算，并按 nd 左补再裁回 ----
+        #   0.5 m 在 45mm 基线下 => d = f*B/z。f 越小(视角越宽)需要的 nd 越小。
+        d_near = f * base_m / max(Z_NEAR, 1e-3)          # 处理分辨率下的像素数
+        nd = int(np.ceil(d_near / 16.0)) * 16
+        nd = max(32, min(MAX_DISP, nd))
+        gl_p = np.pad(gl, ((0, 0), (nd, 0)), mode="edge")
+        gr_p = np.pad(gr, ((0, 0), (nd, 0)), mode="edge")
+
         t_algo = time.time()          # 只统计"匹配+反投影", 不含上面的测斜
-        sgbm = self._get_sgbm(pw)
-        disp = sgbm.compute(gl, gr).astype(np.float32) / 16.0
-        disp = cv2.medianBlur(disp, 5)
+        sgbm = self._get_sgbm(nd)
+        disp = sgbm.compute(gl_p, gr_p).astype(np.float32) / 16.0
+        disp = cv2.medianBlur(disp, 5)[:, nd:]            # 裁掉补出来的那一带
+        disp = disp[:, :pw]
 
         with np.errstate(divide="ignore", invalid="ignore"):
             z = (f * base_m) / disp
@@ -560,10 +626,14 @@ class StereoDepth(threading.Thread):
             "zmax": round(float(hi), 3),
             "w": int(w), "h": int(h),
             "pw": int(pw), "ph": int(ph),
+            "ndisp": int(nd),
             "focal_px": round(float(f_full), 1),
             "fov_deg": round(fov, 1),
             "baseline_m": base_m,
             "calib": ck,
+            "align_dx": round(float(self._align[0]), 1),
+            "align_dy": round(float(self._align[1]), 1),
+            "swap": bool(self._swap),
             "alg": "sgbm",
             "ms": round(ms, 1),
             "shear_l": round(float(shear_l), 2),

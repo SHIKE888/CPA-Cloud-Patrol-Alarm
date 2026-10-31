@@ -5347,6 +5347,17 @@ async function poll() {
     $("sFps").textContent     = (st.fps ?? "?") + " fps";
     // ---- 双目状态 ----
     const _d = st.dual;
+    // 左右目标签：以深度引擎实测为准（st.depth.swap=true 表示拼接的右半幅才是物理左目）。
+    // 2026-10-31 实测：右半幅(cam0)内容比左半幅偏右 +44 px，即 cam0 才是物理左目，
+    // 默认写死的 “cam1 左目 / cam0 右目” 是反的。引擎给不出结论时保持默认不动。
+    if (st.depth && st.depth.swap != null) {
+      const _sw = !!st.depth.swap;
+      const _bs = document.querySelectorAll("#quad .qc > b");
+      if (_bs.length >= 2) {
+        _bs[0].firstChild.nodeValue = _sw ? "cam1 右目" : "cam1 左目";
+        _bs[1].firstChild.nodeValue = _sw ? "cam0 左目" : "cam0 右目";
+      }
+    }
     if (_d && $("dualLine")) {
       const _ms = v => (v == null ? "—" : Math.round(v) + "ms");
       const _tag = _d.active ? "拼接中"
