@@ -67,7 +67,7 @@ def obj_grid(cols, rows, square_mm):
 
 
 # --------------------------------------------------------------------- 解算
-def solve(pairs, cols, rows, square_mm, refine=False):
+def solve(pairs, cols, rows, square_mm, refine=False, no_dist=False):
     lp = sorted(glob.glob(os.path.join(pairs, "L_*.png")))
     if not lp:
         raise SystemExit("在 %s 下没找到 L_*.png" % pairs)
@@ -108,6 +108,16 @@ def solve(pairs, cols, rows, square_mm, refine=False):
 
     r1, K1, D1, _rv1, _tv1 = cv2.calibrateCamera(op, ip1, size, None, None)
     r2, K2, D2, _rv2, _tv2 = cv2.calibrateCamera(op, ip2, size, None, None)
+    if no_dist:
+        # 畸变≈0 的镜头（本项目规格 <=1）: 把 k1..k3 与切向全固定为 0，
+        # 少估 5 个参数 -> 同样的图对张数下 K 更稳，极线校正也不会被噪声带偏。
+        mflags = (cv2.CALIB_ZERO_TANGENT_DIST | cv2.CALIB_FIX_K1 |
+                  cv2.CALIB_FIX_K2 | cv2.CALIB_FIX_K3)
+        r1, K1, D1, _rv1, _tv1 = cv2.calibrateCamera(
+            op, ip1, size, None, np.zeros((5, 1)), flags=mflags)
+        r2, K2, D2, _rv2, _tv2 = cv2.calibrateCamera(
+            op, ip2, size, None, np.zeros((5, 1)), flags=mflags)
+        print("  [no-dist] 畸变固定为 0")
     flags = 0 if refine else cv2.CALIB_FIX_INTRINSIC
     rms, K1, D1, K2, D2, R, T, E, F = cv2.stereoCalibrate(
         op, ip1, ip2, K1, D1, K2, D2, size,
@@ -233,13 +243,16 @@ def main():
     ap.add_argument("--out", default="stereo_calib.json", help="输出 JSON")
     ap.add_argument("--refine", action="store_true",
                     help="联合精修内参(张数多时更准, 张数少时更抖)")
+    ap.add_argument("--no-dist", action="store_true",
+                    help="畸变固定为 0(镜头畸变<=1 时推荐)")
     ap.add_argument("--selftest", action="store_true", help="合成图对自检")
     a = ap.parse_args()
 
     if a.selftest:
         return selftest()
 
-    out, extra = solve(a.pairs, a.cols, a.rows, a.square, refine=a.refine)
+    out, extra = solve(a.pairs, a.cols, a.rows, a.square, refine=a.refine,
+                       no_dist=a.no_dist)
     report(out, extra)
     d = os.path.dirname(os.path.abspath(a.out))
     if d and not os.path.isdir(d):
