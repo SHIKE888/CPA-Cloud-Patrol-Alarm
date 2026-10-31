@@ -162,6 +162,13 @@ def _shoulder_center(rows, box=None, conf=_KPT_CONF):
 
     只看见一侧肩（人侧身）时仍然返回那一侧的坐标，但 `pair=False`，
     上层据此给置信度打折 —— 侧身时中点本来就≈单肩，用比不用好。
+
+    ⚠ 必须做**解剖位置校验**（2026-11-01 板上实测踩到）：姿态模型在
+    遮挡/近距离时会把手肘、甚至大腿的点判成"肩"，实测出现过
+    box=[26,162,805,538]（框高 376）而 sh=(611,483) —— 落在框下 1/7 处，
+    拿它去采深度会采到身体前面的杂物，距离直接错掉。
+    所以：肩必须**低于头、高于髋**，且横向落在框内合理范围，否则返回 None
+    （上层自然退回瞄准点/框中心，宁可不用也不要用错的点）。
     """
     if not rows:
         return None
@@ -171,25 +178,69 @@ def _shoulder_center(rows, box=None, conf=_KPT_CONF):
             pts.append(rows[i])
     if not pts:
         return None
+
+    # ---- 框尺寸（用于相对位置校验）----
+    bw = bh = 0.0
+    try:
+        if box is not None and len(box) >= 4:
+            bw = abs(float(box[2]) - float(box[0]))
+            bh = abs(float(box[3]) - float(box[1]))
+    except Exception:                                       # noqa: BLE001
+        bw = bh = 0.0
+
+    # ---- 与头 / 髋的上下关系（最可靠的解剖约束）----
+    #   ⚠ 这里全部用**绝对像素坐标**：有 head/hip 就用它们的 y，没有才用
+    #     "框顶 + 比例" 估一个（早先版本把两者混着加，相当于把偏移算了两遍，
+    #     结果正常的两肩被拒、误检到大腿的反而通过）。
+    head = _kp(rows, _HEAD_IDX, conf)
+    hip = _kp(rows, _HIP_IDX, conf)
+    box_y0 = None
+    try:
+        box_y0 = float(box[1]) if (box is not None and len(box) >= 4) else None
+    except Exception:                                       # noqa: BLE001
+        box_y0 = None
+    base_y = box_y0 if box_y0 is not None else 0.0
+    y_lo = y_hi = None                       # 肩 y 的允许区间（绝对坐标）
+    if head is not None:
+        y_lo = head[1] + 0.02 * bh           # 不高于头（肩在颈根，比眼睛低）
+    elif bh > 0:
+        y_lo = base_y + 0.02 * bh            # 没有头部关键点：至少别在框顶之上
+    if hip is not None:
+        y_hi = hip[1] + 0.05 * bh            # 不低过髋
+    elif bh > 0:
+        y_hi = base_y + 0.55 * bh            # 没髋：肩不该跑到框中线以下
+    if y_lo is not None and y_hi is not None and y_hi <= y_lo:
+        y_lo = y_hi = None                   # 头髋关系本身不可信 -> 不校验 y
+
+    def _ok(p):
+        if p is None:
+            return False
+        x, y = p[0], p[1]
+        if bw > 0 and box is not None:
+            x0 = min(float(box[0]), float(box[2]))
+            if not (x0 - 0.05 * bw <= x <= x0 + 1.05 * bw):
+                return False
+        if y_lo is not None and not (y_lo <= y <= y_hi):
+            return False
+        return True
+
     if len(pts) == 2:
         (x0, y0), (x1, y1) = (pts[0][0], pts[0][1]), (pts[1][0], pts[1][1])
+        mid = ((x0 + x1) / 2.0, (y0 + y1) / 2.0)
         # 两肩跨度/高度差离谱 -> 其中一个多半是误检（常见：把手肘认成肩）
-        bw = bh = 0.0
-        try:
-            if box is not None and len(box) >= 4:
-                bw = abs(float(box[2]) - float(box[0]))
-                bh = abs(float(box[3]) - float(box[1]))
-        except Exception:                                   # noqa: BLE001
-            bw = bh = 0.0
         bad = ((bw > 0 and abs(x1 - x0) > 0.85 * bw)
                or (bh > 0 and abs(y1 - y0) > 0.25 * bh))
-        if not bad:
-            return {"pt": ((x0 + x1) / 2.0, (y0 + y1) / 2.0), "pair": True}
-        # 有一侧不可信：留置信度更高的那条
-        p = pts[0] if pts[0][2] >= pts[1][2] else pts[1]
-        return {"pt": (p[0], p[1]), "pair": False}
+        if not bad and _ok(mid):
+            return {"pt": mid, "pair": True}
+        # 有一侧不可信：留置信度更高、且位置合理的那条
+        for p in sorted(pts, key=lambda q: -q[2]):
+            if _ok((p[0], p[1])):
+                return {"pt": (p[0], p[1]), "pair": False}
+        return None
     p = pts[0]
-    return {"pt": (p[0], p[1]), "pair": False}
+    if _ok((p[0], p[1])):
+        return {"pt": (p[0], p[1]), "pair": False}
+    return None
 
 
 def _body_size(rows, box_h, conf=_KPT_CONF):
