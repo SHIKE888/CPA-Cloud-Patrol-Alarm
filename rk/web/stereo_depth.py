@@ -507,11 +507,19 @@ class StereoDepth(threading.Thread):
                 #   "b 的内容相对 a 偏右 dx / 偏下 dy"。
                 #   物理上左边的相机看到同一物点在**更大**的 u（x_L = x_R + f*B/z），
                 #   所以 dx>0 说明 gr（右半幅）才是物理左目 -> 必须交换。
-                #   板上 A/B: 不交换 10.8% 有效, 交换 56.8%（差 5 倍）。
-                self._swap = adx > 0.0
+                # ⚠ 但这个估计只在【未标定】时才用得上。有 stereo_calib.json 时
+                #   left/right 已按 (左半幅, 右半幅) 标定好，谁是谁由标定决定。
+                #   实测本场景 phaseCorrelate 给出 dx=+17.3（错误符号）→ 交换后深度图
+                #   相对视频**水平镜像**（近处的柜子在左边，热力图却画到右边，
+                #   看右侧的远景反而成了红色）。2026-11-01 修。
+                self._swap = (adx > 0.0) and (load_calib() is None)
                 self._align = [adx, ady]
         self._shear_tick += 1
         shear_l, shear_r = self._shear
+        # 有标定时左右归属由 stereo_calib.json 唯一确定（left/right 就是按
+        # 左半幅/右半幅标出来的），这里无条件禁止交换 —— 保证深度图与视频同向。
+        if load_calib() is not None:
+            self._swap = False
         if max(abs(shear_l), abs(shear_r)) > SHEAR_WARN:
             # 半幅被逐行拖成斜条纹时，SGBM 出来的"视差"是纯噪声，点云毫无意义。
             # 与其画一坨乱点，不如明确报出来（前端会把这句话写在画面上）。
