@@ -307,7 +307,9 @@ A: 不要。采集工具读的是 30 fps 推流，但每次只用**一帧静止�
 | 文件 | 作用 |
 |---|---|
 | `rk/web/stereo_depth.py` | 深度引擎；有 `stereo_calib.json` 就做极线校正 + 用标定内参 |
+| `rk/web/stereo_calib.json` | **已标定结果（2026-11-01，已上板生效）** |
 | `tools/stereo_calib_capture.py` | 采集成对棋盘图（`L_xxx.png` / `R_xxx.png`） |
+| `tools/stereo_calib_auto.py` | 自动采集（带**静止判定**，见 §10.2） |
 | `tools/stereo_calib_solve.py` | 角点检测 + 单目/双目标定 → `stereo_calib.json`；`--selftest` 合成自证 |
 | `docs/STEREO_CALIB_TUTORIAL.md` | 本文 |
 

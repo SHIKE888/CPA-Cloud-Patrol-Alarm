@@ -383,9 +383,12 @@ class StereoDepth(threading.Thread):
         K1 = S @ cal["K"]
         K2 = S @ cal["K_r"]
         size = (int(pw), int(ph))
+        # alpha=-1: 保留全部源像素(只裁掉真正无效的黑边)。
+        # alpha=0 会把视场从 67° 裁到 56.4°(实测量), 热力图比视频"拉近"了一截,
+        # 与左边两路视频对不上; alpha=-1 下 f_rect 几乎等于原 f, 视场 66.7° 不变。
         R1, R2, P1, P2, _Q, _roi1, _roi2 = cv2.stereoRectify(
             K1, cal["D"], K2, cal["D_r"], size, cal["R"], cal["T"],
-            flags=cv2.CALIB_ZERO_DISPARITY, alpha=0)
+            flags=cv2.CALIB_ZERO_DISPARITY, alpha=-1)
         lx, ly = cv2.initUndistortRectifyMap(K1, cal["D"], R1, P1, size,
                                             cv2.CV_16SC2)
         rx, ry = cv2.initUndistortRectifyMap(K2, cal["D_r"], R2, P2, size,
