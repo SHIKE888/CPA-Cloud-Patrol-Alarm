@@ -373,12 +373,24 @@ def _aim_plan(det, frame_wh=None, margin_ratio=_AIM_MARGIN,
         # 画面尺寸未知（早期帧）：退回"当前是否完整"
         can_full = full_now
 
-    if can_full:
-        aim, mode = body, "center"
-    elif head is not None and not cut_top:
-        aim, mode = head, "head"
+    # ---- 瞄准点：**单点，永远人体几何中心**（2026-11-01 用户要求）----
+    #  原来是「能全包 -> 几何中心 / 装不下 -> 头部 / 头被裁 -> 框中心」三态
+    #  切换。那个切换本身就是俯仰周期性摆动的**燃料**：三个点的 y 相差人体
+    #  高度的 0.2~0.4（归一化 0.45~0.6），每次切换都是一次阶跃，云台追着它
+    #  来回跑（1~2Hz 极限环）。
+    #  现在统一成几何中心 = (头顶 + 脚底)/2：
+    #    · 头/脚都在  -> 直接用关节位置，是真的几何中心；
+    #    · 脚出框     -> 髋关节 + 身高比例推出脚底（见上面的 bottom）；
+    #    · 头出框     -> 用框顶或身高比例推头顶（见上面的 top）；
+    #    · 关节不够   -> 退回检测框的上下沿（至少还是个稳定的中位）。
+    #  `can_full` 仍然算出来，只作为**显示/诊断**，不再影响瞄哪。
+    aim = body
+    if not from_joints:
+        mode = "box"           # 关节不够（没跑姿态），只能按框推
+    elif full_now:
+        mode = "center"        # 全身可见
     else:
-        aim, mode = center, "box"
+        mode = "infer"         # 有裁切，几何中心是按比例推出来的
     return {
         "aim": (float(aim[0]), float(aim[1])),
         "mode": mode,
@@ -999,17 +1011,18 @@ class AiOverlay(object):
                 "score": round(float(d.get("score", 0)), 3),
                 "risk": d.get("risk", 0),
                 "n_kpt": n_kpt,
-                # 给云台追踪用的"瞄准点"：
-                #   能全包 = 人体几何中心（头脚中点）
-                #   装不下 = 头部中心（头被上边框裁掉才退回框中心）
+                # 给云台追踪用的"瞄准点"：**永远人体几何中心**（单点）。
+                #   头/脚被画面裁掉时，几何中心按关节比例推断（看 aim_mode：
+                #   全身可见 / 按比例推断 / 只能按检测框推）。
                 "aim": ([int(round(aim[0])), int(round(aim[1]))]
                         if aim else None),
-                "aim_head": bool(plan and plan["mode"] == "head"),
-                "aim_mode": ({"head": "头部", "center": "几何中心",
+                # 兼容字段：现在恒为 False（不再锁头）
+                "aim_head": False,
+                "aim_mode": ({"center": "几何中心", "infer": "几何中心(推断)",
                               "box": "框中心"}[plan["mode"]]
                              if plan else None),
-                # full = 当前这一刻是否完整可见（旧语义，页面显示用）
-                # can_full = 云台挪过去以后能不能全包（决定瞄哪）
+                # full = 当前这一刻是否完整可见（页面显示用）
+                # can_full = 云台挪过去以后能不能全包（**只显示，不再影响瞄准点**）
                 "full": bool(plan["full_now"]) if plan else bool(full),
                 "can_full": bool(full),
                 "est_h": (int(round(plan["est_h"]))

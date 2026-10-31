@@ -95,8 +95,8 @@ class Ctrl(object):
                 want = -mag * (1 if p > 0 else -1)
         else:
             self.kf.update(e, dt)
-            dead = 0.10 if self.mode == "hold" else 0.15
-            gain = 0.5 if self.mode == "hold" else 0.25
+            dead = 0.05 if self.mode == "hold" else 0.15
+            gain = 0.7 if self.mode == "hold" else 0.25
             vmax = 10.0 if self.mode == "hold" else 8.0
             a = abs(e)
             if self.active:
@@ -149,7 +149,9 @@ def run(mode, jump, noise=0.05, dur=18.0, seed=7):
 
 def main():
     ok = True
-    for label, jump in (("near  (aim jump 0.60)", 0.60),
+    # jump=0.0 = aim 单点化之后的情形（只余框/关键点抖动）
+    for label, jump in (("single-point (aim jump 0.00)", 0.0),
+                        ("near  (aim jump 0.60)", 0.60),
                         ("mid   (aim jump 0.35)", 0.35),
                         ("far   (aim jump 0.15)", 0.15)):
         print("\n%s -- pitch swing / peak speed" % label)
@@ -158,7 +160,9 @@ def main():
             pp, vpk = run(mode, jump)
             res[mode] = pp
             print("  %-6s swing %6.2f deg   peak %5.1f deg/s" % (mode, pp, vpk))
-        if res["hold"] >= res["old"] - 1e-6:
+        if res["old"] < 0.3:
+            print("  [OK] old 本身已经不摆（aim 单点化的功劳）")
+        elif res["hold"] >= res["old"] - 1e-6:
             ok = False
             print("  [X] hold 没有改善")
         else:

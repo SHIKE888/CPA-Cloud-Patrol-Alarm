@@ -278,8 +278,8 @@ class GimbalWeb(object):
         #   所以 pitch 不再做速度前瞻、用大死区 + 半增益 + 限速，只在人快
         #   跑出画面上下时才慢慢跟；`pitch_hold=False` 可切回老的全跟踪。
         self.pitch_hold = True
-        self.pitch_deadband = 0.10       # 归一化（≈3.3°）：这个带里完全不动
-        self.pitch_gain = 0.5            # 相对 yaw 的比例增益
+        self.pitch_deadband = 0.05       # 归一化（≈1.7°）：这个带里完全不动
+        self.pitch_gain = 0.7            # 相对 yaw 的比例增益
         self.pitch_rate_max = 10.0       # 俯仰最大角速度 °/s
         self._pitch_active = False       # 滞回：出带才动、回带就停
         # 平滑：所有速度指令都按这个加速度斜坡上去/下来，不再阶跃
@@ -1551,7 +1551,9 @@ class GimbalWeb(object):
             self._aim_s[1] += dy
             cx, cy = self._aim_s
         aim_head = bool(best.get("aim_head"))
-        aim_mode = best.get("aim_mode") or ("头部" if aim_head else "身体")
+        # ai_overlay 现在给的是**单点**（人体几何中心，头/脚被裁时按比例推断），
+        # aim_mode 只是说明"这个中心是怎么来的"，不再影响瞄哪。
+        aim_mode = best.get("aim_mode") or "几何中心"
         can_full = best.get("can_full")
         ex = (cx - fw / 2.0) / (fw / 2.0)
         ey = (cy - fh / 2.0) / (fh / 2.0)
