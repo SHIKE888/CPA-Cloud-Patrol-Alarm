@@ -45,8 +45,8 @@ module tb_sched;
 
     wire [DW-1:0] O_d;
     wire O_v, O_u, O_l, O_src, O_parity, O_ch1_lost;
-    wire [15:0] wr_lines;
-    wire [7:0]  lost_lines;
+    wire [15:0] wr_lines_unused;
+    wire [7:0]  lost_lines_unused;
 
     dual_frame_sched #(.DATA_WIDTH(DW), .LINE_GRP(LG)) dut (
         .I_clk        (clk),
@@ -57,8 +57,7 @@ module tb_sched;
         .I_d0(d0), .I_v0(v0), .I_u0(u0), .I_l0(l0),
         .I_d1(d1), .I_v1(v1), .I_u1(u1), .I_l1(l1),
         .O_d(O_d), .O_v(O_v), .O_u(O_u), .O_l(O_l),
-        .O_src(O_src), .O_parity(O_parity), .O_ch1_lost(O_ch1_lost),
-        .O_dbg_wr_lines(wr_lines), .O_dbg_lost_lines(lost_lines)
+        .O_src(O_src), .O_parity(O_parity), .O_ch1_lost(O_ch1_lost)
     );
 
     function [DW-1:0] enc(input integer L, input integer g);
@@ -273,7 +272,7 @@ module tb_sched;
         report("P3 dual       ");
 
         $display("==============================================");
-        $display("wr_lines=%0d lost_lines=%0d  TOTAL_FAIL=%0d", wr_lines, lost_lines, total_fail);
+        $display("TOTAL_FAIL=%0d", total_fail);
         if (total_fail == 0) $display("RESULT: ALL PASS");
         else                 $display("RESULT: %0d FAILED", total_fail);
         $finish;

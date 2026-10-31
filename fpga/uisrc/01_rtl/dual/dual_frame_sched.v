@@ -120,6 +120,19 @@ module dual_frame_sched #(
         if (rd_en) rdata <= mem[{rblk, rcnt}];
     end
 
+    //-------------------------------------------------------------------------
+    //  ★ 2026-10-31: 行尾必须跟 rdata 一起打一拍（双目花屏的真因）
+    //  rline_end 是**组合**的 (rcnt == LG-1)，而 rdata 是同步读、天然滞后 1 拍，
+    //  于是下游看到的是"tlast 在最后一个组之前" -> 每行少一组、下一行多一组
+    //  -> 同一帧里行错位。tb_sched 复现：err_mix=484。
+    //  cam0/cam1 直通支的 l0_r / l1_r 本来就打过拍，所以只有双目这条坏。
+    //  单目路径完全不受影响（仍走 l0_r / l1_r）。
+    //-------------------------------------------------------------------------
+    reg rlast_q;
+    always @(posedge I_clk) begin
+        if (rd_en) rlast_q <= rline_end;
+    end
+
     // 行首锁一次就绪状态。
     // ⚠ 不能逐拍判：写端一旦停住，读指针超过写指针之后 "wgray != rgray" 又会
     //   变回真（2 bit 指针分不清"落后"和"跑过头"），于是一直把环形缓冲里的旧
@@ -199,7 +212,7 @@ module dual_frame_sched #(
     assign O_d = dual_r ? (parity_r ? (line_ok ? rdata : {DATA_WIDTH{1'b0}}) : d0_r)
                         : (sel_r ? d1_r : d0_r);
     assign O_u = dual_r ? u0_r : (sel_r ? u1_r : u0_r);
-    assign O_l = dual_r ? (parity_r ? rline_end : l0_r)
+    assign O_l = dual_r ? (parity_r ? rlast_q : l0_r)
                         : (sel_r ? l1_r : l0_r);
     assign O_src    = dual_r ? parity_r : sel_r;
     assign O_parity = parity_r;
