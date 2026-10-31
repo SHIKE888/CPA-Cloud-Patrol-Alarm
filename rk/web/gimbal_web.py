@@ -248,8 +248,24 @@ class GimbalWeb(object):
         # 死区从 0.07 改到 0.015：原来的大死区 + 框抖动 = 「走一下停一下」。
         # 现在误差先过卡尔曼，抖动没了，死区只用来防止静座时的微颤。
         self.track_deadband = 0.015
-        self.track_full = 0.35           # |误差| 到这里给满速
+        self.track_full = 0.35           # 旧映射的"满速误差"（现在只用于显示/兼容）
         self.track_gain = 1.0
+        # 比例律增益：(°/s) / 归一化误差。折算环增益 ≈ kp/33 ≈ 1.2 /s，
+        # 对应 ~0.45s 的视觉延迟还有约 55° 相位裕度。
+        self.track_kp = 40.0
+        # ---- 追踪环路整形（2026-11-01：修"视觉延迟 → 云台摆动不止"）----
+        # 实测（AI 4~8fps，age≈120ms）yaw 在 64°~126° 之间来回摆、峰值 ±45°/s，
+        # 周期 2.5~4s。根因两条，都在下面这几行里治：
+        #   ① ai 的 aim 点在「头部 / 几何中心 / 框中心」之间反复切，每次切换
+        #      都是 0.3~0.6 的**阶跃**；0.5 的短低通根本压不住。
+        #   ② 卡尔曼把阶跃当速度（冲 ±3/s），前瞻(ahead 0.2~0.4s)再把它放大成
+        #      满速 → 45°/s 跑一个视觉周期就转过 13°，必然过冲再反向 = 极限环。
+        self.aim_tau = 0.12              # 瞄准点一阶低通时间常数(s)
+        self.aim_step = 0.06             # 每拍归一化误差最大变化量(≈2.4/s@40Hz)
+        self.vel_max = 1.5               # 卡尔曼速度限幅(归一化/秒)
+        self.pred_max = 0.25             # 预测位移限幅(归一化)
+        self.ahead_max = 0.30            # 前瞻上限(s)：再大就是把噪声当运动
+        self._track_moving = [False, False]   # 启动/停止死区滞回（yaw/pitch）
         # 平滑：所有速度指令都按这个加速度斜坡上去/下来，不再阶跃
         self.accel = _clamp(_num(accel_deg_s2, 250.0), 10.0, 3000.0)
         self.predict_s = _clamp(_num(predict_s, 0.15), 0.0, 0.6)
@@ -501,6 +517,14 @@ class GimbalWeb(object):
                     "kalman": bool(self.kalman),
                     "period_ms": int(round(self.period * 1000)),
                     "deadband": round(self.track_deadband, 3),
+                    # 环路整形参数（2026-11-01）：小误差降速 / 预测限幅 / 瞄准点限速
+                    "aim_tau": round(self.aim_tau, 3),
+                    "aim_step": round(self.aim_step, 3),
+                    "vel_max": round(self.vel_max, 2),
+                    "pred_max": round(self.pred_max, 2),
+                    "ahead_max": round(self.ahead_max, 2),
+                    "kp": round(self.track_kp, 1),
+                    "moving": list(self._track_moving),
                 },
                 # 双闭环：loop=vel 时 v_out/v_meas/trim/pos_err 才有意义
                 "ctrl": dict(self.ctrl_info),
@@ -594,6 +618,11 @@ class GimbalWeb(object):
                     self.track_deadband = _clamp(
                         _num(body["track_deadband"], self.track_deadband),
                         0.0, 0.4)
+                # 比例律增益 (°/s)/归一化：调小 = 更稳更慢，调大 = 更跟手更易摆。
+                # 现场按「人站着不动时云台还会不会来回晃」来定，40 是默认。
+                if "track_kp" in body:
+                    self.track_kp = _clamp(
+                        _num(body["track_kp"], self.track_kp), 5.0, 200.0)
                 if "track_gain" in body:
                     self.track_gain = _clamp(
                         _num(body["track_gain"], self.track_gain), 0.2, 3.0)
@@ -1413,14 +1442,26 @@ class GimbalWeb(object):
                 cx, cy = float(aim[0]), float(aim[1])
             except (TypeError, ValueError):
                 pass
-        # aim 点做一阶低通：head <-> 几何中心 在临界处会来回切，
-        # 直接给误差会让云台"点头"。40Hz 下 k=0.5 ≈ 30ms 时间常数。
+        # ---- 瞄准点：限速滑行（关键是**不允许阶跃**）----
+        #   aim 在「头部 / 几何中心 / 框中心」之间切换时，位置会跳 0.3~0.6
+        #   （归一化）。旧的 k=0.5 低通（τ≈30ms）几乎原样把阶跃传下去，卡尔曼
+        #   立刻把它读成"速度"→ 前瞻放大成满速 → 云台冲过去 → 再反向。
+        #   现在：① 低通 τ≈120ms；② 每拍位移硬限幅 AIM_STEP（归一化 0.06），
+        #   即便真的切换也是一条斜坡而不是台阶。
         if self._aim_s is None:
             self._aim_s = [cx, cy]
         else:
-            k = 0.5
-            self._aim_s[0] += (cx - self._aim_s[0]) * k
-            self._aim_s[1] += (cy - self._aim_s[1]) * k
+            k = _clamp(self.period / (self.aim_tau + self.period), 0.05, 0.5)
+            dx = (cx - self._aim_s[0]) * k
+            dy = (cy - self._aim_s[1]) * k
+            max_step = self.aim_step * fw / 2.0          # 归一化 -> 像素
+            m = max(abs(dx), abs(dy))
+            if max_step > 0 and m > max_step:
+                s = max_step / m
+                dx *= s
+                dy *= s
+            self._aim_s[0] += dx
+            self._aim_s[1] += dy
             cx, cy = self._aim_s
         aim_head = bool(best.get("aim_head"))
         aim_mode = best.get("aim_mode") or ("头部" if aim_head else "身体")
@@ -1456,12 +1497,17 @@ class GimbalWeb(object):
                 self._kf_stale = False
             ex_s, vy = self._kf_x.update(ex, dt_ai)
             ey_s, vp = self._kf_y.update(ey, dt_ai)
+            # 速度限幅：卡尔曼在"瞄准点切换/框抖动"时会给出 ±3/s 这种离谱速度
+            # （正常走动约 0.1~0.5/s）。限幅只作用于**外推**，不改滤波状态。
+            vy = _clamp(vy, -self.vel_max, self.vel_max)
+            vp = _clamp(vp, -self.vel_max, self.vel_max)
             # 前瞻 = 设定值 + 这一帧结果已经过时多久（age_ms）。
             # 串口/固件执行还要再等 ~10~30ms，所以总和一般比 age 略大。
             age = _clamp(_num(ai.get("age_ms"), 0.0) / 1000.0, 0.0, 0.3)
-            ahead = _clamp(self.predict_s + age, 0.0, 0.6)
-            ex_p = self._kf_x.pos_at(ahead)
-            ey_p = self._kf_y.pos_at(ahead)
+            ahead = _clamp(self.predict_s + age, 0.0, self.ahead_max)
+            # 预测位移也限幅：否则 ahead 一大，误差就被推到 ±1 直接满速
+            ex_p = ex_s + _clamp(vy * ahead, -self.pred_max, self.pred_max)
+            ey_p = ey_s + _clamp(vp * ahead, -self.pred_max, self.pred_max)
         else:
             ex_s, ey_s, vy, vp = ex, ey, 0.0, 0.0
             ex_p, ey_p = ex, ey
@@ -1469,16 +1515,33 @@ class GimbalWeb(object):
 
         dead = self.track_deadband
 
-        def axis_rate(err, vmax):
-            if abs(err) <= dead:
+        def axis_rate(err, vmax, axis):
+            """误差 → 角速度。**比例律 + 死区 + 饱和**（不是"到 track_full 给满速"）。
+
+            为什么必须改成比例律（2026-11-01 实测）：
+              相机水平视场 67° → 1 个归一化单位 ≈ 33°。旧映射在 |err|>0.35 就给
+              45°/s，等价环增益 45/(0.35*33) ≈ 3.9 /s；而视觉一条结果要 0.25s、
+              再加上流水线/串口延迟，总延迟 ≈0.4~0.5s ⇒ 相位裕度负的，必然
+              极限环（实测 yaw 在 64°~126° 之间来回、峰值 ±45°/s）。
+              比例律把环增益压到 track_kp*33°/度/秒 ≈ 1.2 /s，同样延迟下
+              相位裕度 ~55°，才收得住。饱和仍用 speed_max，大误差时照样快。
+            """
+            a = abs(err)
+            moving = self._track_moving[axis]
+            # 启动要 2.4 倍死区、停止只要 1 倍：防静坐微颤，也防边界反复启停
+            if a <= (dead if moving else dead * 2.4):
+                self._track_moving[axis] = False
                 return 0.0
-            mag = min(1.0, (abs(err) - dead) / max(1e-6, self.track_full - dead))
-            return -mag * vmax * (1.0 if err > 0 else -1.0)
+            self._track_moving[axis] = True
+            # 比例律：误差越大速度越大，饱和在 vmax。小误差自然就慢，
+            # 不需要再额外分档（分了反而和 kp 打架）。
+            v = min(vmax, self.track_kp * (a - dead))
+            return -v * (1.0 if err > 0 else -1.0)
 
         r_yaw = (self.yaw_sign * self.track_gain
-                 * axis_rate(ex_p, self.speed_max))
+                 * axis_rate(ex_p, self.speed_max, 0))
         r_pit = (self.pitch_sign * self.track_gain
-                 * axis_rate(ey_p, min(self.speed_max, 15.0)))
+                 * axis_rate(ey_p, min(self.speed_max, 15.0), 1))
         # 「已对准」看的是预测误差，不看"速度是否恰好为 0"：
         # 误差落进死区边缘时会算出 0.05°/s 这种非零速度，按速度判会永远显示"追踪中"。
         aligned = (abs(ex_p) <= dead * 2.5 and abs(ey_p) <= dead * 2.5)
