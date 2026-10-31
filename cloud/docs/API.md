@@ -8,7 +8,7 @@
 |---|---|
 | 报警 / 视频元数据 | **SQLite** `data/dash.db`（`alarms`、`clips`、`meta` 表，WAL） |
 | 报警抓拍 | `data/shots/<id>.jpg`（按条数+字节滚动） |
-| 事件视频 | `data/clips/<id>.mp4`（默认总上限 1GB，滚动删） |
+| 事件视频 | `data/clips/<id>.mp4`（**只保留最近 15 条**，兼 1GB 字节兑底，滚动删） |
 | 瞬时状态（遥测/指令/灯） | `data/state.json`（只留这些，报警不再重复写 JSON） |
 
 首次启动会把旧的 `state.json` 里的报警**自动迁移**到 SQLite
@@ -119,7 +119,8 @@
 服务端只校验头部含 `ftyp`，落盘 `data/clips/<id>.mp4` 并写 SQLite `clips` 表。
 成功 `{"ok":true,"bytes":57479}`。
 
-* 视频总量超过 `max_clip_total_mb`（默认 **1024MB**）时从最旧的滚动删除，
+ * 视频数量超过 `max_clip_count`（默认 **15**）或总量超 `max_clip_total_mb`（默认 1024MB）时，
+   从最旧的滚动删除（报警记录本身保留，仅清 `clip` 标记）；
   删掉后只把报警的 `clip` 标记清掉，事件记录保留。
 * 报警不存在（已被滚动丢弃）时返回 400，不落盘。
 

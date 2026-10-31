@@ -240,7 +240,7 @@ mp4 传到云端，看板「事件记录」里点 **▶ 回放** 直接播放。
 | 环形缓存 | 抓 `9012 /snapshot.jpg?w=640&q=50`，8fps，存 **SD 卡** `/mnt/sd/csi_ring`（约 55KB/s） | 保留 14s ≈ 1MB |
 | 合成 mp4 | `gst-launch` + Rockchip **MPP 硬件编解码**（mppjpegdec → mpph264enc → mp4mux faststart） | 640x360 / 8fps / 450kbps，10s ≈ **60KB~450KB**，编码 <1s |
 | 上传 | `POST /api/alarm/<id>/clip?sec=10`，失败留本地 `/mnt/sd/csi_clips` 每 45s 重试 | 单条 1~2s 传完（3Mbps） |
-| 云端存储 | **SQLite**`data/dash.db`（alarms + clips 表）+ `data/clips/<id>.mp4` | 滚动上限 **1GB**，超了从最旧的删 |
+| 云端存储 | **SQLite**`/data/dash.db`（alarms + clips 表）+ `/data/clips/<id>.mp4` | 视频**只保留最近 15 条**（`max_clip_count`），兼 1GB 字节兑底 |
 | 回放 | `GET /api/clip/<id>.mp4`，支持 Range（`<video>` 可拖进度条） | 只有点开才拉，平时不占带宽 |
 
 板端相关参数（`cloud_agent.py`）：

@@ -62,7 +62,8 @@ DEF = {
     "max_shot_mb": 20,               # 图片目录总字节上限
     "max_alarm_kb": 600,             # 单张报警图上限
     "max_clip_mb": 8,                # 单个事件视频上限
-    "max_clip_total_mb": 1024,       # 视频目录总上限（滚动删除，默认 1GB）
+    "max_clip_count": 15,            # 只保留最近 N 条事件视频（0=不限）
+    "max_clip_total_mb": 1024,       # 视频目录总上限（兼作字节兑底）
     "accept_health": True,           # 是否接收/记录系统异常报警（可看板切换，存 meta 表）
     "demo": False,
     "allow_test": False,             # 允许看板触发“测试报警”
@@ -669,19 +670,24 @@ def attach_clip(aid, data, sec=0.0):
 
 
 def prune_clips_locked():
-    """视频滚动上限（默认 1GB）：按 ts 从旧到新删，只清 clip 标记，报警记录保留。"""
+    """视频滚动：**只保留最近 max_clip_count 条**（默认 15），另保留 1GB 字节兑底。
+
+    超出的从最旧的删，只清 `clip` 标记，报警记录保留。
+    """
     cap = int(CFG["max_clip_total_mb"]) * 1024 * 1024
+    keep = int(CFG.get("max_clip_count") or 0)
     try:
         rows = [dict(r) for r in db().execute(
-            "SELECT alarm_id, bytes, path FROM clips ORDER BY ts ASC")]
+            "SELECT alarm_id, bytes, path FROM clips ORDER BY ts DESC")]
     except sqlite3.Error as e:
         log("clip prune read failed: %s" % e)
         return 0
     total = sum(int(r.get("bytes") or 0) for r in rows)
     removed = 0
-    for r in rows:
-        if total <= cap:
-            break
+    for idx, r in enumerate(rows):
+        drop = (keep and idx >= keep) or total > cap
+        if not drop:
+            continue
         try:
             os.remove(r.get("path") or clip_path(r["alarm_id"]))
         except OSError:
@@ -705,7 +711,9 @@ def prune_clips_locked():
             db().commit()
         except sqlite3.Error:
             pass
-        log("clip prune: removed %d, left %.0fMB" % (removed, total / 1048576.0))
+        log("clip prune: removed %d, kept %d, %.1fMB"
+            % (removed, min(len(rows), keep) if keep else len(rows),
+               total / 1048576.0))
     return removed
 
 
@@ -1636,6 +1644,7 @@ def main():
     load_plugins()
     with LOCK:
         _prune_locked()
+        prune_clips_locked()      # 启动就按“最近 N 条”收一次
     if CFG["demo"]:
         seed_demo()
 
