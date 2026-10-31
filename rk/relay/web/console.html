@@ -3737,17 +3737,12 @@ async function syncCam() {
       //   切过去会让时钟 mux 选到没有像素时钟的源 -> rkcsi2-dphy 永久卡死,
       //   之后连强制 FPGA 复位都救不回来, 只能重载 bitstream。
       //   正在用的那一路不禁用(即使探测说不在线, 也不能把当前画面锁死)。
-      // 2026-10-31: 不再按 probe_modules 置灰「不在线」。
-      //   本 bit(0x4708) 上 0xEA/0xEB/0xEC 判据实测不可信 ——
-      //   正在出 59fps 的那一路它照样报 ae_cnt=0 / alive=false，两路全报不在线。
-      //   拿它置灰只会让人以为模组没插，挡着排查。
-      const m = mods.supported ? (mods["cam" + c] || null) : null;
+      // 2026-10-31 用户要求: 不显示任何"模组探测"相关的警告 / 置灰 / 悬停提示。
+      //   本 bit 上那套判据本来就不准, 留着只会误导排查。
       b.disabled = false;
       b.style.opacity = "1";
       b.style.cursor = "pointer";
-      b.title = (m && !m.alive && c !== rs)
-        ? "探测说未检测到模组（本 bit 上该判据不可信，仅作提示）"
-        : "";
+      b.title = "";
     });
   } catch (e) { /* 静默: FPGA 没启用时不影响页面 */ }
 }

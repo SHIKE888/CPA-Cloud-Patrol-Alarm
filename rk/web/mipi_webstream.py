@@ -3701,15 +3701,6 @@ _MODULE_CACHE = {"t": 0.0, "val": None}
 _MODULE_CACHE_TTL = 5.0            # 秒: 探测要写 CAM_TRIG, 别每帧都做
 
 
-# ★ 2026-10-31: 这个在线探测在 0x4708 上实测【不可信】——
-#   cam1 明明在 59fps 出图, 0xEA/0xEB/0xEC 依旧报 cfg_done=0 / ae_cnt=0 /
-#   alive=false, 两路全报"不在线"。所以它只能当提示:
-#     * 不拿它拒绝 RX_SEL 切换(会让人永远切不过去, 反而没法排查)
-#     * 不拿它把页面按钮置灰(console.html 同步改掉了)
-#   等 RTL 里那几个计数器真正接对之后再改回 True。
-MODULE_PROBE_TRUSTED = False
-
-
 def probe_modules(fpga, force=False):
     """探测 cam0/cam1 是否都有模组。
 
@@ -3949,11 +3940,8 @@ class Handler(BaseHTTPRequestHandler):
                         {"ok": False, "error": "FPGA I2C 未启用 (--fpga-bus -1)"},
                         503)
                 _ok, snap = self.fpga.snapshot()
-                # 2026-10-25: 两路模组在线状态(前端用它禁用/提示无模组的通道)
-                try:
-                    snap["modules"] = probe_modules(self.fpga)
-                except Exception:                              # noqa: BLE001
-                    pass
+                # 2026-10-31: 不再下发 modules(模组在线探测) —— 本 bit 上判据不可信,
+                #   前端拿到它只会显示"未检测到模组"这种误报。
                 # compact=1: 板端代理（cloud_agent）每 15s 拉一次，
                 # meta 有 ~4KB 的寄存器描述，对它没用 —— 去掉能省 90% 流量。
                 _qs = self.path.split("?", 1)[1] if "?" in self.path else ""
@@ -4166,33 +4154,7 @@ class Handler(BaseHTTPRequestHandler):
                         _old_sel = self.fpga.read(0xDB) & 0x01
                     except Exception:                              # noqa: BLE001
                         _old_sel = None
-                    # ★ 2026-10-25: 切到没模组的通道会把 rkcsi2-dphy 永久卡死,
-                    #   之后连强制 FPGA 复位都救不回来(实测), 只能重载 bitstream。
-                    #   新版 bit(>=0x4705) 有在线探测 -> 直接拒绝, 不抱侥幸。
-                    if _old_sel is not None:
-                        _want = _old_sel
-                        for _k in body:
-                            if str(_k).strip().upper() == "RX_SEL":
-                                try:
-                                    _want = int(body[_k]) & 0x01
-                                except (TypeError, ValueError):
-                                    pass
-                                break
-                        if _want != _old_sel:
-                            _mods = probe_modules(self.fpga, force=True)
-                            if _mods.get("supported") and MODULE_PROBE_TRUSTED:
-                                _tgt = _mods.get("cam%d" % _want) or {}
-                                if not _tgt.get("alive"):
-                                    return self._json({
-                                        "ok": False,
-                                        "rejected": "no_module",
-                                        "message": ("已拒绝切换: cam%d 通道未检测到模组"
-                                                    "(AE 计数不增长), 切过去会把"
-                                                    "CSI2 链路卡死且只能重载 bitstream。"
-                                                    "请先插上模组。" % _want),
-                                        "modules": _mods,
-                                        "meta": fpga_meta(),
-                                    }, 409)
+                    # 2026-10-31 用户要求: 不要任何模组在线探测的拦截/提示
                 wok, msg = self.fpga.apply(body)
                 # 写完立刻回读 —— FPGA 侧可能把值夹过, 前端以回读为准
                 _ok, snap = self.fpga.snapshot()
