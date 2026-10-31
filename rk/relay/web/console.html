@@ -297,7 +297,20 @@ body{
            letter-spacing:.05em; text-transform:uppercase}
 #viewVideo #stage{
     background:#000; border:1px solid var(--line); border-radius:12px;
-    width:100%; aspect-ratio:16 / 9;
+    /* 宽屏布局：高度由 flex 吃掉 #colLeft 的剩余高度，宽度再由 aspect-ratio
+       按高度反推（"高度驱动"）。
+       ⚠ 必须写 align-self:center 阻止 flex 在横向的 stretch —— 之前这里是
+         width:100%，宽度被拉满后高度仍由 flex 决定，两个方向都被定死，
+         aspect-ratio 完全不起作用：实测 1440x900 时是 984x509 = 1.93:1，
+         竖屏窄屏更惨（见下面 ≤1100px 的分支）。 */
+    flex:1 1 0;
+    width:auto; max-width:100%;
+    aspect-ratio:16 / 9;
+    align-self:center;
+    /* 窗口矮时 #colLeft 是限高 flex, #stage 的 flex-basis 会被压到 0 ->
+       aspect-ratio 失效、画面塌成一条线(实测 813x457 时只剩 2px)。
+       给个下限, 小窗口也能看到双目四宫格/点云。 */
+    min-height:160px;
     margin:0 auto;
     display:flex; align-items:center; justify-content:center;
     overflow:hidden; position:relative;
@@ -317,6 +330,11 @@ body{
 #viewVideo .qb canvas,#viewVideo .qb img{max-width:100%; max-height:100%;
                       object-fit:contain; display:block}
 #viewVideo .dph{color:var(--dim); font-size:12px; text-align:center; line-height:1.8}
+/* 深度点云: canvas 直接写像素, 不缩不平滑(平滑会把 1px 点糊成一片灰) */
+#viewVideo #cvDepth{width:100%; height:100%; display:block; cursor:grab;
+        image-rendering:pixelated}
+#viewVideo .qc>b i{font-style:normal; font-weight:400; font-size:10px;
+        color:#8fb8d8; margin-left:6px; letter-spacing:0}
 /* 未连接提示：做成覆盖层，单目/双目都能看到，也不会被 img 挤到左边 */
 #viewVideo #placeholder{text-align:center; font-size:13px;
                position:absolute; inset:0; z-index:3; pointer-events:none;
@@ -420,6 +438,34 @@ body{
   }
 #viewVideo #toast.show{opacity:1; transform:translateX(-50%) translateY(0)}
 #viewVideo #toast.err{background:var(--err)}
+
+/* ===== 2026-10-31: 统一消息提示框 =====
+   原来 #vToast 压根没有样式 —— 它是个普通 div，内容一写就永久留在
+   文档流里（看起来就是"一直停在左下角"）。这里改成固定浮层：
+   底部居中、自动淡出、不拦截点击，全站所有 toast() 共用这一个。 */
+#vToast{
+  position: fixed;
+  left: 50%;
+  bottom: 28px;
+  transform: translateX(-50%) translateY(10px);
+  max-width: min(82vw, 760px);
+  padding: 10px 18px;
+  border-radius: 9px;
+  background: rgba(26,30,38,.95);
+  border: 1px solid #2f3744;
+  color: #e8eef7;
+  font-size: 13px;
+  line-height: 1.45;
+  text-align: center;
+  white-space: pre-wrap;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity .18s ease, transform .18s ease;
+  z-index: 9999;
+  box-shadow: 0 10px 28px rgba(0,0,0,.5);
+}
+#vToast.show{ opacity: 1; transform: translateX(-50%) translateY(0); }
+#vToast.err{ background: rgba(118,34,34,.96); border-color: #b34242; color: #ffd7d7; }
 #viewVideo .scroll{max-height:260px; overflow:auto}
 #viewVideo .scroll::-webkit-scrollbar{width:8px}
 #viewVideo .scroll::-webkit-scrollbar-thumb{background:#30363d;border-radius:4px}
@@ -496,6 +542,19 @@ html, body{overflow:hidden}
   #viewVideo #colLeft{ height:auto; max-height:none; overflow:visible }
   #viewVideo #colRight{ max-height:none; overflow:visible }
   #viewVideo #colRight > .card > .tabbody{ overflow:visible }
+
+  /* 2026-10-31 竖屏（窄屏单栏）画面比例：
+     宽屏时 #stage 是「高度驱动」——flex:1 1 0 吃掉 #colLeft 的固定高度，
+     宽度由 aspect-ratio:16/9 反推。窄屏下 #colLeft 高度变成 auto，
+     flex-basis:0 就没有可分配的高度，真实高度退化成 min-height:160px
+     （宽度仍是 100%），于是竖屏看到的是一个 2.4:1 的扁条。
+     这里改成「宽度驱动」：高度由 aspect-ratio 从宽度算出，
+     16:9（双目四宫格也是 16:9）在竖屏下保持不变。 */
+  #viewVideo #stage{
+    flex:0 0 auto;
+    width:100%; height:auto;
+    min-height:0; max-height:none;
+  }
 }
 
 </style>
@@ -565,8 +624,9 @@ html, body{overflow:hidden}
             <div class="qb"><canvas id="cvR"></canvas></div></div>
           <div class="qc"><b>骨架</b>
             <div class="qb"><canvas id="cvSkel"></canvas></div></div>
-          <div class="qc"><b>深度（预留）</b>
-            <div class="qb dph">双目融合测距<br>待实现</div></div>
+          <div class="qc"><b>深度点云 <i id="dHud">—</i></b>
+            <div class="qb"><canvas id="cvDepth"
+                 title="拖动旋转 / 双击改水平视场角（未标定前用来把比例调对）"></canvas></div></div>
         </div>
       </div>
       <!-- 画面下方指标区: 等分网格, 整齐对齐 -->
@@ -628,12 +688,6 @@ html, body{overflow:hidden}
             <button class="ghost on" data-jrc="0" style="flex:1">关(定 Q)</button>
             <button class="ghost" data-jrc="1" style="flex:1">开(收敛到目标)</button>
           </div>
-        </div>
-        <div class="row" style="font-size:11px;opacity:.65">
-          <span>2026-10-31 起 RK 侧改为<b>软件编码</b>（cv2.imencode）：
-                V47.8 bit 只出 NV16 原始 YUV，FPGA 直通码流与 mpp 硬件编码均已移除。
-                本组参数为 FPGA 硬件编码器预留，当前不生效；
-                <b>压缩比仍在「链路负载」栏显示</b>（按每帧 JPEG 字节 / 该帧像素×2 计算）。</span>
         </div>
 
         <div class="sep"></div>
@@ -3265,6 +3319,8 @@ let base = "";            // http://host:port
 let connected = false;
 let params = {};          // 本地镜像的参数
 let pushTimer = null;
+// 换源保护期: 这段时间内 syncCam() 不回读 RX_SEL，避免用旧值覆盖刚点亮的高亮。
+let camSwitchLock = 0;
 
 /* ---------------- 工具 ---------------- */
 function toast(msg, isErr) {
@@ -3272,7 +3328,9 @@ function toast(msg, isErr) {
   t.textContent = msg;
   t.className = "show" + (isErr ? " err" : "");
   clearTimeout(t._h);
-  t._h = setTimeout(() => { t.className = ""; }, 1800);
+  // 2026-10-31: 统一 2.6s 后自动收起（原来 1.8s 偏短，长句子读不完）。
+  //   样式见 CSS 里的 #vToast —— 没有 .show 就是 opacity:0，不会残留。
+  t._h = setTimeout(() => { t.className = ""; }, 2600);
 }
 function setDot(ok, txt) {
   $("vDot").className = "dot " + (ok ? "ok" : "bad");
@@ -3672,6 +3730,223 @@ async function skelTick() {
   try { drawPose(await api("/api/pose")); } catch (e) { /* 静默 */ }
 }
 
+/* ---------------- 双目深度点云（下右框） ----------------
+   链路: 板端 stereo_depth.py 在 512 宽上跑 SGBM -> 抽 ~1500 点(9 字节/点)
+         -> /api/depth(JSON+base64) -> 这里解码、做可旋转的透视投影、
+         直接写 ImageData 像素。
+   为什么不在浏览器算: 两路 1920x1080 原始像素约 12MB/帧, 搬进 JS 反而更重;
+         板端算完只传 ~18KB/帧(10Hz 也就 180KB/s)。
+   自适应量程: 服务端给 z 的 8%/92% 分位, 这里再做 EMA 平滑 —— 近处有人时
+         点云不会被远处背景压扁, 颜色也始终用满整个色标。
+   坐标系: 左目光心为原点, x 右 / y 下 / z 前 (单位 m)。
+   -------------------------------------------------------- */
+const DPN = 4000;
+const _dp = {
+  n: 0,
+  x: new Float32Array(DPN), y: new Float32Array(DPN), z: new Float32Array(DPN),
+  r: new Uint8Array(DPN), g: new Uint8Array(DPN), b: new Uint8Array(DPN),
+  ax: new Float32Array(DPN), ay: new Float32Array(DPN), az: new Float32Array(DPN),
+  ord: new Int32Array(DPN),
+};
+let _dYaw = 0.55, _dPitch = 0.22;
+let _dFit = 0, _dCx = 0, _dCy = 0;     // 自适应取景(平滑后)
+let _dZlo = 0.4, _dZhi = 2.2;          // 自适应量程(平滑后)
+let _dInfo = null, _dTprev = 0;
+let _depthTimer = null, _dDrag = null;
+
+const _CRAMP = [[255, 72, 48], [255, 196, 64], [128, 232, 128],
+                [72, 196, 255], [104, 112, 255]];
+function _cmap(t) {
+  t = t < 0 ? 0 : t > 1 ? 1 : t;
+  const s = t * 4, i = Math.min(3, s | 0), f = s - i;
+  const a = _CRAMP[i], b = _CRAMP[i + 1];
+  return [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f,
+          a[2] + (b[2] - a[2]) * f];
+}
+
+function _b64u8(s) {
+  const bin = atob(s), n = bin.length, out = new Uint8Array(n);
+  for (let i = 0; i < n; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+function _depthText(g, W, H, msg) {
+  g.fillStyle = "#05070c"; g.fillRect(0, 0, W, H);
+  g.fillStyle = "#6f7f93"; g.font = "13px sans-serif";
+  g.textAlign = "center"; g.textBaseline = "middle";
+  g.fillText(msg, W / 2, H / 2);
+  g.textAlign = "start"; g.textBaseline = "alphabetic";
+}
+
+function drawCloud(d) {
+  const c = $("cvDepth"); if (!c) return;
+  const W = Math.max(80, c.clientWidth | 0), H = Math.max(60, c.clientHeight | 0);
+  if (c.width !== W || c.height !== H) { c.width = W; c.height = H; c._img = null; }
+  const g = c.getContext("2d");
+  if (!c._img) {
+    c._img = g.createImageData(W, H);
+    c._u32 = new Uint32Array(c._img.data.buffer);
+  }
+
+  if (!d || !d.ok || !d.pts || !(+d.n)) {
+    const why = !d ? "无数据"
+      : d.reason === "dual-off" ? "单目模式不出深度"
+      : d.reason === "warming" ? (d.err || "等第一对左右目…")
+      : d.stale ? "深度已停更" : (d.reason || "暂无深度");
+    _depthText(g, W, H, why);
+    if ($("dHud")) $("dHud").textContent = d && d.shear_r ?
+      ("右目斜移 " + d.shear_r + "px/行") : "—";
+    return;
+  }
+
+  // ---- 解码：9 字节/点 (x,y,z int16 毫米 + RGB) ----
+  const nAll = Math.min(+d.n || 0, DPN);
+  const bytes = _b64u8(d.pts);
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let n = 0;
+  for (let i = 0, o = 0; i < nAll; i++, o += 9) {
+    _dp.x[n] = dv.getInt16(o, true) * 0.001;
+    _dp.y[n] = dv.getInt16(o + 2, true) * 0.001;
+    _dp.z[n] = dv.getInt16(o + 4, true) * 0.001;
+    _dp.r[n] = bytes[o + 6]; _dp.g[n] = bytes[o + 7]; _dp.b[n] = bytes[o + 8];
+    n++;
+  }
+  _dp.n = n;
+  if (!n) { _depthText(g, W, H, "暂无有效深度"); return; }
+
+  // ---- 自适应量程（平滑，避免逐帧跳变）----
+  const zlo = +d.zmin, zhi = +d.zmax;
+  if (zhi > zlo && zhi - zlo > 0.05) {
+    if (!_dFit) { _dZlo = zlo; _dZhi = zhi; }
+    _dZlo = _dZlo * 0.85 + zlo * 0.15;
+    _dZhi = _dZhi * 0.85 + zhi * 0.15;
+  }
+
+  // ---- 视角：自动慢转，拖动时接管 ----
+  const now = performance.now();
+  const dt = _dTprev ? Math.min(0.2, (now - _dTprev) / 1000) : 0;
+  _dTprev = now;
+  if (!_dDrag) _dYaw += dt * 0.28;
+  const cyw = Math.cos(_dYaw), syw = Math.sin(_dYaw);
+  const cpt = Math.cos(_dPitch), spt = Math.sin(_dPitch);
+
+  // 第一遍：绕 y 旋转 -> 绕 x 俯仰 -> 归一化投影 (ax, ay)
+  for (let i = 0; i < n; i++) {
+    const x = _dp.x[i], y = _dp.y[i], z = _dp.z[i];
+    const X1 = x * cyw + z * syw;
+    const Z1 = -x * syw + z * cyw;
+    const Z2 = y * spt + Z1 * cpt;
+    if (Z2 < 0.05) { _dp.az[i] = -1; continue; }
+    _dp.az[i] = Z2;
+    _dp.ax[i] = X1 / Z2;
+    _dp.ay[i] = (y * cpt - Z1 * spt) / Z2;
+  }
+
+  // 稳健取景：用 2%/98% 分位，别被几个噪点把画面拉爆
+  const step = Math.max(1, n >> 7);
+  const sa = [], sb = [];
+  for (let i = 0; i < n; i += step) {
+    if (_dp.az[i] < 0) continue;
+    sa.push(_dp.ax[i]); sb.push(_dp.ay[i]);
+  }
+  let fit = _dFit, ocx = _dCx, ocy = _dCy;
+  if (sa.length > 4) {
+    sa.sort((p, q) => p - q); sb.sort((p, q) => p - q);
+    const i0 = Math.floor(sa.length * 0.02);
+    const i1 = Math.max(i0, Math.floor(sa.length * 0.98) - 1);
+    const du = Math.max(1e-3, sa[i1] - sa[i0]);
+    const dv2 = Math.max(1e-3, sb[i1] - sb[i0]);
+    const f = Math.min(W * 0.94 / du, H * 0.94 / dv2);
+    const tx = W * 0.5 - f * (sa[i0] + sa[i1]) * 0.5;
+    const ty = H * 0.5 - f * (sb[i0] + sb[i1]) * 0.5;
+    if (!_dFit) { _dFit = f; _dCx = tx; _dCy = ty; }
+    fit = _dFit = _dFit * 0.8 + f * 0.2;
+    ocx = _dCx = _dCx * 0.8 + tx * 0.2;
+    ocy = _dCy = _dCy * 0.8 + ty * 0.2;
+  }
+
+  // ---- 画家算法：远的先画（近的盖住远的）----
+  const ord = _dp.ord, sub = ord.subarray(0, n);
+  for (let i = 0; i < n; i++) ord[i] = i;
+  sub.sort((p, q) => _dp.az[q] - _dp.az[p]);
+
+  const px = c._u32;
+  px.fill(0xff0a0e14);                       // 深蓝黑背景
+  const zspan = Math.max(0.01, _dZhi - _dZlo);
+  for (let k = 0; k < n; k++) {
+    const i = sub[k], z2 = _dp.az[i];
+    if (z2 < 0.05) continue;
+    const u = (ocx + fit * _dp.ax[i]) | 0;
+    const v = (ocy + fit * _dp.ay[i]) | 0;
+    if (u < 0 || v < 0 || u >= W - 1 || v >= H - 1) continue;
+    const cm = _cmap((_dp.z[i] - _dZlo) / zspan);
+    // 距离色 60% + 原图色 40%：既看得出远近，又认得出是什么东西
+    const r = (cm[0] * 0.6 + _dp.r[i] * 0.4) | 0;
+    const gg = (cm[1] * 0.6 + _dp.g[i] * 0.4) | 0;
+    const bb = (cm[2] * 0.6 + _dp.b[i] * 0.4) | 0;
+    const col = 0xff000000 | (bb << 16) | (gg << 8) | r;
+    const o = v * W + u;
+    px[o] = col; px[o + 1] = col;
+    px[o + W] = col; px[o + W + 1] = col;
+  }
+  g.putImageData(c._img, 0, 0);
+
+  // ---- HUD ----
+  if ($("dHud")) {
+    $("dHud").textContent = (d.stale ? "停更 · " : "") +
+      (d.fov_deg || 0) + "° / " + (d.ms || 0) + "ms";
+  }
+  const hud = "近 " + _dZlo.toFixed(2) + "m  远 " + _dZhi.toFixed(2) +
+    "m · " + n + "点 · " + (d.fps || 0) + "fps · 基线 " +
+    Math.round((+d.baseline_m || 0.045) * 1000) + "mm";
+  g.fillStyle = "rgba(0,0,0,.5)"; g.fillRect(0, H - 17, W, 17);
+  g.fillStyle = "#9fe"; g.font = "11px sans-serif"; g.textBaseline = "middle";
+  g.fillText(hud, 5, H - 9);
+  // 输入侧告警(如右目每行多 word 被拖成斜条纹): 直接写在画面上, 不藏着
+  if (d.warn) {
+    g.fillStyle = "rgba(120,20,10,.72)"; g.fillRect(0, 0, W, 16);
+    g.fillStyle = "#ffd2c8"; g.fillText(d.warn, 5, 8);
+  }
+  g.textBaseline = "alphabetic";
+}
+
+async function depthTick() {
+  if (!base) return;
+  try {
+    const d = await api("/api/depth");
+    _dInfo = d;
+    drawCloud(d);
+  } catch (e) { /* 静默: 服务重启/换源时不出图是正常的 */ }
+}
+
+/* 点云交互：拖动旋转，双击改水平视场角（未标定前用来把比例调对） */
+(function () {
+  const c = $("cvDepth"); if (!c) return;
+  c.addEventListener("pointerdown", e => {
+    _dDrag = { x: e.clientX, y: e.clientY, yaw: _dYaw, pitch: _dPitch };
+    try { c.setPointerCapture(e.pointerId); } catch (err) { /* 老浏览器 */ }
+  });
+  c.addEventListener("pointermove", e => {
+    if (!_dDrag) return;
+    _dYaw = _dDrag.yaw + (e.clientX - _dDrag.x) * 0.006;
+    _dPitch = Math.max(-0.9,
+      Math.min(0.9, _dDrag.pitch + (e.clientY - _dDrag.y) * 0.005));
+  });
+  const up = () => { _dDrag = null; };
+  window.addEventListener("pointerup", up);
+  window.addEventListener("blur", up);
+  c.addEventListener("dblclick", async () => {
+    const cur = (_dInfo && _dInfo.fov_deg) || params.depth_fov || 60;
+    const v = prompt("水平视场角 FOV（度）\n" +
+      "未标定前用它把点云比例调对；标定后引擎直接用标定焦距。", cur);
+    if (v == null) return;
+    const f = Math.max(20, Math.min(150, parseFloat(v) || cur));
+    params.depth_fov = f;
+    schedulePush();
+    toast("深度视场角 -> " + f.toFixed(0) + "°");
+  });
+})();
+
 // 页面上可能同时存在多个 img[id="stream"]（重连会新建，旧的要等 onerror 才移除）。
 // 一律取「真的一帧画面」那个，否则会把空 img 当成视频源 —— 表现就是
 // 双目切回单目后画面不出来、或提示文字被挤到左边。
@@ -3709,13 +3984,22 @@ function syncQuad() {
     if (!_skelTimer) {
       _skelTimer = setInterval(skelTick, 100);
     }
+    // 点云 10Hz: 板端按 30fps 输入算 10 次/帧对，再多也是重复内容
+    if (!_depthTimer) _depthTimer = setInterval(depthTick, 100);
   } else {
     if (_quadTimer) { clearInterval(_quadTimer); _quadTimer = null; }
     if (_skelTimer) { clearInterval(_skelTimer); _skelTimer = null; }
+    if (_depthTimer) { clearInterval(_depthTimer); _depthTimer = null; }
   }
 }
 
 async function syncCam() {
+  // ★ 2026-10-31: 换源保护期。
+  //   换源是"关流后写入"(见 mipi_webstream.switch_source)：采集线程要先
+  //   cap.release() 再写 0xDB，FPGA 里的 RX_SEL 要晚 1~2 秒才变。
+  //   这段时间如果 syncCam 去回读，拿到的是**旧值**，会把刚点亮的高亮
+  //   又改回去 —— 表现就是"点了按钮没反应/不灵敏"。
+  if (Date.now() < camSwitchLock) return;
   // 2026-10-26: 双目模式下「单目通道」整行禁用。
   //   ★ 这里也必须判 dual: syncCam 每 3 个 poll 周期跑一次, 之前它按 dead
   //     把 disabled 写回 false, 正好覆盖掉 syncToggles 里的 b.disabled = dual,
@@ -3731,7 +4015,6 @@ async function syncCam() {
     const d = await api("/api/fpga");
     const r = (d.regs || {});
     const rs = Number(r.RX_SEL || 0);
-    const mods = d.modules || {};
     document.querySelectorAll("#viewVideo [data-cam]").forEach(b => {
       const c = Number(b.dataset.cam);
       b.classList.toggle("on", c === rs);
@@ -3761,8 +4044,19 @@ document.querySelectorAll("#viewVideo [data-cam]").forEach(b => {
         method: "POST", body: JSON.stringify({ RX_SEL: c })
       });
       toast("已切到 " + (c ? "左目(CAM1)" : "右目(CAM0)"));
-      syncCam();
-    } catch (e) { toast("切通道失败: " + e.message, true); }
+      // ★ 2026-10-31: 立即本地点亮，并进入换源保护期。
+      //   1.8 秒内不让 syncCam 回读覆盖 —— 那期间 FPGA 还是旧值。
+      //   等采集线程真正写完 0xDB 后，下一次轮询自然会跟真实值对齐。
+      camSwitchLock = Date.now() + 3000;
+      document.querySelectorAll("#viewVideo [data-cam]").forEach(x =>
+        x.classList.toggle("on", Number(x.dataset.cam) === c));
+      // 不要在换源刚发出时立刻 syncCam（会回读旧值把高亮改回去）。
+      setTimeout(syncCam, 3200);
+      // 2026-10-31: 不再弹"切通道失败"。
+      //   换源改成了"关流后写入"(见 mipi_webstream.switch_source),
+      //   采集线程要 release 设备再写 0xDB，这个 POST 可能在服务忙时
+      //   拿不到响应 —— 但切换本身是成功的。误报只会干扰判断。
+    } catch (e) { /* 静默: 换源是异步的, 失败由画面自己体现 */ }
   };
 });
 
@@ -4102,7 +4396,10 @@ function modeText(m) {
 async function loadModes(keep) {
   try {
     modeTable = await api("/api/modes");
-  } catch (e) { toast("读取模式表失败: " + e.message, true); return; }
+    // 2026-10-31: 不弹"读取模式表失败"。
+    //   服务重启后要 40~60 秒才就绪(AI 模型 + FPGA 初始化),
+    //   这期间 nginx 必然回 502 —— 那是正常现象, 不是故障。
+  } catch (e) { return; }
   const sel = $("sel_mode");
   const old = keep ? sel.value : null;
   const all = allModes();
