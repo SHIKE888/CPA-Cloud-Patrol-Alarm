@@ -1773,7 +1773,10 @@ class OpenCVCapture(threading.Thread):
                         _hdr = "<读取失败>"
                     print("[dual] 未找到帧标记, 帧首 8 字节 = %s" % _hdr,
                           file=sys.stderr)
-                src = 0                       # 无标记 -> 当 cam0
+                # ★ 2026-10-31: 没有帧标记(MARK_EN=0 / FPGA 刚重载 bit 后 0xDB 归零)时
+                #   不能一律当 cam0 —— 单目通路实际取的是 0xDB[0](RX_SEL) 那一路。
+                #   以前写死 0, 结果"唯一活的那路"被当成右目塞到右半边, 左半边全黑。
+                src = self._cur_rx_sel()      # 无标记 -> 按 RX_SEL 判定
             else:
                 self._dualmk_logged = False
             DUAL_STAT["cam%d" % src] += 1
@@ -1783,6 +1786,24 @@ class OpenCVCapture(threading.Thread):
 
             # ★ 显式模式: 完全由 params.dual 决定, 不再"看到两路标记就自动切"。
             #   用户要的是能手动选「单目 / 双目」, 而不是被自动改。
+            # ★ 2026-10-31: 每 2 秒对一次账 —— TD 重新下载 bit 会把 0xDB 全部归零,
+            #   而网页 params.dual 还在, 两边一失配就是"页面双目 / FPGA 单目"。
+            #   ⚠ 只在这里强制【关】, 绝不自作主张开: 开双目需要两路都有像素,
+            #   否则时钟 mux 选到没时钟那一路会把 D-PHY 收成坏包, 只能重下 bit。
+            _now_s = time.time()
+            if _now_s - getattr(self, "_dbsync_t", 0.0) > 2.0:
+                self._dbsync_t = _now_s
+                try:
+                    _h = globals().get("Handler")
+                    _fp = getattr(_h, "fpga", None) if _h is not None else None
+                    if _fp is not None:
+                        _cur = _fp.read(0xDB)
+                        if (_cur & 0x02) and not int(self.params.get().get("dual", 0)):
+                            _v = apply_dual_en(_fp, False)
+                            print("[dual] params.dual=0 但 0xDB[1]=1, 已纠正 -> 0x%02X"
+                                  % (_v if _v is not None else _cur))
+                except Exception:                              # noqa: BLE001
+                    pass
             want = bool(int(self.params.get().get("dual", 0)))
             # 4K 带宽装不下两路(YUV422 1280MB/s > 452MB/s 可用), FPGA 那边也会把
             # S_dual_eff 强制为 0, 所以 RK 侧跟着强制单目, 免得白算。
@@ -2023,6 +2044,27 @@ class OpenCVCapture(threading.Thread):
                     if j is not None:
                         self.hub.publish(j, ts=t_cap)
                 self._seq_cond.notify_all()
+
+    def _cur_rx_sel(self):
+        """当前单目通路按 0xDB[0](RX_SEL) 选的是哪一路; 读不到就退回 0。
+
+        用途: 帧里没有标记(MARK_EN=0, 或者 FPGA 刚重载 bit 把 0xDB 清零)时,
+              判断这一帧到底来自 cam0 还是 cam1 —— 不然后面拼图会把
+              "唯一活的那一路"放到错误的半边。
+        1 秒缓存: 60fps 下不要每帧都开一次 /dev/i2c-9。
+        """
+        now = time.time()
+        if now - getattr(self, "_rxsel_t", 0.0) < 1.0:
+            return getattr(self, "_rxsel_v", 0)
+        self._rxsel_t = now
+        try:
+            _h = globals().get("Handler")
+            _fp = getattr(_h, "fpga", None) if _h is not None else None
+            if _fp is not None:
+                self._rxsel_v = _fp.read(0xDB) & 0x01
+        except Exception:                                          # noqa: BLE001
+            pass
+        return getattr(self, "_rxsel_v", 0)
 
     # ---- 双目拼接 ----
     @staticmethod
@@ -3415,6 +3457,30 @@ def apply_rx_sel(fpga, sel):
     return cur
 
 
+def apply_dual_en(fpga, on):
+    """把 0xDB[1](DUAL_EN) 设成 on; 开的时候顺带把 0xDB[2](MARK_EN) 置 1。
+
+    为什么必须由后端同步: 网页 `params.dual` 只决定 **RK 侧拼不拼**,
+    FPGA 侧不交替出帧的话就是「只有一路画面 + 右半黑」;
+    反过来 FPGA 交替而网页不拼, 就是「左右目 30Hz 跳变」。
+
+    0xDB 一个字节装了 3 个开关(RX_SEL/DUAL_EN/MARK_EN), 必须读-改-写,
+    只动 bit1/bit2, 不碰 bit0(否则切一次双目就把单目通道也改了)。
+    返回写入后 0xDB 的回读值; fpga 不可用时返回 None。
+    """
+    if fpga is None:
+        return None
+    cur = fpga.read(0xDB)
+    if on:
+        want = cur | 0x02 | 0x04        # bit1 = DUAL_EN, bit2 = MARK_EN
+    else:
+        want = cur & ~0x02 & 0xFF       # 只关 DUAL_EN; 帧标记留着无害
+    if want != cur:
+        fpga.write(0xDB, want)
+        cur = fpga.read(0xDB)
+    return cur
+
+
 class FpgaI2C(object):
     """FPGA 寄存器堆的 I2C 访问。
 
@@ -4026,6 +4092,19 @@ class Handler(BaseHTTPRequestHandler):
                 cap = Handler.capture
                 if cap is not None and hasattr(cap, "apply"):
                     cap.apply()
+                # ★ 2026-10-31: params.dual 一并同步到 FPGA 0xDB[1]/[2]
+                #   网页「双目」按钮只发 params, FPGA 侧交替出帧 + 帧标记得后端补上,
+                #   否则页面怎么点都只有一路画面(另一半黑)。
+                if ("dual" in body) or body.get("reset"):
+                    try:
+                        _dv = int(self.params.get().get("dual", 0))
+                        _dbv = apply_dual_en(Handler.fpga, bool(_dv))
+                        if _dbv is not None:
+                            print("[dual] params.dual=%d -> 0xDB=0x%02X "
+                                  "(DUAL_EN=%d MARK_EN=%d)"
+                                  % (_dv, _dbv, (_dbv >> 1) & 1, (_dbv >> 2) & 1))
+                    except Exception as _e:                  # noqa: BLE001
+                        print("[dual] 写 0xDB 失败: %s" % _e, file=sys.stderr)
                 _bump_rev("params")          # 通知其它在线前端
                 return self._json(out)
             if path == "/api/ctrl":
@@ -4810,6 +4889,17 @@ def main():
                   % (_want, _db, _db & 0x01))
         except Exception as _e:                              # noqa: BLE001
             print("[csi] 设置单目通道失败: %s: %s" % (type(_e).__name__, _e),
+                  file=sys.stderr)
+        # 2026-10-31: 开机把 0xDB[1]/[2] 对齐到存档的 params.dual
+        #   (两路模组都已插好; 双目左右排布见 DUAL_LEFT_SRC)
+        try:
+            _du = bool(int(params.get().get("dual", 0)))
+            _db2 = apply_dual_en(FpgaI2C(args.fpga_bus, args.fpga_addr), _du)
+            if _db2 is not None:
+                print("[csi] 双目: dual=%d -> 0xDB=0x%02X (DUAL_EN=%d MARK_EN=%d)"
+                      % (int(_du), _db2, (_db2 >> 1) & 1, (_db2 >> 2) & 1))
+        except Exception as _e:                              # noqa: BLE001
+            print("[csi] 同步双目位失败: %s: %s" % (type(_e).__name__, _e),
                   file=sys.stderr)
 
     cap.start()
