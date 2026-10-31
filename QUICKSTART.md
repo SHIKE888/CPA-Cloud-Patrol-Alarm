@@ -375,10 +375,8 @@ ssh afc03 "cd /root/rk/cloud && /usr/bin/python3 -u cloud_agent.py \
   --server http://<SERVER_DOMAIN> --token-file token \
   --ring-dir /tmp/t_ring --clip-dir /tmp/t_clip --selftest-clip 14 --selftest-upload"
 
-# 云端：SQLite 里的事件/视频元数据、视频目录与总量
-ssh example "python3 -c \"import sqlite3;c=sqlite3.connect('/opt/csi-dashboard/data/dash.db');\
-print(c.execute('select count(*),sum(clip) from alarms').fetchone(),\
-c.execute('select count(*),sum(bytes) from clips').fetchone())\""
+# 云端：MySQL（库 csi_dashboard）里的事件/视频元数据、视频目录与总量
+ssh example "python3 /opt/csi-dashboard/tools/db_check.py /opt/csi-dashboard/config.json"
 ssh example "du -sh /opt/csi-dashboard/data/clips"
 ```
 

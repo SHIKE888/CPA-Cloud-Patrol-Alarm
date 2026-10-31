@@ -6,23 +6,27 @@
 
 | 内容 | 位置 |
 |---|---|
-| 报警 / 视频元数据 | **SQLite** `data/dash.db`（`alarms`、`clips`、`meta` 表，WAL） |
+| 报警 / 视频元数据 | **MySQL** 库 `csi_dashboard`（`alarms`、`clips`、`meta` 三张表） |
 | 报警抓拍 | `data/shots/<id>.jpg`（按条数+字节滚动） |
 | 事件视频 | `data/clips/<id>.mp4`（**只保留最近 15 条**，兼 1GB 字节兑底，滚动删） |
 | 瞬时状态（遥测/指令/灯） | `data/state.json`（只留这些，报警不再重复写 JSON） |
 
-首次启动会把旧的 `state.json` 里的报警**自动迁移**到 SQLite
-（日志会打 `migrated N alarms: state.json -> SQLite`）。
+连接参数在服务器 `config.json` 里（`db_host/db_port/db_user/db_pass/db_name`），
+或用环境变量 `CSI_DB_PASS` 覆盖密码。依赖 `python3-pymysql`（已装）。
+启动时会 `CREATE TABLE IF NOT EXISTS`，库/表不存在也会自动建表（库本身需事先建好）。
+
+旧版 SQLite（`data/dash.db`）里的报警/视频元数据用一次性脚本迁过来：
+
+```bash
+python3 /opt/csi-dashboard/tools/migrate_to_mysql.py /opt/csi-dashboard/config.json
+```
 
 > **看不到数据？先跑一眼**（服务器上，不用停服务）：
 >
 > ```bash
-> python3 /opt/csi-dashboard/db_check.py      # 表/行数/最近报警/视频总量/WAL
+> python3 /opt/csi-dashboard/tools/db_check.py /opt/csi-dashboard/config.json
+> # 表/行数/来源分布/最近 5 条/视频总量/meta 设置
 > ```
->
-> 用的是 **SQLite**（不是 aaPanel 里的 MySQL）。库是 WAL 模式，
-> 服务端每 10s 做一次 `PASSIVE` checkpoint、`-wal > 2MB` 时 `TRUNCATE`、
-> 退出时也 `TRUNCATE`，所以**单独拷 `dash.db` 一个文件就是完整数据**。
 
 ```sql
 -- alarms: id ts lvl label cn en tid score src note m img ack ack_ts n
@@ -116,7 +120,7 @@
 ### `POST /api/alarm/<id>/clip?sec=10.2`
 
 事件视频（mp4），`Content-Type: video/mp4`，上限 `max_clip_mb`（默认 8MB）。
-服务端只校验头部含 `ftyp`，落盘 `data/clips/<id>.mp4` 并写 SQLite `clips` 表。
+服务端只校验头部含 `ftyp`，落盘 `data/clips/<id>.mp4` 并写 MySQL `clips` 表。
 成功 `{"ok":true,"bytes":57479}`。
 
  * 视频数量超过 `max_clip_count`（默认 **15**）或总量超 `max_clip_total_mb`（默认 1024MB）时，

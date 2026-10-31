@@ -31,11 +31,16 @@ import os
 import re
 import signal
 import sys
-import sqlite3
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
+
+try:
+    import pymysql
+    import pymysql.cursors
+except ImportError:                                   # pragma: no cover
+    pymysql = None
 
 APP = "csi-dashboard"
 VER = "1.0"
@@ -64,6 +69,12 @@ DEF = {
     "max_clip_mb": 8,                # 单个事件视频上限
     "max_clip_count": 15,            # 只保留最近 N 条事件视频（0=不限）
     "max_clip_total_mb": 1024,       # 视频目录总上限（兼作字节兑底）
+    # --- MySQL（报警/视频元数据/设置全存这里；图片与视频本体仍是文件）---
+    "db_host": "127.0.0.1",
+    "db_port": 3306,
+    "db_user": "csi_dashboard",
+    "db_pass": "",                  # 写在本机 config.json 里（或环境变量 CSI_DB_PASS）
+    "db_name": "csi_dashboard",
     "accept_health": True,           # 是否接收/记录系统异常报警（可看板切换，存 meta 表）
     "demo": False,
     "allow_test": False,             # 允许看板触发“测试报警”
@@ -216,6 +227,7 @@ def clip_path(aid):
 
 
 def db_path():
+    """旧 SQLite 库文件的位置（仅迁移/备份时用，运行期不再写它）。"""
     return os.path.join(CFG["data_dir"], "dash.db")
 
 
@@ -236,72 +248,152 @@ def ensure_dirs():
 
 
 # ----------------------------------------------------------------------------
-# SQLite：报警/视频的正式存储（state.json 只留遥测/指令这类瞬时数据）
+# MySQL：报警/视频元数据/设置的正式存储（state.json 只留遥测/指令这类瞬时数据）
+#   调用点沿用 sqlite 写法（? 占位符 / INSERT OR REPLACE），由适配层翻成 MySQL 语法。
 # ----------------------------------------------------------------------------
 ALARM_COLS = ("id", "ts", "lvl", "label", "cn", "en", "tid", "score", "src",
               "note", "m", "img", "ack", "ack_ts", "n", "last_ts", "last_note",
               "recovered", "clip", "clip_bytes", "clip_sec")
 
-_DDL = """
-CREATE TABLE IF NOT EXISTS alarms(
-  id TEXT PRIMARY KEY, ts REAL NOT NULL, lvl INTEGER, label TEXT, cn TEXT, en TEXT,
-  tid INTEGER, score REAL, src TEXT, note TEXT, m TEXT,
-  img INTEGER DEFAULT 0, ack INTEGER DEFAULT 0, ack_ts REAL, n INTEGER DEFAULT 1,
-  last_ts REAL, last_note TEXT, recovered REAL,
-  clip INTEGER DEFAULT 0, clip_bytes INTEGER DEFAULT 0, clip_sec REAL DEFAULT 0
-);
-CREATE INDEX IF NOT EXISTS i_alarms_ts ON alarms(ts DESC);
-CREATE INDEX IF NOT EXISTS i_alarms_label ON alarms(label, ts DESC);
-CREATE TABLE IF NOT EXISTS clips(
-  alarm_id TEXT PRIMARY KEY, ts REAL, sec REAL, bytes INTEGER, path TEXT
-);
-CREATE INDEX IF NOT EXISTS i_clips_ts ON clips(ts);
-CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT);
-"""
-_DB = None
+_DDL = (
+    "CREATE TABLE IF NOT EXISTS alarms("
+    " id VARCHAR(48) NOT NULL PRIMARY KEY,"
+    " ts DOUBLE NOT NULL DEFAULT 0, lvl INT NULL,"
+    " label VARCHAR(64) NULL, cn VARCHAR(64) NULL, en VARCHAR(64) NULL,"
+    " tid INT NULL, score DOUBLE NULL, src VARCHAR(32) NULL,"
+    " note TEXT NULL, m TEXT NULL,"
+    " img TINYINT DEFAULT 0, ack TINYINT DEFAULT 0, ack_ts DOUBLE NULL,"
+    " n INT DEFAULT 1, last_ts DOUBLE NULL, last_note TEXT NULL,"
+    " recovered DOUBLE NULL, clip TINYINT DEFAULT 0,"
+    " clip_bytes INT DEFAULT 0, clip_sec DOUBLE DEFAULT 0,"
+    " KEY i_alarms_ts(ts), KEY i_alarms_label(label, ts)"
+    ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+
+    "CREATE TABLE IF NOT EXISTS clips("
+    " alarm_id VARCHAR(48) NOT NULL PRIMARY KEY,"
+    " ts DOUBLE NULL, sec DOUBLE NULL, bytes INT NULL, path VARCHAR(255) NULL,"
+    " KEY i_clips_ts(ts)"
+    ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+
+    "CREATE TABLE IF NOT EXISTS meta("
+    " k VARCHAR(64) NOT NULL PRIMARY KEY, v MEDIUMTEXT NULL"
+    ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+)
+
+DB_ERR = pymysql.Error if pymysql else Exception
+_local = threading.local()
+
+
+def _sql(s):
+    """sqlite 方言 -> MySQL：? 换成 %s，INSERT OR REPLACE 换成 REPLACE。"""
+    return s.replace("INSERT OR REPLACE INTO", "REPLACE INTO").replace("?", "%s")
+
+
+class _Cur(object):
+    """包一层 pymysql 游标，让 db().execute(...) 的用法与 sqlite 一致。"""
+
+    def __init__(self, cur):
+        self._c = cur
+
+    def execute(self, sql, params=()):
+        self._c.execute(_sql(sql), params)
+        return self
+
+    def fetchone(self):
+        return self._c.fetchone()
+
+    def fetchall(self):
+        return self._c.fetchall()
+
+    def __iter__(self):
+        return iter(self._c)
+
+
+class _Conn(object):
+    def __init__(self, cn):
+        self._cn = cn
+
+    def execute(self, sql, params=()):
+        return _Cur(self._cn.cursor()).execute(sql, params)
+
+    def commit(self):
+        try:
+            self._cn.commit()
+        except DB_ERR:
+            pass
+
+    def rollback(self):
+        try:
+            self._cn.rollback()
+        except DB_ERR:
+            pass
+
+    def close(self):
+        try:
+            self._cn.close()
+        except DB_ERR:
+            pass
+
+
+def _connect():
+    if pymysql is None:
+        raise RuntimeError("未安装 pymysql（apt install python3-pymysql）")
+    pw = CFG.get("db_pass") or os.environ.get("CSI_DB_PASS") or ""
+    return _Conn(pymysql.connect(
+        host=CFG.get("db_host") or "127.0.0.1",
+        port=int(CFG.get("db_port") or 3306),
+        user=CFG.get("db_user") or "root", password=pw,
+        database=CFG.get("db_name") or "csi_dashboard",
+        charset="utf8mb4", cursorclass=pymysql.cursors.DictCursor,
+        autocommit=False, connect_timeout=5))
 
 
 def db():
-    global _DB
-    if _DB is None:
-        _DB = sqlite3.connect(db_path(), check_same_thread=False)
-        _DB.row_factory = sqlite3.Row
-        _DB.execute("PRAGMA journal_mode=WAL")
-        _DB.execute("PRAGMA synchronous=NORMAL")
-        # 默认 1000 页（≈4MB）才回写主库，外面直接把 dash.db 拷走会“看着像空的”。
-        # 缩小到 512 页，另加定期 PASSIVE checkpoint（见 _save_locked）。
-        _DB.execute("PRAGMA wal_autocheckpoint=512")
-        _DB.executescript(_DDL)
-        _DB.commit()
-    return _DB
+    """每线程一条连接（pymysql 连接不能跨线程共用），断了自动重连。"""
+    cn = getattr(_local, "cn", None)
+    if cn is not None:
+        try:
+            cn._cn.ping(reconnect=True)
+            return cn
+        except Exception:                              # noqa: BLE001
+            cn.close()
+    cn = _connect()
+    _local.cn = cn
+    return cn
+
+
+def db_init():
+    """建表（启动时调一次）。失败只告警，不阻止看板起来。"""
+    try:
+        cn = db()
+        for ddl in _DDL:
+            cn.execute(ddl, ())
+        cn.commit()
+        r = cn.execute("SELECT VERSION() AS v").fetchone() or {}
+        log("db: MySQL %s  %s/%s"
+            % (r.get("v"), CFG.get("db_host"), CFG.get("db_name")))
+        return True
+    except Exception as e:                             # noqa: BLE001
+        log("db init failed: %s" % e)
+        return False
 
 
 def db_checkpoint(mode="PASSIVE"):
-    """把 WAL 刷回主库文件；mode=TRUNCATE 会把 -wal 清空（退出时用）。"""
-    if _DB is None:
-        return
-    try:
-        _DB.execute("PRAGMA wal_checkpoint(%s)" % mode)
-    except sqlite3.Error as e:
-        log("db checkpoint failed: %s" % e)
+    """兼容旧调用：MySQL 没有 WAL，直接返回。"""
+    return
 
 
 def db_maybe_shrink():
-    """-wal 超过 2MB 就 TRUNCATE 一次，避免主库看着“没数据”、-wal 越挂越大。"""
-    try:
-        p = db_path() + "-wal"
-        if os.path.exists(p) and os.path.getsize(p) > 2 * 1024 * 1024:
-            db_checkpoint("TRUNCATE")
-    except OSError:
-        pass
+    """兼容旧调用：MySQL 不需要回收 -wal。"""
+    return
 
 
 def meta_get(k, default=None):
-    """读一条持久设置（存在 SQLite meta 表里，重启不丢）。"""
+    """读一条持久设置（存在 MySQL meta 表里，重启不丢）。"""
     try:
         r = db().execute("SELECT v FROM meta WHERE k=?", (k,)).fetchone()
         return json.loads(r["v"]) if r else default
-    except (sqlite3.Error, ValueError):
+    except (DB_ERR, ValueError, TypeError):
         return default
 
 
@@ -311,7 +403,7 @@ def meta_set(k, v):
                      (k, json.dumps(v, ensure_ascii=False)))
         db().commit()
         return True
-    except sqlite3.Error as e:
+    except DB_ERR as e:
         log("meta write failed: %s" % e)
         return False
 
@@ -325,6 +417,8 @@ def db_put_alarm(a):
             v = json.dumps(v or {}, ensure_ascii=False, separators=(",", ":"))
         elif k in ("img", "ack"):
             v = 1 if v else 0
+        elif k == "ts":
+            v = float(v or 0)
         elif k == "cn":
             v = formal_cn(a.get("label"), v)
         row.append(v)
@@ -332,7 +426,7 @@ def db_put_alarm(a):
         db().execute("INSERT OR REPLACE INTO alarms(%s) VALUES(%s)"
                      % (",".join(ALARM_COLS), ",".join("?" * len(ALARM_COLS))), row)
         db().commit()
-    except sqlite3.Error as e:
+    except DB_ERR as e:
         log("db alarm write failed: %s" % e)
 
 
@@ -341,7 +435,7 @@ def db_del_alarm(aid):
         db().execute("DELETE FROM alarms WHERE id=?", (aid,))
         db().execute("DELETE FROM clips WHERE alarm_id=?", (aid,))
         db().commit()
-    except sqlite3.Error as e:
+    except DB_ERR as e:
         log("db alarm delete failed: %s" % e)
 
 
@@ -350,7 +444,7 @@ def db_load_alarms(limit):
     try:
         cur = db().execute("SELECT * FROM alarms ORDER BY ts DESC LIMIT ?", (limit,))
         rows = list(cur)
-    except sqlite3.Error as e:
+    except DB_ERR as e:
         log("db alarm read failed: %s" % e)
         return out
     for r in rows:
@@ -397,7 +491,7 @@ def load_state():
         rows = db_load_alarms(CFG["max_alarms"])
         log("migrated %d alarms: state.json -> SQLite" % len(json_alarms))
     S["alarms"] = rows
-    log("state loaded: %d alarms (sqlite), %d pending"
+    log("state loaded: %d alarms (mysql), %d pending"
         % (len(S["alarms"]), len(S["pending"])))
 
 
@@ -661,7 +755,7 @@ def attach_clip(aid, data, sec=0.0):
                          "VALUES(?,?,?,?,?)",
                          (aid, float(found.get("ts") or now()), sec, len(data), p))
             db().commit()
-        except sqlite3.Error as e:
+        except DB_ERR as e:
             log("db clip write failed: %s" % e)
         prune_clips_locked()
         _save_locked()
@@ -679,7 +773,7 @@ def prune_clips_locked():
     try:
         rows = [dict(r) for r in db().execute(
             "SELECT alarm_id, bytes, path FROM clips ORDER BY ts DESC")]
-    except sqlite3.Error as e:
+    except DB_ERR as e:
         log("clip prune read failed: %s" % e)
         return 0
     total = sum(int(r.get("bytes") or 0) for r in rows)
@@ -696,7 +790,7 @@ def prune_clips_locked():
             db().execute("DELETE FROM clips WHERE alarm_id=?", (r["alarm_id"],))
             db().execute("UPDATE alarms SET clip=0, clip_bytes=0, clip_sec=0 WHERE id=?",
                          (r["alarm_id"],))
-        except sqlite3.Error:
+        except DB_ERR:
             pass
         for a in S["alarms"]:
             if a.get("id") == r["alarm_id"]:
@@ -709,7 +803,7 @@ def prune_clips_locked():
     if removed:
         try:
             db().commit()
-        except sqlite3.Error:
+        except DB_ERR:
             pass
         log("clip prune: removed %d, kept %d, %.1fMB"
             % (removed, min(len(rows), keep) if keep else len(rows),
@@ -1638,8 +1732,9 @@ def load_config():
 def main():
     load_config()
     ensure_dirs()
+    db_init()                     # 建表（MySQL）；失败只告警
     load_state()
-    # 持久设置存 SQLite meta 表（load_state 里已经把 db 初始化了）
+    # 持久设置存 MySQL meta 表
     CFG["accept_health"] = bool(meta_get("accept_health", CFG.get("accept_health", True)))
     load_plugins()
     with LOCK:
@@ -1678,10 +1773,9 @@ def main():
     except KeyboardInterrupt:
         pass
     finally:
-        db_checkpoint("TRUNCATE")     # 退出时合并 WAL，避免 -wal 残留
         try:
             db().close()
-        except sqlite3.Error:
+        except DB_ERR:
             pass
         log("bye")
 
