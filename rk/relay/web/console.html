@@ -387,6 +387,15 @@ body{
   font-size:19px; line-height:1; padding:0; touch-action:none;
   -webkit-tap-highlight-color:transparent; user-select:none;
 }
+/* 长按类控件（车控方向盘 / 云台方向键）：手机上长按会触发文字选择/复制菜单，
+   还会被当成滚动或拖拽 -> pointerup 收不到，车/云台就会一直动。
+   user-select 管选择，-webkit-touch-callout 管 iOS 长按菜单，
+   touch-action:none 管浏览器手势；安卓的 contextmenu 在 JS 里兜底拦掉。 */
+#viewMap #dpad button, #viewVideo .gzpad, #viewVideo .gzbtn{
+  -webkit-user-select:none; user-select:none;
+  -webkit-touch-callout:none; -webkit-user-drag:none;
+  touch-action:none;
+}
 #viewVideo .gzbtn[data-jog="up"]{grid-area:1/2}
 #viewVideo .gzbtn[data-jog="left"]{grid-area:2/1}
 #viewVideo .gzbtn[data-jog="right"]{grid-area:2/3}
@@ -3619,6 +3628,12 @@ function syncQ(v) {
     const lb = $(b); if (lb) lb.textContent = String(v);
   });
 }
+
+/* 长按类按钮不要长按菜单（安卓会弹 复制/全选/分享，还会把长按当成选字） */
+document.addEventListener("contextmenu", (e) => {
+  const t = e.target;
+  if (t && t.closest && t.closest("#dpad button, .gzbtn")) e.preventDefault();
+});
 
 /* 滑块绑定 */
 ["brightness","contrast","saturation","hue","gamma","scale","quality","fps"]
