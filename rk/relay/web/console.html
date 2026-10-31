@@ -191,17 +191,29 @@ body{
 #viewMap .popt2 input{ width: 46px; padding: 3px 6px; font-size: 12px;
     background: #0d1117; border: 1px solid #30363d; color: #e6edf3;
     border-radius: 6px; font-family: ui-monospace, monospace; }
-/* 警戒区参数表：左列标签、右列输入+单位，行距统一，窄屏也不会错位 */
+/* 警戒区参数表：每组 = "标签 ……… 输入框+单位"，标签贴块左、数字贴块右，
+   宽屏两列各占一半（两端与下面按钮行对齐），手机单列。
+   2026-11-01 用户反馈"框太长了"：输入框原来 flex:1 撑满（约 224px），
+   一个"1"字占一大片。现在固定 72px 右对齐，块内用 space-between 把
+   标签和数字推到两端 —— 既短又整齐，不会右边空一大片。 */
 #viewMap .gform{
-    display: grid; grid-template-columns: max-content minmax(0, 1fr);
-    gap: 6px 10px; align-items: center;
+    display: grid; grid-template-columns: minmax(0, 1fr);
+    gap: 7px 20px; align-items: center;
     margin: 10px 0 0; padding-top: 10px; border-top: 1px solid #21262d;
     font-size: 12px; color: var(--dim);
   }
-#viewMap .gform label{ white-space: nowrap; }
-#viewMap .gform .gi{ display: flex; align-items: center; gap: 5px; min-width: 0; }
+@media (min-width: 560px){
+  #viewMap .gform{ grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+#viewMap .gform .gf{
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 8px; min-width: 0;
+  }
+#viewMap .gform label{ white-space: nowrap; overflow: hidden;
+    text-overflow: ellipsis; }
+#viewMap .gform .gi{ display: flex; align-items: center; gap: 5px; flex: none; }
 #viewMap .gform .gi input{
-    flex: 1 1 auto; width: 100%; min-width: 0;
+    flex: none; width: 72px; min-width: 0;
     padding: 4px 7px; font-size: 12px; text-align: right;
     background: #0d1117; border: 1px solid #30363d; color: #e6edf3;
     border-radius: 6px; font-family: ui-monospace, monospace;
@@ -1274,26 +1286,26 @@ html, body{overflow:hidden}
         <h3>警戒区域 / 人员定位</h3>
         <div class="plist" id="zlist"></div>
 
-        <!-- 参数表：左标签右输入，单位固定在输入框右边（原来一行里塞
-             "刷新 1 秒 · 冷却 60 秒" 这种混排，窄屏会折行错位）。 -->
+        <!-- 参数表：每组「标签 …… 输入框+单位」，宽屏两列、手机单列。
+             输入框固定 72px 右对齐（原来 flex:1 撑满右列，一个"1"字占一大片）。 -->
         <div class="gform">
-          <label for="gPollSec">采样间隔</label>
-          <span class="gi"><input id="gPollSec" type="number" min="0.3" max="10" step="0.1" value="1"><i>秒</i></span>
+          <span class="gf"><label for="gPollSec">采样间隔</label>
+            <span class="gi"><input id="gPollSec" type="number" min="0.3" max="10" step="0.1" value="1"><i>秒</i></span></span>
 
-          <label for="gWarnN">预警阈值</label>
-          <span class="gi"><input id="gWarnN" type="number" min="1" max="200" step="1" value="5"><i>次</i></span>
+          <span class="gf"><label for="gWarnN">预警阈值</label>
+            <span class="gi"><input id="gWarnN" type="number" min="1" max="200" step="1" value="5"><i>次</i></span></span>
 
-          <label for="gAlarmN">报警阈值</label>
-          <span class="gi"><input id="gAlarmN" type="number" min="1" max="200" step="1" value="10"><i>次</i></span>
+          <span class="gf"><label for="gAlarmN">报警阈值</label>
+            <span class="gi"><input id="gAlarmN" type="number" min="1" max="200" step="1" value="10"><i>次</i></span></span>
 
-          <label for="gCoolSec">同目标冷却</label>
-          <span class="gi"><input id="gCoolSec" type="number" min="5" max="3600" step="5" value="60"><i>秒</i></span>
+          <span class="gf"><label for="gCoolSec">同目标冷却</label>
+            <span class="gi"><input id="gCoolSec" type="number" min="5" max="3600" step="5" value="60"><i>秒</i></span></span>
 
-          <label for="gYawOff">云台零点偏置</label>
-          <span class="gi"><input id="gYawOff" type="number" min="-180" max="180" step="1" value="0"><i>°</i></span>
+          <span class="gf"><label for="gYawOff">云台零点偏置</label>
+            <span class="gi"><input id="gYawOff" type="number" min="-180" max="180" step="1" value="0"><i>°</i></span></span>
 
-          <label for="gWinDeg">雷达方位窗口</label>
-          <span class="gi"><input id="gWinDeg" type="number" min="2" max="30" step="1" value="7"><i>°</i></span>
+          <span class="gf"><label for="gWinDeg">雷达方位窗口</label>
+            <span class="gi"><input id="gWinDeg" type="number" min="2" max="30" step="1" value="7"><i>°</i></span></span>
         </div>
 
         <div class="btnrow wide" style="margin-top:10px">
