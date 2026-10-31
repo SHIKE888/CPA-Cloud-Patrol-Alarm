@@ -120,6 +120,12 @@ module dual_frame_sched #(
     wire rline_end  = (rcnt == LINE_GRP[CNTW-1:0] - 1'b1);
     wire [1:0] rgray = rblk ^ (rblk >> 1);
     wire blk_ready   = (wgray_s2 != rgray);
+    // 格雷码反解回写块号 (2bit: b[1]=g[1], b[0]=g[1]^g[0])
+    wire [1:0] wblk_s2 = {wgray_s2[1], wgray_s2[1] ^ wgray_s2[0]};
+    // 不读的时候让读指针跟着写指针跑, 永远保持 2 行滞后
+    //   ★ 2026-10-31: 单目选 cam1 也走这个环形缓冲了。如果不做这件事,
+    //     从"不读"切到"读"时读写块号是任意相位, 头几行会读到正在写的块(撕裂)。
+    wire [1:0] rblk_idle = wblk_s2 - 2'd2;
 
     always @(posedge I_clk) begin
         if (rd_en) rdata <= mem[{rblk, rcnt}];
@@ -147,10 +153,13 @@ module dual_frame_sched #(
             end else begin
                 rcnt <= rcnt + 1'b1;
             end
+        end else begin
+            rblk <= rblk_idle;
+            rcnt <= {CNTW{1'b0}};
         end
     end
 
-    always @* rd_en = I_dual_en & I_v0;
+    always @* rd_en = (I_dual_en | I_sel) & I_v0;
 
     //-------------------------------------------------------------------------
     //  ch0 直通路径也打一拍, 与 RAM 读延迟对齐
@@ -185,10 +194,13 @@ module dual_frame_sched #(
         else          begin sel_r <= I_sel; dual_r <= I_dual_en; end
     end
 
-    // 单目模式下两路都假设与 I_clk 同域（由上层时钟 mux 保证）
+    // ★ 2026-10-31: 这一组已**不再参与输出**（单目 cam1 也改走环形缓冲）。
+    //   时钟从 I_clk 改成 I_clk1 —— cam1 现在跑自己的恢复时钟,
+    //   再用 I_clk 直接采样 d1/v1/u1/l1 就是跨时钟域直采。
+    //   保留只是为了兼容旧接口/仿真观察, 综合会当作无用逻辑清掉。
     reg [DATA_WIDTH-1:0] d1_r;
     reg                  v1_r, u1_r, l1_r;
-    always @(posedge I_clk or negedge I_rst_n) begin
+    always @(posedge I_clk1 or negedge I_rst_n) begin
         if (!I_rst_n) begin
             d1_r <= {DATA_WIDTH{1'b0}};
             v1_r <= 1'b0; u1_r <= 1'b0; l1_r <= 1'b0;
@@ -198,24 +210,26 @@ module dual_frame_sched #(
         end
     end
 
-    assign O_v = dual_r ? v0_r : (sel_r ? v1_r : v0_r);
+    assign O_v = v0_r;
     // 双路模式下 cam1 数据没跟上时输出 **黑**（0）而不是环形缓冲里的旧数据 ——
     // 否则板上会看到一个"冻结的 cam1 画面"，极易误判成"cam1 工作正常"。
-    assign O_d = dual_r ? (parity_r ? (line_ok ? rdata : {DATA_WIDTH{1'b0}}) : d0_r)
-                        : (sel_r ? d1_r : d0_r);
-    assign O_u = dual_r ? u0_r : (sel_r ? u1_r : u0_r);
-    assign O_l = dual_r ? (parity_r ? rline_end : l0_r)
-                        : (sel_r ? l1_r : l0_r);
-    assign O_src    = dual_r ? parity_r : sel_r;
+    // ★ 2026-10-31: 单目选 cam1 时也走这条环形缓冲（不再是 d1_r 直通）——
+    //   cam1 现在跑自己的恢复时钟, 用 I_clk 直接采样 d1 就是跨时钟取样。
+    //   统一成 "use_ch1 ? 环形缓冲 : cam0 直通", 单目/双目只差 use_ch1 的来源。
+    wire use_ch1 = dual_r ? parity_r : sel_r;
+    assign O_d = use_ch1 ? (line_ok ? rdata : {DATA_WIDTH{1'b0}}) : d0_r;
+    assign O_u = u0_r;
+    assign O_l = use_ch1 ? rline_end : l0_r;
+    assign O_src    = use_ch1;
     assign O_parity = parity_r;
 
     // 读块不就绪说明 cam1 数据没跟上（没接 / 没对齐 / 掉速）
     reg lost_r;
     always @(posedge I_clk or negedge I_rst_n) begin
         if (!I_rst_n)             lost_r <= 1'b0;
-        else if (dual_r && v0_r)  lost_r <= ~line_ok;
+        else if (v0_r)            lost_r <= ~line_ok;
     end
-    assign O_ch1_lost = dual_r & lost_r;
+    assign O_ch1_lost = use_ch1 & lost_r;
 
     //-------------------------------------------------------------------------
     //  2026-10-31: 双目数据通路诊断计数
