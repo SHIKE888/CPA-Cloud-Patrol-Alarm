@@ -626,7 +626,7 @@ html, body{overflow:hidden}
             <div class="qb"><canvas id="cvSkel"></canvas></div></div>
           <div class="qc"><b>深度热力图 <i id="dHud">—</i></b>
             <div class="qb"><canvas id="cvDepth"
-                 title="固定视角深度热力图（近红远蓝）· 右键改水平视场角"></canvas></div></div>
+                 title="固定视角深度热力图（近红远蓝，右侧色标单位 m，量程动态 0.1~10m）· 右键改水平视场角"></canvas></div></div>
         </div>
       </div>
       <!-- 画面下方指标区: 等分网格, 整齐对齐 -->
@@ -3812,11 +3812,39 @@ function drawHeatInto(g, W, H, d) {
   for (let i = 0; i < npx; i++) px[i] = LUT[bytes[i]];
   _hCtx.putImageData(_hImg, 0, 0);
 
+  // 右侧留一条色标栏，热力图在这块之外 contain 放大（比例仍是 16:9，不变形）
+  const panelW = Math.min(66, Math.max(50, Math.round(W * 0.15)));
+  const drawW = Math.max(40, W - panelW);
   g.imageSmoothingEnabled = true;   // 双线性放大：热力图要平滑，不要马赛克
-  const s = Math.min(W / hw, H / hh);
+  const s = Math.min(drawW / hw, H / hh);
   const dw = hw * s, dh = hh * s;
   g.fillStyle = "#05070c"; g.fillRect(0, 0, W, H);
-  g.drawImage(_hCv, (W - dw) / 2, (H - dh) / 2, dw, dh);
+  g.drawImage(_hCv, (drawW - dw) / 2, (H - dh) / 2, dw, dh);
+
+  // ---- 右侧颜色标尺：动态量程 0.1~10 m（服务端 zlo/zhi 已限定在此范围）----
+  //   底=近(红) 顶=远(蓝)，跟热力图同一套色表；中点是量程中值，方便读数。
+  const zlo = Math.min(10, Math.max(0.1, +d.zlo || 0.1));
+  const zhi = Math.min(10, Math.max(zlo + 0.05, +d.zhi || 10));
+  const by0 = 20, bh = Math.max(48, H - 40);
+  const bx0 = drawW + 6, bw = 9;
+  g.fillStyle = "rgba(5,7,12,.78)"; g.fillRect(drawW, 0, panelW, H);
+  for (let i = 0; i < bh; i++) {
+    const c = _cmap(1 - i / Math.max(1, bh - 1));      // 顶=远
+    g.fillStyle = "rgb(" + (c[0] | 0) + "," + (c[1] | 0) + "," + (c[2] | 0) + ")";
+    g.fillRect(bx0, by0 + i, bw, 1);
+  }
+  g.strokeStyle = "rgba(255,255,255,.35)"; g.lineWidth = 1;
+  g.strokeRect(bx0 + 0.5, by0 + 0.5, bw - 1, bh - 1);
+  const fmt = v => (v < 1 ? v.toFixed(2) : v.toFixed(1));
+  g.font = "9.5px ui-monospace,SFMono-Regular,monospace";
+  g.fillStyle = "#dbe7f3"; g.textBaseline = "middle"; g.textAlign = "left";
+  const lx = bx0 + bw + 4;
+  g.fillText(fmt(zhi), lx, by0 + 4);
+  g.fillText(fmt((zhi + zlo) / 2), lx, by0 + bh / 2);
+  g.fillText(fmt(zlo), lx, by0 + bh - 4);
+  g.fillStyle = "#7e8b9b";
+  g.fillText("m", lx, by0 + bh + 8);
+  g.textAlign = "start"; g.textBaseline = "alphabetic";
 
   if ($("dHud")) {
     const tag = d.calib ? ("fx" + Math.round(+d.focal_px || 0))
@@ -3824,12 +3852,12 @@ function drawHeatInto(g, W, H, d) {
     $("dHud").textContent = (d.stale ? "停更 · " : "") + tag + " / " +
       (d.ms || 0) + "ms";
   }
-  const hud = "近 " + (+d.zlo || 0).toFixed(2) + "m  远 " + (+d.zhi || 0).toFixed(2) +
-    "m · 有效 " + Math.round((+d.valid || 0) * 100) + "% · " + (d.fps || 0) +
-    "fps · 基线 " + Math.round((+d.baseline_m || 0.045) * 1000) + "mm";
-  g.fillStyle = "rgba(0,0,0,.5)"; g.fillRect(0, H - 17, W, 17);
+  // 底部只显示帧率 + 有效像素占比（用户要求；近/远看右侧色标即可）
+  const hud = (d.fps || 0) + " fps · 有效 " +
+    Math.round((+d.valid || 0) * 100) + "%";
+  g.fillStyle = "rgba(0,0,0,.55)"; g.fillRect(0, H - 16, Math.min(W, 150), 16);
   g.fillStyle = "#9fe"; g.font = "11px sans-serif"; g.textBaseline = "middle";
-  g.fillText(hud, 5, H - 9);
+  g.fillText(hud, 5, H - 8);
   if (d.warn) {
     g.fillStyle = "rgba(120,20,10,.72)"; g.fillRect(0, 0, W, 16);
     g.fillStyle = "#ffd2c8"; g.fillText(d.warn, 5, 8);

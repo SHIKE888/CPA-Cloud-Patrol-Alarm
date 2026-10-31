@@ -96,7 +96,10 @@ TARGET_PTS = 2200           # 输出点数（每点 9 字节, 2200 点 ≈ 20KB/
 HEAT_DIV = 2
 OUT_HZ = 10.0               # 引擎最高计算频率(双目 30fps 输入, 每 3 帧取 1 对)
 WANT_TTL = 6.0              # 多久没人拉 /api/depth 就停机(秒)
-Z_MIN, Z_MAX = 0.15, 4.0    # 有效深度窗口(m)，45mm 基线在这个范围内才有意义
+Z_MIN, Z_MAX = 0.15, 10.0   # 有效深度窗口(m)。2026-11-01 用户要求远端放到 10 m
+# 颜色标尺 / 热力图的动态量程硬边界（用户要求 0.1~10 m）。
+# 注意与 Z_MIN/Z_MAX 分开：Z_MAX 决定“算不算数”，Z_RANGE_* 只决定“颜色怎么分”。
+Z_RANGE_MIN, Z_RANGE_MAX = 0.1, 10.0
 DISP_MIN = 0.4              # 小于这个(亚像素)视差当无效，避免"无穷远"噪声
 MIN_VALID = 0.015           # 有效像素低于这个比例就当"没匹配上"
 SHEAR_WARN = 0.6            # 半幅每行偏移超过这个(px/row)就报输入异常
@@ -608,8 +611,11 @@ class StereoDepth(threading.Thread):
             self._qrt[0] = self._qrt[0] * 0.85 + float(lo) * 0.15
             self._qrt[1] = self._qrt[1] * 0.85 + float(hi) * 0.15
         q_lo, q_hi = float(self._qrt[0]), float(self._qrt[1])
+        # 限定到色标量程 0.1~10 m（自适应量程也不能跑出这个范围）
+        q_lo = min(max(q_lo, Z_RANGE_MIN), Z_RANGE_MAX)
         if q_hi - q_lo < 0.05:
             q_hi = q_lo + 0.05
+        q_hi = min(max(q_hi, q_lo + 0.05), Z_RANGE_MAX)
         hh2 = max(2, ph // HEAT_DIV)
         hw2 = max(2, pw // HEAT_DIV)
         z2 = z[:hh2 * HEAT_DIV:HEAT_DIV, :hw2 * HEAT_DIV:HEAT_DIV]
