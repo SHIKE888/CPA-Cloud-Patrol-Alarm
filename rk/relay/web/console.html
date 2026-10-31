@@ -3886,10 +3886,10 @@ function drawCloud(d) {
 
   // ---- HUD ----
   if ($("dHud")) {
-    // 未标定 -> 显示 FOV(引擎按它估算焦距)；已标定 -> 显示标定出来的 fx，
-    // 此时 FOV 旋钮/右键改 FOV 一律被引擎忽略（避免两套参数打架）。
+    // 未标定 -> 显示 FOV(引擎按它估算焦距)，后面标个「估」：此时点云与视频的
+    // 比例尺取决于 FOV 是否准确（右键可改）。已标定 -> 显示标定出来的 fx。
     const tag = d.calib ? ("fx" + Math.round(+d.focal_px || 0))
-                        : ((d.fov_deg || 0) + "°");
+                        : ((d.fov_deg || 0) + "°估");
     $("dHud").textContent = (d.stale ? "停更 · " : "") + tag + " / " +
       (d.ms || 0) + "ms";
   }
