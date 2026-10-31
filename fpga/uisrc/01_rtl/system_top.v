@@ -383,11 +383,15 @@ wire          					S_rx1_aclk		;   // cam1 支路时钟（固定模式下 = S_hs
 //    - S_hs_rx_clk 永远锁在 cam0 的恢复时钟上（时钟 mux 选择位恒 0）
 //    - cam1 整条支路 (RX#1 AXIS / image_correction1 / sched 写侧) 跑 S_hs_clk1
 //    - 单目/双目的源切换**只切换数据 mux**, 不换时钟、不复位 RX
-//      => 切换瞬间没有"等待新源时钟稳定 + 20ms 复位窗"造成的花屏/卡死
-//    - 代价: cam0 必须始终在位（两模组都在位, 符合现场）
-//  USE_FIXED_RX_CLK = 0: 回退到 0x4709 行为（时钟 mux 跟随源）
+//  USE_FIXED_RX_CLK = 0: 回退到 0x4709/V47.8 行为（时钟 mux 跟随源）
+//
+//  ⚠ 2026-10-31 诊断版 0x470C: 先置 0。0x470A/0x470B(=1) 上板都是花屏，
+//    而 flash 兜底 0x4600 画面完全正常。这一版 RTL 与 V47.8 等价（除了
+//    S_res_pwrup 多给一个上电窗，无害），用来判定“到底是不是这次改动引起的”：
+//      - 置 0 画面正常 => 问题就在这个固定时钟架构（cam1 时钟域）
+//      - 置 0 画面还花 => 与我的改动无关，要往 V47.8 本身查
 //=============================================================================
-localparam USE_FIXED_RX_CLK = 1'b1;
+localparam USE_FIXED_RX_CLK = 1'b0;
 
 	//---- LP-free CSI-2 RX (03_ip/mipi_csi_lpfree) 的 AXIS 输出 ----
 	wire							S_rx_rstn		;
