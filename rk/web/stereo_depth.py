@@ -97,6 +97,51 @@ TARGET_PTS = 2200           # 输出点数（每点 9 字节, 2200 点 ≈ 20KB/
 HEAT_DIV = 2
 OUT_HZ = 10.0               # 引擎最高计算频率(双目 30fps 输入, 每 3 帧取 1 对)
 WANT_TTL = 6.0              # 多久没人拉 /api/depth 就停机(秒)
+# ---- 运动视差偏置补偿（2026-11-01）-----------------------------------------
+#   两目是 FPGA **交替出帧**拼成 3840x1080 的：同一对里左右半幅相差约一个帧周期
+#   (SKEW_S)。云台/车体在动时, 后出的那一半看到的世界已经转过 ω·SKEW_S,
+#   于是测出的视差里多出一个与 ω 成正比的偏置 —— 板上表现为
+#   "左转变近、右转变远, 停下来就恢复"(用户 2026-11-01 实测)。
+#   这里用【相邻两帧左目的整体位移】估 ω(像素/秒), 再乘 SKEW_S 得到偏置并从视差里减掉。
+#   好处: 不依赖云台遥测、不用猜帧率, 车体平移导致的位移也一并覆盖。
+PAN_COMP = os.environ.get("DEPTH_PAN_COMP", "1") not in ("0", "false", "False", "")
+# 两目出帧时间差(s)。双目 27fps 输出时一个输出帧周期是 37ms，但两目是**同一帧周期内
+# 交替**出帧的，实际相差约半个周期 18.5ms。
+# ⚠ 2026-11-01 实板反馈：取 37ms 时补偿过头约一倍（右转从"变远"翻成"变近"），
+#   所以这里取半个帧周期。
+SKEW_S = float(os.environ.get("DEPTH_SKEW_S", "0.0185"))
+# 热调增益：改这个文件就生效，不用重启服务（每次最多 1s 重新读一次）。
+#   1.0 = 用上面的 SKEW_S；0 = 关掉补偿；>1 补得更狠。
+PAN_GAIN_FILE = os.environ.get("DEPTH_PAN_GAIN_FILE", "/root/rk/web/depth_pan_gain")
+_PAN_GAIN = {"mtime": None, "v": 1.0}
+
+
+def pan_gain():
+    """读热调增益；文件不存在/读不动就用 1.0。"""
+    try:
+        st = os.stat(PAN_GAIN_FILE)
+    except OSError:
+        _PAN_GAIN["mtime"] = None
+        _PAN_GAIN["v"] = 1.0
+        return 1.0
+    if _PAN_GAIN["mtime"] == st.st_mtime:
+        return _PAN_GAIN["v"]
+    try:
+        with open(PAN_GAIN_FILE) as f:
+            v = float(f.read().strip().split()[0])
+        v = max(0.0, min(4.0, v))
+    except Exception:                                          # noqa: BLE001
+        v = 1.0
+    _PAN_GAIN["mtime"] = st.st_mtime
+    _PAN_GAIN["v"] = v
+    return v
+PAN_RESP_MIN = 0.20        # 整体位移估计的相位相关响应下限
+PAN_DEADBAND = 0.35        # 处理分辨率下小于这个位移(px)就不补, 防抖
+# 补偿上限(处理分辨率 px)。按 f(448)≈340px/rad、SKEW_S=37ms 算：
+#   45°/s(云台最大速度) -> 340×0.785×0.037 ≈ 9.9px；90°/s ≈ 20px。
+# ⚠ 原来写 12，实测 45°/s 时需要的补偿量就有 14.3px，被上限截掉后只补回一半
+#   （合成测试: 关补偿 −70%，截断到 12 时 −41%，不截断 +1%）。别设太小。
+PAN_MAX = 28.0
 Z_MIN, Z_MAX = 0.15, 10.0   # 有效深度窗口(m)。2026-11-01 用户要求远端放到 10 m
 # 颜色标尺 / 热力图的动态量程硬边界（用户要求 0.1~10 m）。
 # 注意与 Z_MIN/Z_MAX 分开：Z_MAX 决定“算不算数”，Z_RANGE_* 只决定“颜色怎么分”。
@@ -220,6 +265,10 @@ class StereoDepth(threading.Thread):
         # 标定: (key, maps)。maps 是处理分辨率下的极线校正查找表。
         self._rect = None
         self._rect_key = None
+        # 运动视差偏置补偿: 上一帧左目(处理分辨率灰度) + 它的捕获时刻
+        self._pan_prev = None
+        self._pan_prev_t = 0.0
+        self._pan_disp = 0.0
 
     # ------------------------------------------------------------ 外部接口
     def wanted(self, now=None):
@@ -571,6 +620,26 @@ class StereoDepth(threading.Thread):
         gl = cv2.cvtColor(sl, cv2.COLOR_BGR2GRAY)
         gr = cv2.cvtColor(sr, cv2.COLOR_BGR2GRAY)
 
+        # ---- 运动视差偏置: 用相邻两帧左目的整体位移估 ω, 再乘 SKEW_S ----
+        #   两目晚一个帧周期, 云台在转时视差会系统性偏大/偏小, 这里把偏置换算成
+        #   处理分辨率下的像素数, 在 SGBM 之后从视差里减掉(见 disp -= pan)。
+        pan = 0.0
+        if PAN_COMP:
+            t_now = float(tsp) if tsp else time.time()
+            if self._pan_prev is not None:
+                dt = t_now - self._pan_prev_t
+                if 0.02 <= dt <= 0.6:
+                    pdx, _pdy, presp = self._estimate_align(self._pan_prev, gl)
+                    if presp >= PAN_RESP_MIN:
+                        pan = pdx * (SKEW_S / dt) * pan_gain()
+                        if abs(pan) > PAN_MAX:
+                            pan = PAN_MAX if pan > 0 else -PAN_MAX
+                        if abs(pan) < PAN_DEADBAND:
+                            pan = 0.0
+            self._pan_prev = gl.copy()
+            self._pan_prev_t = t_now
+        self._pan_disp = pan
+
         # ---- 视差搜索范围：按最近可测距离 Z_NEAR 算，并按 nd 左补再裁回 ----
         #   0.5 m 在 45mm 基线下 => d = f*B/z。f 越小(视角越宽)需要的 nd 越小。
         d_near = f * base_m / max(Z_NEAR, 1e-3)          # 处理分辨率下的像素数
@@ -584,6 +653,9 @@ class StereoDepth(threading.Thread):
         disp = sgbm.compute(gl_p, gr_p).astype(np.float32) / 16.0
         disp = cv2.medianBlur(disp, 5)[:, nd:]            # 裁掉补出来的那一带
         disp = disp[:, :pw]
+        if pan:
+            # 两目差一个帧周期: 后出那半幅已经转过去了, 测出的视差多算了 pan
+            disp = disp - pan
 
         with np.errstate(divide="ignore", invalid="ignore"):
             z = (f * base_m) / disp
@@ -690,6 +762,7 @@ class StereoDepth(threading.Thread):
             "ms": round(ms, 1),
             "shear_l": round(float(shear_l), 2),
             "shear_r": round(float(shear_r), 2),
+            "pan_comp": round(float(self._pan_disp), 2),
             "warn": warn,
             # 热力图（固定视角直接上色）: hw×hh 的 8bit 图，0=无效
             "heat": heat_b64,
