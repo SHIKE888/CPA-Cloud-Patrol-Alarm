@@ -3592,7 +3592,7 @@ document.querySelectorAll("#viewVideo [data-jrc]").forEach(b => {
     schedulePush();
   });
 });
-/* 推流模式: 单目 / 双目拼接(左cam1右cam0 —— 左目=cam1, 右目=cam0) */
+/* 推流模式: 单目 / 双目拼接(左cam1右cam0 —— 左目=cam1, 右目=cam0)
    ★ 完全显式, 不会自动切 —— 想单目就点单目, 不会因为看到两路标记被改掉。 */
 document.querySelectorAll("#viewVideo [data-mode]").forEach(b => {
   b.onclick = () => {
