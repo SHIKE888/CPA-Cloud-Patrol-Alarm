@@ -28,6 +28,7 @@ AI（`/api/ai`）和深度（`/api/depth`）是两条独立管线：
 import base64
 import math
 import threading
+import time
 
 try:
     import numpy as np
@@ -46,7 +47,47 @@ MIN_AIM_VALID = 5          # 瞄准点窗口里至少这么多有效像素才算
 MIN_BOX_VALID = 12
 SPREAD_WARN = 1.8          # p75/p25 超过它 -> 窗口里混了背景，conf 打折
 Z_SANE = (0.20, 15.0)      # 合理的距离区间（超出就不报位置）
-MAX_AGE = 2.5              # 深度结果超过这么久就当过期（秒）
+# 深度结果超过这么久就当过期。原来 2.5s 太宽松：云台在摆动时，2.5 秒前的
+# 画面和"此刻"的云台角完全对不上，算出来的位置能差一米以上（用户报的
+# "大幅跳变"）。0.8s 是 SGBM 一轮(约 0.1s)+ 排队波动的合理上界。
+MAX_AGE = 0.8
+
+# ---- 输出平滑（同一目标跨帧）----
+#  为什么要有：即使角度和图像都对齐了，采样点（肩中点/瞄准点）本身也在
+#  帧间抖动（关键点检测、SGBM 空洞），直接输出会让地图上的点在原地"炸开"。
+#  这里对 (x,y,up) 做指数平滑：跟手程度由 SMOOTH_TAU 决定（0.3s ≈ 3~4 帧）。
+SMOOTH_TAU = 0.30
+SMOOTH_RESET_M = 2.5       # 单帧跳这么远 = 目标切换/测距跑飞 -> 直接重置
+_SMOOTH_TTL = 8.0
+_SMOOTH = {}               # tid -> {"x","y","up","t"}
+_SMOOTH_LOCK = threading.Lock()
+
+
+def _smooth_rel(tid, rel, now):
+    """同一目标的 3D 相对位置做指数平滑。tid 为空 / rel 为空就原样返回。"""
+    if tid is None or not rel:
+        return rel
+    with _SMOOTH_LOCK:
+        for k in [k for k, v in _SMOOTH.items() if now - v["t"] > _SMOOTH_TTL]:
+            _SMOOTH.pop(k, None)
+        s = _SMOOTH.get(tid)
+        if s is None:
+            _SMOOTH[tid] = {"x": rel["x"], "y": rel["y"],
+                            "up": rel["up"], "t": now}
+            return dict(rel)
+        dt = min(2.0, max(0.02, now - s["t"]))
+        d = math.hypot(rel["x"] - s["x"], rel["y"] - s["y"])
+        if d > SMOOTH_RESET_M:
+            s.update(x=rel["x"], y=rel["y"], up=rel["up"], t=now)
+            return dict(rel)
+        a = 1.0 - math.exp(-dt / SMOOTH_TAU)
+        s["x"] += a * (rel["x"] - s["x"])
+        s["y"] += a * (rel["y"] - s["y"])
+        s["up"] += a * (rel["up"] - s["up"])
+        s["t"] = now
+        ground = math.hypot(s["x"], s["y"])
+        return {"x": s["x"], "y": s["y"], "up": s["up"], "ground": ground,
+                "range": math.hypot(ground, s["up"])}
 
 # heat 解码缓存：同一帧只解一次 base64（10Hz 轮询下这点开销可不忽略）
 _CACHE = {"key": None, "q": None}
@@ -135,11 +176,19 @@ def _probe_video_pt(q, depth, u_v, v_v, box_w_v, zlo, zhi, src="aim"):
     ur, vr = _apply_h(depth.get("img2rect"), u_v, v_v)
     hu = ur / w_full * hw
     hv = vr / h_full * hh
+    # ⚠ 采样点必须落在热力图**里面**。热力图是极线校正后的左图，覆盖的画面
+    #   范围比原始图略小（本工程实测：原始 u∈[59,1720]、v∈[0,1080] 之外
+    #   映射出去就出界），人走到画面最左/最右时 hu 会跑到图外；那时窗口只能
+    #   被边界裁掉一半，采到的是边缘背景，距离直接错。
+    #   宁可报"不在深度视野"也不给个错的位置（用户反馈的"对不上"）。
+    if not (0 <= hu < hw and 0 <= hv < hh):
+        return {"src": "outside", "hu": hu, "hv": hv, "n": 0}
     r = max(2, int(round(AIM_R * hw)))
     st = _window_stats(q, hu - r, hv - r, hu + r + 1, hv + r + 1,
                        zlo, zhi, MIN_AIM_VALID)
     if st is not None:
         st["src"] = src
+        st["hu"], st["hv"] = hu, hv
         return st
     # 兜底：用框宽当窗口（人身上总有一点有效深度）
     rb = max(r, int(round(0.20 * max(1.0, box_w_v) / w_full * hw)))
@@ -147,6 +196,7 @@ def _probe_video_pt(q, depth, u_v, v_v, box_w_v, zlo, zhi, src="aim"):
                        zlo, zhi, MIN_BOX_VALID)
     if st is not None:
         st["src"] = "box"
+        st["hu"], st["hv"] = hu, hv
     return st
 
 
@@ -227,7 +277,7 @@ def to_base(dist, u, v, f_px, cx, cy, yaw_deg=0.0, pitch_deg=0.0):
 
 # --------------------------------------------------------------- 对外入口
 def match_targets(dets, depth, ai_wh, yaw_deg=0.0, pitch_deg=0.0,
-                  locked_tid=None, ai_on_left=True):
+                  locked_tid=None, ai_on_left=True, smooth=True):
     """给每个 AI 检测算距离/方位。
 
     参数
@@ -316,6 +366,12 @@ def match_targets(dets, depth, ai_wh, yaw_deg=0.0, pitch_deg=0.0,
             item["reason"] = "窗口内没有有效深度"
             out.append(item)
             continue
+        if st.get("src") == "outside":
+            item["reason"] = "不在深度视野内（人太靠画面边）"
+            item["hu"] = round(st["hu"], 1)
+            item["hv"] = round(st["hv"], 1)
+            out.append(item)
+            continue
 
         # ---- AI 跑在**右目**上时，先补视差再取一次 ----
         #   同一物点在右目像上的 u 比左目**小** f*B/z（2m 处约 35px），
@@ -326,7 +382,7 @@ def match_targets(dets, depth, ai_wh, yaw_deg=0.0, pitch_deg=0.0,
             d_shift = cam_fx * base_m / max(float(st["z"]), 0.05)
             st2 = _probe_video_pt(q, depth, u_v + d_shift, v_v,
                                   box_w_v, zlo, zhi, src0)
-            if st2 is not None and st2["src"] != "box":
+            if st2 is not None and st2.get("src") not in ("box", "outside"):
                 st = st2
             u_v += d_shift
 
@@ -354,19 +410,29 @@ def match_targets(dets, depth, ai_wh, yaw_deg=0.0, pitch_deg=0.0,
             conf *= 0.8                       # 有效像素偏少
 
         bearing = math.degrees(math.atan2(u_v - cam_cx, cam_fx))
+        raw = {"x": rel["x"], "y": rel["y"], "up": rel["up"],
+               "ground": rel["ground"], "range": rel["range"]}
+        # 跨帧平滑：压住"关键点/SGBM 帧间抖动"和残留下来的云台摆动
+        sm = _smooth_rel(tid, raw, time.monotonic()) if smooth else raw
         item.update({
             "ok": True,
             "reason": "",
-            "dist_m": round(rel["range"], 2),
-            "ground_m": round(rel["ground"], 2),
+            "dist_m": round(sm["range"], 2),
+            "ground_m": round(sm["ground"], 2),
             "bearing_deg": round(bearing, 1),
             "bearing_world_deg": round(bearing + float(yaw_deg or 0.0), 1),
-            "rel": {"x": round(rel["x"], 2), "y": round(rel["y"], 2)},
+            "rel": {"x": round(sm["x"], 3), "y": round(sm["y"], 3)},
+            # 原始（未平滑）也留下来：调参/对比用，前端画图只认 rel
+            "rel_raw": {"x": round(rel["x"], 3), "y": round(rel["y"], 3)},
             "valid": int(st["n"]),
             "spread": round(float(st["spread"]), 2),
             "src": st["src"],
             "conf": round(conf, 2),
             "u_video": round(u_v, 1),
+            # 采样点在**热力图**上的坐标（前端叠加到热力图上就能一眼看出
+            # "采到的到底是不是人"）
+            "hu": round(float(st.get("hu") or 0.0), 1),
+            "hv": round(float(st.get("hv") or 0.0), 1),
             "depth_age": round(float(depth.get("age") or 0.0), 2),
         })
         out.append(item)
@@ -396,19 +462,22 @@ def _selftest():
              "heat": base64.b64encode(q.tobytes()).decode("ascii")}
     # AI 帧 960x540，人在正中间（框中心 u=480），框覆盖中间那一块
     dets = [{"tid": 7, "box": [330, 110, 630, 480], "aim": [480, 300], "score": 0.9}]
-    r = match_targets(dets, depth, [960, 540], yaw_deg=0.0, pitch_deg=0.0)
+    r = match_targets(dets, depth, [960, 540], yaw_deg=0.0, pitch_deg=0.0,
+                      smooth=False)
     t = r[0]
     ok = abs(t["dist_m"] - 2.0) < 0.12 and abs(t["bearing_deg"]) < 0.5
     print("  dist=%s ground=%s bearing=%s src=%s conf=%s" %
           (t["dist_m"], t["ground_m"], t["bearing_deg"], t["src"], t["conf"]))
     # 云台左转 30°：相对位置应往 +y（左）偏
-    r2 = match_targets(dets, depth, [960, 540], yaw_deg=30.0, pitch_deg=0.0)
+    r2 = match_targets(dets, depth, [960, 540], yaw_deg=30.0, pitch_deg=0.0,
+                       smooth=False)
     x, y = r2[0]["rel"]["x"], r2[0]["rel"]["y"]
     ok2 = (abs(math.degrees(math.atan2(y, x)) - 30.0) < 0.6)
     print("  yaw=30° -> rel=(%.2f, %.2f) 角度 %.1f°" %
           (x, y, math.degrees(math.atan2(y, x))))
     # 俯仰向下 20°：水平距离应该变短
-    r3 = match_targets(dets, depth, [960, 540], yaw_deg=0.0, pitch_deg=20.0)
+    r3 = match_targets(dets, depth, [960, 540], yaw_deg=0.0, pitch_deg=20.0,
+                       smooth=False)
     g = r3[0]["ground_m"]
     ok3 = g < t["ground_m"] - 0.05
     print("  pitch=20° -> ground=%.2f m (0° 时 %.2f)" % (g, t["ground_m"]))
@@ -419,7 +488,8 @@ def _selftest():
     u_r_ai = (u_l - d_px) / 1920.0 * 960.0       # 换算到 AI(960 宽) 坐标
     dets2 = [{"tid": 8, "box": [u_r_ai - 170, 110, u_r_ai + 170, 480],
               "aim": [u_r_ai, 300]}]
-    rr = match_targets(dets2, dep2, [960, 540], 0.0, 0.0, ai_on_left=False)
+    rr = match_targets(dets2, dep2, [960, 540], 0.0, 0.0, ai_on_left=False,
+                       smooth=False)
     want = math.degrees(math.atan2(u_l - 960.0, 1448.5))
     ok4 = abs(rr[0]["bearing_deg"] - want) < 0.4
     print("  右目 u=%.1f -> bearing=%.2f° (应 %.2f°), dist=%s" %
@@ -429,13 +499,21 @@ def _selftest():
     # 但肩中点仍在人身上 -> 应取到 2m、src=shoulder。
     dets3 = [{"tid": 9, "box": [500, 110, 800, 480], "aim": [650, 300],
               "sh": [480, 250], "sh_pair": True}]
-    r5 = match_targets(dets3, depth, [960, 540], 0.0, 0.0)
+    r5 = match_targets(dets3, depth, [960, 540], 0.0, 0.0, smooth=False)
     t5 = r5[0]
     ok5 = (bool(t5.get("ok")) and t5.get("src") == "shoulder"
            and abs(t5["dist_m"] - 2.0) < 0.15)
     print("  肩中点优先: dist=%s src=%s （同一个人框中心落在背景上）" %
           (t5.get("dist_m"), t5.get("src")))
-    ok = ok and ok2 and ok3 and ok4 and ok5
+    # 采样点映射到热力图**外面**（人贴到画面最右）-> 必须报"不在深度视野"，
+    # 不能靠被边界裁掉一半的窗口硬采（那采到的是背景，位置直接错）。
+    dets4 = [{"tid": 11, "box": [860, 110, 940, 480], "aim": [1000, 300]}]
+    r6 = match_targets(dets4, depth, [960, 540], 0.0, 0.0, smooth=False)
+    t6 = r6[0]
+    ok6 = (not t6.get("ok")) and ("视野" in (t6.get("reason") or ""))
+    print("  出界保护: ok=%s reason=%s hu=%s" %
+          (t6.get("ok"), t6.get("reason"), t6.get("hu")))
+    ok = ok and ok2 and ok3 and ok4 and ok5 and ok6
     print("PASS" if ok else "FAIL")
     return 0 if ok else 2
 

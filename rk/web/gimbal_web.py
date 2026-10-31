@@ -39,6 +39,7 @@ import re
 import sys
 import threading
 import time
+from collections import deque
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
@@ -338,6 +339,11 @@ class GimbalWeb(object):
         # 双闭环：实测速度(°/s)/积分/修正量；_t_meas = 上次 status 的时刻
         self._t_meas = 0.0
         self._vel_meas = [0.0, 0.0]
+        # 角度历史 (t_monotonic, yaw, pitch)：给"人员定位"用。
+        #   云台在追踪时会持续摆动，而 AI 检测框是**几百毫秒前**那一帧的；
+        #   拿"此刻"的云台角去配"旧图像"算方位，云台一动位置就跟着跳。
+        #   有了历史就能按 AI 帧的时刻把角度**回溯**到当时的真实朝向。
+        self._ang_hist = deque(maxlen=600)
         self._vel_meas_hold = [0.0, 0.0]   # 上一次有效的测速（防止瞬时 0 让封顶失效）
         self._tel_cost = 0.0              # status 单次耗时的平滑估计（自适应限流）
         self._stall = [False, False]        # 本拍是否因“目标超前太多”被冻结
@@ -472,6 +478,45 @@ class GimbalWeb(object):
         return (y_lo, y_hi), (p_lo, p_hi)
 
     # ------------------------------------------------------------------ HTTP 接口
+    def angle_at(self, t_mono, max_gap=0.6):
+        """取 t_mono（monotonic 秒）**那一刻**的云台角 (yaw, pitch)。
+
+        为什么要回溯：云台在追踪时会持续摆动（gain 再怎么调也不是 0），而 AI
+        检测框是几百毫秒前那一帧的。拿"此刻"的角度去配"旧图像"算方位，云台
+        一动，算出来的人在车体系里的位置就跟着跳 —— 实测用户报的"大幅跳变"
+        就是这么来的。这里按时刻插值，让角度和图像是同一个瞬间。
+
+        返回 (yaw, pitch, 用到的时间差)；历史不够/太旧就返回 None（调用方
+        退回"当前角度"，并在输出里标出来）。
+        """
+        try:
+            t = float(t_mono)
+        except (TypeError, ValueError):
+            return None
+        with self.lock:
+            hist = list(self._ang_hist)
+        if not hist:
+            return None
+        # hist 是按时间递增的；找跨越 t 的两点做线性插值
+        if t <= hist[0][0]:
+            t0, y0, p0 = hist[0]
+            if t0 - t > max_gap:
+                return None
+            return (y0, p0, 0.0)
+        for i in range(len(hist) - 1, -1, -1):
+            if hist[i][0] <= t:
+                if i == len(hist) - 1:
+                    t0, y0, p0 = hist[i]
+                    if t - t0 > max_gap:
+                        return None
+                    return (y0, p0, t - t0)
+                t0, y0, p0 = hist[i]
+                t1, y1, p1 = hist[i + 1]
+                dt = t1 - t0
+                k = 0.0 if dt <= 1e-6 else (t - t0) / dt
+                return (y0 + (y1 - y0) * k, p0 + (p1 - p0) * k, 0.0)
+        return None
+
     def status(self):
         with self.lock:
             yaw, pitch = (self.angle if self.angle else (None, None))
@@ -773,6 +818,13 @@ class GimbalWeb(object):
                 self.angle = [math.degrees(float(a.group(1))),
                               math.degrees(float(a.group(2)))]
                 self._t_meas = time.monotonic()
+                # 记历史（给 angle_at 回溯用）。时间用 monotonic，和
+                # AI 的 age_ms 同一个时基（都是进程内 time.monotonic）。
+                try:
+                    self._ang_hist.append((self._t_meas,
+                                           self.angle[0], self.angle[1]))
+                except Exception:                            # noqa: BLE001
+                    pass
             if sp:
                 self.rate = [float(sp.group(1)), float(sp.group(2))]
                 # Speed 是 rpm，1 rpm = 6 °/s（内环要的是 °/s）

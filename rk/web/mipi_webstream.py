@@ -3999,7 +3999,7 @@ def shrink_jpeg(jpeg, max_w=0, quality=80):
 # ============================================================================
 #  人员位置（给调度页「人员上图 + 越界告警」用）
 # ============================================================================
-def _person_targets(cap, gz, want_depth=True):
+def _person_targets(cap, gz, want_depth=True, pre_depth=None):
     """AI 检测框 + 双目深度 → 每个人相对**车体**的位置。
 
     返回的 `targets[i].rel` 是车体系向量（x 前 / y 左，米），已经算进云台
@@ -4040,6 +4040,24 @@ def _person_targets(cap, gz, want_depth=True):
             pitch_deg = float(g.get("pitch_rel_deg") or 0.0)
             if g.get("tracking"):
                 locked = trk.get("tid")
+            # ★ 云台角按 **AI 那一帧的时刻** 回溯（2026-11-01）
+            #   云台追踪时会持续摆动，而 AI 检测框是 age_ms 之前那一帧的。
+            #   拿"此刻"的角度配"旧图像"算方位，云台一动位置就跟着跳（用户报
+            #   的"云台上下摆动导致人员位置大幅跳变"）。用角度历史插值到 AI
+            #   帧的时刻，图像和角度才是同一个瞬间。
+            try:
+                age_s = float((ai or {}).get("age_ms") or 0.0) / 1000.0
+                hit = gz.angle_at(time.monotonic() - age_s)
+                zz = g.get("zero") or [0.0, 0.0]
+                if hit is not None:
+                    yaw_deg = float(hit[0]) - float(zz[0])
+                    pitch_deg = float(hit[1]) - float(zz[1])
+                    gz_info["ang_src"] = "ai_frame"
+                else:
+                    gz_info["ang_src"] = "now"
+                gz_info["ai_age_s"] = round(age_s, 3)
+            except Exception:                            # noqa: BLE001
+                gz_info["ang_src"] = "now"
         except Exception as e:                               # noqa: BLE001
             gz_info = {"ok": False, "error": "%s: %s" % (type(e).__name__, e)}
     out["gimbal"] = gz_info
@@ -4050,7 +4068,9 @@ def _person_targets(cap, gz, want_depth=True):
     # ---- 深度：顺手 snapshot() 续期，否则引擎会在 6s 后自己睡下去 ----
     depth = None
     dep = getattr(cap, "_depth", None) if cap is not None else None
-    if dep is not None and want_depth:
+    if isinstance(pre_depth, dict):
+        depth = pre_depth            # 调用方已经取过这一帧（/api/depth 复用）
+    elif dep is not None and want_depth:
         try:
             depth = dep.snapshot()
         except Exception:                                    # noqa: BLE001
@@ -4060,7 +4080,7 @@ def _person_targets(cap, gz, want_depth=True):
         dbrief = {k: depth.get(k) for k in
                   ("ok", "reason", "age", "stale", "zlo", "zhi", "focal_px",
                    "cx_full", "cy_full", "cam_fx", "cam_cy", "w", "h", "pw",
-                   "ph", "valid", "zmed", "calib", "warn")}
+                   "ph", "hw", "hh", "valid", "zmed", "calib", "warn")}
         dbrief["reason"] = depth.get("reason") or ""
     out["depth"] = dbrief
     try:
@@ -4475,7 +4495,25 @@ class Handler(BaseHTTPRequestHandler):
                                        "err": _DEPTH_IMPORT_ERR})
                 if not int(self.params.get().get("dual", 0)):
                     return self._json({"ok": False, "reason": "dual-off"})
-                return self._json(d.snapshot())
+                snap = d.snapshot()
+                # ★ 顺带把"深度采样点"一起给出（2026-11-01）
+                #   用户要排查"视觉中心对应的热力图点跟人对不上"，光看数字看不
+                #   出来；这里把每条 AI 目标实际采到的热力图像素 (hu,hv) 附上，
+                #   前端直接叠在热力图上画个十字 —— 点到底落在人身上没有，一眼
+                #   就知道。走同一个 depth 快照，不额外拍一帧。
+                try:
+                    pt = _person_targets(Handler.capture, Handler.gimbal,
+                                         True, pre_depth=snap)
+                    snap["samples"] = [
+                        {"tid": t.get("tid"), "ok": bool(t.get("ok")),
+                         "hu": t.get("hu"), "hv": t.get("hv"),
+                         "src": t.get("src") or "",
+                         "dist_m": t.get("dist_m"),
+                         "reason": t.get("reason") or ""}
+                        for t in (pt.get("targets") or [])]
+                except Exception:                        # noqa: BLE001
+                    pass
+                return self._json(snap)
             if path == "/api/targets":
                 # 人员位置：AI 框 + 深度热力图 + 云台角度 -> 车体系相对位置。
                 # 调度页按「页面设置的频率」拉（默认 1s 一次），没人拉就不会

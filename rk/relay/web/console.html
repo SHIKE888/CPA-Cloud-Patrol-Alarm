@@ -995,7 +995,7 @@ html, body{overflow:hidden}
           <span class="val" id="v_depth_z_near">0.25</span></div>
 
         <div class="row"><label title="云台/车体转动时修正视差偏置。0=关；正负决定补偿方向，绝对值决定补多少">运动补偿</label>
-          <input type="range" id="p_depth_pan_gain" min="-0.5" max="0.5" step="0.01" value="0">
+          <input type="range" id="p_depth_pan_gain" min="-2" max="2" step="0.1" value="0">
           <span class="val" id="v_depth_pan_gain">0.00</span></div>
 
         <div class="sep"></div>
@@ -4874,6 +4874,33 @@ function drawHeatInto(g, W, H, d) {
     g.fillStyle = "#ffd2c8"; g.fillText(d.warn, 5, 8);
   }
   g.textBaseline = "alphabetic";
+
+  // ---- 深度采样点（2026-11-01）----
+  //   服务端顺带给的 samples[i].hu/hv = 这条 AI 目标**实际采到的热力图像素**。
+  //   画成十字：点落没落在人身上一眼可见（排查"视觉中心和热力图对不上"）。
+  //   颜色：肩中心=绿、瞄准点=黄、兜底框取样=橙、出界/无数据=红。
+  const smp = d.samples;
+  if (smp && smp.length) {
+    for (let i = 0; i < smp.length; i++) {
+      const s = smp[i];
+      if (s.hu == null || s.hv == null) continue;
+      const x = (W - dw) / 2 + (s.hu / hw) * dw;
+      const y = (H - dh) / 2 + (s.hv / hh) * dh;
+      if (x < -20 || x > W + 20 || y < -20 || y > H + 20) continue;
+      const col = !s.ok ? "#f85149"
+                : s.src === "shoulder" ? "#3fb950"
+                : s.src === "box" ? "#d29922" : "#f0e68c";
+      g.strokeStyle = col; g.lineWidth = 1.4;
+      g.beginPath(); g.moveTo(x - 7, y); g.lineTo(x + 7, y);
+      g.moveTo(x, y - 7); g.lineTo(x, y + 7); g.stroke();
+      g.beginPath(); g.arc(x, y, 3.2, 0, Math.PI * 2); g.stroke();
+      g.fillStyle = col;
+      g.font = "10px ui-monospace,SFMono-Regular,monospace";
+      g.fillText((s.tid == null ? "?" : "ID" + s.tid) +
+                 (s.ok ? " " + (s.dist_m == null ? "" : s.dist_m.toFixed(2) + "m")
+                       : " 无"), x + 9, y - 5);
+    }
+  }
 }
 
 function drawCloud(d) {
