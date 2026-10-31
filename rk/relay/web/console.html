@@ -5425,7 +5425,9 @@ async function poll() {
   try {
     const st = await api("/api/status");
     $("sState").textContent   = "运行中";
-    $("sBackend").textContent = (st.backend || "?") + " / " + (st.device || "?");
+    // 后端框只显示视频节点：原来拼成 "opencv / /dev/video22"，
+    // 采集方式对使用者没有意义，留个设备路径就够了。
+    $("sBackend").textContent = st.device || "?";
     $("sSize").textContent    = (st.width || "?") + " × " + (st.height || "?");
     // 黑框比例跟着实际分辨率走, 换模式时不会突然变形
     // ⚠ 双目例外: 推流是 3840x1080(32:9), 但界面是 2x2 四宫格,
