@@ -486,13 +486,16 @@ DEFAULT_PARAMS = {
     "scale":      1.0,    #  0.25 .. 1.5       (相对 --stream-width 的缩放)
     "quality":    80,     #  30 .. 95          (JPEG 质量)
     "fps":        60,     #  1 .. 120          (推流帧率上限, 默认 60 = 当前链路上限)
-    # 双目拼接: 0 = 单目全屏(默认), 1 = 双目拼接(左 cam0 / 右 cam1)。
+    # 双目拼接: 0 = 单目全屏(默认), 1 = 双目拼接(左 cam1 / 右 cam0)。
+#   ★ 2026-10-31 用户确认物理排布: **左目 = cam1(J3), 右目 = cam0(J2)**。
+#     之前全部代码/页面按"左 cam0 / 右 cam1"写, 双目的左右是反的。
+#     现在只在 DUAL_LEFT_SRC / DUAL_RIGHT_SRC 定义一次, 其余地方引用它们。
     #   ★ 完全显式, 不会自动切 —— 页面上三档: 单目 / 双目 / 双目演示。
     "dual":       0,      #  0/1
     # 双目**演示**模式: 1 = 把当前这一路复制成左右两半(右边色偏并标注 DEMO-R),
     # 只为看排版/分辨率/帧率, 数据是假的。FPGA 出真双目后设回 0。
     "dual_demo":  0,      #  0/1
-    # 双目模式下 AI 跑哪一路 (0=cam0/左半边, 1=cam1/右半边)。
+    # 双目模式下 AI 跑哪一路 (0=cam0/【右】半边, 1=cam1/【左】半边)。
     #   单目模式下不需要这个 —— 帧本身就是当前选中的那一路, AI 自动跟着走。
     "ai_src":     0,      #  0/1
     # ---------------- FPGA 硬件 JPEG 编码器 (jpeg_encoder_top) ----------------
@@ -1308,6 +1311,12 @@ DUAL_MAGIC1 = 0x5A
 DUAL_MAGIC3 = 0xFF
 DUAL_SRC1 = 0x11          # 0x11 = cam1, 其它(0x00) = cam0
 
+# ★★ 物理排布 (2026-10-31 用户确认): 左目 = cam1(J3), 右目 = cam0(J2) ★★
+#   拼接顺序/黑边占位/AI 噂哪半边/页面按钮标注全部引这两个常量,
+#   不要再在别处写死 0/1 —— 之前就是各处各写一份, 结果左右全反。
+DUAL_LEFT_SRC = 1         # 拼在左半边的那一路 (= cam1 / J3 = 左目)
+DUAL_RIGHT_SRC = 0        # 拼在右半边的那一路 (= cam0 / J2 = 右目)
+
 DUAL_STALE = 1.5          # 秒: 一路超过这么久没更新, 就只出另一路(另一半涂黑)
 DUAL_GAP = 8              # 帧号相差超过这么多就不配对(防止拿几十帧前的旧图硬拼)
 
@@ -1783,7 +1792,7 @@ class OpenCVCapture(threading.Thread):
                 self._dual_now = want
                 self._dual_slot = {0: None, 1: None}
                 self._dual_last_pair = None
-                print("[dual] %s" % ("开启拼接: 左 cam0 / 右 cam1"
+                print("[dual] %s" % ("开启拼接: 左 cam1(左目) / 右 cam0(右目)"
                                      if want else "关闭拼接(直通)"))
                 # 输出尺寸变了(单目 1920x1080 -> 双目 3840x1080), 告诉前端
                 try:
@@ -1935,7 +1944,7 @@ class OpenCVCapture(threading.Thread):
                     self._demo_info = False
                     self.hub.update_info(width=self._w, height=self._h)
 
-                # ---- 双目拼接: 左 cam0 / 右 cam1 ----
+                # ---- 双目拼接: 左 cam1(左目) / 右 cam0(右目) ----
                 # 源帧是左右交替的, 每帧只含一路, 所以这里做配对。
                 # 返回 None = 这一帧被判定为"和上一对重复", 直接跳过(不发布),
                 # 于是输出帧率正好是输入的一半 = 30fps。
@@ -1980,7 +1989,7 @@ class OpenCVCapture(threading.Thread):
                 if frame is not None:
                     # ---- 可选 AI 叠加 ----
                     # 只在"画面源 = AI 标注"时才碰帧; 切回原图时这段开销为零。
-                    # 双目模式下 AI 只跑 cam0(= 左半边), 这是用户定的方案:
+                    # 双目模式下 AI 只跑一路(默认 cam1=左目), 这是用户定的方案:
                     # 4K/单目/双目 都保持"自选一路全速", 省一半 NPU 和 CPU。
                     _ai = AI_OVERLAY
                     if _ai is not None and _ai.active:
@@ -2094,7 +2103,11 @@ class OpenCVCapture(threading.Thread):
                         return None
                     self._dual_last_pair = key
                     DUAL_STAT["pair"] += 1
-                    return (cv2.hconcat([a[0], b[0]]),
+                    # ★ 按物理排布拼: 左 = DUAL_LEFT_SRC(cam1), 右 = DUAL_RIGHT_SRC(cam0)
+                    #   不能直接 hconcat([a, b]) —— 那样是 cam0 在左, 画面左右反了。
+                    _l = self._dual_slot[DUAL_LEFT_SRC]
+                    _r = self._dual_slot[DUAL_RIGHT_SRC]
+                    return (cv2.hconcat([_l[0], _r[0]]),
                             min(a[1], b[1]), "dual")
 
             # ---- 只有一路活着: 另一半涂黑, 保持输出宽度不变 ----
@@ -2111,7 +2124,7 @@ class OpenCVCapture(threading.Thread):
             DUAL_STAT["single"] += 1
             f = me[0]
             canvas = np.zeros((f.shape[0], f.shape[1] * 2, 3), np.uint8)
-            x = 0 if src == 0 else f.shape[1]
+            x = 0 if src == DUAL_LEFT_SRC else f.shape[1]
             canvas[:, x:x + f.shape[1]] = f
             return canvas, me[1], "cam%d" % src
 
@@ -2143,7 +2156,7 @@ class OpenCVCapture(threading.Thread):
             if now - self._skel_sub_ts >= 1.0 / 30.0:
                 self._skel_sub_ts = now
                 hw = frame.shape[1] // 2
-                x0 = 0 if int(half) == 0 else hw
+                x0 = 0 if int(half) == DUAL_LEFT_SRC else hw
                 roi = frame[:, x0:x0 + hw]
                 small = cv2.resize(roi, (self.SKEL_W, self.SKEL_H),
                                    interpolation=cv2.INTER_LINEAR)
@@ -2185,7 +2198,7 @@ class OpenCVCapture(threading.Thread):
             print("[ai] 骨架坐标异常: %s" % e, file=sys.stderr)
 
     def _ai_dual_draw(self, ai, frame, half=0):
-        """双目模式: AI 只喂指定那一路(cam0=左半边 / cam1=右半边), 画完再贴回去。
+        """双目模式: AI 只喂指定那一路(cam1=左半边 / cam0=右半边), 画完再贴回去。
 
         half 由 params.ai_src 决定 —— 单目模式下帧本身就是选中的那一路,
         AI 天然跟着走; 只有双目(左右拼在一起)时才需要选喂哪半边。
@@ -2194,7 +2207,7 @@ class OpenCVCapture(threading.Thread):
         原地改会把还在用于下一对配对的帧也改脏。
         """
         hw = frame.shape[1] // 2
-        x0 = 0 if int(half) == 0 else hw
+        x0 = 0 if int(half) == DUAL_LEFT_SRC else hw
         roi = frame[:, x0:x0 + hw]
         ai.submit(roi)
         drawn = ai.draw(roi)
@@ -2332,7 +2345,7 @@ class OpenCVCapture(threading.Thread):
             raws = []
             if self._dual_now:
                 now = time.time()
-                for s in (0, 1):
+                for s in (DUAL_LEFT_SRC, DUAL_RIGHT_SRC):
                     it = self._last_raw_by_src.get(s)
                     raws.append(it if (it is not None
                                        and (now - it[2]) < DUAL_STALE) else None)
@@ -3001,7 +3014,7 @@ FPGA_BITS = [
     # name, addr, bit, 说明
     ("MARK_EN", 0xDB, 2, "帧标记 (1=每帧 Y[0..1]=A5 5A, web 靠它分左右)"),
     ("DUAL_EN", 0xDB, 1, "双目交替 (1=两路各30fps; 4K 下 FPGA 强制忽略)"),
-    ("RX_SEL",  0xDB, 0, "CSI 源 (0=cam0/J2, 1=cam1/J3)"),
+    ("RX_SEL",  0xDB, 0, "CSI 源 (0=cam0/J2=右目, 1=cam1/J3=左目)"),
 ]
 
 # ============================================================================
@@ -3350,7 +3363,7 @@ def _fpga_pp_on(fpga):
 #  2026-10-25: 上电恢复单目通道 (0xDB[0]) —— 单目通道不要默认左目
 #
 #  【为什么要管这件事】
-#    FPGA 复位后 r_rx_sel = 0 就是 cam0/J2(左目)。只要 J2 没插模组, 时钟 mux
+#    FPGA 复位后 r_rx_sel = 0 就是 cam0/J2(右目)。只要 J2 没插模组, 时钟 mux
 #    就选了一条**没有像素时钟**的源: 整条 CSI 通路没有 S_hs_rx_clk ->
 #    rkcif 永远等不到帧 -> 上电即卡死, 而且只能重载 bitstream 才能救回来。
 #
@@ -3364,7 +3377,7 @@ def _fpga_pp_on(fpga):
 #    初始化表硬走完, cfg_done 照样是 1。
 # ---------------------------------------------------------------------------
 RX_SEL_SECTION = "csi"
-DEFAULT_RX_SEL = 1          # 1 = cam1/J3(右目)。出厂板默认装右目。
+DEFAULT_RX_SEL = 1          # 1 = cam1/J3(左目)。出厂板 J3 上装了模组(2026-10-31 确认)。
 
 
 def rx_sel_get(state_path):
