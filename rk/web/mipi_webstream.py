@@ -473,6 +473,20 @@ except Exception as _e:                                   # pragma: no cover
 else:
     _GIMBAL_IMPORT_ERR = ""
 
+# ------------------------------------------------------------------ 双目深度
+# 下右框「深度」的点云引擎。纯软件实现(cv2 SGBM)，只在网页 10Hz 拉
+# /api/depth 时才真正计算 —— 没人看的时候线程在睡觉，零开销。
+# 基线 45mm 是板上实测的中心距(用户给定)，见 stereo_depth.BASELINE_M。
+try:
+    if SCRIPT_DIR not in sys.path:
+        sys.path.insert(0, SCRIPT_DIR)
+    from stereo_depth import StereoDepth
+except Exception as _e:                                   # pragma: no cover
+    StereoDepth = None
+    _DEPTH_IMPORT_ERR = "%s: %s" % (type(_e).__name__, _e)
+else:
+    _DEPTH_IMPORT_ERR = ""
+
 # ------------------------------------------------------------------ 默认参数
 DEFAULT_PARAMS = {
     "brightness": 0,      # -100 .. 100        (加减偏移)
@@ -506,6 +520,9 @@ DEFAULT_PARAMS = {
     "jpeg_q":      75,    #  1 .. 100   有损量化质量
     "jpeg_kb":     120,   #  1 .. 2000  目标每帧 KB (无损时忽略)
     "jpeg_rc":     0,     #  0/1        闭环码率控制
+    # 双目深度: 未标定前用「水平视场角」估算焦距 f = (W/2)/tan(FOV/2)。
+    #   标定完成后把 stereo_depth 的焦距改成实测值即可, 这里不用再动。
+    "depth_fov":   60.0,  #  20 .. 150 度 (水平视场角)
 }
 
 PARAM_RANGE = {
@@ -530,6 +547,7 @@ PARAM_RANGE = {
     "jpeg_q":     (1, 100),
     "jpeg_kb":    (1, 2000),
     "jpeg_rc":    (0, 1),
+    "depth_fov":  (20.0, 150.0),
 }
 
 
@@ -1323,6 +1341,17 @@ DUAL_GAP = 8              # 帧号相差超过这么多就不配对(防止拿几
 DUAL_STAT = {"cam0": 0, "cam1": 0, "pair": 0, "single": 0, "nomark": 0,
              "shape_skip": 0, "dup_skip": 0, "half_skip": 0}
 
+# 发布端缺号兜底 (见 _enc_loop 末尾的注释)。
+# 丢帧点会留下永久空洞, _next_pub 卡住就等于画面永久冻结。
+# 积压超过这么多帧就认为出现了空洞, 直接跳到最小可用 seq。
+# 40 帧 @60fps ≈ 0.67s; 多线程乱序最多几个, 40 足够安全。
+SEQ_GAP_MAX = 40
+PUB_STAT = {"gap_skip": 0}     # gap_skip > 0 说明确实发生过空洞(丢帧)
+
+# 2026-10-31: 已改为在 FPGA 侧用 ui_image_correction 的 H_SKIP 修（精确 12 像素 = 3 组），
+#   用户明确要求不要软件校准，这里保持 0（关闭 np.roll 补偿）。
+CAM1_SHIFT_PX = 0
+
 # ============================================================================
 #  参数版本号 (多前端同步)
 #
@@ -1591,6 +1620,15 @@ class OpenCVCapture(threading.Thread):
         self._dual_slot = {0: None, 1: None}
         self._dual_last_pair = None
         self._dual_lock = threading.Lock()
+
+        # ---- 换源挂起请求 (恢复自 e86322b, 后来被覆盖了一次) ----
+        # 必须由**采集线程**在 cap.release() 之后去写 0xDB。
+        # 原因(当时板上验证过的结论, 原话):
+        #   如果边推流边改时钟 mux, BUFG 会在两个无关时钟之间切换,
+        #   下游(image_correction / isp / preproc / yuv / dbuf 写口)可能停在
+        #   非法状态, 而 TX 侧又不在换源窗里复位 -> 板上就是"画面永久卡死,
+        #   RK 一帧收不到"。关流后再改, 等价于一次干净的上电序列。
+        self._pending_rx_sel = None
         self._last_raw_by_src = {}
         self._dual_tag = "single"
         # ---- 双目骨架单独一路 (前端下左框) ----
@@ -1601,6 +1639,19 @@ class OpenCVCapture(threading.Thread):
         self._skel_ok = 0.0         # 上次渲染成功的时刻(调试用)
         self._skel_sub_ts = 0.0     # 上次提交推理的时刻(防多线程重复喂)
         self._skel_pose = None      # 最新骨架坐标(给 /api/pose, 前端自己画)
+
+        # ---- 双目深度点云 (下右框) ----
+        # 线程常驻但默认在睡觉: 只有前端拉 /api/depth 时才提交帧。
+        # 引擎自己会按 OUT_HZ 限速, 并自适应处理宽度(384~640)。
+        self._depth = None
+        if StereoDepth is not None:
+            try:
+                self._depth = StereoDepth(params)
+                self._depth.start()
+            except Exception as e:                        # noqa: BLE001
+                print("[depth] 初始化失败: %s" % e, file=sys.stderr)
+        elif _DEPTH_IMPORT_ERR:
+            print("[depth] 不可用: %s" % _DEPTH_IMPORT_ERR, file=sys.stderr)
 
     # ------------------------------------------------------------------
     #  三级流水线
@@ -1662,6 +1713,25 @@ class OpenCVCapture(threading.Thread):
     #   的辅助函数已随该通路一并删除(需要时可从 git 历史里找回)。
     #   现在所有帧都走 _raw_q -> _conv_loop -> _bgr_q -> _enc_loop 的软件编码链路。
 
+    def switch_source(self, sel, force=False):
+        """请求切换 CSI 单目通道 (cam0/cam1)。
+
+        ★ 2026-10-31 恢复自 e86322b（后来被 7e57f50 覆盖成了进程重启）:
+          **真正的写入放在采集线程里、且一定在 cap.release() 之后**。
+
+          原因（当时的板上结论，原文）：
+            “如果边推流边改时钟 mux, BUFG 会在两个无关时钟之间切换, 下游
+             (image_correction / isp / preproc / yuv / dbuf 写口) 可能停在
+             非法状态, 而 TX 侧又不在换源窗里复位 -> 板上就是画面永久卡死,
+             RK 一帧收不到。关流后再改, 等价于一次干净的上电序列。”
+
+          实测证据（2026-10-31 监控日志）：走进程重启那条路时，切换后约
+          2.5 秒服务被拉起, frame_id 从 4365 掉回 84/1；同期 FPGA 的
+          E1/E3/E7 全在涨 —— 数据通路没事, 是进程被重启了。
+        """
+        self._pending_rx_sel = int(sel) & 1
+        self.request_reopen()
+
     def request_reopen(self):
         """请求采集线程释放并重开 V4L2 设备 (切换分辨率/帧率后用)。"""
         ev = getattr(self, "need_reopen", None)
@@ -1676,6 +1746,28 @@ class OpenCVCapture(threading.Thread):
         seq = 0
         while not self.stop_flag.is_set():
             t_start = time.time()
+
+            # ★ 换源挂起: 先把采集设备关掉, 再去写 0xDB。
+            #   顺序绝对不能反 —— 推流中途切时钟 mux 会把下游停在非法状态,
+            #   而那个状态自己不会恢复(板上实测: E1 还在涨但 RK 一帧收不到)。
+            #   release 之后 cap=None, 下面会重新 open, 相当于一次干净上电。
+            _psel = getattr(self, "_pending_rx_sel", None)
+            if _psel is not None:
+                self._pending_rx_sel = None
+                if cap is not None:
+                    try:
+                        cap.release()
+                    except Exception:                              # noqa: BLE001
+                        pass
+                    cap = None
+                try:
+                    _b = getattr(self.args, "fpga_bus", None)
+                    if _b is not None and _b >= 0:
+                        apply_rx_sel(FpgaI2C(_b, self.args.fpga_addr), _psel)
+                        print("[csi] 已关流后换源 -> RX_SEL=%d" % _psel)
+                except Exception as e:                             # noqa: BLE001
+                    print("[csi] 换源写入失败: %s" % e, file=sys.stderr)
+
             # 模式切换: 先丢掉旧句柄, 下面用新的 args 重新打开
             _ev = getattr(self, "need_reopen", None)
             if _ev is not None and _ev.is_set():
@@ -1970,6 +2062,20 @@ class OpenCVCapture(threading.Thread):
                 jpg = payload
             else:
                 frame = payload
+                # ★ 2026-10-31: cam1 画面整体左偏 14 像素（板上实测），这里做几何补偿。
+                #
+                #   为什么放在 web 端而不是 FPGA：
+                #     14 像素 = 7 个 32bit word（YUV422 每 word 2 像素），
+                #     不是 4 像素组的整数倍（14/4 = 3.5）。而 ui_image_correction
+                #     的窗口是按 4 像素组调的，最小只能补 4 的倍数，补不到 14。
+                #     偏差在 csi2_pack 的 word 级，要在那边加可调偏移才能根治。
+                #     先用这里把几何摆正，便于确认 14 这个数对不对。
+                #
+                #   np.roll 是环绕平移：左边补进来的 14 像素来自本行右端，
+                #   内容不对但几何正确（FPGA 那段本来就取不到）。
+                if CAM1_SHIFT_PX and src == 1:
+                    frame = np.roll(frame, CAM1_SHIFT_PX, axis=1)
+
                 # 关掉演示后把页面排版尺寸还原, 否则一直按 32:9
                 if (getattr(self, "_demo_info", False)
                         and not int(p.get("dual_demo", 0))):
@@ -2054,6 +2160,33 @@ class OpenCVCapture(threading.Thread):
                     self._next_pub += 1
                     if j is not None:
                         self.hub.publish(j, ts=t_cap)
+
+                # ★ 2026-10-31 关键修复: 缺号兜底, 否则画面会**永久冻结**
+                #
+                #  上面那个 while 只认"连续的 seq"。可是有若干地方是
+                #  【seq 已经分配、帧却被丢掉】的:
+                #    · _capture_loop 双目模式下没有帧标记 -> continue
+                #    · _conv_loop 色彩转换抛异常 / 返回 None -> continue
+                #  这些 seq 永远不会出现在 _results 里, 于是 _next_pub 就卡在
+                #  那个缺口上不再前进 —— 之后每一帧都只是往 dict 里堆, 一帧
+                #  都不发布。表现就是你看到的:
+                #    "刚切过来是流畅的, 过一两秒画面冻住/花屏",
+                #    "再切一次模式、或者刷新浏览器就好了"。
+                #  (_put 是阻塞背压、不丢帧, 所以缺口只可能来自上面这些 continue)
+                #
+                #  兜底策略: 积压超过 SEQ_GAP_MAX 帧, 说明中间真的有空洞,
+                #  直接把 _next_pub 推到当前最小的可用 seq, 放弃那几个空洞。
+                #  阈值取 40 帧(@60fps≈0.67s): 多线程乱序最多几个, 40 足够安全。
+                if len(self._results) > SEQ_GAP_MAX:
+                    k = min(self._results)
+                    if k > self._next_pub:
+                        PUB_STAT["gap_skip"] += 1
+                        self._next_pub = k
+                    while self._next_pub in self._results:
+                        j = self._results.pop(self._next_pub)
+                        self._next_pub += 1
+                        if j is not None:
+                            self.hub.publish(j, ts=t_cap)
                 self._seq_cond.notify_all()
 
     def _cur_rx_sel(self):
@@ -2160,6 +2293,8 @@ class OpenCVCapture(threading.Thread):
                     #   不能直接 hconcat([a, b]) —— 那样是 cam0 在左, 画面左右反了。
                     _l = self._dual_slot[DUAL_LEFT_SRC]
                     _r = self._dual_slot[DUAL_RIGHT_SRC]
+                    # 真配对 -> 顺手喂一份给深度引擎(非阻塞; 没人看时内部直接丢)
+                    self._depth_feed(_l[0], _r[0])
                     return (cv2.hconcat([_l[0], _r[0]]),
                             min(a[1], b[1]), "dual")
 
@@ -2272,6 +2407,28 @@ class OpenCVCapture(threading.Thread):
         dw = min(dw, hw)
         out[:dh, x0:x0 + dw] = drawn[:dh, :dw]
         return out
+
+    def _depth_feed(self, left, right):
+        """把一对左右目帧交给深度引擎（非阻塞、不拷贝）。
+
+        _dual_compose 已经保证这两帧是同一对、且做过 CAM1_SHIFT_PX 对齐，
+        所以这里只管转手。引擎自己判断"有没有人在看"，不需要这里再判。
+        """
+        d = self._depth
+        if d is None:
+            return
+        try:
+            d.submit(left, right)
+        except Exception as e:                                 # noqa: BLE001
+            print("[depth] 喂帧异常: %s" % e, file=sys.stderr)
+
+    def depth_status(self):
+        """给 /api/status 的深度引擎状态（不含点云本体）。"""
+        d = self._depth
+        if d is None:
+            return {"ok": False, "reason": "disabled",
+                    "err": _DEPTH_IMPORT_ERR}
+        return d.status()
 
     def dual_status(self):
         """给 /api/status、/api/sys 用的双目状态。"""
@@ -3887,6 +4044,20 @@ class Handler(BaseHTTPRequestHandler):
                 if not pose:
                     return self._json({"ok": False, "persons": []})
                 return self._json(pose)
+            if path == "/api/depth":
+                # 下右框「深度」：板端 SGBM 稀疏点云。
+                # 前端 10Hz 拉一次；超过 stereo_depth.WANT_TTL 没人拉,
+                # 引擎就停止计算(采集/编码链路零额外开销)。
+                cap = Handler.capture
+                d = (getattr(cap, "_depth", None)
+                     if cap is not None else None)
+                if d is None:
+                    return self._json({"ok": False,
+                                       "reason": "depth-disabled",
+                                       "err": _DEPTH_IMPORT_ERR})
+                if not int(self.params.get().get("dual", 0)):
+                    return self._json({"ok": False, "reason": "dual-off"})
+                return self._json(d.snapshot())
             if path == "/skel.jpg":
                 # 双目下左框: 黑底纯骨架。图片很小(640x360), 前端用
                 # setInterval 拉, 不走 MJPEG 长连接 —— 这样不用动 hub 的
@@ -3919,6 +4090,9 @@ class Handler(BaseHTTPRequestHandler):
                 st["dual"] = (_cap.dual_status()
                               if (_cap is not None
                                   and hasattr(_cap, "dual_status")) else None)
+                st["depth"] = (_cap.depth_status()
+                               if (_cap is not None
+                                   and hasattr(_cap, "depth_status")) else None)
                 st["backends"] = {
                     "gi_gst": HAVE_GST_PY,
                     "cv2": HAVE_CV2,
@@ -4169,7 +4343,21 @@ class Handler(BaseHTTPRequestHandler):
                     except Exception:                              # noqa: BLE001
                         _old_sel = None
                     # 2026-10-31 用户要求: 不要任何模组在线探测的拦截/提示
-                wok, msg = self.fpga.apply(body)
+
+                # ★ RX_SEL 绝不在这里写！换源的时钟 mux 变动必须在采集线程
+                #   cap.release() 之后做（见 switch_source 的注释）。
+                #   这里只把它从 body 里摘出来，剩下其它寄存器照旧走 apply。
+                _rx_req = None
+                if isinstance(body, dict):
+                    for _k in list(body.keys()):
+                        if str(_k).strip().upper() == "RX_SEL":
+                            try:
+                                _rx_req = int(body[_k]) & 1
+                            except Exception:                      # noqa: BLE001
+                                _rx_req = None
+                            body.pop(_k)
+
+                wok, msg = self.fpga.apply(body) if body else (True, "ok")
                 # 写完立刻回读 —— FPGA 侧可能把值夹过, 前端以回读为准
                 _ok, snap = self.fpga.snapshot()
                 # 打开预处理（高级 PP_EN=1 且 ADV_MODE≠0，或初级 BASIC_EN≠0）时，
@@ -4184,22 +4372,60 @@ class Handler(BaseHTTPRequestHandler):
                 snap["write_ok"] = wok
                 snap["message"] = msg
                 snap["meta"] = fpga_meta()
-                # 通道真的变了才重启采集（写同样的值不折腾）
+                # 通道真的变了才切换（写同样的值不折腾）
+                #   ⚠ 不再回读 _new_sel: RX_SEL 已经从 apply 里摘走, 由采集线程
+                #     在关流后写入, 此刻 FPGA 里的值还没变。
                 if _old_sel is not None:
-                    try:
-                        _new_sel = self.fpga.read(0xDB) & 0x01
-                    except Exception:                              # noqa: BLE001
-                        _new_sel = _old_sel
-                    if _new_sel != _old_sel:
-                        # 记住这一路, 下次上电直接用它(见 apply_rx_sel)。
-                        # 只记"切换成功"的值 —— 万一切过去卡死, 存档还停在
-                        # 上一条能用的通道, 重新上电就能自己回到可用状态。
-                        rx_sel_put(getattr(self, "state_path", None), _new_sel)
-                        snap["rx_switched"] = _new_sel
-                        snap["message"] = ("%s; 已切到 cam%d, 服务重启中(约 10s)…"
-                                           % (msg, _new_sel))
-                        _schedule_service_restart(1.5)
+                    if _rx_req is not None and _rx_req != _old_sel:
+                        # ★ 2026-10-31: 整段包 try —— 之前用户点了按钮报"切通道失败"
+                        #   但画面其实切过去了, 说明这里抛了异常被 HTTP handler 变成
+                        #   500。不能让一个附带动作(记录/通知)把主功能判成失败。
+                        try:
+                            # 记住这一路, 下次上电直接用它(见 apply_rx_sel)。
+                            # 只记"切换成功"的值 —— 万一切过去卡死, 存档还停在
+                            # 上一条能用的通道, 重新上电就能自己回到可用状态。
+                            rx_sel_put(getattr(self, "state_path", None), _rx_req)
+                            snap["rx_switched"] = _rx_req
+                            # ★ 2026-10-31 关键修复: 不再重启服务。
+                            #
+                            #   板上监控实测(每 2 秒采样 /api/status + FPGA 计数器):
+                            #     19:17:25  fid=4365   <- 切通道
+                            #     19:17:27  (无响应)   <- 服务正在被 systemctl restart
+                            #     19:17:32  fid=84     <- frame_id 从头开始 = 进程重启了
+                            #   同一时间 FPGA 侧 0xE1/0xE3/0xE7 **一直在涨** ——
+                            #   数据通路完全正常, 重启的只是 Python 服务。
+                            #   而 _schedule_service_restart(1.5) 内部还有
+                            #   systemd-run --on-active=1, 合计约 2.5 秒 ——
+                            #   正好是用户反复描述的"刚切完很流畅, 约 2 秒后卡死"。
+                            #   现在换成 e86322b 验证过的"关流后写入"(见 switch_source)。
+                            snap["message"] = ("%s; 已切到 cam%d" % (msg, _rx_req))
+                            _cap = Handler.capture
+                            if _cap is not None and hasattr(_cap, "switch_source"):
+                                _cap.switch_source(_rx_req)
+                            else:
+                                snap["message"] += " (采集未启动, 未生效)"
+                        except Exception as _ex:                   # noqa: BLE001
+                            import traceback
+                            print("[csi] 换源异常:\n%s" % traceback.format_exc(),
+                                  file=sys.stderr)
+                            snap["switch_error"] = repr(_ex)
+                            snap["message"] = ("切到 cam%d 时出异常: %r"
+                                               % (_rx_req, _ex))
                 _bump_rev("fpga")           # 通知其它在线前端
+                # ★ 2026-10-31: 换源请求已经从 body 摘走、只挂到采集线程,
+                #   这次 apply 可能是空 body, snap["ok"] 就会是 False, 于是这里
+                #   返回 500, 前端左下角报"切通道失败" —— 但画面其实切成功了。
+                #   只要换源请求已受理, 就应当算成功。
+                if _rx_req is not None:
+                    snap["ok"] = True
+                    wok = True
+                    # ★ 换源是异步的(采集线程下一轮才写 0xDB)，此刻回读还是旧值,
+                    #   前端拿 regs.RX_SEL 判高亮就会"点了按钮颜色不变"。
+                    #   这里把回包里的 RX_SEL 换成即将生效的目标值，
+                    #   FPGA 的真实值等采集线程写完自然就一致了。
+                    _r = snap.get("regs")
+                    if isinstance(_r, dict):
+                        _r["RX_SEL"] = _rx_req
                 return self._json(snap, 200 if (wok and snap.get("ok")) else 500)
             if path == "/api/mode":
                 body = self._read_json()
@@ -4474,7 +4700,17 @@ class Handler(BaseHTTPRequestHandler):
 
         # ★ 单设备限流: 同一 IP 只保留最新一路流, 旧的自动退场。
         #   否则每次重连都多挂一个线程, clients 只涨不跌。
+        # ⚠ 经过 nginx 反代时 peer 永远是 127.0.0.1 —— 若只按 peer 判"设备",
+        #   所有手机/电脑都会算成同一个设备, 第二台一连上就把第一台顶掉,
+        #   现象就是"只有一个设备能看视频流"(2026-11-01 实测确认)。
+        #   nginx 的 /stream 已经带了 X-Real-IP, 这里优先采用。
         ip = self.client_address[0] if self.client_address else "?"
+        if ip in ("127.0.0.1", "::1", "::ffff:127.0.0.1"):
+            _fwd = (self.headers.get("X-Real-IP") or "").strip()
+            if not _fwd:
+                _fwd = (self.headers.get("X-Forwarded-For") or "").split(",")[0].strip()
+            if _fwd:
+                ip = _fwd
         gen = _stream_acquire(ip)
 
         self.send_response(200)
