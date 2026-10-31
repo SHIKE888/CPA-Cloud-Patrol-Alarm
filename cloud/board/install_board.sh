@@ -11,12 +11,14 @@
 set -eu
 
 TOKEN="${1:-}"
-SERVER="${2:-http://<SERVER_DOMAIN>}"
+SERVER="${2:-${CSI_SERVER:-}}"
 DIR=/root/rk/cloud
 SRC=$(cd "$(dirname "$0")" && pwd)
 
 [ "$(id -u)" = "0" ] || { echo "请用 root 运行"; exit 1; }
 [ -n "$TOKEN" ] || { echo "用法: sh install_board.sh <token> [server_url]"; exit 1; }
+# 服务器地址不写死在仓库里，必须由调用方给出（第 2 个参数或 CSI_SERVER）
+[ -n "$SERVER" ] || { echo "缺少 server_url：请传第 2 个参数，或设置 CSI_SERVER=http(s)://<SERVER_DOMAIN>"; exit 1; }
 [ -f "$SRC/cloud_agent.py" ] || { echo "缺少 cloud_agent.py"; exit 1; }
 
 mkdir -p "$DIR"

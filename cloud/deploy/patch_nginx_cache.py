@@ -1,7 +1,12 @@
+import os
 import shutil
 import sys
 
-P = "/www/server/panel/vhost/nginx/<SERVER_DOMAIN>.conf"
+# nginx 站点配置文件路径因环境而变，不写死在仓库里；用 NGINX_VHOST 指定
+P = os.environ.get("NGINX_VHOST", "")
+if not P:
+    sys.exit("缺少 NGINX_VHOST，例：NGINX_VHOST=/www/server/panel/vhost/nginx/example.com.conf python3 patch_nginx_cache.py")
+BAK = "/root/" + os.path.basename(P) + ".bak_csi2"
 MARK = "location = / {"
 SNIP = """
     # ===== 看板首页不缓存（部署新版后浏览器立刻拿到）=====
@@ -21,6 +26,6 @@ if MARK in s:
 i = s.find("# ===== CSI2RK cloud dashboard")
 if i < 0:
     i = s.rstrip().rfind("}")
-shutil.copy(P, "/root/<SERVER_DOMAIN>.conf.bak_csi2")
+shutil.copy(P, BAK)
 open(P, "w", encoding="utf-8").write(s[:i] + SNIP + s[i:])
-print("patched, backup -> /root/<SERVER_DOMAIN>.conf.bak_csi2")
+print("patched, backup -> " + BAK)

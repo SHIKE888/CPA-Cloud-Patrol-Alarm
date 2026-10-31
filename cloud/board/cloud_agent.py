@@ -1040,7 +1040,8 @@ def selftest_clip(ag, secs):
 
 def main():
     ap = argparse.ArgumentParser(description="CSI2RK cloud agent (board side)")
-    ap.add_argument("--server", default=os.environ.get("CSI_SERVER", "https://<SERVER_DOMAIN>"))
+    # 云端地址不写死在仓库里：必须给 --server 或环境变量 CSI_SERVER
+    ap.add_argument("--server", default=os.environ.get("CSI_SERVER", ""))
     ap.add_argument("--token", default=os.environ.get("CSI_TOKEN", ""))
     ap.add_argument("--token-file", default="/root/rk/cloud/token")
     ap.add_argument("--local", default="http://127.0.0.1:9012")
@@ -1082,6 +1083,9 @@ def main():
             pass
     if not a.token:
         sys.stderr.write("缺少 --token 或 --token-file\n")
+        return 2
+    if not a.server:
+        sys.stderr.write("缺少 --server 或环境变量 CSI_SERVER（例: https://<SERVER_DOMAIN>）\n")
         return 2
     a.snap_width = max(320, min(1280, a.snap_width))
     a.snap_quality = max(30, min(80, a.snap_quality))

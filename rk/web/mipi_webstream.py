@@ -38,7 +38,7 @@ import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, unquote
 
 
 def _schedule_self_restart(width, height, delay=1.2):
@@ -4106,11 +4106,12 @@ class AlarmQueue(object):
     `/api/alarm` 通道（去抖、抓拍、录像、云端入库全都复用）。
     """
 
-    def __init__(self, maxlen=50, dedupe_s=20.0):
+    def __init__(self, maxlen=50, dedupe_s=20.0, dedupe_xdev_s=5.0):
         self._lock = threading.Lock()
         self._items = []                  # [{seq, t, ...}]
         self._seq = 0
         self._last = {}                   # dedupe key -> 上次入队时刻
+        self._last2 = {}                  # (label,tid) -> 上次入队时刻（跨设备）
         self._maxlen = int(maxlen)
         self._dedupe_s = float(dedupe_s)
         self.boot = "%08x" % (int(time.time() * 1000) & 0xffffffff)
@@ -4134,12 +4135,25 @@ class AlarmQueue(object):
         m = body.get("m") if isinstance(body.get("m"), dict) else {}
         # 目标/区域唯一键：同一个目标在同一个区域里 20s 内只入队一次
         key = (label, str(tid), str(m.get("zone_id") or m.get("zone") or ""))
+        # 跨设备去重：两台设备（手机 + PC）同时开着调度页时，两边都会跑一遍
+        # 越界判定，同一个人同一级会各报一次。区域现在从板端共享，zone_id 一致，
+        # 上面的 key 已经能拦住；这里再加一层只看 (label, tid) 的短窗口兜底
+        # （label 已经区分了预警/报警，所以不会把"预警→报警"这条升级掐掉）。
+        key2 = (label, str(tid))
         t = time.time()
         with self._lock:
             last = self._last.get(key)
             if last is not None and (t - last) < self._dedupe_s:
                 return {"ok": True, "queued": 0, "dup": True, "seq": self._seq}
+            last2 = self._last2.get(key2)
+            if last2 is not None and (t - last2) < self._dedupe_xdev_s:
+                return {"ok": True, "queued": 0, "dup": True, "seq": self._seq,
+                        "xdev": True}
             self._last[key] = t
+            self._last2[key2] = t
+            if len(self._last2) > 400:
+                cut = t - max(600.0, self._dedupe_xdev_s * 4)
+                self._last2 = {k: v for k, v in self._last2.items() if v > cut}
             if len(self._last) > 400:
                 cut = t - max(600.0, self._dedupe_s * 4)
                 self._last = {k: v for k, v in self._last.items() if v > cut}
@@ -4176,6 +4190,205 @@ class AlarmQueue(object):
 
 
 ALARM_Q = AlarmQueue()
+
+
+# ============================================================================
+#  警戒区域 / 告警参数的**板端共享副本**（多设备看到同一份）
+# ============================================================================
+#  【为什么必须放板上】2026-11-01 用户反馈："其他设备同步的警戒区域不一致，
+#    导致错报"。原来警戒区只存在浏览器 localStorage：每台设备各存一份，手机上
+#    可能是空的、也可能是几天前画的老区域。于是同一时刻两台设备对"人在不在区里"
+#    的结论不同 —— 老区域那台把不该报的报了（错报），空区域那台该报的不报。
+#    现在改成：板端存唯一一份（按地图 basename 分组），页面打开/改完都跟它对齐，
+#    哪台设备画的都一样。
+#
+#  【存哪儿】复用 state.json 的 `guard` section（原子写、跟 params 一起备份）：
+#      {"guard": {"maps": {"map_20261101_034026": {"rev":3,"t":...,
+#                                                  "zones":[...], "cfg":{...}}}}}
+#    没有 map_base（还没取到地图）时用 "" 这一档，页面拿到地图名后自然切走。
+# ============================================================================
+GUARD_SECTION = "guard"
+GUARD_MAX_ZONES = 100
+GUARD_MAX_MAPS = 40
+
+
+def _g_num(v, lo, hi, dflt=None):
+    """取一个数值并钳到 [lo, hi]；不是数字就用 dflt。"""
+    try:
+        x = float(v)
+    except (TypeError, ValueError):
+        return dflt
+    if x != x or x in (float("inf"), float("-inf")):        # NaN / inf
+        return dflt
+    return max(lo, min(hi, x))
+
+
+def _g_map_key(s):
+    """地图名归一化：去掉路径、只留安全字符。空字符串 = 还没绑定地图。"""
+    s = str(s or "").strip().replace("\\", "/")
+    s = s.rsplit("/", 1)[-1]
+    out = "".join(c for c in s if c.isalnum() or c in "._-")
+    return out[:120]
+
+
+def _g_cfg(o, base=None):
+    """白名单 + 钳位地合并一份告警参数（前端随时可能发来脏数据）。"""
+    c = dict(base or {})
+    if not isinstance(o, dict):
+        return c
+    for k, (lo, hi) in (("poll", (0.3, 10.0)), ("cool", (5.0, 3600.0)),
+                        ("yawOff", (-180.0, 180.0)), ("win", (2.0, 30.0))):
+        if k in o:
+            v = _g_num(o.get(k), lo, hi)
+            if v is not None:
+                c[k] = round(v, 3)
+    for k in ("warnN", "alarmN"):
+        if k in o:
+            v = _g_num(o.get(k), 1, 200)
+            if v is not None:
+                c[k] = int(round(v))
+    for k in ("report", "lidar"):
+        if k in o and isinstance(o.get(k), bool):
+            c[k] = bool(o[k])
+    # 报警阈值不能早于预警阈值（前端也钳，但两边都钳才安全）
+    if "warnN" in c and "alarmN" in c and c["alarmN"] < c["warnN"]:
+        c["alarmN"] = c["warnN"]
+    return c
+
+
+def _g_zones(a):
+    """校验/清洗警戒区数组。非法项直接丢掉，不让一条坏数据废掉整张表。"""
+    out = []
+    if not isinstance(a, list):
+        return out
+    for i, z in enumerate(a[:GUARD_MAX_ZONES]):
+        if not isinstance(z, dict):
+            continue
+        typ = z.get("type")
+        if typ not in ("circle", "rect"):
+            continue
+        o = {"id": str(z.get("id") or ("z%d" % (i + 1)))[:48],
+             "type": typ,
+             "name": str(z.get("name") or
+                         ("圆形警戒" if typ == "circle" else "矩形警戒"))[:32],
+             "on": (z.get("on") is not False)}
+        if typ == "circle":
+            cx = _g_num(z.get("cx"), -1e5, 1e5)
+            cy = _g_num(z.get("cy"), -1e5, 1e5)
+            r = _g_num(z.get("r"), 1e-3, 1e5)
+            if cx is None or cy is None or r is None:
+                continue
+            o.update({"cx": round(cx, 4), "cy": round(cy, 4), "r": round(r, 4)})
+        else:
+            v = [_g_num(z.get(k), -1e5, 1e5) for k in ("x0", "y0", "x1", "y1")]
+            if any(x is None for x in v):
+                continue
+            o.update({"x0": round(v[0], 4), "y0": round(v[1], 4),
+                      "x1": round(v[2], 4), "y1": round(v[3], 4)})
+        out.append(o)
+    return out
+
+
+class GuardStore(object):
+    """警戒区 / 告警参数的板端唯一副本（多设备共享）。
+
+    版本号 `rev` 每写一次 +1：页面带着自己看到的 rev 来写，对不上就回
+    `conflict=True`（仍然接受写入 = 最后写的为准，但会提示用户"已被其它设备
+    改过"）。这样既不会静默丢用户的修改，也能让各设备在下一次轮询时收敛。
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._maps = None            # {map_key: {"rev","t","zones","cfg"}}
+        self.state_path = None
+
+    # ---- 存取 ----
+    def set_path(self, p):
+        with self._lock:
+            self.state_path = p
+            self._maps = None        # 换存档文件 -> 丢弃缓存，重新读
+
+    def _load_locked(self):
+        if self._maps is not None:
+            return self._maps
+        maps = {}
+        if state_store is not None and self.state_path:
+            try:
+                sec = state_store.get(self.state_path, GUARD_SECTION) or {}
+                raw = sec.get("maps")
+                if isinstance(raw, dict):
+                    for k, v in raw.items():
+                        if not isinstance(v, dict):
+                            continue
+                        maps[_g_map_key(k)] = {
+                            "rev": int(_g_num(v.get("rev"), 0, 1e9, 0) or 0),
+                            "t": _g_num(v.get("t"), 0, 1e11, 0.0) or 0.0,
+                            "zones": _g_zones(v.get("zones")),
+                            "cfg": _g_cfg(v.get("cfg")),
+                        }
+            except Exception:                              # noqa: BLE001
+                maps = {}
+        self._maps = maps
+        return maps
+
+    def _save_locked(self):
+        if state_store is not None and self.state_path:
+            try:
+                state_store.put(self.state_path, GUARD_SECTION,
+                                {"maps": self._maps})
+            except Exception:                              # noqa: BLE001
+                pass
+
+    # ---- 对外 ----
+    def snapshot(self, map_key):
+        k = _g_map_key(map_key)
+        with self._lock:
+            m = self._load_locked()
+            e = m.get(k) or {}
+            return {"ok": True, "map": k,
+                    "rev": int(e.get("rev") or 0),
+                    "t": float(e.get("t") or 0.0),
+                    "zones": list(e.get("zones") or []),
+                    "cfg": dict(e.get("cfg") or {}),
+                    # 有区域的地图清单，页面用来提示"这张图上还有哪些区域"
+                    "maps": [{"map": kk, "n": len(vv.get("zones") or [])}
+                             for kk, vv in sorted(m.items())
+                             if (vv.get("zones") or [])][:GUARD_MAX_MAPS]}
+
+    def apply(self, body):
+        if not isinstance(body, dict):
+            body = {}
+        k = _g_map_key(body.get("map"))
+        with self._lock:
+            m = self._load_locked()
+            e = m.get(k) or {"rev": 0, "t": 0.0, "zones": [], "cfg": {}}
+            cur_rev = int(e.get("rev") or 0)
+            try:
+                want_rev = int(float(body.get("rev")))
+            except (TypeError, ValueError):
+                want_rev = None
+            conflict = (want_rev is not None and want_rev != cur_rev)
+            # 只更新传来的那一部分：页面改参数时别把区域冲掉，反之亦然
+            if "zones" in body:
+                e["zones"] = _g_zones(body.get("zones"))
+            if "cfg" in body:
+                e["cfg"] = _g_cfg(body.get("cfg"), e.get("cfg"))
+            e["rev"] = cur_rev + 1
+            e["t"] = round(time.time(), 3)
+            m[k] = e
+            if len(m) > GUARD_MAX_MAPS:
+                # 太多了就丢最久没动过的（正常情况不会走到）
+                keep = sorted(m.items(), key=lambda kv: kv[1].get("t") or 0.0)
+                for kk, _vv in keep[:len(m) - GUARD_MAX_MAPS]:
+                    m.pop(kk, None)
+            self._save_locked()
+            return {"ok": True, "map": k, "rev": int(e["rev"]),
+                    "t": e["t"], "zones": list(e["zones"]),
+                    "cfg": dict(e["cfg"]), "conflict": bool(conflict),
+                    "was_rev": cur_rev}
+
+
+GUARD_ST = GuardStore()
 
 
 # ============================================================================
@@ -4272,6 +4485,20 @@ class Handler(BaseHTTPRequestHandler):
                 _wd = "depth=0" not in _qs
                 return self._json(_person_targets(Handler.capture,
                                                   Handler.gimbal, _wd))
+            if path == "/api/guard":
+                # 警戒区域 / 告警参数的板端共享副本（多设备看到同一份）。
+                #   GET  /api/guard?map=<地图名>  -> {rev, zones, cfg}
+                #   POST /api/guard {map, rev, zones?, cfg?} -> 写入并 rev+1
+                # 页面里改完区域/参数就 POST，同时每隔几秒 GET 一次跟别的设备对齐。
+                _qs = self.path.split("?", 1)[1] if "?" in self.path else ""
+                _mk = ""
+                for kv in _qs.split("&"):
+                    if kv.startswith("map="):
+                        try:
+                            _mk = unquote(kv[4:])
+                        except Exception:                  # noqa: BLE001
+                            _mk = kv[4:]
+                return self._json(GUARD_ST.snapshot(_mk))
             if path == "/api/alarm_pending":
                 # cloud_agent 取报警队列（网页里发生的越界告警）
                 qs = self.path.split("?", 1)[1] if "?" in self.path else ""
@@ -4559,6 +4786,9 @@ class Handler(BaseHTTPRequestHandler):
                           % (out["seq"], body.get("label"),
                              body.get("tid"), body.get("note") or ""))
                 return self._json(out)
+            if path == "/api/guard":
+                # 写警戒区域 / 告警参数（板端唯一副本，谁写谁负责 rev）。
+                return self._json(GUARD_ST.apply(self._read_json()))
             if path == "/api/fpga":
                 if self.fpga is None:
                     return self._json(
@@ -5368,6 +5598,8 @@ def main():
     Handler.capture = cap
     Handler.state_path = state_file
     Handler.gimbal = gimbal
+    # 警戒区域/告警参数的板端共享副本也存进 state.json（多设备一致）
+    GUARD_ST.set_path(state_file)
 
     # 如果这次是 start.sh 因为切分辨率重启起来的, 把用户原来的曝光补回去
     _restore_exp_after_switch()

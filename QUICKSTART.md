@@ -346,8 +346,8 @@ ssh afc03 "reboot"                        # 重启板子
 
 ```bash
 # 云端（服务器）
-ssh example "systemctl status csi-dashboard; journalctl -u csi-dashboard -n 30 --no-pager"
-ssh example "du -sh /opt/csi-dashboard/data; ls -lt /opt/csi-dashboard/data/shots | head"
+ssh <YOUR_SERVER_HOST> "systemctl status csi-dashboard; journalctl -u csi-dashboard -n 30 --no-pager"
+ssh <YOUR_SERVER_HOST> "du -sh /opt/csi-dashboard/data; ls -lt /opt/csi-dashboard/data/shots | head"
 curl -s http://<SERVER_DOMAIN>/api/ping          # 不需要密码
 
 # 板端代理（心跳 / 报警抓图 / 长轮询取指令）
@@ -376,8 +376,8 @@ ssh afc03 "cd /root/rk/cloud && /usr/bin/python3 -u cloud_agent.py \
   --ring-dir /tmp/t_ring --clip-dir /tmp/t_clip --selftest-clip 14 --selftest-upload"
 
 # 云端：MySQL（库 csi_dashboard）里的事件/视频元数据、视频目录与总量
-ssh example "python3 /opt/csi-dashboard/tools/db_check.py /opt/csi-dashboard/config.json"
-ssh example "du -sh /opt/csi-dashboard/data/clips"
+ssh <YOUR_SERVER_HOST> "python3 /opt/csi-dashboard/tools/db_check.py /opt/csi-dashboard/config.json"
+ssh <YOUR_SERVER_HOST> "du -sh /opt/csi-dashboard/data/clips"
 ```
 
 看板「事件记录」里有视频的那条会显示 `视频 10s` 标签和 **▶ 回放** 按钮。

@@ -48,7 +48,7 @@ CLOUD_DIR=${CLOUD_DIR:-/root/rk/cloud}
 AGENT=${AGENT:-$CLOUD_DIR/cloud_agent.py}
 CLOUD_LOG=${CLOUD_LOG:-/tmp/cloud_agent.log}
 CLOUD_SVC=${CLOUD_SVC:-cloud-agent}
-SERVER=${SERVER:-http://<SERVER_DOMAIN>}
+SERVER=${SERVER:-}
 NODE=${NODE:-$(hostname 2>/dev/null || echo afc03)}
 NODE_NAME=${NODE_NAME:-AFC03 IMX415}
 

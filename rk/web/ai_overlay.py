@@ -151,6 +151,47 @@ def _dist(a, b):
     return (dx * dx + dy * dy) ** 0.5
 
 
+def _shoulder_center(rows, box=None, conf=_KPT_CONF):
+    """两肩中点（颈根部）—— 深度采样点优先用它。返回 dict 或 None。
+
+    为什么要单独给这个点（2026-11-01 用户要求「深度采样优先取肩部中心」）：
+      * 框中心落在腰腹：人走近/走到画面边缘时框被裁，框中心会滑到大腿甚至框外；
+      * 腰腹又常被手臂、背包、桌面挡住，深度很容易匹配到背景；
+      * 肩部（颈根到胸口）面积大、朝向正对相机、离地面高不易被杂物遮挡，
+        是整幅人体上**深度最稳**的一块；两肩一起取中点还能抵消单肩误检。
+
+    只看见一侧肩（人侧身）时仍然返回那一侧的坐标，但 `pair=False`，
+    上层据此给置信度打折 —— 侧身时中点本来就≈单肩，用比不用好。
+    """
+    if not rows:
+        return None
+    pts = []
+    for i in _SHOULDER_IDX:
+        if i < len(rows) and len(rows[i]) >= 3 and rows[i][2] >= conf:
+            pts.append(rows[i])
+    if not pts:
+        return None
+    if len(pts) == 2:
+        (x0, y0), (x1, y1) = (pts[0][0], pts[0][1]), (pts[1][0], pts[1][1])
+        # 两肩跨度/高度差离谱 -> 其中一个多半是误检（常见：把手肘认成肩）
+        bw = bh = 0.0
+        try:
+            if box is not None and len(box) >= 4:
+                bw = abs(float(box[2]) - float(box[0]))
+                bh = abs(float(box[3]) - float(box[1]))
+        except Exception:                                   # noqa: BLE001
+            bw = bh = 0.0
+        bad = ((bw > 0 and abs(x1 - x0) > 0.85 * bw)
+               or (bh > 0 and abs(y1 - y0) > 0.25 * bh))
+        if not bad:
+            return {"pt": ((x0 + x1) / 2.0, (y0 + y1) / 2.0), "pair": True}
+        # 有一侧不可信：留置信度更高的那条
+        p = pts[0] if pts[0][2] >= pts[1][2] else pts[1]
+        return {"pt": (p[0], p[1]), "pair": False}
+    p = pts[0]
+    return {"pt": (p[0], p[1]), "pair": False}
+
+
 def _body_size(rows, box_h, conf=_KPT_CONF):
     """按关节比例估算**完整人体**的身高（像素）。返回 (est_h, from_joints)。
 
@@ -227,6 +268,7 @@ def _aim_plan(det, frame_wh=None, margin_ratio=_AIM_MARGIN,
     head = _kp(rows, _HEAD_IDX)
     feet = _kp(rows, _FOOT_IDX)
     hip = _kp(rows, _HIP_IDX)
+    shc = _shoulder_center(rows, b)
 
     fw = fh = 0
     try:
@@ -292,6 +334,9 @@ def _aim_plan(det, frame_wh=None, margin_ratio=_AIM_MARGIN,
         "full_now": full_now,
         "can_full": bool(can_full),
         "head": head,
+        # 肩部中点：深度采样点优先用它（见 _shoulder_center 的注释）
+        "shoulder": (shc["pt"] if shc else None),
+        "shoulder_pair": bool(shc and shc["pair"]),
         "est_h": (float(est_h) if est_h else None),
         "span": float(span),
         "shift": (float(shift[0]), float(shift[1])),
@@ -922,6 +967,13 @@ class AiOverlay(object):
                            int(round(plan["shift"][1]))] if plan else None),
                 "head": ([int(round(head[0])), int(round(head[1]))]
                          if head else None),
+                # 肩部中点：person_dist 的深度采样点**优先**取这里。
+                #   框中心会随「框被裁」滑动、腰腹常被手臂/背包挡住；
+                #   肩部朝向正对相机、面积大，是整幅人体上深度最稳的一块。
+                "sh": ([int(round(plan["shoulder"][0])),
+                        int(round(plan["shoulder"][1]))]
+                       if (plan and plan.get("shoulder")) else None),
+                "sh_pair": bool(plan and plan.get("shoulder_pair")),
                 "labels": [a["cn"] for a in (d.get("actions") or [])],
                 "labels_en": [_act_en(a) for a in (d.get("actions") or [])],
             })

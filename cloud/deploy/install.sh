@@ -2,7 +2,7 @@
 # =============================================================================
 # install.sh —— 在云服务器上安装 CSI2RK 云端看板（幂等，可重复执行）
 #
-#   sh install.sh                 # 默认站点根目录 /www/wwwroot/<SERVER_DOMAIN>
+#   sh install.sh                 # 默认站点根目录 /www/wwwroot/csi-dashboard
 #   SITE_ROOT=/www/wwwroot/xxx sh install.sh
 #
 # 只做四件事：
@@ -16,7 +16,7 @@
 set -eu
 
 PREFIX=/opt/csi-dashboard
-SITE_ROOT="${SITE_ROOT:-/www/wwwroot/<SERVER_DOMAIN>}"
+SITE_ROOT="${SITE_ROOT:-/www/wwwroot/csi-dashboard}"
 SRC=$(cd "$(dirname "$0")" && pwd)
 
 [ "$(id -u)" = "0" ] || { echo "请用 root 运行"; exit 1; }
