@@ -75,27 +75,20 @@ body{
 #viewMap #sidecol::-webkit-scrollbar{ width: 8px }
 #viewMap #sidecol::-webkit-scrollbar-thumb{ background: #30363d; border-radius: 4px }
 #viewMap #sidecol::-webkit-scrollbar-track{ background: transparent }
+/* 卡片高度跟地图框对齐（2026-11-01 用户要求「大框要和地图框始终上下对齐」）：
+   sidecol 已经被 main 拉成与 #wrap 同高，aside 再用 flex:1 吃掉全部高度，
+   内容在 .tabbody 里滚，而不是把卡片撑长。 */
 #viewMap aside{
-    width: auto; background: transparent; border: 0; border-radius: 0;
-    padding: 0; overflow: visible; font-size: 13px; flex: none;
-    display: flex; flex-direction: column; gap: 12px;
+    width: auto; background: var(--panel); border: 1px solid var(--line);
+    border-radius: 12px; padding: 14px; overflow: hidden; font-size: 13px;
+    flex: 1 1 auto; min-height: 0;
+    display: flex; flex-direction: column; gap: 0;
   }
-/* 侧栏页签（2026-11-01 用户要求：输入框设置项单独一个页签）——
-   与视频采集页那组页签同一套长相，字号跟全局一起调到 14。 */
-#viewMap .tabs{ display: flex; gap: 6px; flex-wrap: nowrap; }
-#viewMap .tab{
-    background: var(--panel2); border: 1px solid var(--line);
-    border-radius: 8px; padding: 7px 8px; color: var(--dim);
-    font-size: 14px; line-height: 1.2; white-space: nowrap;
-    flex: 1 1 0; min-width: 0; text-align: center;
-    cursor: pointer; transition: background .12s, color .12s, border-color .12s;
-  }
-#viewMap .tab:hover{ color: var(--fg); border-color: var(--acc2); }
-#viewMap .tab.on{ background: var(--acc2); border-color: var(--acc2);
-    color: #fff; font-weight: 600; }
-#viewMap .tabbody{ display: flex; flex-direction: column; gap: 12px; }
+#viewMap .tabbody{ flex: 1 1 auto; min-height: 0; overflow-y: auto;
+    overscroll-behavior: contain; padding-right: 2px; }
+#viewMap .tabbody::-webkit-scrollbar{ width: 8px }
+#viewMap .tabbody::-webkit-scrollbar-thumb{ background: #30363d; border-radius: 4px }
 /* 四张卡：完全同一套底/描边/圆角/内距 */
-#viewMap aside section,
 #viewMap #dpad{
     background: var(--panel); border: 1px solid var(--line);
     border-radius: 12px; padding: 14px;
@@ -105,6 +98,14 @@ body{
              letter-spacing: .05em; text-transform: uppercase; }
 /* 卡片内部：纵向排列 */
 #viewMap aside section{ display: flex; flex-direction: column; }
+/* 调度页一张卡里有多组内容，组间距 14（与采集页 .row 的行距同量级） */
+#viewMap .tabbody > section + section{ margin-top: 14px; }
+/* 「控制」页签：页签标题已说明用途，内容里不再重复 h3；
+   链路 / 位姿挪到最下方 —— 内容不足时用 auto 外边距贴底，内容超长时正常滚动。 */
+#viewMap #mtab-ctl{ display: flex; flex-direction: column; }
+#viewMap #mtab-ctl > *{ flex: 0 0 auto; }
+#viewMap #mtab-ctl > .bottominfo{ margin-top: auto; }
+#viewMap #mtab-ctl > .bottominfo + .bottominfo{ margin-top: 14px; }
 /* 按钮行：三列等宽 / 两列等宽，行距统一 8px */
 #viewMap .btnrow{ display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
 #viewMap .btnrow + .btnrow{ margin-top: 8px; }
@@ -114,15 +115,21 @@ body{
     gap: 8px; margin: 9px 0 0; color: var(--dim); font-size: 12.5px; }
 #viewMap .hint b{ color: var(--fg); font-weight: 600; font-variant-numeric: tabular-nums;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-/* 巡检点列表：一行一个点，左边序号+类型+坐标，右边停留时间+删除 */
-#viewMap .plist{ margin: 8px 0 0; max-height: 196px; overflow-y: auto;
+/* 巡检点 / 警戒区列表：**固定 10 行**（2026-11-01 用户要求"预留十个空白框占位"）
+   —— 空白也占位，切页签时高度不跳；超过 10 条在框内滚动。 */
+#viewMap .plist{ margin: 8px 0 0; height: 340px; overflow-y: auto;
     border-top: 1px solid #21262d; scrollbar-width: thin; }
 #viewMap .plist::-webkit-scrollbar{ width: 8px }
 #viewMap .plist::-webkit-scrollbar-thumb{ background: #30363d; border-radius: 4px }
-#viewMap .pempty{ color: #6e7681; font-size: 12.5px; line-height: 1.55; padding: 9px 0 3px; }
+/* 空态提示只占 1 行（34px），剩余 9 行用占位空行补齐 → 空/非空都恰好 340px */
+#viewMap .pempty{ color: #6e7681; font-size: 12.5px; height: 34px; line-height: 34px;
+    padding: 0; border-bottom: 1px solid #21262d; overflow: hidden;
+    white-space: nowrap; text-overflow: ellipsis; }
 #viewMap .pitem{ display: grid; grid-template-columns: 1fr 92px auto; gap: 8px;
-    align-items: center; padding: 7px 0; border-bottom: 1px solid #21262d;
-    font-size: 12.5px; }
+    align-items: center; height: 34px; padding: 0; overflow: hidden;
+    border-bottom: 1px solid #21262d; font-size: 12.5px; }
+/* 占位空行：只留分隔线，什么都不写 */
+#viewMap .pitem.empty{ padding: 0; }
 #viewMap .pitem.act{ background: rgba(31,111,235,.14); }
 #viewMap .pitem .pl{ min-width: 0; display: flex; align-items: center; white-space: nowrap; }
 #viewMap .pitem .pno{ color: var(--fg); font-weight: 600; min-width: 13px; }
@@ -131,8 +138,11 @@ body{
 #viewMap .pitem .pk.free{ background: #30363d; color: #adbac7; }
 #viewMap .pitem .pc{ color: var(--dim); font-family: ui-monospace, monospace;
     overflow: hidden; text-overflow: ellipsis; }
-#viewMap .pitem .pd{ display: flex; gap: 4px; align-items: center; }
+#viewMap .pitem .pd{ display: flex; gap: 4px; align-items: center; justify-content: flex-end; }
 #viewMap .pitem .pd input[type=number]{ width: 44px; padding: 3px 5px; }
+/* 列表里的启用/停用：跟全站 .tool.on 同一套蓝色高亮，尺寸缩到列表能放下 */
+#viewMap .pitem .pd .tool{ padding: 3px 9px; font-size: 12.5px; line-height: 1.2;
+    border-radius: 6px; }
 #viewMap .pitem .pd select{ background: #0d1117; border: 1px solid #30363d; color: #e6edf3;
     border-radius: 6px; padding: 3px 1px; font-size: 11px; font-family: inherit; }
 #viewMap .pitem .pdel{ padding: 2px 3px; line-height: 1.1; font-size: 11px;
@@ -565,23 +575,49 @@ body{
 #viewVideo .scroll{max-height:260px; overflow:auto}
 #viewVideo .scroll::-webkit-scrollbar{width:8px}
 #viewVideo .scroll::-webkit-scrollbar-thumb{background:#30363d;border-radius:4px}
-#viewVideo .tabs{display:flex; gap:6px; margin:-2px 0 14px;
-    flex-wrap:nowrap; overflow-x:auto; scrollbar-width:none}
-#viewVideo .tabs::-webkit-scrollbar{height:0}
-/* 未选中的页签也要有框，四颗按钮看起来才是同一组控件 */
-/* 2026-11-01 两轮修正：
-   ① 字号 13->14 后右列装不下，「预处理」被挤成两行 -> nowrap + 不压缩；
-   ② 只加 nowrap 会变成按钮很窄（padding 被挤掉）-> 改成 **flex:1 均分整行**，
-      按钮随列宽自动定量，既不换行也不显窄。 */
-#viewVideo .tab{background:var(--panel2); border:1px solid var(--line);
-       border-radius:8px; padding:7px 8px; color:var(--dim);
-       font-size:14px; line-height:1.2; white-space:nowrap;
-       flex:1 1 0; min-width:0; text-align:center;
-       cursor:pointer; transition:background .12s, color .12s, border-color .12s}
-#viewVideo .tab:hover{color:var(--fg); border-color:var(--acc2)}
-#viewVideo .tab.on{background:var(--acc2); border-color:var(--acc2); color:#fff; font-weight:600}
-#viewVideo .tabbody{padding-top:2px}
-#viewVideo .tabs + .tabbody .hint:first-child{margin-top:0}
+/* ===== 页签（视频采集页 / 调度控制页 **共用同一套**，结构、尺寸完全一致）=====
+   2026-11-01 用户要求「调度控制页改成一样的嵌套结构，尺寸要一模一样」，
+   所以这里只写一份选择器，两页的 DOM 结构也都是：
+       .card(或 aside.card) > .tabs + .tabbody
+   踩过的坑（都写进注释，别改回去）：
+     ① 字号 13->14 后一行装不下 -> nowrap；但单加 nowrap 会把按钮挤窄；
+     ② 最终用 flex:1 1 0 均分整行，既不换行也不显窄；
+     ③ 文字靠 flex 居中，不能靠 line-height（中文字体行盒比 1.2 大，会贴底）；
+     ④ .tabbody 不能有 padding-top、首个子元素必须 margin-top:0，
+        否则「页签上方 14 / 下方 14」对不上（.row 自带 margin 9 会叠加）。 */
+/* ⚠ 必须带 #viewVideo / #viewMap 前缀：`.tab` 单独写特异性只有 (0,1,0)，
+   会被 `#viewVideo button{font-size:13px; padding:5px 10px}` 和
+   `#viewMap button{font-size:13.5px; padding:6px 10px}` 覆盖
+   （实测两页高度因此变成 21px / 30px，完全不一致）。 */
+#viewVideo .tabs, #viewMap .tabs{ display:flex; gap:6px; margin:0 0 14px;
+    flex-wrap:nowrap; overflow-x:auto; scrollbar-width:none;
+    /* ⚠ flex:0 0 auto 不能省：两页的父容器都是 flex column，.tabs 默认
+       flex:0 1 auto 会被**压缩**——实测采集页在 950 高窗口下页签高度
+       从 33px 被压到 25px（调度页还是 33），两页尺寸就对不上了。 */
+    flex: 0 0 auto; }
+#viewVideo .tabs::-webkit-scrollbar,
+#viewMap .tabs::-webkit-scrollbar{ height:0 }
+#viewVideo .tab, #viewMap .tab{
+    background: var(--panel2); border: 1px solid var(--line);
+    border-radius: 8px; padding: 0 8px; color: var(--dim);
+    /* ⚠ 高度写成固定值（不靠 padding+line-height 撑）：字体行盒/缩放/系统字体
+       一变化，两页就会差 1~2px。这里 33px = 采集页实测高度，两页完全一致。 */
+    height: 33px; box-sizing: border-box;
+    font-size: 14px; line-height: 1.2; white-space: nowrap;
+    flex: 1 1 0; min-width: 0;
+    display: flex; align-items: center; justify-content: center;
+    cursor: pointer; transition: background .12s, color .12s, border-color .12s;
+  }
+#viewVideo .tab:hover, #viewMap .tab:hover{ color: var(--fg); border-color: var(--acc2); }
+#viewVideo .tab.on, #viewMap .tab.on{
+    background: var(--acc2); border-color: var(--acc2);
+    color: #fff; font-weight: 600; }
+/* .tabbody 保持 block：采集页里是一串 .row（各自 margin:9px），
+   如果把它做成 flex+gap，行距会变成 9+12=21，两页反而对不上。
+   调度页的分组间距另写（见 #viewMap .tabbody > section）。 */
+#viewVideo .tabbody, #viewMap .tabbody{ padding-top: 0; }
+#viewVideo .tabbody > *:first-child,
+#viewMap .tabbody > *:first-child{ margin-top: 0; }
 #viewVideo #lanChip{
     display:flex; align-items:center; gap:5px;
     font-size:11.5px; color:var(--dim); cursor:pointer; user-select:none;
@@ -1261,8 +1297,8 @@ html, body{overflow:hidden}
       </div>
 
       <div class="tabbody" id="mtab-ctl">
+      <!-- 2026-11-01 用户要求：页签上已经写了「控制」，下方不再重复标题。 -->
       <section id="ctrlbox">
-        <h3>控制</h3>
         <div class="btnrow">
           <button id="btnMapping" class="primary">开始建图</button>
           <button id="btnSaveMap" class="warn" disabled>保存建图</button>
@@ -1287,7 +1323,9 @@ html, body{overflow:hidden}
         <div class="hint" hidden><span id="stClockNote" style="color:#d29922"></span></div>
       </section>
 
-      <section>
+      <!-- 2026-11-01 用户要求：链路 / 位姿挪到页签最下方（按钮、方向键靠上，状态靠下）。
+           .bottominfo 同时是 layoutDpad() 插入窄屏方向键的锚点 —— 方向键插在它前面。 -->
+      <section class="bottominfo">
         <h3>链路</h3>
         <div class="metrics">
           <div class="m"><i>状态</i><b id="st">未连接</b></div>
@@ -1297,7 +1335,7 @@ html, body{overflow:hidden}
         </div>
       </section>
 
-      <section>
+      <section class="bottominfo">
         <h3>位姿</h3>
         <div class="metrics">
           <div class="m"><i>机器人</i><b id="stPose">—</b></div>
@@ -1312,20 +1350,23 @@ html, body{overflow:hidden}
       <!-- 2026-10-28: 巡检框 —— 按顺序排多个有向/无向目标，每个点单独设停留时间，
            可单独删除；点「开始巡检」才按序跑；停止共用上面的「停止全部」。 -->
       <section id="patrolbox">
-        <h3>巡检</h3>
         <div class="btnrow wide">
           <button id="btnPatrolAdd" class="primary">加入巡检</button>
           <button id="btnPatrolClear">清空列表</button>
         </div>
         <div class="plist" id="plist"></div>
-        <div class="popt2" style="margin-top:8px">
-          <span>检测到人后追踪</span>
-          <input id="gzTrackSec" type="number" min="3" max="60" step="1" value="10">
-          <span>秒后继续巡视</span>
+        <!-- 2026-11-01 用户要求：跟踪那一条改成「追踪时间」输入框（同设置页格式），
+             再加一个「一键设置时间」把所有巡检点的停留时间一次性改掉。 -->
+        <div class="gform" style="margin-top:8px">
+          <span class="gf"><label for="gzTrackSec" title="巡视中检测到人就自动追踪这么久，追完继续巡视">追踪时间</label>
+            <span class="gi"><input id="gzTrackSec" type="number" min="3" max="60" step="1" value="10"><i>秒</i></span></span>
+          <span class="gf"><label for="pDurAll" title="填一个停留时间，再点下面的「一键设置时间」套用到所有巡检点">停留时间</label>
+            <span class="gi"><input id="pDurAll" type="number" min="0" max="6000" step="1" value="10"><i>秒</i></span></span>
         </div>
         <div class="btnrow" style="margin-top:8px">
+          <button id="btnDurAll" class="tool" title="把上面的停留时间套用到所有巡检点（分钟会自动换算成秒）">一键设置时间</button>
           <button id="btnPatrolLoop" class="tool" title="跑完最后一点再从第 1 点开始，直到「停止全部」">循环</button>
-          <button id="btnPatrolStart" class="primary" style="grid-column:2 / -1" disabled>开始巡检</button>
+          <button id="btnPatrolStart" class="primary" title="按列表顺序开始巡检" disabled>开始巡检</button>
         </div>
         <div class="hint"><span id="stPatrol">未开始</span><b id="stPatrolInfo">—</b></div>
       </section>
@@ -1337,9 +1378,12 @@ html, body{overflow:hidden}
                    → 这里叠上小车位姿 → 地图坐标 → 判越界 → /api/alarm 入队
                    → cloud_agent 取走并上报云端（抓拍/录像/入库全复用原通道）。 -->
       <section id="guardbox">
-        <h3>警戒区域 / 人员定位</h3>
         <div class="plist" id="zlist"></div>
         <div class="btnrow wide" style="margin-top:10px">
+          <button id="btnGuardAllOn" class="tool" title="把所有警戒区都设为启用（参与越界判定）">全部启用</button>
+          <button id="btnGuardAllOff" class="tool" title="把所有警戒区都设为停用（保留图形，不参与判定）">全部停用</button>
+        </div>
+        <div class="btnrow wide" style="margin-top:8px">
           <button id="btnGuardClear" class="tool">清空区域</button>
           <button id="btnGuardDbg" class="tool" title="在浏览器控制台打一下这一拍用到的原始数据">打印调试</button>
         </div>
@@ -1350,7 +1394,6 @@ html, body{overflow:hidden}
       <div class="tabbody" id="mtab-cfg" hidden>
       <!-- 参数表：单独一个「设置」页签（用户要求）。每组「标签 …… 输入框+单位」。 -->
       <section>
-        <h3>人员定位 / 越界告警</h3>
         <div class="gform">
           <span class="gf"><label for="gPollSec">采样间隔</label>
             <span class="gi"><input id="gPollSec" type="number" min="0.3" max="10" step="0.1" value="1"><i>秒</i></span></span>
@@ -1615,8 +1658,12 @@ html, body{overflow:hidden}
     if (narrow) {
       // 2026-11-01: 侧栏加了页签之后不能再插到 side.firstChild（会跑到页签上面），
       //   统一放进「控制」页签里（遥控盘本来就属于控制）。
+      //   2026-11-01 二改：插在 .bottominfo（链路/位姿）**之前**，让状态信息保持在页签最下方。
       const host = $('mtab-ctl') || side;
-      if (dpad.parentElement !== host) host.appendChild(dpad);
+      const pin = host.querySelector('.bottominfo');
+      if (dpad.parentElement !== host || dpad.nextElementSibling !== pin) {
+        host.insertBefore(dpad, pin || null);
+      }
       dpad.classList.add('wrapInline');
     } else {
       if (dpad.parentElement !== wrap) wrap.appendChild(dpad);
@@ -2203,7 +2250,7 @@ html, body{overflow:hidden}
     try {
       localStorage.setItem(REMOTE_KEY, JSON.stringify({
         lin: parseFloat(L.value), ang: parseFloat(A.value),
-        loop: !!S.patrolLoop, gzsec: gzTrackSec()
+        loop: !!S.patrolLoop, gzsec: gzTrackSec(), dur: pDurAllVal()
       }));
     } catch (e) {}
   }
@@ -2220,6 +2267,7 @@ html, body{overflow:hidden}
     if (A) A.value = clamp(c.ang, 0.2, 2, 0.6);
     S.patrolLoop = !!c.loop;
     if ($('gzTrackSec')) $('gzTrackSec').value = clamp(c.gzsec, 3, 60, 10);
+    if ($('pDurAll')) $('pDurAll').value = clamp(c.dur, 0, 6000, 10);
     syncPatrolLoopBtn();
     syncRemoteLabels();
   }
@@ -2243,6 +2291,21 @@ html, body{overflow:hidden}
   if ($('gzTrackSec')) $('gzTrackSec').addEventListener('change', function () {
     saveRemoteCfg();
     toast('检测到人追踪 ' + gzTrackSec() + ' 秒');
+  });
+  // 停留时间：列表上方那个框只是「待套用的值」，点一键设置才写进每个巡检点
+  function pDurAllVal() {
+    const v = parseFloat($('pDurAll') ? $('pDurAll').value : 10);
+    if (!isFinite(v) || v < 0) return 10;
+    return Math.min(6000, Math.round(v));
+  }
+  if ($('pDurAll')) $('pDurAll').addEventListener('change', function () { saveRemoteCfg(); });
+  if ($('btnDurAll')) $('btnDurAll').addEventListener('click', function () {
+    if (!S.patrol.length) { toast('先往巡检列表里加点，再一键设置时间', true); return; }
+    const sec = pDurAllVal();
+    for (let i = 0; i < S.patrol.length; i++) { S.patrol[i].dv = sec; S.patrol[i].du = 1; }
+    saveRemoteCfg();
+    patrolSave(); renderPatrol();
+    toast('已把 ' + S.patrol.length + ' 个巡检点的停留时间统一设为 ' + sec + ' 秒');
   });
   loadRemoteCfg();
   $('btnStopAll').addEventListener('click', function () {
@@ -2854,8 +2917,11 @@ html, body{overflow:hidden}
     if (!box) return;
     const running = !!S.patrolTimer;
     if (!S.patrol.length) {
-      box.innerHTML = '<div class="pempty">还没有巡检点：先在地图上放目标，' +
-        '再点「加入巡检」（跑在导航模式，用当前导航图）</div>';
+      // 空态也占满 10 行：提示文字占第 1 行，其余补齐空行（切换页签高度不跳）
+      let h = '<div class="pempty" title="先在地图上放目标，再点「加入巡检」' +
+        '（跑在导航模式，用当前导航图）">还没有巡检点：先放目标再点「加入巡检」</div>';
+      for (let k = 1; k < 10; k++) h += '<div class="pitem empty"></div>';
+      box.innerHTML = h;
     } else {
       let h = '';
       for (let i = 0; i < S.patrol.length; i++) {
@@ -2881,6 +2947,8 @@ html, body{overflow:hidden}
           '<button class="pdel" data-di="' + i + '" title="删除第 ' + (i + 1) +
           ' 点">✕</button></div></div>';
       }
+      // 预留 10 行：不足就补空行（只有分隔线），保证列表框高度恒定
+      for (let k = S.patrol.length; k < 10; k++) h += '<div class="pitem empty"></div>';
       box.innerHTML = h;
     }
     if ($('btnPatrolStart')) {
@@ -3557,8 +3625,11 @@ html, body{overflow:hidden}
     const box = $('zlist');
     if (!box) return;
     if (!S.zones.length) {
-      box.innerHTML = '<div class="pempty">还没有警戒区：矩形拖对角，' +
-        '圆形点圆心再拖半径（人进区自动上报云端）</div>';
+      // 空态也占满 10 行：提示文字占第 1 行，其余补齐空行（切换页签高度不跳）
+      let h = '<div class="pempty" title="矩形拖对角，圆形点圆心再拖半径' +
+        '（人进区自动上报云端）">还没有警戒区：矩形拖对角 / 圆形点圆心拖半径</div>';
+      for (let k = 1; k < 10; k++) h += '<div class="pitem empty"></div>';
+      box.innerHTML = h;
       return;
     }
     let h = '';
@@ -3573,20 +3644,29 @@ html, body{overflow:hidden}
                'm @(' + Math.min(z.x0, z.x1).toFixed(1) + ', ' +
                Math.min(z.y0, z.y1).toFixed(1) + ')';
       }
+      // 启用开关：2026-11-01 用户要求"警戒区的启用风格要统一"——
+      //   原来是个原生 checkbox + 灰字，与全站其它开关（上报云端/融合雷达/
+      //   矩形警戒 都用 .tool.on 蓝色）完全不是一套。现在统一成 .tool 按钮：
+      //   启用=蓝底白字，停用=灰底，点一下切换。
       h += '<div class="pitem">' +
         '<div class="pl"><b class="pno">' + (i + 1) + '</b>' +
         '<span class="pk' + (on ? '' : ' free') + '">' + (z.type === 'circle' ? '圆' : '矩') +
         '</span><span class="pc" title="' + z.name + '">' + z.name + ' ' + desc + '</span></div>' +
-        '<div class="pd"><label style="display:flex;align-items:center;gap:4px;color:#8b949e;' +
-        'cursor:pointer"><input type="checkbox" data-zt="' + i + '"' +
-        (on ? ' checked' : '') + '>启用</label></div>' +
+        '<div class="pd"><button class="tool' + (on ? ' on' : '') + '" data-zt="' + i + '"' +
+        ' title="' + (on ? '点一下停用这个区域' : '点一下启用这个区域') + '">' +
+        (on ? '启用' : '停用') + '</button></div>' +
         '<div class="pops"><button class="pdel" data-zd="' + i + '" title="删除这个区域">✕</button></div>' +
         '</div>';
     }
+    // 预留 10 行：不足就补空行（只有分隔线），保证列表框高度恒定
+    for (let k = S.zones.length; k < 10; k++) h += '<div class="pitem empty"></div>';
     box.innerHTML = h;
     box.querySelectorAll('[data-zt]').forEach(function (el) {
-      el.onchange = function () {
-        S.zones[+el.getAttribute('data-zt')].on = !!el.checked;
+      el.onclick = function () {
+        const i = +el.getAttribute('data-zt');
+        const z = S.zones[i];
+        if (!z) return;
+        z.on = (z.on === false);       // 取反：停用 -> 启用
         guardSave(); renderZones(); S.sceneRev++; draw();
       };
     });
@@ -4054,6 +4134,30 @@ html, body{overflow:hidden}
       if (!S.zones.length) return;
       if (!confirm('清空这张图上的全部警戒区？')) return;
       S.zones = []; guardSave(); renderZones(); S.sceneRev++; draw();
+    };
+    // 全部启用 / 全部停用（2026-11-01 用户要求）：一次改所有区域的 on 开关，
+    //   停用只是不参与越界判定，图形和配置都保留，随时能再启用。
+    function guardSetAll(on) {
+      if (!S.zones.length) { toast('还没有警戒区'); return; }
+      let n = 0;
+      for (let i = 0; i < S.zones.length; i++) {
+        const z = S.zones[i];
+        const cur = (z.on !== false);
+        if (cur !== on) { z.on = on; n++; }
+      }
+      guardSave(); renderZones(); S.sceneRev++; draw();
+      toast(n ? ((on ? '已启用' : '已停用') + '全部 ' + S.zones.length + ' 个区域')
+              : ('所有区域本来就已' + (on ? '启用' : '停用')));
+    }
+    if ($('btnGuardAllOn')) $('btnGuardAllOn').onclick = function () {
+      guardSetAll(true);
+      this.classList.add('on');
+      if ($('btnGuardAllOff')) $('btnGuardAllOff').classList.remove('on');
+    };
+    if ($('btnGuardAllOff')) $('btnGuardAllOff').onclick = function () {
+      guardSetAll(false);
+      this.classList.add('on');
+      if ($('btnGuardAllOn')) $('btnGuardAllOn').classList.remove('on');
     };
     if ($('gWinDeg')) $('gWinDeg').onchange = function () {
       gCfg.win = Math.min(30, Math.max(2, Number($('gWinDeg').value) || 7));
