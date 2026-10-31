@@ -93,15 +93,6 @@ module jpeg_regfile #(
     //   0 = 原 NV16 直通流 (默认, 保持现有 1080p/4K 显示不受影响)
     //   1 = FPGA 硬件 JPEG 码流 (DT=0x18, 走 csi2_frame_tx_var)
     output wire         O_cfg_jpg_tx,
-    // 2026-10-27 0x0B[1] DT18: JPEG 长包用哪个 DT
-    //   0 = DT=0x1E (与 NV16 通道同一个 DT, rkcif 当前配置只认这个;
-    //               JPEG 字节直接占帧缓冲前段, RK 端零重编码直通)
-    //   1 = DT=0x18 (标准 JPEG, 需要驱动/CSI-RX 侧也认, 板上实测被拒)
-    output wire         O_cfg_jpg_dt18,
-    // 2026-10-27 0x0B[2] JPAD: 帧尾补 0 到整帧 (1920*1080*2 = 4147200)
-    //   1 = 补满整帧, rkcif 行为与现有 NV16 通路完全一致 (稳妥, 但占带宽)
-    //   0 = 纯短帧, 用来验证 rkcif 能不能收不满一帧的 CSI-2 帧
-    output wire         O_cfg_jpg_pad,
     output wire [1:0]   O_cfg_subsample,
     output wire [7:0]   O_cfg_restart_int,
     output wire [2:0]   O_cfg_predictor,
@@ -204,18 +195,6 @@ module jpeg_regfile #(
     input  wire [7:0]   I_diag_c1ck,
     input  wire [7:0]   I_diag_rtv,
 
-    // ★ 2026-10-28 诊断 (临时调试版): JPEG 编码器内部状态
-    //   背景: 板上 0x470E 永远 st_busy=1 / 帧字节=0, 看门狗 8.2 次/秒,
-    //   而 0xA8 只暴露 busy/done, 看不出卡在哪。
-    //   0xEA/0xEB = 左引擎 o_diag 低/高
-    //   0xEC/0xED = 右引擎 o_diag 低/高
-    //   0xEE      = 顶层门控状态
-    //   o_diag 位定义见 jpeg_encoder_top.v
-    input  wire [15:0]  I_diag_enc_l,
-    input  wire [15:0]  I_diag_enc_r,
-    input  wire [7:0]   I_diag_enc_t,
-    input  wire [7:0]   I_diag_jv,
-
     // 2026-10-20: LP-free RX 调试总线 (只读)
     //   0xD6 = dbg_mipi  : [3:0]各lane字节对齐 [4]word对齐 [5]in_frame
     //                      [6]payload_valid [7]10bit解包有效
@@ -238,42 +217,7 @@ module jpeg_regfile #(
     //   bit2 cam0 autodone        bit3 cam1 autodone
     //   bit4 cam0 unpack_valid    bit5 cam1 unpack_valid
     //   bit6 cam0 4lane byte对齐  bit7 cam1 4lane byte对齐
-    input  wire [7:0]   I_dbg_status,
-
-    // V54f 诊断: rgb_to_yuv422_quad 抽头快照 (每帧采一组像素)
-    //   0x0C~0x0F = {flag, B, G, R}   (rgb2yuv 的输入 pix0)
-    //   0xFC~0xFF = {Cr, Y1, Cb, Y0}  (rgb2yuv 的输出 pair0)
-    input  wire [31:0]  I_dbg_rgbin,
-    input  wire [31:0]  I_dbg_yuvout,
-
-    // V54i 诊断: cam0(右路) 从掉线恢复的次数 (dual_stitch 的 st_r_starve)
-    //   0xCA/0xCB = 低/高字节。左路对应值已经是 0xE2 (=st_l_starve[7:0])。
-    //   右半幅黑时: 这个计数持续增长 => cam0 确实没有像素进拼接器;
-    //                计数不动       => cam0 数据正常, 黑是 JPEG 侧的事。
-    input  wire [15:0]  I_dbg_cam0_starve,
-
-    // V54l 诊断: 合并器输出 JPEG 起始三态 (0xCC/0xCD/0xCE)
-    //   [7:0]=首字节 [15:8]=次字节 [16]=曾经看到过连续的 FF D8
-    //   判读: CC=FF CD=D8 CE=1 -> 合并器对, 丢在下游;
-    //         CE=1 但 CC!=FF   -> SOI 不在帧首, sel 起始相位错;
-    //         CE=0             -> 合并器从不输出 SOI, 引擎 0 的 T_HDR 没吐头。
-    input  wire [23:0]  I_dbg_mhdr,
-
-    //=========================================================================
-    //  ★★ V54k (2026-10-31): 量化表写入透传 (0x10~0x8F) ★★
-    //
-    //  原来写部分的 default 分支写着「 0x10~0x4F 由 qtable RAM 处理」，
-    //  但本模块**根本没有把这个写口接出去**（没端口，system_top 里也把
-    //  jpeg_qtable_ram.I_wr_en 硬接成 1'b0）。结果量化表永远是上电初值，
-    //  运行期没办法调码率 —— 这也是 0x5406 实测 1.56:1 压缩比的一个侧面原因:
-    //  量程根本没参与调节。
-    //
-    //  接法: cfg_ctrl_top 透传 -> system_top -> jpeg_qtable_ram 写口。
-    //  地址范围与 qtable RAM 内部解码 (0x10..0x8F -> idx 0..127) 一致。
-    //=========================================================================
-    output wire         O_qt_wr_en,
-    output wire [7:0]   O_qt_wr_addr,
-    output wire [7:0]   O_qt_wr_data);
+    input  wire [7:0]   I_dbg_status);
 
     // ---------------------------------------------------------------- 控制寄存器
     reg        r_lossless;
@@ -284,8 +228,6 @@ module jpeg_regfile #(
     reg        r_rc_en;
     reg [3:0]  r_rc_speed;
     reg        r_jpg_tx;       // 2026-10-21: 0x0B MIPI 发 NV16(0) 还是 JPEG(1)
-    reg        r_jpg_dt18;     // 2026-10-27: 0x0B[1] JPEG 长包 DT 0=0x1E 1=0x18
-    reg        r_jpg_pad;      // 2026-10-27: 0x0B[2] 帧尾补零到整帧
     reg [1:0]  r_subsample;
     reg [7:0]  r_restart;
     reg [2:0]  r_predictor;
@@ -376,17 +318,7 @@ module jpeg_regfile #(
             r_target     <= 24'd0;     // 0 = 不限码率
             r_rc_en      <= 1'b0;
             r_rc_speed   <= 4'd8;
-            // ★ 2026-10-28 V51: 移除 NV16 —— MIPI 只发 JPEG 码流
-            //   jpg_tx 的硬件端已锁死为常量 (NV16 的打包器和定长 TX 都删了),
-            //   这里把复位值改成 1 只是让回读所见即所得。
-            //   dt18 必须保持 0: rkcif 没有 JPEG 支持, 只能按 DT=0x1E 当
-            //   YUV422 字节流收 (板上实测 0x18 被拒收 -> err id + crc/ecc)。
-            //   jpg_pad 默认 0: JPEG 是变长帧, 不再补零到 8294400 字节
-            //   (补一帧要 118ms@70MHz, 是 60fps 的硬阻塞, 见
-            //    docs/VARLEN_CSI2_JPEG_2026-10-28.md)。
-            r_jpg_tx     <= 1'b1;      // 1 = 硬件 JPEG 码流 (固定)
-            r_jpg_dt18   <= 1'b0;      // 0 = DT 0x1E (固定, rkcif 只认这个)
-            r_jpg_pad    <= 1'b0;      // 0 = 变长帧 (JPEG 本来的形态)
+            r_jpg_tx     <= 1'b0;      // 默认走原 NV16 通路
             r_subsample  <= 2'd1;      // 默认 4:2:2
             r_restart    <= 8'd0;
             r_predictor  <= 3'd0;      // 0 = MED
@@ -466,11 +398,7 @@ module jpeg_regfile #(
                     8'h08: r_restart   <= I_wr_data;
                     8'h09: r_predictor <= I_wr_data[2:0];
                     8'h0A: r_soft_rst  <= I_wr_data[0];
-                    8'h0B: begin
-                        r_jpg_tx   <= I_wr_data[0];
-                        r_jpg_dt18 <= I_wr_data[1];
-                        r_jpg_pad  <= I_wr_data[2];
-                    end
+                    8'h0B: r_jpg_tx    <= I_wr_data[0];
                     // ---- 高级预处理 (单选) ----
                     8'hB0: r_pp_en      <= I_wr_data[0];
                     8'hB1: r_pp_mode    <= (I_wr_data[3:0] > 4'd8) ? 4'd8 : I_wr_data[3:0];
@@ -542,14 +470,7 @@ module jpeg_regfile #(
     assign O_dbg_btn = (r_dbg_btn_cnt == 16'd0);
 
     // 2026-10-21: MIPI 输出源选择 (0 = 原 NV16 直通, 1 = 硬件 JPEG 码流)
-    assign O_cfg_jpg_tx   = r_jpg_tx;
-    assign O_cfg_jpg_dt18 = r_jpg_dt18;
-    assign O_cfg_jpg_pad  = r_jpg_pad;
-
-    // V54k: 0x10~0x8F 的写入直接透传给量化表 RAM (它内部自己解码地址)
-    assign O_qt_wr_en   = I_wr_en && (I_wr_addr >= 8'h10) && (I_wr_addr <= 8'h8F);
-    assign O_qt_wr_addr = I_wr_addr;
-    assign O_qt_wr_data = I_wr_data;
+    assign O_cfg_jpg_tx = r_jpg_tx;
 
     // ---------------------------------------------------------------- 读 (1 拍延迟)
     // 量化表整段占 0x10~0x8F (128 项 = 亮度 64 + 色度 64), 单独判断,
@@ -574,12 +495,7 @@ module jpeg_regfile #(
                 8'h08: O_rd_data <= r_restart;
                 8'h09: O_rd_data <= {5'b0, r_predictor};
                 8'h0A: O_rd_data <= 8'h00;
-                8'h0B: O_rd_data <= {5'b0, r_jpg_pad, r_jpg_dt18, r_jpg_tx};
-            // V54f 诊断抽头
-            8'h0C: O_rd_data <= I_dbg_rgbin[ 7:0];
-            8'h0D: O_rd_data <= I_dbg_rgbin[15:8];
-            8'h0E: O_rd_data <= I_dbg_rgbin[23:16];
-            8'h0F: O_rd_data <= I_dbg_rgbin[31:24];
+                8'h0B: O_rd_data <= {7'b0, r_jpg_tx};
 
                 8'hA0: O_rd_data <= s_frame_bytes[ 7:0];
                 8'hA1: O_rd_data <= s_frame_bytes[15:8];
@@ -610,23 +526,6 @@ module jpeg_regfile #(
                 8'hF9: O_rd_data <= r_basic_he_clip;
                 8'hFA: O_rd_data <= 8'h00;      // 已废弃: HE 平滑不再可调
                 8'hFB: O_rd_data <= {7'b0, r_basic_linefix};
-            // V54f 诊断抽头
-            8'hFC: O_rd_data <= I_dbg_yuvout[ 7:0];
-            8'hFD: O_rd_data <= I_dbg_yuvout[15:8];
-            8'hFE: O_rd_data <= I_dbg_yuvout[23:16];
-            8'hFF: O_rd_data <= I_dbg_yuvout[31:24];
-            // V54i: cam0 (右路) 掉线恢复次数
-            8'hCA: O_rd_data <= I_dbg_cam0_starve[ 7:0];
-            8'hCB: O_rd_data <= I_dbg_cam0_starve[15:8];
-            // V54l: 合并器输出 JPEG 起始三态判别
-            //   0xCC=首字节(应 FF)  0xCD=次字节(应 D8)  0xCE.bit0=见过 FF D8
-            //   ⚠ V54n: 这里原来重复定义了两次 (编辑事故)。重复 case 标签会让
-            //     综合工具丢弃整个分支, 并连带把 I_dbg_mhdr 的整条驱动链优化掉,
-            //     于是 0xCC/0xCD/0xCE 恒读 0x00 —— 这是"读数全零但桥实际在动"
-            //     矛盾现象的最可能解释。现只保留一组。
-            8'hCC: O_rd_data <= I_dbg_mhdr[ 7:0];
-            8'hCD: O_rd_data <= I_dbg_mhdr[15:8];
-            8'hCE: O_rd_data <= {7'b0, I_dbg_mhdr[16]};
                 8'hF5: O_rd_data <= {4'b0, r_pp_emboss_gain};
                 8'hF6: O_rd_data <= r_pp_emboss_bias;
                 8'hF7: O_rd_data <= 8'h00;      // 锐化已移除
@@ -659,13 +558,6 @@ module jpeg_regfile #(
                 8'hE7: O_rd_data <= I_diag_rxck;
                 8'hE8: O_rd_data <= I_diag_c1ck;
                 8'hE9: O_rd_data <= I_diag_rtv;
-                // 2026-10-28 诊断: JPEG 编码器内部状态 (位定义见 jpeg_encoder_top.v)
-                8'hEA: O_rd_data <= I_diag_enc_l[ 7:0];
-                8'hEB: O_rd_data <= I_diag_enc_l[15:8];
-                8'hEC: O_rd_data <= I_diag_enc_r[ 7:0];
-                8'hED: O_rd_data <= I_diag_enc_r[15:8];
-                8'hEE: O_rd_data <= I_diag_enc_t;
-                8'hEF: O_rd_data <= I_diag_jv;
                 8'hD0: O_rd_data <= s_cam_wr_cnt[ 7:0];
                 8'hD1: O_rd_data <= s_cam_wr_cnt[15:8];
                 8'hD2: O_rd_data <= {7'b0, s_cam_busy};

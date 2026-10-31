@@ -41,32 +41,21 @@
 --     -> RGB888 转 YUV422 (4 像素/拍)      : rgb_to_yuv422_quad
 --     -> DDR 三帧缓存 (16bpp 写 / 32b 读)  : ui_dbuf + ui_FDMA + DDR3
 --     -> 读侧按 VTC 时序读出              : ui_vtc
---     -> 32b/2px -> 64b/4px 跨时钟域      : yuv32_to_quad
---     -> 4 引擎并行 JPEG (16x8 MCU)        : jpeg_enc_if x4 + jpeg_encoder_top x4
---     -> 4 段码流 4:1 合并                 : jpeg_seg_merge4
---     -> 字节流跨时钟桥                    : jpeg_byte_bridge
---     -> CSI-2 变长帧/包组包 (DT=0x1E)     : csi2_frame_tx_var
+--     -> YUV422 跨时钟域打包              : csi2_pack_yuv422_stream
+--     -> CSI-2 帧/包组包 (DT=0x1E)        : csi2_frame_tx
 --     -> D-PHY TX (4 lane HS + LP)        : mipi_dphy_tx_wrapper
 --     -> RK3576 CSI3 (csi2_dphy3 / mipi3_csi2)
---     -> RK 端 milianke_mipi 驱动 -> CIF -> 用户态直接推流
---     -> HDMI 2.1 / 网页显示
---
--- ★★★ 2026-10-28 V51: NV16 已移除, MIPI 只输出 JPEG ★★★
---   为什么: NV16 3840x1080@60 = 498MB/s, 4lane@1000Mbps 只有 500MB/s
---   (99.6%), 且每行 2123 byte_clk @125MHz = 16.96us 超过 VTC 的 14.91us
---   行预算 13.7% -> 必然截包 -> CRC 满屏。结构上不可能, 不是 bug。
---   所以:
---     - csi2_pack_yuv422_stream / csi2_frame_tx(定长) / csi2_test_src
---       / 读侧帧标记注入 / TX_SRC_SEL mux 全部删除;
---     - 0x0B[0] JPG_TX 锁死 1, 0x0B[1] DT18 锁死 0, 0x0B[2] JPAD 默认 0。
+--     -> RK 端 milianke_mipi 驱动 -> CIF/ISP -> VPSS
+--     -> HDMI 2.1 输出 1080P60 画面
 --
 -- 关键点:
---   1) 内容固定是硬件 JPEG 码流 (变长帧), 但 CSI-2 的 DT 仍是 0x1E ——
---      rkcif 没有 JPEG 支持, 只能当 YUV422 字节流收。驱动继续上报
---      MEDIA_BUS_FMT_YUYV8_2X8, 应用层扫 FF D8..FF D9 取帧。
+--   1) 输出格式固定 YUV422-8bit (DT=0x1E), 分辨率 1920x1080@60,
+--      必须与 RK 端驱动 milianke_mipi.c 中上报的
+--      MEDIA_BUS_FMT_YUYV8_2X8 / 1920x1080 / 4 lane 完全一致。
 --   2) I_dsi_en 由 RK 侧 (dts 里 mipi-en-gpios = gpio1 RK_PD0) 驱动,
 --      高电平才使能 D-PHY 发送; 驱动的 s_stream() 打开流时置高。
---      它同时是 csi2_frame_tx_var 的 enable —— D-PHY 复位期间不往乒乓里塞包。
+--   3) 无摄像头自检: 见同目录 system_top_tx_tpg.v + fpga_pin_tx_tpg.adc,
+--      用内部测试图案替代 IMX415, 可用于先验证 FPGA->RK->HDMI 通路。
 *********************************************************************/
 
 `define DRAM_BYTE_NUM 2   	   // 1 = x8, 2 = x16,4 = x32,8=x64
@@ -209,17 +198,13 @@ parameter CS_WIDTH        = 1
 	wire [15:0] S_line_groups;                       // V21 诊断: 每行像素组数
 
 	// 4K 模式 (2'd1/@30 与 2'd2/@25) 的图像尺寸完全相同, 只有 VTC 场周期不同
-	// ★ 2026-10-28: 双目拼接成为**唯一**工作模式 (作品只要求 1080p@60 双目), 4K 废弃。
-	//   图像宽 = 3840 = 左半(cam1) + 右半(cam0), 高 = 1080。
-	//   crop 模块仍按单目 1920 裁, 所以 S_cam_h 与 S_h_active 必须分开。
-	wire        S_is_4k        = 1'b0;
+	wire        S_is_4k        = (S_res_mode != 2'd0);
 
 	// ---- 图像宽高 ----
-	wire [12:0] S_cam_h        = 13'd1920;          // 单目裁剪宽度 (ui_image_correction 用)
-	wire [12:0] S_h_active     = 13'd3840;          // 拼接后整行 (ISP/preproc/dbuf/编码器用)
-	wire [11:0] S_v_active     = 12'd1080;
-	wire [15:0] S_w_beats      = 16'd960;           // 64b/beat = 4px -> 3840/4
-	wire [15:0] S_r_beats      = 16'd1920;          // 32b/beat = 2px -> 3840/2
+	wire [12:0] S_h_active     = S_is_4k ? 13'd3840 : H_ACTIVE[12:0];
+	wire [11:0] S_v_active     = S_is_4k ? 12'd2160 : V_ACTIVE[11:0];
+	wire [15:0] S_w_beats      = S_is_4k ? 16'd960  : 16'd480;
+	wire [15:0] S_r_beats      = S_is_4k ? 16'd1920 : 16'd960;
 	// V39: 传感器垂直裁剪起点。4K 录制区从第 36 行开始 (厂商 v_start=35)；
 	//      1080p 厂商参考 v_start=19。首行必须是偶数，否则 RGGB Bayer 相位错。
 	wire [12:0] S_v_start      = S_is_4k ? 13'd35  : 13'd19;
@@ -262,8 +247,10 @@ parameter CS_WIDTH        = 1
 	wire [11:0] S_vtc_v_active = S_is_4k ? 12'd2160 : V_ACTIVE[11:0];
 	wire [11:0] S_vtc_v_start  = S_is_4k ? 12'd2164 : (V_ACTIVE+V_FP);
 	wire [11:0] S_vtc_v_end    = S_is_4k ? 12'd2169 : (V_ACTIVE+V_FP+V_SA);
-	// 4K 场周期: 已废弃 (拼接模式只用 1080 行时序)
-	wire [11:0] S_vtc_v_frame  = (V_ACTIVE+V_FP+V_SA+V_BP);   // 1125 -> 59.6fps
+	// 4K 场周期: 与 h_frame=2652 配套 -> 147.5MHz/(2652 x 2225) = 24.997fps
+	wire [11:0] S_vtc_v_frame  = (S_res_mode == 2'd2) ? 12'd2225
+	                           : (S_res_mode == 2'd1) ? 12'd2387
+	                                                  : (V_ACTIVE+V_FP+V_SA+V_BP);
 	//===============================================================
                                       
 
@@ -341,7 +328,7 @@ wire        					S_pll_lock		;
 
 	//---- DSI PLL outputs (sourced from I_sysclk_25m) ----
 	wire							S_dsi_25m_unused;
-	wire							S_dsi_byte_clk	;	// ★125MHz (VCO1000/8; 原注释写 75MHz 是错的)
+	wire							S_dsi_byte_clk	;	// 75MHz  -> wrapper I_hs_clk
 	wire							S_dsi_hs_x2		;	// 150MHz -> wrapper I_hs_clk_x2
 	wire							S_dsi_hs_x4		;	// 300MHz -> wrapper I_hs_clk_x4
 	wire							S_dsi_hs_x4_90d	;	// 300MHz @90 -> wrapper I_hs_clk_x4_90d
@@ -352,8 +339,8 @@ wire        					S_pll_lock		;
 	wire							S_dsi_R_tuser	;
 	wire							S_dsi_R_tvalid	;
 	wire							S_dsi_R_tlast	;
-	// ★ V51: S_dsi_R_tdata32 (NV16 用的 32bit word + 帧标记注入) 和
-	//   S_dsi_pack_tready 已随 NV16 通路删除。dbuf 读侧现在只喂 yuv32_to_quad。
+	wire	[31:0]					S_dsi_R_tdata32	;	// RGBX8888 (1 像素/cyc) 出 dbuf.R
+	wire							S_dsi_pack_tready;
 
 	//---- DSI 握手同步 + 复位 ----
 	reg  [1:0]						S_dsi_en_sync	= 2'b00;
@@ -384,11 +371,10 @@ wire 							S_ae_req		;
 //    0xDB[0]: 0=cam0 (上电默认)  1=cam1
 //    改动时 system_top 会给写侧一个 120ms 复位窗，让行/帧计数重新对齐。
 //=============================================================================
-wire          					S_hs_clk0		;   // cam0 RX 恢复时钟 (cam0 侧整条链用它)
-wire          					S_hs_clk1		;   // cam1 RX 恢复时钟 (cam1 侧整条链用它)
-wire                                            S_st_clk                ;   // ★ 拼接/下游像素域 = S_clk_70m = 73.75MHz (PLL C3, 20 分频; V54)
-wire          					S_enc_clk		;   // JPEG 编码器时钟 (V47.14 起 = S_hs_rx_clk 70MHz)
-wire          					S_hs_rx_clk		;   // 保留旧名: 下游像素域 (= S_st_clk)
+wire          					S_hs_clk0		;   // cam0 RX 恢复时钟
+wire          					S_hs_clk1		;   // cam1 RX 恢复时钟 (仅作 mux 输入)
+wire          					S_hs_rx_clk_mux	;   // 二选一（LUT）
+wire          					S_hs_rx_clk		;   // BUFG 后的全局 byte clock (= HS clk / 4)
 
 	//---- LP-free CSI-2 RX (03_ip/mipi_csi_lpfree) 的 AXIS 输出 ----
 	wire							S_rx_rstn		;
@@ -596,45 +582,6 @@ rgb_to_yuv422_quad u_rgb2yuv_quad (
 	.o_data     (S_yuv_data     )
 );
 
-//=============================================================================
-// V54f 诊断: rgb_to_yuv422_quad 输入/输出抽头
-//   每帧在 S_yuv_de 的第 1000 组采一次(第一行中间, 避开行首边界)
-//   0x0C..0x0F = {tog, in_b, in_g, in_r}          ← rgb2yuv 输入 pix0
-//   0xFC..0xFF = {out_cr, out_y1, out_cb, out_y0} ← rgb2yuv 输出 pair0
-//   抽头在 S_hs_rx_clk 域, 到 25MHz 由 cfg_ctrl_top 做 2 级同步
-//=============================================================================
-reg [15:0] S_dbg_smp;
-reg [7:0]  S_dbg_in_r, S_dbg_in_g, S_dbg_in_b;
-reg [7:0]  S_dbg_out_y0, S_dbg_out_cb, S_dbg_out_y1, S_dbg_out_cr;
-reg        S_dbg_tog;
-always @(posedge S_hs_rx_clk or negedge S_pll_lock) begin
-	if (!S_pll_lock) begin
-		S_dbg_smp    <= 16'd0;
-		S_dbg_in_r   <= 8'd0;  S_dbg_in_g   <= 8'd0;  S_dbg_in_b   <= 8'd0;
-		S_dbg_out_y0 <= 8'd0;  S_dbg_out_cb <= 8'd0;
-		S_dbg_out_y1 <= 8'd0;  S_dbg_out_cr <= 8'd0;
-		S_dbg_tog    <= 1'b0;
-	end else begin
-		if (S_yuv_sof)     S_dbg_smp <= 16'd0;
-		else if (S_yuv_de) S_dbg_smp <= S_dbg_smp + 16'd1;
-
-		if (S_yuv_de && (S_dbg_smp == 16'd999)) begin
-			S_dbg_in_r <= S_post_tdata[23:16];
-			S_dbg_in_g <= S_post_tdata[15: 8];
-			S_dbg_in_b <= S_post_tdata[ 7: 0];
-		end
-		if (S_yuv_de && (S_dbg_smp == 16'd1000)) begin
-			S_dbg_out_y0 <= S_yuv_data[ 7: 0];
-			S_dbg_out_cb <= S_yuv_data[15: 8];
-			S_dbg_out_y1 <= S_yuv_data[23:16];
-			S_dbg_out_cr <= S_yuv_data[31:24];
-			S_dbg_tog    <= ~S_dbg_tog;
-		end
-	end
-end
-wire [31:0] S_dbg_rgbin  = {S_dbg_tog, S_dbg_in_b,  S_dbg_in_g,  S_dbg_in_r };
-wire [31:0] S_dbg_yuvout = {S_dbg_out_cr, S_dbg_out_y1, S_dbg_out_cb, S_dbg_out_y0};
-
 
 //=============================================================================
 //  FPGA 硬件 JPEG 编码器接线 (2026-10-21)
@@ -669,841 +616,75 @@ wire [23:0] S_jpeg_st_bytes;
 wire        S_jpeg_st_busy;
 wire        S_jpeg_st_done;
 
-//=============================================================================
-//  ★ 2026-10-29 V52b: 字节桥排水诊断 (复用已作废的 0xE4/0xE5)
-//
-//  板上 V52(0x5200) 实测把死锁钉到了这一段:
-//    0xA5/A6 = 0x00/0x10 => encif_full=0x1(只有引擎0满), consume=0, mrg_segc=0
-//    引擎0 = 0x1442 => T_HDR, lb_avail=1, m_ready=0
-//    mrg_segc=0 说明 sel 从未前进, 于是 m_ready=0 只能是 o_ready_down=0,
-//    也就是 jpeg_byte_bridge 的 w_ready=~f_full 为 0 —— **桥满**。
-//
-//  但"桥满"有两种完全不同的原因, 必须分开:
-//    (a) 满 + 读侧不动  => 读侧死了 (r_ready 恒 0 / X_jv 不收 / 复位没放)
-//    (b) 满 + 读侧在动  => 只是速率限住 (FWFT 握手 3 拍读 1 字节 = 41.7MB/s)
-//    (c) 空 + 不动      => 问题在 merge4 没产出, 与桥无关
-//
-//  0xE4/0xE5 (16bit) = { 桥读侧剩余字节数 S_jb_lvl[7:0], 桥读侧已读字节计数 S_jb_rcnt[7:0] }
-//    读两次间隔 1s:  rcnt 变 => 在排水;  rcnt 不变 => 读侧死了。lvl 看是否贴着 0xFF。
-//  原占用者 D_lg1_s2 (cam1 每行组数) 是 NV16 时代的诊断, 已无用。
-//  ⚠ 本声明必须在 ifdef 之外 (cfg_ctrl_top 例化在 ifdef 外)。
-//=============================================================================
-wire [15:0] S_diag_bridge;
-
-//=============================================================================
-//  ★ V53c (2026-10-29) 只读抽头 —— 复用 0xE6 / 0xE7 / 0xE9
-//
-//  目的: 分清「sel 卡在 1/2」和「桥的 f_full 假报满」——这两种都能导致
-//        eng0 停在 T_HDR 且 m_ready=0, 现有寄存器区分不了。
-//    0xE6 = { S_yuv_de, S_jcfg_valid, S_jcfg_consume, 4'b0, S_jpeg_m_ready }
-//           bit0 = 桥 w_ready (1=可收)    => 0 就证明是 f_full 一直为 1
-//           bit2 = S_jcfg_consume        => 源侧总反压
-//           bit3 = S_jcfg_valid          => 源侧真的在给字
-//           bit7 = S_yuv_de              => dbuf 读侧数据有效
-//    0xE7 = 引擎1 o_diag[7:0]  (bit3:0 = tstate)
-//    0xE9 = 引擎2 o_diag[7:0]  (bit3:0 = tstate)
-//  原来占位的 D_tl_s2 / D_rxck_s2 / D_rtv_s2 是 2026-10-21 画面冻结排查用的,
-//  现在 0xE1(sof) / 0xE3(vs) 已能证明源是活的, 所以可以腾出来。
-//  ⚠ 声明必须在 ifdef 之外
-//=============================================================================
-wire [7:0]  S_diag_misc;
-wire [7:0]  S_diag_e1;
-wire [7:0]  S_diag_e2;
-
-
-//=============================================================================
-//  ★ 2026-10-28 V51: 移除 NV16 —— MIPI 输出只剩 JPEG 一条路
-//
-//  删除的东西 (全部是 NV16 专用):
-//    - csi2_pack_yuv422_stream    YUV422 字节打包 + CDC
-//    - csi2_frame_tx (定长)        每行一个定长长包 (DT=0x1E)
-//    - csi2_test_src              内置测试图案 (它只能从定长 TX 出去)
-//    - S_mark_* 读侧标记注入       往 NV16 的 Y 平面里塞 A5 5A, 对 JPEG 是污染
-//    - TX_SRC_SEL / JPEG_TEST_SRC  三选一 mux
-//
-//  留下的唯一通路:
-//    ui_dbuf.R -> yuv32_to_quad -> 4x jpeg_enc_if -> 4x jpeg_encoder_top
-//      -> jpeg_seg_merge4 -> jpeg_byte_bridge -> csi2_frame_tx_var (变长)
-//      -> mipi_dphy_tx_wrapper
-//
-//  寄存器语义随之固定:
-//    0x0B[0] JPG_TX  锁死 1  (原来 0=NV16)
-//    0x0B[1] DT18    锁死 0  (DT 必须是 0x1E, 见下)
-//    0x0B[2] JPAD    保留为运行时开关, 默认 0 = 变长帧 (JPEG 本来的形态)
-//
-//  ⚠ 为什么 DT 仍然是 0x1E 而不是 JPEG 标准值 0x18:
-//    这是**传输容器**, 不是数据格式。rkcif 完全没有 JPEG 支持
-//    (CIF_FMT_TYPE 只有 YUV/RAW, capture.c 里自己写着 "JPEG, TODO"),
-//    上报的 mbus code 只能是 MEDIA_BUS_FMT_YUYV8_2X8 => CSI-RX 按 DT=0x1E 收。
-//    板上实测(0x470A): DT=0x18 直接被拒收, 报 MIPI_CSI2 err id + crc/ecc。
-//    改成 0x1E 后 JPEG 字节就能当"普通像素"DMA 进帧缓冲, 应用层再扫
-//    FF D8..FF D9 直接推流 —— 零解码零重编码 (见 docs/VARLEN_CSI2_JPEG_2026-10-28.md)。
-//
-//  为什么 3840 宽必须走 JPEG: NV16 3840x1080@60 需要 498MB/s, 而 4lane
-//  1000Mbps 只有 500MB/s (99.6%), 且每行 2123 byte_clk @125MHz = 16.96us
-//  超过 VTC 的 14.91us 行预算 13.7% -> 必然截包 -> CRC 满屏。
-//=============================================================================
-localparam      S_jpeg_tx_sel = 1'b1;
-localparam      S_jpeg_dt18   = 1'b0;
-localparam [5:0] S_jpeg_dt    = 6'h1E;
+// 2026-10-21: 0x0B JPG_TX —— MIPI 输出源选择 (0=原 NV16, 1=硬件 JPEG 码流)
+wire        S_jpeg_tx_sel;
 wire        S_jpeg_m_ready;
-wire        S_jpeg_pad;         // 由 0x0B[2] 驱动, 默认 0 = 变长帧
-
-// 2026-10-27: JPEG 支路诊断 (ifdef 内外都要声明, cfg 例化在外面)
-//   0xA3~0xA6 = {看门狗触发次数, 源侧 FIFO 溢出次数}
-//   0xA7      = 跨时钟桥 写侧背压低 8 位
-wire [31:0] S_dbg_jpeg;
-wire [7:0]  S_dbg_jb;
-// ★ V54l (2026-11-01): 段合并器输出的 JPEG 起始三态判别 —— 专门定位
-//    "buffer 里没有 FFD8" 到底丢在哪一级。取值:
-//      0xCC = 上电后第 1 个有效字节 (正常必须是 0xFF)
-//      0xCD = 上电后第 2 个有效字节 (正常必须是 0xD8)
-//      0xCE = bit0: 合并器输出里是否见到过连续的 FF D8
-//    三态判读:
-//      CC=FF CD=D8 CE=1 -> 合并器完全正确, 问题在跨时钟桥 / CSI-2 组包 / D-PHY
-//      CE=1 但 CC!=FF  -> SOI 在码流里但不在帧首 => sel 起始相位错 (段计数与 4 不同余)
-//      CE=0             -> 合并器从不输出 SOI => 引擎 0 的 T_HDR 根本没吐头
-wire [23:0] S_dbg_mhdr;
-// V54o: 四路 enc_if 源侧溢出汇总, 送给 0xA8 bit2 (原来那一位硬接 0)
-wire        S_enc_ovf_any;
 
 `ifdef JPEG_EN
-	// V48: 原先这里的 S_jpeg_s_ready / S_jpeg_qt_a,b / S_jpeg_qta,qtb 单数声明已删
-	//      —— 4 引擎改成 [0:3] 数组 (见下方 "四引擎各自的连线")。
-	//      同名重复声明会让数组被后面的单数覆盖, 报 HDL-8007 cannot index non-array。
+	wire        S_jpeg_s_ready;
+	wire [6:0]  S_jpeg_qt_a, S_jpeg_qt_b;
+	wire [7:0]  S_jpeg_qta, S_jpeg_qtb;
 	wire        S_jpeg_m_valid, S_jpeg_m_last;
 	wire [7:0]  S_jpeg_m_data;
 	wire [31:0] S_jpeg_cnt;
 
-	//==========================================================================
-	//  2026-10-27: 编码器真正接入 (之前压根没接对)
-	//  ------------------------------------------------------------------
-	//  0x470A 实测: 0xA0~0xA2(帧字节数) 恒 0, 0xA8 bit0(busy) 恒 1
-	//  => 编码器**从来没出过一帧**。原因就是当年注释里写的第 ③ 条:
-	//  源是 64bit = 4 像素/拍, 只接了 s_data[31:0] = 2 像素, 每拍丢一半,
-	//  行缓冲永远凑不满 8 行 => 停在 T_WGRP 等数据, busy 永远为 1。
-	//  另外编码器原来挂在 S_hs_rx_clk(≈31MHz), 光时钟就只够 13fps。
-	//
-	//  现在: 源(S_hs_rx_clk, 4px/拍) -> jpeg_enc_if(异步FIFO+拆字)
-	//        -> 编码器(S_pclkx1 147.5MHz, 2px/拍) -> jpeg_byte_bridge
-	//        -> csi2_frame_tx_var(S_hs_rx_clk)
-	//  实测 150 clk/MCU(有损) => 147.5MHz 下 128px/16.5us ≈ 60fps 上限。
-	//
-	//  ★ 必须整帧门控: 编码器是**连续流定长消费** (每帧恰好 (W/2)*H 个 word),
-	//    一旦帧内丢一个 word 就永远等不到, 死锁。所以上一帧没编完时整帧丢掉,
-	//    保证进去的每一帧都是完整的。
-	//  ★ 还得有看门狗: FIFO 只有 1024 word(约 2 行), 极端情况下仍可能溢出,
-	//    溢出后编码器必死锁。busy 超过 ~54ms 就复位编码器 + 清 FIFO 并重开闸。
-	//==========================================================================
-	// ★ 2026-10-27 实测(0x470B 时序报告): 编码器内部的 fmax 只有 **45.06MHz**
-	//   (最差路径 X_jpeg_qt 异步读 -> u_quant 量化乘加 = 21.9ns,
-	//    147.5MHz 下 WNS -15.413ns / 2591 个违例端点)。
-	//   => 不能直接用 S_pclkx1。先用 S_hs_rx_clk(≈31.25MHz) 把功能跑通:
-	//   31.25MHz 下 150 clk/MCU => 16200 MCU x 4.8us = 77.8ms/帧 ≈ 13fps。
-	//   要上 30fps/60fps 必须先把量化/熵编码那一拍拆流水 (另开任务)。
-	wire        S_enc_rst_n = S_pll_lock;
-
-	// ★★ 帧门控状态：必须声明在【所有使用点之前】★★
-	//   yuv32_to_quad 的 c_ready 和 S_jg_gcnt 都要用 S_enc_gate_r。
-	//   如果声明在文件后部，Verilog 会先把它隐式声明成 1bit wire
-	//   （TD 报 HDL-7225 "already implicitly declared"），功能静默出错。
-	//   本工程已踩过多次，见 memory。
-	wire        S_enc_flush;                 // 看门狗: 复位 FIFO + 编码器
-	wire        S_enc_soft;
-	reg         S_enc_done_tgl = 1'b0;       // 完成标志跑回 s_clk 用 (翻转同步)
-	reg         S_enc_busy_f   = 1'b0;       // s_clk: 已放行一帧未完成
-	reg         S_enc_gate_r   = 1'b0;
-
-	// ★ 2026-10-28: 编码器时钟已改为独立的 pclkx1/4 = 36.875MHz (见时钟生成处)。
-	//   原来的 45MHz fmax 卡点 (量化倒数表组合除法器) 已换成流水长除法，
-        //   但要跑 146MHz 还差很远，所以这里不把它接到像素域 (=70.238MHz)。
-
-	// ★ 2026-10-28: 双引擎 —— 左右各编 1920 宽的半行 (每组 120 MCU)。
-	//   两个引擎都设 DRI=120, 于是每个半行是一个独立熵编码段,
-	//   由 jpeg_seg_merge 交替拼成一张 3840x1080 的标准 JPEG。
-	//   RST 编号用奇偶交错: 左 0,2,4.. 右 1,3,5.. -> 全局正好 0,1,2,...,7,0...
-	//   ★ 左引擎 LAST_RST_EN=1: 它最后一段后面还跟着右引擎最后一段, 那个边界要标记。
-	//==========================================================================
-	// ★ 2026-10-28 V49: JPEG 直通源改为 dbuf 读侧 (DDR 三帧缓存)
-        //   dbuf 读侧 32b=2px @147.5MHz -> yuv32_to_quad -> 64b=4px @70.238MHz
-	//   283 Mpx/s 够 280 Mpx/s 需求, 且 FIFO 反压让 dbuf 停读 -> 数据留 DDR
-	//==========================================================================
-	wire        S_jcfg_valid;
-	wire [63:0] S_jcfg_data;
-	wire        S_jcfg_sof;
-	wire        S_jcfg_last;
-	wire        S_jcfg_r_ready;      // ★ 也要前置声明 (原声明在 dbuf 段, 会隐式声明成 1bit)
-
-	// ★ V50a: 源侧反压只看"四个 enc_if 的 FIFO 装不装得下", 不再用帧门控。
-	//   任何一个满了就停读 dbuf —— 数据留在 DDR 里, 这才是三帧缓存该起的作用。
-	wire [3:0]  S_encif_full;
-
-	// ★★ V54b (2026-10-30, 板上 0x5400 实测定案) ★★
-	//   原来: S_jcfg_consume = ~(|S_encif_full)   <-- **四路取与**
-	//   后果: 只要有一路 enc_if 满, 源就全停, 另外三路也饿死;
-	//         而哪一路会满完全取决于 mux 当时选了谁 -> 单路憋死就能拖死全线。
-	//   板上 0x5400 实测指纹 (与 V52 死锁时逐位相同):
-	//     0xA3~A6( S_dbg_jpeg ) = ovf=1, mrg_segc=0, encif_full 只有一路=1
-	//     0xA0~A2 = 0 (从没编完过一帧), 0xA7/0xE4/0xE5 = 0 (桥零字节)
-	//     引擎0 = 0x1442 (T_HDR, m_ready=0)  引擎3 = 0x1167 (T_NEXT, pend=2)
-	//   修法: 一拍数据只属于**一个**段(由 S_jg_gcnt 决定), 所以只需要
-	//         "当前这一段对应的那一路" FIFO 能收就行, 其它三路满不满与这一拍无关。
-	//   ⇒ 任何一路被 mux 卡住, 其它三路仍能正常吃数, 不会再被一起饿死。
-	//   ⚠ S_jg_gcnt 必须先声明再用 (否则被隐式声明成 1bit wire, 本工程踩过多次)
-	reg  [9:0]  S_jg_gcnt;
-	// ★★ V54e (2026-10-30, 板上 0x5401 实测定案): 反压**必须**是四路取与 ★★
-	//   V54c 曾改成只看当前段那一路 (~S_encif_full[S_jg_seg]), 结果板上
-	//   S_dbg_jpeg(0xA3~A6) 读出 ovf=1、mrg_segc=0, 画面大片绿(色度全丢)。
-	//   原因: dbuf 读侧 147.5MHz, 一行 1920 word = 13.0us, 1080 行 = 14.06ms 灌完;
-	//         而 4 引擎编码一帧要 16.62ms => 输入比编码快 2.6ms,
-	//         FIFO 一定积累到满。per-segment 只看当前段那一路, 会把它写爆。
-	//   四路取与的效果是: 任一路满就停读 dbuf, 数据留在 DDR 三帧缓存里,
-	//   等编码追上再继续 —— 代价是突发-停顿的节奏, 但一帧数据 14.06ms
-	//   仍在 16.66ms 帧周期内传得完, 帧率不受影响, 且永远不会溢出。
-	//   "一路满饿死四路" 的真因是 mux 的 o_ready 驱动方向错了(已在 V54c 修好),
-	//   不是反压策略的问题。
-	wire        S_jcfg_consume = ~(|S_encif_full);
-
-	yuv32_to_quad X_jcfg (
-		.r_clk   (S_pclkx1          ),
-		.r_rst_n (S_pll_lock        ),
-		.r_valid (S_dsi_R_tvalid    ),
-		.r_data  (S_ud_rtdata       ),
-		.r_sof   (S_dsi_R_tuser     ),
-		.r_last  (S_dsi_R_tlast     ),
-		.r_ready (S_jcfg_r_ready    ),
-		.c_clk   (S_hs_rx_clk       ),
-		.c_rst_n (S_pll_lock        ),
-		.c_valid (S_jcfg_valid      ),
-		.c_data  (S_jcfg_data       ),
-		.c_sof   (S_jcfg_sof        ),
-		.c_last  (S_jcfg_last       ),
-		.c_ready (S_jcfg_consume    )   // 只受 FIFO 满反压, 不受帧门控
+	jpeg_qtable_ram X_jpeg_qt (
+		.I_clk       (S_hs_rx_clk ),
+		.I_rst_n     (S_pll_lock  ),
+		.I_wr_en     (1'b0        ),
+		.I_wr_addr   (8'd0        ),
+		.I_wr_data   (8'd0        ),
+		.I_rd_idx_a  (S_jpeg_qt_a ),
+		.O_rd_data_a (             ),
+		.O_rd_data_a_asyn (S_jpeg_qta ),
+		.I_rd_idx_b  (S_jpeg_qt_b ),
+		.O_rd_data_b (S_jpeg_qtb  )
 	);
 
-	// 读侧 group 计数 (每拍 4px, 一行 960 拍, 4 段各 240 拍)
-	// ★ S_jg_gcnt 已在上面 V54b 块里前置声明 (供 S_jcfg_consume 使用)
-	wire [3:0] S_jg_vld = { (S_jg_gcnt >= 10'd720),
-	                        (S_jg_gcnt >= 10'd480) && (S_jg_gcnt < 10'd720),
-	                        (S_jg_gcnt >= 10'd240) && (S_jg_gcnt < 10'd480),
-	                        (S_jg_gcnt <  10'd240) };
-	always @(posedge S_hs_rx_clk or negedge S_pll_lock) begin
-		if (!S_pll_lock)   S_jg_gcnt <= 10'd0;
-		// ★ 必须带 S_enc_gate_r: gate=0 时 c_valid 会一直挂着, 若只用 S_jcfg_valid
-		//   计数, 分组边界会被冲飞 (仿真已验证此坑)。
-		else if (S_jcfg_valid && S_jcfg_consume)
-			S_jg_gcnt <= S_jcfg_last ? 10'd0 : (S_jg_gcnt + 10'd1);
-	end
-
-	reg [9:0] S_yuv_gcnt;
-	// 2026-10-28 V48: 一行 960 group 切成 4 段, 每段 240 group = 960 像素 = 60 MCU
-	//   group k 段: [0,240) [240,480) [480,720) [720,960)
-	wire [3:0] S_eng_vld = { (S_yuv_gcnt >= 10'd720),
-	                         (S_yuv_gcnt >= 10'd480) && (S_yuv_gcnt < 10'd720),
-	                         (S_yuv_gcnt >= 10'd240) && (S_yuv_gcnt < 10'd480),
-	                         (S_yuv_gcnt <  10'd240) };   // bit0 = 引擎0
-	wire      S_yuv_left  = (S_yuv_gcnt < 10'd480);   // 保留旧名, 仅调试观察用
-	always @(posedge S_hs_rx_clk or negedge S_pll_lock) begin
-		if (!S_pll_lock)   S_yuv_gcnt <= 10'd0;
-		else if (S_yuv_de) S_yuv_gcnt <= S_yuv_last ? 10'd0 : (S_yuv_gcnt + 10'd1);
-	end
-
-	// ---- 四引擎各自的连线 (2026-10-28 V48: 2 -> 4 引擎冲 60fps) ----
-	//   每引擎 960 宽 => MCU_X = 960/16 = 60, MCU_Y = 135 => 8100 MCU/引擎
-        //   4 引擎并行: 8100 x 151.3 clk = 1,225,530 clk
-        //     @70.238MHz (C3=21) -> 17.45ms -> 57.31fps  < IMX415 的 60.0fps (会溢出)
-        //     @73.75 MHz (C3=20) -> 16.617ms -> 60.19fps > 60.0fps  ✓  —— V54 采用这一档
-        //   ⚠ clk3 域实测 fmax 约 73.9MHz, 73.75MHz 余量仅 ~0.2%.
-        //     若综合后 WNS<0: 把 ui_pll.v 的 CLKC3_DIV 改回 21/CPHASE 20/DUTY 11,
-        //     同时把 IMX415 的 VMAX(0x3024/25) 2283 -> 2400 (57.1fps) 与之匹配。
-        //     详见 docs/V54_60FPS.md
-		//   两路各 1920 宽再拆 2 段:  引擎0/1 吃 cam1(group 0..239/240..479)
-		//                            引擎2/3 吃 cam0(group 480..719/720..959)
-	wire        S_enc_v  [0:3];
-	wire [31:0] S_enc_d  [0:3];
-	wire [15:0] S_enc_ovf [0:3];
-	wire [15:0] S_enc_words [0:3];
-	wire        S_jpeg_s_ready [0:3];
-	wire [6:0]  S_qt_a [0:3];
-	wire [6:0]  S_qt_b [0:3];
-	wire [7:0]  S_qta  [0:3];
-	wire [7:0]  S_qtb  [0:3];
-	// V54k: 量化表写入通路 (来自 cfg_ctrl_top 的 0x10~0x8F 透传)
-	wire        S_qt_wr_en;
-	wire [7:0]  S_qt_wr_addr;
-	wire [7:0]  S_qt_wr_data;
-	wire [7:0]  S_jm_d [0:3];
-	wire [15:0] S_diag_enc [0:3];
-	wire [23:0] S_jpeg_bytes [0:3];
-	wire [31:0] S_jpeg_fcnt  [0:3];
-	// ★ 每路一个数组元素(由对应引擎驱动), 再拼成只读总线给合并器
-	//   (不能直接对拼接 wire 的位赋驱动 -> multi-driver)
-	wire        S_jm_v  [0:3];
-	wire        S_jm_l  [0:3];
-	// ★ V54c: S_jm_rdy[0:3] 已删除 —— 原来它被当作 mux o_ready 的驱动源(方向反了),
-	//   现在编码器直接接 S_jm_rdy_p[gi_enc] (由 X_jmrg.o_ready 驱动)。
-	wire        S_jseg  [0:3];
-	wire        S_jpeg_busy [0:3];
-	wire        S_jpeg_done [0:3];
-
-	wire [3:0]  S_jm_v_p   = { S_jm_v[3],   S_jm_v[2],   S_jm_v[1],   S_jm_v[0]   };
-	wire [3:0]  S_jm_l_p   = { S_jm_l[3],   S_jm_l[2],   S_jm_l[1],   S_jm_l[0]   };
-	// ★★ V54c (2026-10-30) 修重大 bug: o_ready 是 merge4 的 **output**
-	//   原来写的是
-	//     wire [3:0] S_jm_rdy_p = { S_jm_rdy[3], S_jm_rdy[2], S_jm_rdy[1], S_jm_rdy[0] };
-	//   把 merge4 的输出接到一条"由 S_jm_rdy 组合拼接出来"的 wire 上 ——
-	//   **驱动方向完全反了**, 形成一个组合环。综合后 mux 的 o_ready 恒 0
-	//   => 四个引擎的 m_ready 全为 0 => 引擎0 卡 T_HDR、引擎3 卡 T_NEXT
-	//   => 一个字节都吐不出来 => 桥永远为空 (0xA7=0, 0xE4/E5=0, 0xEF 的 jb_v=0)。
-	//   板上 0x5400 实测指纹 0x1442 / 0x1167 就是它。
-	//   而台架 tb_wd 里是 .o_ready(e_rdy) 直接连 packed vector, 没有这段反向拼接,
-	//   所以"台架 PASS、真机死锁"。
-	//   ⇒ S_jm_rdy_p 改为由 X_jmrg 驱动, 再分位给 4 个引擎的 m_ready。
-	wire [3:0]  S_jm_rdy_p;                      // 由 X_jmrg.o_ready 驱动
-	wire [3:0]  S_jseg_p   = { S_jseg[3],   S_jseg[2],   S_jseg[1],   S_jseg[0]   };
-	wire [3:0]  S_jpeg_busy_p = { S_jpeg_busy[3], S_jpeg_busy[2], S_jpeg_busy[1], S_jpeg_busy[0] };
-	wire [3:0]  S_jpeg_done_p = { S_jpeg_done[3], S_jpeg_done[2], S_jpeg_done[1], S_jpeg_done[0] };
-	wire [31:0] S_jm_d_pack = { S_jm_d[3], S_jm_d[2], S_jm_d[1], S_jm_d[0] };
-	wire [9:0]  S_mrg_segc;
-	reg         S_mrg_busy_d = 1'b0;
-	reg         S_enc_soft_d = 1'b0;   // V51b: 软复位释放沿检测
-	//==========================================================================
-	//  ★★ 2026-10-28 V51b: 修段合并选择器的单向锁存 (板上硬冻结的根因)
-	//
-	//  板上现象 (0x5100, 6 次采样 3 秒内完全一致):
-	//    引擎0 diag = 0x1442  -> tstate=T_HDR(2), lb_avail=1, bp_ok=1, m_ready=0
-	//    引擎3 diag = 0x1167  -> tstate=T_NEXT(7), pend=2, huff_run=1, bp_ok=0
-	//    两路 m_ready 都是 0 => sel 既不是 0 也不是 3 (卡在 1 或 2)
-	//    S_enc_stall 每 ~114ms +1 (看门狗在响) 但状态纹丝不动
-	//
-	//  根因: jpeg_seg_merge4 的 sel 只在 i_start 时归零, 而
-	//        i_start = (引擎0 busy 的上升沿)。
-	//        看门狗软复位引擎0 后, 若 st_busy 没有产生下降沿, 就再也不会
-	//        有上升沿 => sel 一卡住就永不归零:
-	//          引擎0 在 T_HDR 等 hdr_done, 但没被选中 => m_ready=0
-	//          => 帧头吐不出去 => 段永远完不成 => sel 永不前进 => 死锁。
-	//
-	//  修法: 看门狗软复位**释放那一拍**也强制 i_start, 让 sel 归零、done_p 清空,
-	//        与引擎的复位同步重来。这样看门狗才真正起到"复位救活"的作用。
-	//  ⚠ 必须在这两个 wire 被使用 (X_jmrg 例化) 之前声明, 否则会被 Verilog
-	//    隐式声明成 1bit wire —— 这个坑本工程踩过多次。
-	//==========================================================================
-	wire        S_enc_rst_rel = S_enc_soft_d & ~S_enc_soft;   // 软复位释放拍
-	//==========================================================================
-	//  ★★ V53b (2026-10-29): **合并器 i_start 的根因修复** ★★
-	//
-	//  原来是: S_mrg_start = (S_jpeg_busy[0] & ~S_mrg_busy_d) | S_enc_rst_rel
-	//          即拿"引擎0 st_busy 的上升沿"当帧起始。**这是错的**, 台架实测:
-	//
-	//    tb_wd 只改这一行, 其余完全相同 (70.238MHz + enc_if AW(12)/16行 + 桥4KB):
-	//      m_start = 上电单拍 / 只由 rst_rel 触发 -> MERGED=6007 逐字节正确,
-	//                                                segcnt=19, ENG by=1303/1394/1303/1392
-	//      m_start = busy[0] 上升沿 (原接法)       -> MERGED=6620 (错), segcnt=0,
-	//                                                **引擎1/2 输出 0 字节**
-	//
-	//  机理: jpeg_seg_merge4 的 i_start 会把 sel 清零 + done_p 清空。引擎0 的
-	//  st_busy 并不是"帧开始"的可靠指示 —— 它在 i_soft_rst 里被清 0、帧尾 (line 775)
-	//  也被清 0, 而且 i_en 恒 1 使得它随后立刻又置 1。于是这个"上升沿"会在帧中间
-	//  反复出现, 每次都把 sel 拽回 0 并丢掉已经锁存的 done_p:
-	//    -> 引擎1/2 永远轮不到 => 它们的 jpeg_bitpack 只有约 8 字节弹性, 憋死
-	//    -> 它们的 enc_if 填满 => S_jcfg_consume = ~(|S_encif_full) 是**全局与**
-	//    -> 一路满就饿死四路 => 源断流 => 谁也编不完 => 看门狗每 114ms 复位一次
-	//    -> 但 i_flush 又把 enc_if 的 rd_go 清 0 (要重新攒够 16 行), 而全局反压
-	//       让任何一路都攒不满 => **永久死锁, 看门狗永远救不活**
-	//
-	//  板上指纹 (0x5301 实测) 与此完全吻合:
-	//    桥 lvl=0 rcnt=0 st_bp=0 (零字节), mrg_segc=0, encif_full 只有一路=1,
-	//    consume=0, stall=746 且每 3s +25, eng0=0x1442(T_HDR,m_ready=0),
-	//    eng3=0x1167(T_NEXT,pend=2,bp_ok=0) —— 与 V52 逐位相同。
-	//
-	//  修法: sel 不需要"每帧归零"。四引擎的段序本身就是 0,1,2,3 循环
-	//        (RST_INIT=gi, RST_STEP=4), 只要在"编码器被复位"的那一拍归零即可
-	//        —— 也就是 S_enc_rst_rel。上电时靠 rst_n 与 sel 的初值 2'd0。
-	//==========================================================================
-	wire        S_mrg_start   = S_enc_rst_rel;
-
-	// (S_enc_flush / S_enc_soft / S_enc_done_tgl / S_enc_busy_f / S_enc_gate_r
-	//  已前置声明在编码器时钟段之前, 勿重复声明)
-	reg  [2:0]  S_enc_done_s   = 3'b000;
-	wire        S_enc_done_pls = S_enc_done_s[2] ^ S_enc_done_s[1];
-	reg  [23:0] S_enc_wd       = 24'd0;      // 卡死看门狗计数
-	reg  [5:0]  S_enc_wdc      = 6'd0;       // 复位脉冲剩余拍数
-	reg  [15:0] S_enc_stall    = 16'd0;      // 看门狗触发次数
-	wire        S_jb_v, S_jb_l, S_jb_r;
-	wire [7:0]  S_jb_d;
-	wire [15:0] S_jb_bp;
-    // ★ V53: jpeg_byte_bridge 的 AW 已从 9 改到 12, o_level 是 12 位 (0..4095);
-    //   本诊断只取低 8 位拼 0xE4, 读回 0xFF 即当作"贴满"。
-    wire [11:0] S_jb_lvl;
-	//   位定义见 jpeg_encoder_top.v 的 o_diag 注释
-	wire [7:0]  S_diag_enc_t;
-	wire [7:0]  S_diag_jv;
-
-	// ---- 帧门控 (保留仅供诊断, 已不参与数据通路) ----
-	// ★ 2026-10-28 V50a: 板上实测 0xA0~A2=0 而 0xA3~A6(累计字节)=4031 且在涨,
-	//   0xA8 s_ovf=0 (没丢数据), 0xEE 的 gate_r 在 0/1 之间跳。
-	//   根因: 编码一帧 17.45ms > 帧周期 16.67ms, 所以一帧永远编不完 ->
-	//   busy_f 恒 1 -> 下个 SOF 把 gate 关掉 -> 源断流 -> 引擎卡在半帧 -> 死锁。
-	//   这正是搬到 DDR 读侧要解决的问题, 却又用一个帧门控接回去了。
-	//   => JPEG 源通路彻底不用 gate, 只用 enc_if 的 FIFO 满反压。
-	always @(posedge S_hs_rx_clk or negedge S_pll_lock) begin
-		if (!S_pll_lock) begin
-			S_enc_busy_f <= 1'b0;
-			S_enc_gate_r <= 1'b0;
-			S_enc_done_s <= 3'b000;
-		end else begin
-			S_enc_done_s <= {S_enc_done_s[1:0], S_enc_done_tgl};
-			if (S_yuv_de && S_yuv_sof) begin
-				S_enc_gate_r <= ~S_enc_busy_f;     // 仅作诊断观測
-				if (!S_enc_busy_f) S_enc_busy_f <= 1'b1;
-			end
-			if (S_enc_done_pls) S_enc_busy_f <= 1'b0;
-		end
-	end
-
-	// ---- 看门狗 (S_enc_clk 域) ----
-	// ★ 改成按"引擎真的在前进"复位: 以 enc_if 的 st_word_lo 之和作为进度。
-	//   原来的条件是 st_busy 持续 114ms —— 连续编码时 st_busy 永远为 1,
-	//   那样看门狗会每 114ms 无条件 flush 一次, 把帧打碎。
-	localparam [23:0] ENC_WD_MAX = 24'd8_000_000;
-	wire [15:0] S_enc_prog = S_enc_words[0] + S_enc_words[1] + S_enc_words[2] + S_enc_words[3];
-	reg  [15:0] S_enc_prog_d = 16'd0;
-	always @(posedge S_enc_clk or negedge S_enc_rst_n) begin
-		if (!S_enc_rst_n) begin
-			S_enc_wd       <= 24'd0;
-			S_enc_wdc      <= 6'd0;
-			S_enc_stall    <= 16'd0;
-			S_enc_done_tgl <= 1'b0;
-			S_enc_prog_d   <= 16'd0;
-		end else if (S_enc_wdc != 6'd0) begin
-			S_enc_wdc <= S_enc_wdc - 6'd1;
-			S_enc_wd  <= 24'd0;
-		end else if (S_enc_prog != S_enc_prog_d) begin
-			// 引擎在前进 -> 清计数
-			S_enc_prog_d <= S_enc_prog;
-			S_enc_wd     <= 24'd0;
-		end else if (S_jpeg_st_done) begin
-			S_enc_done_tgl <= ~S_enc_done_tgl;
-			S_enc_wd       <= 24'd0;
-		end else if (!S_jpeg_st_busy) begin
-			S_enc_wd       <= 24'd0;
-		end else if (S_enc_wd >= ENC_WD_MAX) begin
-			S_enc_wdc      <= 6'd31;
-			S_enc_wd       <= 24'd0;
-			S_enc_stall    <= S_enc_stall + 16'd1;
-			S_enc_done_tgl <= ~S_enc_done_tgl;
-		end else begin
-			S_enc_wd <= S_enc_wd + 24'd1;
-		end
-	end
-	assign S_enc_flush = (S_enc_wdc != 6'd0);
-	assign S_enc_soft  = (S_enc_wdc > 6'd16);
-
-	//==========================================================================
-	//  0xA3~0xA6 = 32 位, 拆成两半用:
-	//    [15:0] = {S_enc_stall[15:0], 溢出标志}   —— 看门狗触发次数 (低 16 位)
-	//    [31:16] = {S_encif_full[3:0], S_jcfg_consume, S_mrg_segc[9:0]}
-	//
-	//  V51b 为什么要看这两组:
-	//    S_mrg_segc    = 段合并器已经切过的段数。它一直不动 => sel 卡死;
-	//                    它在涨 => 合并其实在跑, 问题在别处。
-	//    S_encif_full  = 四路 enc_if FIFO 的满标志。若读回 0xF,
-	//                    说明"四路一起断流"这个全局与反压真的发生了 ——
-	//                    此时任何一路卡住都会饿死其余三路, 这是设计级问题,
-	//                    解法是给每路加独立输出 FIFO, 而不是调参数。
-	//    S_jcfg_consume= 上面那个全局与本身。
-	//==========================================================================
-	assign S_dbg_jpeg = { S_encif_full, S_jcfg_consume, S_mrg_segc,
-	                      S_enc_stall[15:0],
-	                      (|(S_enc_ovf[0] | S_enc_ovf[1] | S_enc_ovf[2] | S_enc_ovf[3])) };
-	assign S_dbg_jb   = S_jb_bp[7:0];
-
-	//==========================================================================
-	//  ★ V54l: 合并器输出 JPEG 起始三态捕获 (enc 域, 不跨域采样, 只抓一次)
-	//  仿真 tb_jpeg_full 已证明 merge4 逐字节正确 (MERGED4=6007 含 SOI), 但那
-	//  是 RTL 行为; 板上可能因为看门狗 flush / enc_if 溢出 / sel 相位而与仿真
-	//  不同。这里只抓"上电后前 2 个有效字节"+"是否见过 FF D8", 三种失败位置
-	//  各自对应唯一的读数组合, 一次烧录即可判定。
-	//==========================================================================
-	reg  [1:0] S_mhdr_cnt  = 2'd0;
-	reg  [7:0] S_mhdr_b0   = 8'h00;
-	reg  [7:0] S_mhdr_b1   = 8'h00;
-	reg        S_msoi_seen = 1'b0;
-	reg  [7:0] S_mprev     = 8'h00;
-	always @(posedge S_enc_clk or negedge S_enc_rst_n) begin
-		if (!S_enc_rst_n) begin
-			S_mhdr_cnt  <= 2'd0;
-			S_mhdr_b0   <= 8'h00;
-			S_mhdr_b1   <= 8'h00;
-			S_msoi_seen <= 1'b0;
-			S_mprev     <= 8'h00;
-		end else if (S_jpeg_m_valid && S_jpeg_m_ready) begin
-			// SOI 检测只看"相邻两个有效字节", 避免把上一帧尾巴的 FF 与本帧 D8 拼错
-			if ((S_mprev == 8'hFF) && (S_jpeg_m_data == 8'hD8))
-				S_msoi_seen <= 1'b1;
-			S_mprev <= S_jpeg_m_data;
-			if (S_mhdr_cnt == 2'd0) begin
-				S_mhdr_b0  <= S_jpeg_m_data;
-				S_mhdr_cnt <= 2'd1;
-			end else if (S_mhdr_cnt == 2'd1) begin
-				S_mhdr_b1  <= S_jpeg_m_data;
-				S_mhdr_cnt <= 2'd2;
-			end
-		end
-	end
-	assign S_dbg_mhdr = { 7'b0, S_msoi_seen, S_mhdr_b1, S_mhdr_b0 };
-	assign S_enc_ovf_any = |{S_enc_ovf[3], S_enc_ovf[2], S_enc_ovf[1], S_enc_ovf[0]};
-
-	// ★ V53c: 只读抽头 (0xE6/E7/E9)，见上方声明处的位定义
-	assign S_diag_misc = { S_yuv_de, S_jcfg_valid, S_jcfg_consume, 4'b0000,
-	                       S_jpeg_m_ready };
-	assign S_diag_e1   = S_diag_enc[1][7:0];
-	assign S_diag_e2   = S_diag_enc[2][7:0];
-	// ★ 2026-10-28 诊断 (0xEE): 帧门控链状态
-	//   [0] S_enc_gate_r  [1] S_enc_busy_f  [2] S_jpeg_st_busy  [3] S_jpeg_st_done
-	//   [4] S_enc_flush   [5] S_enc_soft    [6] 看门狗复位中  [7] S_jpeg_tx_sel
-	assign S_diag_enc_t = { S_jpeg_tx_sel, (S_enc_wdc != 6'd0), S_enc_soft,
-	                        S_enc_flush, S_jpeg_st_done, S_jpeg_st_busy,
-	                        S_enc_busy_f, S_enc_gate_r };
-	//==========================================================================
-	//  双引擎: 左引擎吃 group 0..479 (cam1), 右引擎吃 480..959 (cam0)
-	//==========================================================================
-	// 2026-10-28 V48: 4 引擎, 每引擎吃一行的 1/4 (240 word = 960 像素 = 60 MCU)
-	//
-	// ★★ V50 (仿真定调, 必须看) ★★
-	//   jpeg_encoder_top **无法容忍 s_valid 断流**: 它的行缓冲一次要预取 8 行,
-	//   若在预取途中断粮, 引擎会永久卡死 (吃 768/1024 后停), 而且熵编码器
-	//   会持续吐垃圾 (~1 byte/clk, o_seg_done 永不置位)。
-	//   仿真实测 (tb_eng_eif): 门限 6 行 FAIL / 7 行 PASS。
-	//   每引擎每行 240 word, 所以缓冲需 ≥7*240=1680 -> FIFO 深度上到 2048,
-	//   起送门限取 8 行 = 1920 word (留余量)。
-	//   改完后 tb_jpeg_ddr4 与基准 merged4.jpg **逐字节完全相同 (6007 B)**。
-	//
-	//   s_valid 必须带 S_enc_gate_r: yuv32_to_quad 在 gate=0 时保持 c_valid 不变,
-	//   不带的话同一个 word 会被重复写进 FIFO (仿真已复现)。
-	//
-	// ★★ V53 (完整链路仿真定案, 板上 0x5200 死锁根因) ★★
-	//   V51/V52 用 AW(11)+START_LEVEL=1920 (8 行), 只考虑了"单引擎 1/4 源",
-	//   没考虑 jpeg_seg_merge4 是 **4:1 串行 mux** —— 一个引擎的 seg 没结束,
-	//   另外三路的 o_ready 恒 0, 而 jpeg_bitpack 只有约 8 字节输出弹性。
-	//   于是: 桥满 -> mux 阻塞 -> 三路引擎 8 字节就憋死 -> 卡 T_NEXT(pend=2,bp_ok=0)
-	//        -> enc_if 填满 -> 全局死锁 (板上 0xA5 显示 encif_full=0x1, mrg_segc=0)。
-	//   完整链路仿真 tb_jpeg_full 复现完全一致:
-	//     AW(9)  桥 + 8 行预取  -> TIMEOUT, 4 引擎 tstate=7/pend=2/bp_ok=0
-	//     4KB 桥  + 8 行预取    -> 仍 TIMEOUT (桥 level=4094 贴满, 吐 142 KB 垃圾)
-	//     4KB 桥  + 16 行预取   -> PASS, 6007 B 与基准逐字节相同, 且 H=64 也 PASS
-	//   => 必须同时做两件事:
-	//      ① jpeg_byte_bridge AW 9 -> 12 (4KB), 让 mux 下游永不阻塞
-	//      ② 本处 AW 11 -> 12, START_LEVEL 1920 -> 3840 (16 行 x 240 word)
-	//   ERAM 实测 201/272, 本改动约 +33 块, 余量仍够。
-	genvar gi_encif;
-	generate
-	for (gi_encif = 0; gi_encif < 4; gi_encif = gi_encif + 1) begin : g_encif
-		jpeg_enc_if #(.AW(12), .START_LEVEL(3840)) u_enc_if (
-			.s_clk      (S_hs_rx_clk            ),
-			.s_rst_n    (S_pll_lock             ),
-			.s_valid    (S_jcfg_valid & S_jg_vld[gi_encif]),   // V50a: 不再带帧门控
-			.s_data     (S_jcfg_data            ),
-			.s_sof      (S_jcfg_sof             ),   // ★ 必须用读侧帧首, 不能用写侧 S_yuv_sof
-			.e_clk      (S_enc_clk              ),
-			.e_rst_n    (S_enc_rst_n            ),
-			.i_flush    (S_enc_flush            ),
-			.e_valid    (S_enc_v[gi_encif]       ),
-			.e_data     (S_enc_d[gi_encif]       ),
-			.e_ready    (S_jpeg_s_ready[gi_encif]),
-			.st_ovf     (S_enc_ovf[gi_encif]     ),
-			.st_word_lo (S_enc_words[gi_encif]   ),
-			.st_sof     (                       ),
-			.o_level    (                       ),
-			.o_full     (S_encif_full[gi_encif] )
-		);
-	end
-	endgenerate
-
-	genvar gi_qt;
-	generate
-	for (gi_qt = 0; gi_qt < 4; gi_qt = gi_qt + 1) begin : g_qt
-		jpeg_qtable_ram u_qt (
-			.I_clk       (S_enc_clk       ),
-			.I_rst_n     (S_enc_rst_n     ),
-			.I_wr_en     (S_qt_wr_en      ),
-			.I_wr_addr   (S_qt_wr_addr    ),
-			.I_wr_data   (S_qt_wr_data    ),
-			.I_rd_idx_a  (S_qt_a[gi_qt]   ),
-			.O_rd_data_a (                ),
-			.O_rd_data_a_asyn (S_qta[gi_qt]),
-			.I_rd_idx_b  (S_qt_b[gi_qt]   ),
-			.O_rd_data_b (S_qtb[gi_qt]    )
-		);
-	end
-	endgenerate
-
-	// ---- 4 引擎: 每引擎 960 宽 = 60 MCU/行, 共 60x135 = 8100 MCU ----
-	//   引擎0: 出帧头(宽 3840) + 熵段, 不出 EOI; 引擎3: 不出帧头, 出 EOI
-	//   RST 编号 0,1,2,3 交错 -> RST_INIT=gi, RST_STEP=4 (rst_idx 是 3bit, 自动回绕)
-	//   每行 60 MCU 一个重启段 (i_rst_int=60)
-	genvar gi_enc;
-	generate
-	for (gi_enc = 0; gi_enc < 4; gi_enc = gi_enc + 1) begin : g_enc
-		jpeg_encoder_top #(.W(960), .H(1080),
-		                   .HDR_EN(gi_enc == 0 ? 1 : 0),
-		                   .EOI_EN(gi_enc == 3 ? 1 : 0),
-		                   .RST_INIT(gi_enc),
-		                   .RST_STEP(4),
-		                   .LAST_RST_EN(gi_enc == 3 ? 0 : 1)) u_enc (
-			.clk            (S_enc_clk            ),
-			.rst_n          (S_enc_rst_n          ),
-			.i_en           (1'b1                 ),
-			.i_soft_rst     (S_enc_soft           ),
-			.i_lossless     (1'b0                 ),
-			.i_width        (12'd3840             ),   // 整幅宽, 而 W 参数是 960
-			.i_height       (12'd1080             ),
-			.i_rst_int      (16'd60               ),   // 1/4 行 = 60 MCU 一个重启段
-			.o_qt_idx_a     (S_qt_a[gi_enc]       ),
-			.i_qt_data_a    (S_qta[gi_enc]        ),
-			.o_qt_idx_b     (S_qt_b[gi_enc]       ),
-			.i_qt_data_b    (S_qtb[gi_enc]        ),
-			.s_valid        (S_enc_v[gi_enc]      ),
-			.s_data         (S_enc_d[gi_enc]      ),
-			.s_ready        (S_jpeg_s_ready[gi_enc]),
-			.m_valid        (S_jm_v[gi_enc]       ),
-			.m_data         (S_jm_d[gi_enc]       ),
-			.m_last         (S_jm_l[gi_enc]       ),
-			.m_ready        (S_jm_rdy_p[gi_enc]),   // V54c: 直接用 mux 的输出
-			.st_frame_bytes (S_jpeg_bytes[gi_enc] ),
-			.st_busy        (S_jpeg_busy[gi_enc]  ),
-			.st_done        (S_jpeg_done[gi_enc]  ),
-			.st_frame_cnt   (S_jpeg_fcnt[gi_enc]  ),
-			.o_seg_done     (S_jseg[gi_enc]       ),
-			.o_diag         (S_diag_enc[gi_enc]   )
-		);
-	end
-	endgenerate
-
-	// ---- 段合并 (4:1): 引擎0 RST0, 1 RST1, 2 RST2, 3 RST3, 下一行再 0,1,2,3 ----
-	jpeg_seg_merge4 X_jmrg (
-		.clk          (S_enc_clk      ),
-		.rst_n        (S_enc_rst_n    ),
-		.i_start      (S_mrg_start    ),
-		.i_valid      (S_jm_v_p       ),
-		.i_data       (S_jm_d_pack    ),
-		.i_last       (S_jm_l_p       ),
-		.o_ready      (S_jm_rdy_p     ),
-		.i_seg_done   (S_jseg_p       ),
-		.o_valid      (S_jpeg_m_valid ),
-		.o_data       (S_jpeg_m_data  ),
-		.o_last       (S_jpeg_m_last  ),
-		.o_ready_down (S_jpeg_m_ready ),
-		.o_seg_cnt    (S_mrg_segc     )
+	jpeg_encoder_top #(.W(1920), .H(1080)) X_jpeg (
+		.clk            (S_hs_rx_clk    ),
+		.rst_n          (S_pll_lock     ),
+		.i_en           (1'b1           ),
+		.i_soft_rst     (1'b0           ),
+		.i_lossless     (1'b0           ),
+		.i_width        (12'd1920       ),
+		.i_height       (12'd1080       ),
+		.o_qt_idx_a     (S_jpeg_qt_a    ),
+		.i_qt_data_a    (S_jpeg_qta     ),
+		.o_qt_idx_b     (S_jpeg_qt_b    ),
+		.i_qt_data_b    (S_jpeg_qtb     ),
+		.s_valid        (S_yuv_de       ),
+		.s_data         (S_yuv_data[31:0]),
+		.s_ready        (S_jpeg_s_ready ),
+		.m_valid        (S_jpeg_m_valid ),
+		.m_data         (S_jpeg_m_data  ),
+		.m_last         (S_jpeg_m_last  ),
+		.m_ready        (S_jpeg_m_ready ),
+		.st_frame_bytes (S_jpeg_st_bytes),
+		.st_busy        (S_jpeg_st_busy ),
+		.st_done        (S_jpeg_st_done ),
+		.st_frame_cnt   (S_jpeg_cnt     )
 	);
 
-	// 合并器帧起始脉冲的延迟寄存器 (编码域)
-	always @(posedge S_enc_clk or negedge S_enc_rst_n) begin
-		if (!S_enc_rst_n) begin
-			S_mrg_busy_d <= 1'b0;
-			S_enc_soft_d <= 1'b0;
-		end else begin
-			S_mrg_busy_d <= S_jpeg_busy[0];
-			S_enc_soft_d <= S_enc_soft;
-		end
-	end
-
-	// ---- 两引擎的合成状态 ----
-	//   ★ busy 用"或": 任一引擎没编完就不能开下一帧。
-	//   ★ done 只在**两个都空闲**的那一拍脉冲一次, 否则上游会提前放行下一帧。
-	assign S_jpeg_st_busy = |S_jpeg_busy_p;
-	assign S_jpeg_st_done = (|S_jpeg_done_p) & ~(|S_jpeg_busy_p);
-	assign S_jpeg_st_bytes = S_jpeg_bytes[0] + S_jpeg_bytes[1] + S_jpeg_bytes[2] + S_jpeg_bytes[3];
-	assign S_jpeg_cnt      = S_jpeg_fcnt[0];
-
-	//==========================================================================
-	//  ★★ V52 (2026-10-29): 发送域时钟改回 S_dsi_byte_clk (与 D-PHY I_hs_clk 同源)
-	//
-	//  这是与「单目完美版 0x450D」交叉验证后发现的**唯一确凿回归**:
-	//    0x450D: u_csi2_frame_tx.clk = S_dsi_byte_clk, D-PHY I_hs_clk 也是它 => 同域
-	//    V51   : X_jv.clk = S_hs_rx_clk = 70.24MHz, D-PHY 仍是 125MHz
-	//            => hs_en/hs_data[31:0]/hs_last **32 位裸跨 70->125, 无任何同步**
-	//            125/70.24 = 1.78 非整数比 => 每个 70MHz 数据拍被 125MHz 采 1 或 2 次
-	//            => 随机重复/丢字节, 码流不可能正确。
-	//
-	//  改法: 把整条「字节桥读侧 + S_jl_* 补零/丢弃状态机 + var 组包」搬到
-	//        S_dsi_byte_clk。jpeg_byte_bridge 内部就是异步 FIFO(fifo_32b_async_2),
-	//        所以 70.24MHz 写 / 125MHz 读天然成立, 且它成为**唯一**的 CDC 点。
-	//        这样就和 0x450D 的干净度一致: 组包器与 D-PHY 之间零跨域。
-	//==========================================================================
-	// 发送域复位: 两路 PLL 都锁定才放开 (不加 S_dsi_en_int, 否则 RK 停流会打断包)
-	wire S_tx_domain_rst_n = S_pll_lock & S_dsi_pll_lock;
-
-	// 编码器字节流 (70.24MHz) -> 发送域 (S_dsi_byte_clk 125MHz, 异步 FIFO)
-	// ★★ V53: 深度 512B -> 4096B (AW 9 -> 12)。
-	//   原因: jpeg_seg_merge4 的 4:1 mux 一次只能服务一路, 而 jpeg_bitpack 只有
-	//   约 5 字节输出弹性。桥一满 -> o_ready_down=0 -> 三路非选中引擎 5 字节就憋死
-	//   -> 卡在 T_NEXT(pend=2, bp_ok=0) -> enc_if 填满 -> 全局死锁。
-	//   板上 0x5200 与 iverilog 全链仿真 tb_jpeg_full 完全一致。
-	//   代价: 4096 x 9bit = 36 kbit ≈ 2 个 ERAM 块。
-	jpeg_byte_bridge #(.AW(12)) X_jb (
-		.w_clk   (S_enc_clk        ),
-		.w_rst_n (S_enc_rst_n      ),
-		.w_valid (S_jpeg_m_valid   ),
-		.w_data  (S_jpeg_m_data    ),
-		.w_last  (S_jpeg_m_last    ),
-		.w_ready (S_jpeg_m_ready   ),
-		.r_clk   (S_dsi_byte_clk   ),
-		.r_rst_n (S_tx_domain_rst_n),
-		.r_valid (S_jb_v         ),
-		.r_data  (S_jb_d         ),
-		.r_last  (S_jb_l         ),
-		.r_ready (S_jb_r         ),
-		.st_bp   (S_jb_bp         ),
-		.o_level (S_jb_lvl        )
-	);
-
-	// CSI-2 可变长发送 (乒乓双缓冲): 编码器输出是连续字节流,
+	// CSI-2 可变长发送 (DT=0x18, 乒乓双缓冲): 编码器输出是连续字节流,
 	// 也不知道每包多大, 所以走 csi2_frame_tx_var。乒乓让攒包和发包并行,
 	// s_tready 基本一直为 1, 避免编码器的 block 流水被长停顿打乱。
 	wire        S_jv_hs_en, S_jv_hs_last;
 	wire [31:0] S_jv_hs_data;
 
-	//==========================================================================
-	//  2026-10-27  JPEG 帧尾补零 / 截断 (0x0B[2])
-	//  ---- 为什么需要 ----
-	//  rkcif 的 DMA 按媒体格式 w*h*bpp 往 DDR 写: 1920x1080 NV16 = 4147200
-	//  字节/帧。JPEG 一帧只有 ~120KB, 短帧会不会被当成完整帧由收端决定,
-	//  没验证前先用"补满整帧"这个与现有 NV16 通路完全一致的行为。
-	//  ---- 另一个作用 ----
-	//  编码器异常时帧字节数可能超过整帧 (0x4708 出现过 4694772 > 4147200),
-	//  这里超限即截断并吞掉本帧剩余字节, 顺便保护链路不被灌爆。
-	//  ---- 输出是组合的 ----
-	//  必须跟着 S_jv_r (var TX 的 s_tready) 走组合, 不能打拍 ——
-	//  打拍就成了"不看背压丢字节", JPEG 会花屏。
-	//==========================================================================
-	localparam [24:0] JPAD_BYTES = 25'd8_294_400;   // 3840*1080*2 (拼接后整幅 NV16)
-	localparam [1:0]  JLS_DATA = 2'd0;   // 转发编码器字节
-	localparam [1:0]  JLS_PAD  = 2'd1;   // 补零
-	localparam [1:0]  JLS_DROP = 2'd2;   // 本帧已超限, 吞掉剩余字节
-
-	reg  [1:0]  S_jl_st  = JLS_DATA;
-	reg  [24:0] S_jl_cnt = 25'd0;
-	// S_jv_rx_ready 由 X_jv 的 s_tready **输出**驱动, 不要在本文件里再 assign 它
-	wire        S_jv_rx_ready;
-
-	wire        S_jv_v = (S_jl_st == JLS_PAD ) ? 1'b1 :
-	                     (S_jl_st == JLS_DATA) ? S_jb_v : 1'b0;
-	wire [7:0]  S_jv_d = (S_jl_st == JLS_PAD ) ? 8'h00 : S_jb_d;
-	// tlast: 补零阶段 = 补到最后一个字节; 数据阶段 = 编码器帧尾(pad 关时)
-	//        或本帧已满被截断
-	wire        S_jv_l = (S_jl_st == JLS_PAD ) ? (S_jl_cnt == JPAD_BYTES - 25'd1) :
-	                     (S_jl_st == JLS_DATA) && S_jb_v &&
-	                       ( (S_jb_l && !S_jpeg_pad) ||
-	                         (S_jl_cnt >= JPAD_BYTES - 25'd2) );
-
-	// 编器字节流来自字节桥读侧 (V52 起是 S_dsi_byte_clk 域, 与 var 组包同域)
-	// ★ 2026-10-28 二次修复: DATA 转发 / DROP 抽走丢弃 / PAD 期间必须停
-	//   (PAD 是插补零, 排桥会把编码器下帧的字节混进补零段)
-	assign S_jb_r = (S_jl_st != JLS_PAD) ? S_jv_rx_ready : 1'b0;
-
-	// ★ V52b: 桥读侧"已经读出去多少个字节"。它不动就证明桥的读侧彻底死了。
-	//   握手条件与 jpeg_byte_bridge 内部一致: h_v && r_ready 才算真的送出一个字节。
-	reg [7:0] S_jb_rcnt;
-	always @(posedge S_dsi_byte_clk or negedge S_tx_domain_rst_n) begin
-		if (!S_tx_domain_rst_n) S_jb_rcnt <= 8'd0;
-		else if (S_jb_v && S_jb_r) S_jb_rcnt <= S_jb_rcnt + 8'd1;
-	end
-	// 0xE4/0xE5 = { 桥读侧剩余字节数低8位, 已读出字节计数 }
-	//   满水位实际是 511; 这里取低 8 位, 读回 0xFF 就当作"贴满"。
-	assign S_diag_bridge = { S_jb_lvl[7:0], S_jb_rcnt };
-
-	// ★ 2026-10-28 诊断 (0xEF): JPEG 字节排水链状态
-	//   [1:0] S_jl_st (0=DATA 1=PAD 2=DROP)  [2] V52b: S_dsi_pll_lock
-	//   [3] S_jpeg_pad
-	//   [4] S_jb_r (桥读完成)  [5] S_jv_rx_ready (发送器收)  [6] S_jb_v  [7] S_jb_l
-	//   [2] 原来是"S_jl_cnt 是否超过 4M字节", 那个用 0xE4 的 lvl 就能看出来;
-	//   改成 dsi_pll_lock 是因为 S_tx_domain_rst_n 含它 —— 它若为 0, 桥读侧被
-	//   按在复位里永不出数, 表现与"读侧死了"完全一致, 必须先排除。
-	assign S_diag_jv = { S_jb_l, S_jb_v, S_jv_rx_ready, S_jb_r,
-	                     S_jpeg_pad, S_dsi_pll_lock, S_jl_st };
-
-	// ★★ 2026-10-28 二次死锁修复 (0x4712)
-	//   原实现把整条 case 包在 `else if (S_jv_v && S_jv_rx_ready)` 里, 而 JLS_DROP
-	//   状态本身就让 S_jv_v=0 —— 于是 DROP 的退出条件 (S_jb_v && S_jb_l)
-	//   **永远不可能被求值**。一进 DROP 就是永久死锁 (板上实测 S_jl_st 恒 = DROP)。
-	//   改成:
-	//     1) DROP 单独在发送门之外处理;
-	//     2) DROP 期间照样把桥里的字节抽走丢弃 (S_jb_r 在 DROP 也为 1),
-	//        否则桥会写满 -> 合并器 o_ready=0 -> 两个编码器又被反压卡死;
-	//     3) 加 4096 拍超时兜底, 帧尾永远不来也不能死锁。
-	reg [11:0] S_jl_to = 12'd0;
-
-	// ★ V52: 时钟从 S_hs_rx_clk 改为 S_dsi_byte_clk —— 必须与 X_jv 及字节桥读侧同域
-	always @(posedge S_dsi_byte_clk or negedge S_tx_domain_rst_n) begin
-		if (!S_tx_domain_rst_n) begin
-			S_jl_st  <= JLS_DATA;
-			S_jl_cnt <= 25'd0;
-			S_jl_to  <= 12'd0;
-		end else if (S_jl_st == JLS_DROP) begin
-			// ---- 丢弃阶段: 不发送, 但必须把桥抽空; 帧尾来了或超时就恢复 ----
-			if (S_jb_v && S_jb_l) begin
-				S_jl_st  <= S_jpeg_pad ? JLS_PAD : JLS_DATA;
-				S_jl_cnt <= 25'd0;
-				S_jl_to  <= 12'd0;
-			end else if (S_jl_to == 12'hFFF) begin
-				S_jl_st  <= JLS_DATA;          // 强制恢复, 不允许再死锁
-				S_jl_cnt <= 25'd0;
-				S_jl_to  <= 12'd0;
-			end else begin
-				S_jl_to <= S_jl_to + 12'd1;
-			end
-		end else if (S_jv_v && S_jv_rx_ready) begin
-			S_jl_to <= 12'd0;
-			case (S_jl_st)
-			JLS_DATA: begin
-				if (S_jb_l && S_jpeg_pad) begin
-					S_jl_st  <= JLS_PAD;            // 转补零
-					S_jl_cnt <= S_jl_cnt + 25'd1;   // 本拍已发 1 字节
-				end else if (S_jb_l) begin
-					S_jl_cnt <= 25'd0;              // 短帧直通, 帧结束
-				end else if (S_jl_cnt >= JPAD_BYTES - 25'd2) begin
-					S_jl_st  <= JLS_DROP;           // 满帧截断
-					S_jl_cnt <= 25'd0;
-				end else begin
-					S_jl_cnt <= S_jl_cnt + 25'd1;
-				end
-			end
-			JLS_PAD: begin
-				if (S_jl_cnt >= JPAD_BYTES - 25'd1) begin
-					S_jl_st  <= JLS_DATA;           // 补满, 等下一帧
-					S_jl_cnt <= 25'd0;
-				end else begin
-					S_jl_cnt <= S_jl_cnt + 25'd1;
-				end
-			end
-			default: begin                          // JLS_DROP
-				// 不可达: DROP 已在 case 外单独处理
-				S_jl_st  <= JLS_DATA;
-				S_jl_cnt <= 25'd0;
-			end
-			endcase
-		end
-	end
-
 	csi2_frame_tx_var #(
 		.PKT_BYTES (1024),
-		.GAP_FRAME (4000),      // 帧间空闲: 对齐定长版 4000
-		.GAP_LINE  (200 ),      // ★V54g: 包间排空, 定长版板上验证过的值
+		.GAP_FRAME (200 ),
+		.DT        (6'h18),
 		.VC        (2'b00)
 	) X_jv (
-		// ★★ V52: 与 D-PHY 的 I_hs_clk 同一根时钟, 消除 32 位裸跨域
-		.clk        (S_dsi_byte_clk   ),
-		.rst_n      (S_tx_domain_rst_n),
-		// ★ V51: 原来接 0x0B[0] (NV16 时要置 0 才关掉 JPEG)。现在 NV16 没了,
-		//   改接 RK 的 stream-on 信号 —— enable=0 会清空乒乓缓冲, 所以不能让
-		//   D-PHY 还在复位时就把整包塞进去, 否则 RK 开流后第一帧是残帧。
-		.enable     (S_dsi_en_int   ),
-		.i_dt       (S_jpeg_dt      ),
-		.s_tvalid   (S_jv_v         ),
-		.s_tdata    (S_jv_d         ),
-		.s_tlast    (S_jv_l         ),
-		.s_tready   (S_jv_rx_ready  ),
+		.clk        (S_hs_rx_clk    ),
+		.rst_n      (S_pll_lock     ),
+		.enable     (S_jpeg_tx_sel  ),
+		.s_tvalid   (S_jpeg_m_valid ),
+		.s_tdata    (S_jpeg_m_data  ),
+		.s_tlast    (S_jpeg_m_last  ),
+		.s_tready   (S_jpeg_m_ready ),
 		.hs_en      (S_jv_hs_en     ),
 		.hs_data    (S_jv_hs_data   ),
 		.hs_last    (S_jv_hs_last   ),
@@ -1515,14 +696,6 @@ wire        S_enc_ovf_any;
 
 `ifndef JPEG_EN
 	// 未启用时给 cfg 只读寄存器一个确定值 (否则读到 X)
-	assign S_dbg_jpeg = 32'd0;
-	assign S_dbg_jb   = 8'd0;
-	assign S_dbg_mhdr = 24'd0;      // V54l
-	assign S_enc_ovf_any = 1'b0;    // V54o
-	assign S_diag_bridge = 16'd0;   // V52b
-	assign S_diag_misc   = 8'd0;    // V53c
-	assign S_diag_e1     = 8'd0;    // V53c
-	assign S_diag_e2     = 8'd0;    // V53c
 	assign S_jpeg_st_bytes = 24'd0;
 	assign S_jpeg_st_busy  = 1'b0;
 	assign S_jpeg_st_done  = 1'b0;
@@ -1891,17 +1064,7 @@ reg  [17:0] S_ud_dly;
 reg         S_ud_rst_win;                       // 1 = 正在复位 dbuf/FDMA
 always @(posedge I_sysclk_25m or negedge S_pll_lock) begin
 	if (!S_pll_lock)                     S_ud_dly <= 18'd0;
-	// 2026-10-26: **换 CSI 源也必须复位 dbuf + FDMA**。
-	//   原来这里只认 S_res_chg_d(切分辨率), 换源时虽然 S_res_hold25 开了
-	//   120ms 窗、写侧/读侧/byte 域都复位了, 但 dbuf/FDMA 这一路没动 ->
-	//   FDMA 停在旧源的 AXI 突发中途 -> 写侧永久堵死, 而 VTC 照旧自由跑 ->
-	//   板上现象: MIPI_CSI2 ERR1 0x1000000(crc,vc:0) / 0x10(fs/fe mis) 刷屏,
-	//   rkcif 报 "csi size err size:0x0", 画面卡死且只能重烧 bit 才能恢复。
-	//   ⚠ 只加在这一处: 绝不能加进 S_res_evt / S_reload_wait —— 那两个会触发
-	//     传感器整表重写 + D-PHY 长复位(>500ms), 换源时两颗传感器都没停,
-	//     不需要也不应该重写它们。
-	else if (S_res_chg_d == 2'b01 ||
-	         S_src_chg || S_clk_chg)     S_ud_dly <= 18'd1;        // 从切换沿开始计时
+	else if (S_res_chg_d == 2'b01)       S_ud_dly <= 18'd1;        // 从切换沿开始计时
 	else if (S_ud_dly == 18'd0)          S_ud_dly <= 18'd0;
 	else if (S_ud_dly <  UD_RST_DLY)     S_ud_dly <= S_ud_dly + 18'd1;
 	else                                 S_ud_dly <= 18'd0;        // 到点停
@@ -2070,9 +1233,7 @@ mipi_csi_rx #(
 
 	.O_hs_div_clk          ( S_hs_clk0   ),
 
-	// ★ 2026-10-28: 各自接自己的恢复时钟 —— 双目同时采集后不再需要时钟 mux。
-	//   RX 内部有跨时钟 FIFO, aclk 就是它自己的 O_hs_div_clk 最干净。
-	.m_axis_video_aclk     ( S_hs_clk0    ),
+	.m_axis_video_aclk     ( S_hs_rx_clk   ),
 	.m_axis_video_aresetn  ( S_rx_rstn     ),
 	.m_axis_video_tready   ( 1'b1          ),
 	.m_axis_video_tuser    ( S_rx0_tuser   ),
@@ -2115,7 +1276,7 @@ mipi_csi_rx #(
 	// 2026-10-21: 两路 AXIS 输出时钟都用 S_hs_rx_clk (与 0x4601 一致)。
 	//   选中的那一路的恢复时钟就是 S_hs_rx_clk 的来源，所以下游全部同域；
 	//   没选中的那一路靠 RX 内部 FIFO 做 CDC，数据丢弃即可。
-	.m_axis_video_aclk     ( S_hs_clk1    ),
+	.m_axis_video_aclk     ( S_hs_rx_clk   ),
 	.m_axis_video_aresetn  ( S_rx_rstn     ),
 	.m_axis_video_tready   ( 1'b1          ),
 	.m_axis_video_tuser    ( S_rx1_tuser   ),
@@ -2152,57 +1313,20 @@ sensor_sync_start #(
 //    (0x450E 实测)。这里 S_rx_sel 是准静态寄存器，只有切换瞬间会毛刺，
 //    切换后立刻有 120ms 写侧复位窗兜住。
 //--------------------------------------------------------------------------
-// ★ 2026-10-28: 双目**同时**采集后不再有"选源"，两路 RX 各自跑自己的恢复时钟，
-//   拼接模块 (dual_stitch) 是唯一的跨时钟点。
-//
-//   像素域时钟 = **PLL 现成的 70MHz 输出 (S_clk_70m)**，不再用 toggle-FF 分频：
-//     - 70MHz x 4px = 280 Mpx/s >= 需要的 248.8 (余量 12.6%)
-//     - 拼接读侧 964 拍/行 @70MHz = 13.77us < 源行 14.81us (余量 7%)
-//     - 它是真 PLL 输出: derive_clocks 会自动建时钟、set_clock_groups 能引用。
-//       (toggle FF + BUFG 生成的时钟, TD 的 create_clock 按引脚名找不到 -> 整条
-//        set_clock_groups 命令失败 -> 所有 CDC 被当同步路径算 -> 假违例 −6.8ns)
-	// JPEG 编码器时钟: V47.14 起回退到 S_hs_rx_clk(70MHz), 见下方说明
-//   ★ 2026-10-28: 双引擎的吞吐账 ——
-//     3840x1080 = (3840/16)x(1080/8) = 240x135 = 32400 MCU
-//     双引擎每个编 16200 MCU, 有损 150 clk/MCU
-//     @147.5MHz: 16200 x 150 / 147.5MHz = 16.48ms -> 60.6fps (目标 60, 但时序不收敛)
-//     @ 70MHz : 16200 x 150 / 70MHz    = 34.7ms  -> 28.8fps (本版可落地实测用)
-//   原来用 pclkx1/4 = 36.875MHz 的 toggle-FF 分频, 只能到 ~15fps;
-//   而且 toggle FF 生成的时钟 SDC 里 create_clock 按引脚名找不到, 等于不受时序检查。
-// 2026-10-28 V47.14: 编码器时钟回退到像素域 S_hs_rx_clk(70MHz)
-//   原因: 挂 S_pclkx1(147.5MHz) 时实测最差路径 ~14.8ns, 布线后 WNS -8 ~ -12ns,
-//   编码结果不可信。本版目标是“能落地实测 JPEG 直通”, 所以优先保证正裕量:
-//     16200 MCU x 150 clk / 70MHz = 34.7ms -> 28.8fps (双引擎并行)
-//   70MHz 下预算 14.29ns vs 路径 14.8ns, 只差 0.5ns —— 叠加本轮资源优化
-//   (AWB 串行除法 -5400FF / demosaic -12ERAM / 7x7 -10ERAM) 降拥塞后有望转正。
-//   后续把 huff 数值通路拆 2~3 级流水后, 再改回 S_pclkx1 冲 60fps。
-//
-// ★ 2026-10-28 V47.15: 切回 S_pclkx1 (147.5MHz) 冲 60fps 验证
-//   16200 MCU x 151.3 clk / 147.5MHz = 16.62ms -> 60.19fps (双引擎并行)
-//   顺带解决 gate 断粮: 147.5MHz 下编码速度追平 60fps 输入, 不会再出现
-//   "编到一半下个 SOF 把 gate 关掉 -> linebuf 断粮 -> 卡在 T_WGRP" 的死锁。
-//   70MHz 版实测 0xA0(上一帧字节数) 恒 0 = 一帧都没完成, 就是这个原因。
-//   时序关键: V47.14 那次最差路径 13.45ns 里 net 占 10.21ns (76%),
-//   纯粹是布线绕远 —— 本轮配 place/route 高 effort 压拥堵, 不拆流水。
-//
-// ★★★ 2026-10-28 V47.15 结论: 147.5MHz 已验证不可行, 回退 70MHz ★★★
-//   syn 后 S_pclkx1->S_pclkx1: Min Period 16.503ns, Fmax 60.595MHz, SWNS -9.724ns,
-//   3997/22579 个端点违例(17.7%), 瓶颈 X_jpeg_l/u_huff/state_reg[1] -> kk_reg[1]。
-//   拆流水只提频率不提吞吐(同一份工作摊到更多拍), 对帧率无益。
-//   业界参照: ultraembedded/core_jpeg 商品核在 Xilinx 7 系也只有 75MHz ——
-//   JPEG 熵编码天生串行, 147.5MHz 不是"再优化一下"能到的。
-//   => 60fps 只能靠**增加并行度(4 引擎)**, 频率维持 70MHz。
-assign S_enc_clk = S_hs_rx_clk;
-
-// 已无选源: 保持为 0, 让旧的换源复位窗口逻辑永远不触发
+// ⚠ 时钟 mux 的选择端必须是**寄存器**直接驱动, 否则 BUFG 前面多一级组合逻辑,
+//   时钟路径上会带出毛刺/偏斜。这里先把选择位打一拍再送 mux。
+//   位义: dual_eff=1 -> 看 cam0；否则看 sel (1=cam1, 0=cam0)
+//   (声明在文件前部信号区, 这里只放逻辑)
 always @(posedge I_sysclk_25m or negedge S_pll_lock) begin
 	if (!S_pll_lock) S_clk_sel_r <= 1'b0;
-	else             S_clk_sel_r <= 1'b0;
+	else             S_clk_sel_r <= S_dual_eff ? 1'b0 : S_rx_sel;
 end
+assign S_hs_rx_clk_mux = S_clk_sel_r ? S_hs_clk1 : S_hs_clk0;
 
-// 下游像素域 = 拼接输出时钟 (70MHz, PLL 直出)
-assign S_st_clk    = S_clk_70m;
-assign S_hs_rx_clk = S_st_clk;
+PH1_LOGIC_BUFG X_bufg_rx_clk (
+	.i ( S_hs_rx_clk_mux ),
+	.o ( S_hs_rx_clk     )
+);
 
 //--------------------------------------------------------------------------
 //  ⚠ 0x4700 曾经在这里给 cam1 额外插了一个 BUFG (S_hs_clk1_raw -> S_hs_clk1)，
@@ -2251,11 +1375,11 @@ ui_image_correction #(
 )X_ui_image_correction
 (
     .O_line_groups    (S_line_groups     ),  // V21 诊断: 每行像素组数
-    // ★ 2026-10-28: 本模块回到 cam0 自己的恢复时钟域 (不再共用 mux 时钟)
-    .I_clk            (S_hs_clk0		  ),
-    .I_rst_n          (S_pll_lock		  ),
-    // 单目裁剪宽度固定 1920 (与下游 S_h_active=3840 分开)
-    .I_img_width      (S_cam_h		  ),
+    .I_clk            (S_hs_rx_clk		  ),
+    // V23: 裁剪边界跟 S_h_active/S_v_active 走, 模式一切换就必须复位重对齐
+    .I_rst_n          (S_pll_lock & S_res_rstn_rx		  ),
+    // V21: 运行时宽高
+    .I_img_width      (S_h_active		  ),
     .I_img_height     (S_v_active		  ),
     // V39: 垂直起始裁剪 (4K=35, 1080p=19)
     .I_v_start        (S_v_start		  ),
@@ -2286,10 +1410,9 @@ ui_image_correction #(
 )X_ui_image_correction1
 (
     .O_line_groups    (S_line_groups1    ),
-    // ★ 2026-10-28: 本模块回到 cam1 自己的恢复时钟域
-    .I_clk            (S_hs_clk1		  ),
-    .I_rst_n          (S_pll_lock		  ),
-    .I_img_width      (S_cam_h		  ),
+    .I_clk            (S_hs_rx_clk		  ),
+    .I_rst_n          (S_pll_lock & S_res_rstn_rx1 ),
+    .I_img_width      (S_h_active		  ),
     .I_img_height     (S_v_active		  ),
     .I_v_start        (S_v_start		  ),
     .I_grp_per_line   (S_grp_per_line     ),
@@ -2304,59 +1427,44 @@ ui_image_correction #(
 );
 
 //=============================================================================
-//  双目【同时】采集 + 整行乒乓 + 左右拼接 (2026-10-28)
+//  双目交替帧调度 (2026-10-21)
 //
-//  替换原来的 dual_frame_sched (逐帧交替, 每目 30fps)。现在两路每一行都同时
-//  进各自的 FIFO, 读侧拼成 "左半 = cam1 + 右半 = cam0" 的 3840 宽一行, 输出
-//  仍是 4px/clk / 40bit, 所以 ui_isp_top 以下全部不用改位宽。
+//  单目 (S_dual_en=0): 按 0xDB[0] 二选一，全速推流 —— 与 0x4601 行为一致
+//  双目 (S_dual_en=1): cam0/cam1 逐帧交替，各 30fps，输出仍是 1080p60
+//                      （两路传感器仍按 60fps 采，FPGA 每路两帧取一帧）
 //
-//  ⚠ 时钟: 两路写侧各用自己的恢复时钟 (S_hs_clk0/S_hs_clk1), 读侧是 S_hs_rx_clk
-//     (= S_st_clk = 70.238MHz)。这是整个工程唯一的跨时钟点。
-//  ⚠ 掉一路 (没插模组/RX 没锁) 时该半幅填黑, 另一半照常跑 —— 不会再整链死锁。
+//  ⚠ 4K 模式强制按单目处理（带宽装不下两路），见 S_dual_eff
 //=============================================================================
-wire [15:0] S_st_l_ovf, S_st_r_ovf, S_st_l_starve, S_st_r_starve, S_st_lines;
-wire [23:0] S_st_frames;
+assign S_dual_eff = S_dual_en & ~S_is_4k;
 
-dual_stitch #(
-    .HGRP       (480),      // 1920 px / 4 px + 4px/clk = 480 组
-    .V_ACTIVE   (1080),
-    .FIFO_AW    (11),       // 每源 2048 word ≈ 4.2 行
-    // ★ 结构定义 (以这里为准): 左半幅 = cam1, 右半幅 = cam0
-    //   V54d 曾把 SWAP 改成 1 想做左右对调, 但用户确认「结构上左目就是 cam1」,
-    //   反的是 web/console.html 的标签与注释 —— 已在 web 侧修正。这里保持 0。
-    .SWAP       (0),        // ★ 左 = cam1, 右 = cam0
-    .STARVE_MAX (2400)      // @70.238MHz ≈ 34.2us ≈ 2.3 行
-) X_dual_stitch (
-    .l_clk     (S_hs_clk1        ),
-    .l_rst_n   (S_pll_lock       ),
-    .l_valid   (S_crop1_tvalid   ),
-    .l_data    (S_crop1_tdata    ),
-    .l_user    (S_crop1_tuser    ),
-    .l_last    (S_crop1_tlast    ),
-    .r_clk     (S_hs_clk0        ),
-    .r_rst_n   (S_pll_lock       ),
-    .r_valid   (S_crop0_tvalid   ),
-    .r_data    (S_crop0_tdata    ),
-    .r_user    (S_crop0_tuser    ),
-    .r_last    (S_crop0_tlast    ),
-    .o_clk     (S_hs_rx_clk      ),
-    .o_rst_n   (S_pll_lock       ),
-    .o_valid   (S_axis_tvalid    ),
-    .o_data    (S_axis_tdata     ),
-    .o_user    (S_axis_tuser     ),
-    .o_last    (S_axis_tlast     ),
-    .st_l_ovf    (S_st_l_ovf     ),
-    .st_r_ovf    (S_st_r_ovf     ),
-    .st_l_starve (S_st_l_starve  ),
-    .st_r_starve (S_st_r_starve  ),
-    .st_lines    (S_st_lines     ),
-    .st_frames   (S_st_frames    )
+dual_frame_sched #(
+    .DATA_WIDTH (40),
+    .LINE_GRP   (480)          // 1080p: 1920px / 4
+) X_dual_sched (
+    .I_clk        (S_hs_rx_clk      ),
+    // ⚠ 和 I_clk 用同一个时钟: dual_frame_sched 内部 d1_r/v1_r/u1_r/l1_r
+    //    都用 I_clk 采样, I_clk1 只用作行组环形缓冲的写时钟。两者必须同域,
+    //    否则 cam1 的 tuser 会被漏採 -> dbuf 不轮转 -> 画面冻结。
+    .I_clk1       (S_hs_rx_clk      ),
+    .I_rst_n      (S_pll_lock       ),
+    .I_dual_en    (S_dual_eff       ),
+    .I_sel        (S_rx_sel_rx      ),
+    .I_d0         (S_crop0_tdata    ),
+    .I_v0         (S_crop0_tvalid   ),
+    .I_u0         (S_crop0_tuser    ),
+    .I_l0         (S_crop0_tlast    ),
+    .I_d1         (S_crop1_tdata    ),
+    .I_v1         (S_crop1_tvalid   ),
+    .I_u1         (S_crop1_tuser    ),
+    .I_l1         (S_crop1_tlast    ),
+    .O_d          (S_axis_tdata     ),
+    .O_v          (S_axis_tvalid    ),
+    .O_u          (S_axis_tuser     ),
+    .O_l          (S_axis_tlast     ),
+    .O_src        (S_out_src        ),
+    .O_ch1_lost   (S_ch1_lost       ),
+    .O_parity     (S_frame_parity   )
 );
-
-// 已无"哪一目"的概念 (两目同时在流里), 帧标记固定按 0 打
-assign S_out_src = 1'b0;
-// 旧逐帧调度器的输出, 保留声明避免其它模块引用时悬空
-assign S_dual_eff = 1'b0;
 
 
 
@@ -2496,47 +1604,19 @@ cfg_ctrl_top #(
 	// V36: 真正的帧首/行尾信号 (S_ISP_O_tuser 实测恒 0, 不能用作计数)
 	.i_fs_csi     (S_csi_frame_start),   // CSI-2 FS 短包 -> 传感器真实帧率
 	// 2026-10-21 画面冻结定位 (只读 0xE1~0xE3)
-	// ★ V53c: 0xE1/0xE3 改为 dual_stitch 的成帧数 (低/中字节), 见下方拼接计数段
-	.i_diag_sof   (S_st_frames[7:0]),
+	.i_diag_sof   (D_sof_s2),
 	// 2026-10-21: JPEG 状态回读 (jpeg_regfile 0xA0 帧字节数 / 0xA8 STATUS)
 	.i_jpeg_bytes (S_jpeg_st_bytes),
 	.i_jpeg_busy  (S_jpeg_st_busy ),
 	.i_jpeg_done  (S_jpeg_st_done ),
-	.i_dbg_jpeg   (S_dbg_jpeg     ),
-	.i_dbg_jb     (S_dbg_jb       ),
-	// ★ V51: 移除 NV16 —— o_jpeg_tx / o_jpeg_dt18 不再使用 (MIPI 恒定发 JPEG,
-	//   DT 恒定 0x18), 只留 0x0B[2] JPAD 作为帧长策略开关。
-	.o_jpeg_tx    (               ),
-	.o_jpeg_dt18  (               ),
-	.o_jpeg_pad   (S_jpeg_pad     ),
-	.i_diag_wbuf  (S_st_l_starve[7:0]),   // V53c: 原 D_wb_s2 -> 左路掉线恢复次数
-	.i_diag_vs    (S_st_frames[15:8]),    // V53c: 原 D_vs_s2 -> 成帧数中字节
-	.i_diag_lg1   (S_diag_bridge),   // V52b: 原 cam1 行组数诊断 -> 桥排水诊断
-	.i_diag_tlast (S_diag_misc),     // V53c: 原 D_tl_s2 -> 桥 w_ready/源侧有效
-	.i_diag_rxck  (S_diag_e1),       // V53c: 原 D_rxck_s2 -> 引擎1 o_diag[7:0]
-	.i_diag_c1ck  (S_st_r_starve[7:0]),   // V53c: 原 D_c1ck_s2 -> 右路掉线恢复次数
-	.i_diag_rtv   (S_diag_e2),       // V53c: 原 D_rtv_s2 -> 引擎2 o_diag[7:0]
-	// ★ V53c: 这两个端口原来**根本没接**, 正好用来读拼接器的数据完整性告警
-	//   0xDC = 左路补零/丢弃次数低 8 位
-	//   0xD4/D5 = 已输出行数低 8 位 / 右路补零/丢弃次数低 8 位
-	//   ⚠ st_* 在 S_hs_rx_clk (70MHz), 这里被 25MHz 寄存器采样, 多 bit CDC 会有
-	//     脏快照 —— 但这几个都是慢变计数器, 看趋势/是否为 0 是可靠的。
-	.i_dbg_status   (S_st_l_ovf[7:0]),
-	.i_st_line_groups ({S_st_r_ovf[7:0], S_st_lines[7:0]}),
-	.i_dbg_rgbin    (S_dbg_rgbin ),
-	.i_dbg_yuvout   (S_dbg_yuvout),
-	.i_dbg_cam0_starve (S_st_r_starve),
-	.i_dbg_mhdr     (S_dbg_mhdr   ),
-	.i_st_enc_ovf   (S_enc_ovf_any),
-	.o_qt_wr_en      (S_qt_wr_en   ),
-	.o_qt_wr_addr    (S_qt_wr_addr ),
-	.o_qt_wr_data    (S_qt_wr_data ),
-	// 2026-10-28 诊断: JPEG 编码器内部状态 (0xEA~0xEE)
-	//   V48: 4 引擎 -> 只接首段(引擎0)和末段(引擎3), 便于对比
-	.i_diag_enc_l (S_diag_enc[0]),
-	.i_diag_enc_r (S_diag_enc[3]),
-	.i_diag_enc_t (S_diag_enc_t),
-	.i_diag_jv    (S_diag_jv),
+	.o_jpeg_tx    (S_jpeg_tx_sel  ),
+	.i_diag_wbuf  (D_wb_s2),
+	.i_diag_vs    (D_vs_s2),
+	.i_diag_lg1   (D_lg1_s2),
+	.i_diag_tlast (D_tl_s2),
+	.i_diag_rxck  (D_rxck_s2),
+	.i_diag_c1ck  (D_c1ck_s2),
+	.i_diag_rtv   (D_rtv_s2),
 	.i_fs_corr    (S_axis_tuser),        // 裁剪模块输出帧首
 	.i_last_corr  (S_axis_tlast),        // 裁剪模块输出行尾
 	// 2026-10-20: LP-free RX 调试总线 (只读 0xD6/0xD7/0xD8) = 固定 cam0
@@ -2664,12 +1744,6 @@ X_ui_setvbuf
 
 
 //例化uidbuf 控制器
-// ★ 2026-10-28 V51: 移除 NV16 —— dbuf 读侧只服务 JPEG 编码器
-//   tready 直接交给 yuv32_to_quad 的 FIFO: 编码器慢就撑住当前帧,
-//   写侧继续用另外两帧 -> 丢整帧不丢行。
-//   (原来 NV16 那条 S_vtc_de_valid & S_dsi_pack_tready 已随打包器一起删掉)
-wire        S_ud_rtready = S_jcfg_r_ready;
-
 ui_dbuf# (  
 	.AXI_DATA_WIDTH	(AXI_DATA_WIDTH		),//AXI总线数据位宽
 	.AXI_ADDR_WIDTH	(AXI_ADDR_WIDTH		),//AXI总线地址位宽
@@ -2712,7 +1786,7 @@ X_ui_dbuf
 	
 	.I_R_en      	(S_vtc_vs			),
 	.I_R_rclk    	(S_pclkx1			),
-	.I_R_tready  	(S_ud_rtready),
+	.I_R_tready  	(S_vtc_de_valid & S_dsi_pack_tready),
 	.O_R_tuser   	(S_dsi_R_tuser		),
 	.O_R_tvalid  	(S_dsi_R_tvalid		),
 	.O_R_tdata   	(S_ud_rtdata		),
@@ -3012,59 +2086,205 @@ always @(posedge I_sysclk_25m) begin
 end
 
 //=============================================================================
-//  ★ 2026-10-28 V51: 移除 NV16 —— 下面整段 (读侧帧标记注入 + YUV422 打包器)
-//  全部删除。
+//  2026-10-21 修正: 帧标记改到 dbuf **读侧**打
 //
-//  这些代码的用途是给 NV16 通路做"上板可见性"验证: 往 NV16 的 Y 平面里
-//  塞 A5 5A src FF, 让网页能确认"数据是 FPGA 发的、不是 RK 缓存的旧帧"。
-//  NV16 通路已经不存在, 而且这几个标记字节对 JPEG 码流是纯粹的污染。
+//  写侧那个做法 (S_mark_en && S_yuv_sof) 实测**完全没生效**:
+//  板上抓帧整帧搜不到 0xA5 / 0xFF, UV 平面也没有 0x80 —— 一个字节都没写进去。
+//  根因是 S_yuv_sof (rgb_to_yuv422_quad 的 o_user_sof) 在本机基本不来:
+//  uidbuf 的 wfifo_rst_done 只要上电时见过一次 I_W_tuser 就永久锁存,
+//  之后没有 tuser 也照常写 DDR, 所以**画面一直是好的**, 这个坑极其隐蔽。
+//  (写侧那段先留着不删 —— sof 若真不来它就是死代码, 来了也只是重复打标记。)
 //
-//  历史留档 (别再踩):
-//    写侧 (S_mark_en && S_yuv_sof) 的做法实测完全没生效 —— S_yuv_sof 在本机
-//    基本不来, 因为 uidbuf 的 wfifo_rst_done 只要上电见过一次 I_W_tuser 就
-//    永久锁存, 之后没有 tuser 也照常写 DDR, 画面一直是好的, 极隐蔽。
-//    读侧的 O_R_tuser 才可靠 (dbuf 读状态机自己按"读地址回 0"产生)。
+//  读侧的 O_R_tuser 是 dbuf 读状态机自己按"读地址回 0"产生的, 打包器靠它
+//  分行, 一定可靠。所以在这里覆盖:
+//    第 1 拍 -> Y0=0xA5  Cb0=0x80  Y1=0x5A  Cr1=0x80
+//    第 2..4 拍 -> Y=src/0xFF 交替, 见下面 S_mark_wA / S_mark_wB
+//  RK 侧落成 NV16 后 Y 平面头 4 字节就是  A5 5A src FF。
+//
+//  ★ 为什么要连打 4 拍: dbuf 读口受 S_dsi_pack_tready 背压, tuser 后一拍
+//    可能是空拍, 只打一拍很容易丢。web 端是"在前 64 字节里搜 A5 5A"的,
+//    多打几拍不增加任何解析难度, 只多损失 8 个像素。
 //=============================================================================
+reg  S_rtuser_d1, S_rtuser_d2, S_rtuser_d3;
+// 与打包器的 src_rst_n 用同一根复位, 保证标记窗口和打包器对齐
+wire S_mark_rst_n = S_pll_lock & S_res_rstn;
+always @(posedge S_pclkx1 or negedge S_mark_rst_n) begin
+	if (!S_mark_rst_n) begin
+		S_rtuser_d1 <= 1'b0;
+		S_rtuser_d2 <= 1'b0;
+		S_rtuser_d3 <= 1'b0;
+	end else begin
+		S_rtuser_d1 <= S_dsi_R_tuser;
+		S_rtuser_d2 <= S_rtuser_d1;
+		S_rtuser_d3 <= S_rtuser_d2;
+	end
+end
 
+wire [7:0]  S_mark_src_b = S_out_src ? 8'h11 : 8'h00;
+// 第 1 拍: Y0=0xA5 Cb0=0x80 Y1=0x5A Cr1=0x80  ->  NV16 的 Y[0],Y[1] = A5 5A
+wire [31:0] S_mark_w0 = { 8'h80, 8'h5A, 8'h80, 8'hA5 };
+// 后面几拍: Y=src,FF 交替          ->  NV16 的 Y[2],Y[3] = src FF
+wire [31:0] S_mark_wA = { 8'h80, 8'hFF, 8'h80, S_mark_src_b };
+wire [31:0] S_mark_wB = { 8'h80, S_mark_src_b, 8'h80, 8'hFF };
+
+assign S_dsi_R_tdata32 = !S_mark_en            ? S_ud_rtdata :
+                         S_dsi_R_tuser         ? S_mark_w0 :
+                         S_rtuser_d1           ? S_mark_wA :
+                         S_rtuser_d2           ? S_mark_wB :
+                         S_rtuser_d3           ? S_mark_wA :
+                                                 S_ud_rtdata;
+
+wire        S_pack_tvalid;
+wire        S_pack_tready;
+wire [31:0] S_pack_tdata;
+wire        S_pack_tsof;
+wire        S_pack_tlast;
+
+csi2_pack_yuv422_stream u_csi2_pack (
+	// V21: 运行时尺寸
+	.I_h_active		(S_h_active			),
+	.I_v_active		(S_v_active			),
+	// source: ui_dbuf.R (S_pclkx1 域)
+	.src_clk		(S_pclkx1			),
+	// V22: 模式切换复位窗也要给打包器 —— 否则它的字节计数/行状态机
+	// 会跟新的行/帧边界错位而卡死(实测只复位 VTC 时 TX 彻底不出帧)
+	.src_rst_n		(S_pll_lock & S_res_rstn),
+	.s_tvalid		(S_dsi_R_tvalid		),
+	.s_tready		(S_dsi_pack_tready	),
+	.s_tdata		(S_dsi_R_tdata32	),
+	.s_tuser_sof	(S_dsi_R_tuser		),
+	.s_tlast		(S_dsi_R_tlast		),
+	// sink: byte_clk 域 YUV422 AXIS
+	.dst_clk		(S_dsi_byte_clk		),
+	// V23: 用 byte_clk 域自己同步出来的复位 (原来借用 S_pclkx1 域的, 跨域不干净)
+	.dst_rst_n		(S_dphy_rst_n & S_res_rstn_byte),
+	.enable			(S_dsi_en_int		),
+	.m_tvalid		(S_pack_tvalid		),
+	.m_tready		(S_pack_tready		),
+	.m_tdata		(S_pack_tdata		),
+	.m_tuser_sof	(S_pack_tsof		),
+	.m_tlast		(S_pack_tlast		)
+);
 
 //=============================================================================
-//  ★ 2026-10-28 V51: 移除 NV16 —— 内置测试图案源 (csi2_test_src) 一并删除
+//  传输链路自测源 (JPEG_TEST_SRC = 1 时启用)
 //
-//  它是 NV16 通路的链路自测工具: TPG -> csi2_frame_tx(定长, DT=0x1E) -> D-PHY,
-//  用来二分"CRC 到底出在 TX 还是上游"。现在定长 TX 已经不存在, TPG 也就
-//  无处可去 (它输出 32bit YUV422 word, 而 csi2_frame_tx_var 吃 8bit 字节流,
-//  硬接还得再加一级字节化)。
+//  发"逐字节可校验"的线性递增序列, 用来在 JPEG 编码器写出来之前, 先把
+//  "FPGA -> MIPI x4 -> RK -> 用户态"这条链路验掉 —— 这是目前风险最高的环节。
+//  RK 端抓一帧后逐字节比对 (帧内第 k 字节 == k & 0xFF), 只要全对就证明
+//  CSI-2 传输是比特精确的 (没有丢字节/重复/错位)。
+//  帧结构与现有 YUV422 通路完全一致 (1920x1080, 2 字节/像素), RK 侧不用改。
 //
-//  历史结论留档 (V50b 实测, 别重复做):
-//    切到 TPG 后 fps 稳定 50.4, frame_id 5 秒涨 252, MIPI_CSI2 错误 0,
-//    IOMMU page fault 0 => "FPGA->MIPI->RK" 这一段本身是干净的,
-//    当时的 CRC 全在 csi2_pack_yuv422_stream 的整行预取丢失上。
-//  ⚠ 50.4 fps 就是 3840 宽 NV16 在这个 byte_clk 下的物理上限, 不是故障。
+//  测完把 JPEG_TEST_SRC 置回 0 即可恢复正式通路; 它是常量, 综合时
+//  没用到的那一路会被直接优化掉, 不占资源。
 //
-//  csi2_test_src.v 文件保留在工程里 (不例化就不参与综合), 以后要压链路
-//  可以给它加一层 32->8 字节化再接到 X_jv 上。
+//  2026-10-15: 链路验证已通过 (3 帧 12,441,600 字节 零误差), 置 0 恢复正式通路。
+//
+//  ★ 2026-10-17 V32: 置 1 做【单 4K MIPI 纯传输 demo】
+//    目的: 把 "4K 撕裂" 到底出在 TX/CSI-2/RK 这一段, 还是出在 RX/ISP/DDR/packer
+//    这一段彻底分开。打开后整条输出通路变成:
+//        内置 4K 测试图案 -> csi2_frame_tx -> D-PHY TX -> RK
+//    完全绕开 IMX415 RX / ui_isp / preproc / ui_dbuf / csi2_pack。
+//    配合 V31 (FPGA 上电即 4K25), 默认就是 3840x2160 的 checker 图案。
+//    图案 = 64x64 模盘 + 每 64 行/列的亮网格线 + 行号斜坡 (全灰度,
+//    不受 YUYV 字节序影响), 重得/镜像/上下绕回一眼可见。
+//    测完把本常量置回 1'b0 即恢复正式通路。
 //=============================================================================
+localparam JPEG_TEST_SRC = 1'b0;   // V33: 内置 TPG 关(下面 TX_SRC_SEL 直接选源)
 
+// ★ V33 (2026-10-17) TX 数据源三选一 —— 二分定位 4K 撕裂的上游归属
+//   已确定(V32 demo, 用户亲眼确认): 内置4K棋盘 -> frame_tx -> D-PHY -> RK 干净满帧,
+//     绿紫相间(与我算的 YUYV 解释一致) => TX/CSI-2/D-PHY/rkcif 接收段正常
+//   已排除: ui_image_correction (4K 下 h_cnt 1..960=3840px, 966->960 裁剪正确)
+//   已排除: 链路速率档 / 模式切换 / rkcif 不支持 3840 宽
+//   本参数把 csi2_frame_tx 的输入在三个点之间切:
+//     2'd0 = csi2_pack 输出      (正式通路)
+//     2'd1 = ui_dbuf.R 直连, 跳过 csi2_pack  <-- 本次隔离测试
+//     2'd2 = 内置 TPG            (已证明干净的基准)
+//   ui_dbuf 的读输出本身就是 32bit YUV422 word, O_R_tuser/O_R_tlast 与
+//   packer 的 m_tuser_sof/m_tlast 语义一致(帧首/行尾), 可以直连。
+//   判定: 直连后画面干净 => 元凶是 csi2_pack (4K 一行 1920 word, A-FIFO 仅 2048)
+//         仍撕裂          => 在 ui_dbuf / ui_isp / preproc / RX解包, 继续前二分
+// V33a: 2'd1 (dbuf 直连) 实测失败 —— ui_dbuf 的读输出在 S_pclkx1 域,
+//        而 csi2_frame_tx 在 S_dsi_byte_clk 域, csi2_pack 本来就在兼做 CDC。
+//        直接跨域灌进去的结果是 "csi size err, size 0x0" (一个包都没有)。
+//        => 这个 tap 点不成立, 改回正式通路。要测 csi2_pack 必须穿透一个 CDC。
+localparam [1:0] TX_SRC_SEL = 2'd0;
 
-//=============================================================================
-//  ★ 2026-10-28 V51: 移除 NV16 —— 定长 CSI-2 组包器 (csi2_frame_tx) 删除
-//
-//  它就是 NV16 的组包器: 每行一个定长长包 (DT=0x1E, 1920 word),
-//  GAP_LINE=200 / GAP_FRAME=4000。JPEG 走的是变长组包器 csi2_frame_tx_var
-//  (X_jv, 在本文件更早的位置), 所以这里整块不再需要。
-//
-//  连同它一起删掉的还有 TX_SRC_SEL 三选一 mux 和 S_hs_en/S_hs_data/S_hs_last。
-//
-//  历史留档 (这条链路的 GAP 已经被调死, 别在新通路上照抄):
-//    GAP_LINE=200 (1.6us) 是实测验证过的: 4K25 下 rkcif 25.00fps, ECC=0, CRC=0。
-//    V38f 改成 100 想"增加每行余量", 结果 4K 掉到 0.99fps 并爆 e2/crc;
-//    GAP_LINE=40 在 V38b 也试过, 同样报 CRC/ECC。
-//    原因: 减小 GAP 是把 TX 对上游的吞吐要求提高了, 并不会给出任何余量;
-//    而且定长 TX 在 payload 期间只要 s_tvalid 掉一拍就会把 hs_en 拉低,
-//    那等于把这个 packet 提前截断 -> 必然报错。
-//=============================================================================
+wire        S_test_tvalid;
+wire [31:0] S_test_tdata;
+wire        S_test_tsof;
+wire        S_test_tlast;
 
-//---- Layer-1 只有 JPEG 变长组包 X_jv (见本文件 "CSI-2 可变长发送" 一节) ----
+csi2_test_src #(
+	.H_ACTIVE	(3840),         // V32: 4K demo (必须是常呈, 与 V31 的 RES_MODE=2 一致)
+	.V_ACTIVE	(2160),
+	.BPP_NUM	(2),
+	.BPP_DEN	(1),
+	.MODE		(2),            // V32: 2 = 4K 几何诊断图案(模盘+网格+行号斜坡)
+	.LFSR_SEED	(32'hDEAD_BEEF)
+) u_csi2_test_src (
+	.clk			(S_dsi_byte_clk		),
+	.rst_n			(S_dphy_rst_n		),
+	.enable			(S_dsi_en_int & JPEG_TEST_SRC),
+	.m_tvalid		(S_test_tvalid		),
+	.m_tready		(S_pack_tready		),
+	.m_tdata		(S_test_tdata		),
+	.m_tuser_sof	(S_test_tsof		),
+	.m_tlast		(S_test_tlast		)
+);
+
+//---- Layer-1: CSI-2 帧 FSM (DT=0x1E YUV422-8bit) ----
+wire        S_hs_en;
+wire [31:0] S_hs_data;
+wire        S_hs_last;
+
+// 数据源三选一 (常量选择, 综合时只保留一路)
+//   TX_SRC_SEL: 0=packer 正式通路  1=ui_dbuf.R 直连(跳过packer)  2=内置TPG
+wire        S_tx_tvalid = (TX_SRC_SEL == 2'd2) ? S_test_tvalid :
+                          (TX_SRC_SEL == 2'd1) ? S_dsi_R_tvalid : S_pack_tvalid;
+wire [31:0] S_tx_tdata  = (TX_SRC_SEL == 2'd2) ? S_test_tdata  :
+                          (TX_SRC_SEL == 2'd1) ? S_dsi_R_tdata32: S_pack_tdata;
+wire        S_tx_tsof   = (TX_SRC_SEL == 2'd2) ? S_test_tsof   :
+                          (TX_SRC_SEL == 2'd1) ? S_dsi_R_tuser  : S_pack_tsof;
+wire        S_tx_tlast  = (TX_SRC_SEL == 2'd2) ? S_test_tlast  :
+                          (TX_SRC_SEL == 2'd1) ? S_dsi_R_tlast  : S_pack_tlast;
+
+csi2_frame_tx #(
+	.DT			(6'h1E),	// YUV422-8bit  (必须与 RK 驱动 MEDIA_BUS_FMT_YUYV8_2X8 一致)
+	.VC			(2'd0 ),
+	.BPP_NUM	(2    ),
+	.BPP_DEN	(1    ),
+	// ★★★ 不要动这两个参数 ★★★
+	//   GAP_LINE=200 (1.6us) 是实测验证过的: 4K25 下 rkcif 25.00 fps, ECC=0, CRC=0。
+	//   V38f 曾把它改成 100 想"增加每行余量", 结果 4K 直接掉到 0.99 fps,
+	//   并爆出 MIPI_CSI2 ERR1:0x10000000 (ecc2) / ERR1:0x18000000 (crc,vc:3)。
+	//   原因: 减小 GAP 是把 TX 对上游 packer 的吞吐要求提高了(每行 16.98us->16.18us),
+	//         并不会给出任何余量; 而且 csi2_frame_tx 在 payload 期间只要 s_tvalid 掉一拍
+	//         就会把 hs_en 拉低, 那等于把这个 packet 提前截断 -> 必然报错。
+	//   GAP_LINE=40 (320ns) 在 V38b 也试过, 同样报 CRC/ECC。
+	//   => 这条链路的 GAP 已经调好了, 逐行偏移要另找原因。
+	.GAP_LINE	(32'd200 ),
+	.GAP_FRAME	(32'd4000)
+) u_csi2_frame_tx (
+	.clk			(S_dsi_byte_clk	),
+	// V22: 同 csi2_pack —— 包/帧状态机必须在模式切换时一起复位,
+	// 否则它与新的行/帧边界错位后会卡死(实测: RX 计数在涨但 TX 不出帧)
+	.rst_n			(S_dphy_rst_n & S_res_rstn_byte),
+	.enable			(S_dsi_en_int	),
+	.I_h_active		(S_h_active		),
+	.I_v_active		(S_v_active		),
+	.s_tvalid		(S_tx_tvalid	),
+	.s_tready		(S_pack_tready	),
+	.s_tdata		(S_tx_tdata		),
+	.s_tuser_sof	(S_tx_tsof		),
+	.s_tlast		(S_tx_tlast		),
+	.hs_en			(S_hs_en		),
+	.hs_data		(S_hs_data		),
+	.hs_last		(S_hs_last		),
+	.frame_cnt		(				),
+	.packet_cnt		(				)
+);
 
 //---- Layer-0: Anlogic D-PHY TX wrapper (LP init + HS 串化) ----
 mipi_dphy_tx_wrapper #(
@@ -3091,10 +2311,10 @@ mipi_dphy_tx_wrapper #(
 	.I_lpdt_clk		(S_dsi_lp_clk			),
 	.I_rst			(~S_dphy_rst_n			),
 
-	// HS TX: ★ V51 移除 NV16 后只有 JPEG 变长组包这一路, 不再有 mux
-	.I_hs_tx_valid	(S_jv_hs_en				),
-	.I_hs_tx_data	(S_jv_hs_data			),
-	.I_hs_tx_last	(S_jv_hs_last			),
+	// HS TX from Layer-1
+	.I_hs_tx_valid	(S_jpeg_tx_sel ? S_jv_hs_en : S_hs_en),
+	.I_hs_tx_data	(S_jpeg_tx_sel ? S_jv_hs_data : S_hs_data),
+	.I_hs_tx_last	(S_jpeg_tx_sel ? S_jv_hs_last : S_hs_last),
 	.O_hs_tx_ready	(						),
 
 	// LP TX: 不发 LP 配置 (CSI-2 host 不需)
@@ -3113,3 +2333,4 @@ mipi_dphy_tx_wrapper #(
 );
 
 endmodule
+

@@ -130,13 +130,9 @@ module ui_Contrast_adj #(
             temp_value_B[i] <= 0;
         end
         else if(I_tvalid_r[0])begin
-            // ★ 2026-10-28 压 DSP: contrast_level 是 parameter 常量(默认 160)，
-            //   160 = 128 + 32 = 2^7 + 2^5，用移位加法替代 12 个乘法器(12 DSP)。
-            //   24 位中间值保证不溢出(16bit x 160 < 2^24)，与原式逐位等价。
-            //   ⚠ 若把 contrast_level 改成别的值，必须重新做移位分解！
-            temp_value_R[i] <= ((({8'd0,pixel_shifted_R[i]})<<7) + (({8'd0,pixel_shifted_R[i]})<<5)) >> 7;
-            temp_value_G[i] <= ((({8'd0,pixel_shifted_G[i]})<<7) + (({8'd0,pixel_shifted_G[i]})<<5)) >> 7;
-            temp_value_B[i] <= ((({8'd0,pixel_shifted_B[i]})<<7) + (({8'd0,pixel_shifted_B[i]})<<5)) >> 7;
+            temp_value_R[i] <= (pixel_shifted_R[i] * contrast_level)>>7;// 由于 contrast_level 是定点数（Q0.7 格式），需要右移7位
+            temp_value_G[i] <= (pixel_shifted_G[i] * contrast_level)>>7;
+            temp_value_B[i] <= (pixel_shifted_B[i] * contrast_level)>>7;
         end
     end
 

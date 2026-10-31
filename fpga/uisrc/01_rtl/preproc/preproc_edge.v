@@ -69,8 +69,30 @@ module preproc_edge (
 		end
 	endfunction
 
-	// 2026-10-27: 3x3 中值(med9) 已删除 —— 不在赛题硬指标里, 且 rank 计数法
-	//   是 9x9 次比较的组合逻辑, 白占 LUT。
+	// 3x3 中值: rank 计数法 (严格中值, 含重值处理)
+	//   rank[i] = #{j: x[j] < x[i]} + #{j<i: x[j] == x[i]}
+	//   rank 恰好是 0..8 的一个排列, 取 rank==4 的那个值即为中值。
+	function [7:0] med9;
+		input [7:0] v0, v1, v2, v3, v4, v5, v6, v7, v8;
+		reg [7:0] x [0:8];
+		reg [3:0] r [0:8];
+		integer i, j;
+		begin
+			x[0] = v0; x[1] = v1; x[2] = v2;
+			x[3] = v3; x[4] = v4; x[5] = v5;
+			x[6] = v6; x[7] = v7; x[8] = v8;
+			for (i = 0; i < 9; i = i + 1) begin
+				r[i] = 4'd0;
+				for (j = 0; j < 9; j = j + 1) begin
+					if (i < j) r[i] = r[i] + ((x[j] <  x[i]) ? 4'd1 : 4'd0);
+					if (i > j) r[i] = r[i] + ((x[j] <= x[i]) ? 4'd1 : 4'd0);
+				end
+			end
+			med9 = 8'd0;
+			for (i = 0; i < 9; i = i + 1)
+				if (r[i] == 4'd4) med9 = x[i];
+		end
+	endfunction
 
 	// 边界行顶替: A/B 行无效时用当前行 C
 	//-------------------------------------------------------------------------
@@ -120,17 +142,47 @@ module preproc_edge (
 		                   (c1 >= i_morph_th), (c2 >= i_morph_th), (b1 >= i_morph_th)};
 		wire morphv = i_morph_sel ? (|binc) : (&binc);
 
-		// ---------------- 4~7 中值/拉普拉斯/浮雕/Prewitt: 已删除 -------------
-		//  2026-10-27: 赛题硬指标只要求 高斯/直方图/灰度/对比度拉伸/阈值/形态学/Sobel,
-		//  其余算子全部删掉（主要为了腾 DSP —— 每个算子都是 per-pixel 乘法）。
-		//  端口 i_lap_gain / i_prew_gain / i_emboss_gain / i_emboss_bias 保留但
-		//  不再使用, TD 会把它们优化掉, 这样 cfg/UI 的连线一根都不用改。
-		//  旧值 4..7 现在等同于直通(i_mode=0), 不会报错也不会黑屏。
+		// ---------------- 4 中值 ----------------
+		wire [7:0] medv = med9(a0, a1, a2, b0, b1, b2, c0, c1, c2);
+
+		// ---------------- 5 拉普拉斯 ----------------
+		wire signed [12:0] lsum = ($signed({5'b0, b1}) <<< 2)
+		                        - $signed({5'b0, a1}) - $signed({5'b0, c1})
+		                        - $signed({5'b0, b0}) - $signed({5'b0, b2});
+		wire [12:0] alsum = lsum[12] ? (~lsum + 13'd1) : lsum;
+		wire [16:0] al_g  = alsum * i_lap_gain;
+		wire [14:0] al_s  = al_g >> 2;
+		wire [7:0]  lapv  = (al_s > 15'd255) ? 8'hFF : al_s[7:0];
+
+		// ---------------- 6 浮雕 (独立增益/偏置) ----------------
+		// kernel [-2 -1 0; -1 1 1; 0 1 2]
+		wire signed [12:0] ebase = ($signed({4'b0, c2, 1'b0}) + $signed({5'b0, c1})
+		                          + $signed({5'b0, b2}) + $signed({5'b0, b1}))
+		                         - ($signed({4'b0, a0, 1'b0}) + $signed({5'b0, a1})
+		                          + $signed({5'b0, b0}));
+		wire signed [15:0] egain = (ebase * $signed({12'b0, i_emboss_gain})) >>> 3;
+		wire [7:0] embv = clamp8($signed({8'd0, i_emboss_bias}) + egain);
+
+		// ---------------- 7 Prewitt ----------------
+		wire signed [10:0] px = ($signed({3'b0, a2}) + $signed({3'b0, b2}) + $signed({3'b0, c2}))
+		                      - ($signed({3'b0, a0}) + $signed({3'b0, b0}) + $signed({3'b0, c0}));
+		wire signed [10:0] py = ($signed({3'b0, c0}) + $signed({3'b0, c1}) + $signed({3'b0, c2}))
+		                      - ($signed({3'b0, a0}) + $signed({3'b0, a1}) + $signed({3'b0, a2}));
+		wire [10:0] apx = px[10] ? (~px + 11'd1) : px;
+		wire [10:0] apy = py[10] ? (~py + 11'd1) : py;
+		wire [11:0] pmag = {1'b0, apx} + {1'b0, apy};      // <= 1530
+		wire [15:0] pmag_g = pmag * i_prew_gain;
+		wire [13:0] pmag_s = pmag_g >> 2;
+		wire [7:0]  prewv = (pmag_s > 14'd255) ? 8'hFF : pmag_s[7:0];
 
 		// ---------------- 单路 mux ----------------
 		wire [7:0] gv = (i_mode == 4'd1) ? edgev :
 		                (i_mode == 4'd2) ? (binv ? 8'hFF : 8'h00) :
-		                (i_mode == 4'd3) ? (morphv ? 8'hFF : 8'h00) : c1;
+		                (i_mode == 4'd3) ? (morphv ? 8'hFF : 8'h00) :
+		                (i_mode == 4'd4) ? medv :
+		                (i_mode == 4'd5) ? lapv :
+		                (i_mode == 4'd6) ? embv :
+		                (i_mode == 4'd7) ? prewv : c1;
 
 		assign algo_pix[(32*j) +: 32] =
 		    (i_mode == 4'd0) ? i_rgb[(32*j) +: 32] :

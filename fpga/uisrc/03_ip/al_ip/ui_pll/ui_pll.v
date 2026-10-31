@@ -18,16 +18,7 @@
 //		C0        	| 25.000000 MHZ	| 0.0000  DEG  
 //		C1        	| 147.500000MHZ	| 0.0000  DEG  
 //		C2        	| 737.500000MHZ	| 0.0000  DEG  
-//		C3        	| 73.750000 MHZ	| 0.0000  DEG  
-//	=========================================================================
-//	C3 说明 (V54 2026-10-30): 原为 DIV=21 => 70.238MHz.
-//	  JPEG 实测 8100 MCU/引擎 x 151.3 clk = 1,225,530 clk
-//	    70.238MHz -> 17.45ms -> 57.3fps  < IMX415 的 60.0fps (VMAX=2283)
-//	    73.75 MHz -> 16.62ms -> 60.19fps > 60.0fps  ✓ 不溢出
-//	  对应修改: CLKC3_DIV 21->20, CPHASE 20->19, DUTY_INT 11->10
-//	  ⚠ clk3 域实测 fmax 约 73.9MHz, 73.75MHz 余量仅 ~0.2%.
-//	    若综合后 WNS<0, 回退见 docs/V54_60FPS.md (DIV 改回 21 + IMX415 VMAX 改 2400)
-//	=========================================================================
+//		C3        	| 70.238095 MHZ	| 0.0000  DEG  
 ///////////////////////////////////////////////////////////////////////////////
 `timescale 1 ns / 100 fs
 
@@ -93,11 +84,11 @@ module ui_pll (
     .CLKC2_DUTY_INT(1),
     .CLKC2_DUTY50("ENABLE"),
     .CLKC3_ENABLE("ENABLE"),
-    .CLKC3_DIV(20),
-    .CLKC3_CPHASE(19),
+    .CLKC3_DIV(21),
+    .CLKC3_CPHASE(20),
     .CLKC3_FPHASE(0),
     .CLKC3_FPHASE_RSTSEL(0),
-    .CLKC3_DUTY_INT(10),
+    .CLKC3_DUTY_INT(11),
     .CLKC3_DUTY50("ENABLE"),
     .INTPI(1),
     .HIGH_SPEED_EN("DISABLE"),

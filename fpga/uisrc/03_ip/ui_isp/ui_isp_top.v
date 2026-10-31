@@ -133,25 +133,7 @@ wire         dem_grbg_tlast, dem_grbg_tuser, dem_grbg_tvalid;
 //   sel=2 GBRG : GBRG分支, inv=0
 //   sel=3 BGGR : GBRG分支, inv=1
 wire [1:0] w_bsel   = I_is_4k ? 2'd0 : I_bayer_sel;  // 4K 仍固定 RGGB
-
-//===========================================================================
-// ★ 2026-10-28 资源优化: 开关式保留 GBRG 分支
-//
-//   实测(syn_1/fpga_prj_gate.area): 两套 demosaic 合计
-//        X_ui_top_demosaic_rggb : 467 LUT +  8 ERAM
-//        X_ui_top_demosaic_grbg : 711 LUT + 12 ERAM
-//   而且两套**同时**吃同一份输入、同时运算, 只有最后 w_use_rg 一个 mux 选择
-//   —— 没被选中的那套纯粹白烧功耗、白占 ERAM 与布线资源。
-//   本工程 ERAM 已到 84.2%(229/272), 拥塞 index top1≈99, 这部分必须让出来。
-//
-//   板上实测 0xDA(Bayer 相位寄存器) = 0 → 走 RGGB 分支,
-//   所以默认只综合 RGGB 分支, 关掉 GBRG 分支:
-//       省 12 ERAM + 711 LUT, 功能零变化。
-//   将来若真要用 GBRG/BGGR 相位(sel=2/3), 把下面这个参数改回 1'b1 即可。
-//===========================================================================
-localparam DEM_TWO_BRANCH = 1'b0;   // 1 = 保留 GBRG 分支(支持 sel=0..3 四种相位)
-
-wire       w_use_rg = DEM_TWO_BRANCH ? ~w_bsel[1] : 1'b1;
+wire       w_use_rg = ~w_bsel[1];                   // 1=用 RGGB 分支
 wire       w_yinv   =  w_bsel[0];                   // 行相位取反
 
 ui_top_demosaic #(
@@ -176,37 +158,27 @@ ui_top_demosaic #(
     .O_tready     (m_aixs_tready)
 );
 
-generate
-if (DEM_TWO_BRANCH) begin : g_dem_grbg
-    ui_top_demosaic #(
-        .data_complete_delay (50),
-        .BAYER_MODE          ("GBRG")
-    ) X_ui_top_demosaic_grbg (
-        .I_clk        (I_clk),
-        .I_rst_n      (I_rst_n),
-        .I_img_width  (I_img_width ),
-        .I_img_height (I_img_height),
-        .I_ypos_inv   (w_yinv      ),
-        .I_axi4s_tdata(BLC_O_tdata),
-        .I_axi4s_tdest(BLC_O_tdest),
-        .I_axi4s_tlast(BLC_O_tlast),
-        .I_axi4s_tvalid(BLC_O_tvalid),
-        .I_axi4s_tuser(BLC_O_tuser),
-        .I_axi4s_tready(BLC_O_tready),
-        .O_tlast      (dem_grbg_tlast),
-        .O_tuser      (dem_grbg_tuser),
-        .O_tdata      (dem_grbg_tdata),
-        .O_tvalid     (dem_grbg_tvalid),
-        .O_tready     (m_aixs_tready)
-    );
-end else begin : g_no_grbg
-    // 关掉 GBRG 分支: 输出绑 0, 下游 mux 因为 w_use_rg 恒 1 会被综合裁掉
-    assign dem_grbg_tdata  = 128'd0;
-    assign dem_grbg_tlast  = 1'b0;
-    assign dem_grbg_tuser  = 1'b0;
-    assign dem_grbg_tvalid = 1'b0;
-end
-endgenerate
+ui_top_demosaic #(
+    .data_complete_delay (50),
+    .BAYER_MODE          ("GBRG")
+) X_ui_top_demosaic_grbg (
+    .I_clk        (I_clk),
+    .I_rst_n      (I_rst_n),
+    .I_img_width  (I_img_width ),
+    .I_img_height (I_img_height),
+    .I_ypos_inv   (w_yinv      ),
+    .I_axi4s_tdata(BLC_O_tdata),
+    .I_axi4s_tdest(BLC_O_tdest),
+    .I_axi4s_tlast(BLC_O_tlast),
+    .I_axi4s_tvalid(BLC_O_tvalid),
+    .I_axi4s_tuser(BLC_O_tuser),
+    .I_axi4s_tready(BLC_O_tready),
+    .O_tlast      (dem_grbg_tlast),
+    .O_tuser      (dem_grbg_tuser),
+    .O_tdata      (dem_grbg_tdata),
+    .O_tvalid     (dem_grbg_tvalid),
+    .O_tready     (m_aixs_tready)
+);
 
 assign m_aixs_tdata  = w_use_rg ? dem_rggb_tdata  : dem_grbg_tdata;
 assign m_aixs_tlast  = w_use_rg ? dem_rggb_tlast  : dem_grbg_tlast;

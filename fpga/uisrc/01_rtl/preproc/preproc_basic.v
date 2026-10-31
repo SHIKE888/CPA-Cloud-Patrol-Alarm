@@ -84,12 +84,6 @@ module preproc_basic #(
 
 	//-------------------------------------------------------------------------
 	// 0. 工具函数
-	// ★ 2026-10-28: 原来用 3 个乘法器算 BT.601/709 亮度。全设计 lum_sel 被调用 5 处
-	//   (preproc_basic 4 + preproc_win3x3 1) = **60 个 DSP**；2 个 JPEG 引擎要 96 个，
-	//   总 DSP 会超 240。改成纯移位加(系数是常量, 逐位等价):
-	//     601: 77=64+8+4+1  150=128+16+4+2  29=16+8+4+1
-	//     709: 54=32+16+4+2 183=128+32+16+4+2+1  19=16+2+1
-	//   r,g,b<=255 且权重和恰好=256 -> 最大 65280, 16 位不溢出。
 	//-------------------------------------------------------------------------
 	function [7:0] lum_sel;
 		input [7:0]           r;
@@ -97,16 +91,9 @@ module preproc_basic #(
 		input [7:0]           b;
 		input                 mode;      // 0=601  1=709
 		reg   [15:0]          t;
-		reg   [15:0]          t0, t1;
 		begin
-			t0 = (({8'd0,r} << 6) + ({8'd0,r} << 3) + ({8'd0,r} << 2) + {8'd0,r})
-			   + (({8'd0,g} << 7) + ({8'd0,g} << 4) + ({8'd0,g} << 2) + ({8'd0,g} << 1))
-			   + (({8'd0,b} << 4) + ({8'd0,b} << 3) + ({8'd0,b} << 2) + {8'd0,b});
-			t1 = (({8'd0,r} << 5) + ({8'd0,r} << 4) + ({8'd0,r} << 2) + ({8'd0,r} << 1))
-			   + (({8'd0,g} << 7) + ({8'd0,g} << 5) + ({8'd0,g} << 4) + ({8'd0,g} << 2)
-			                                         + ({8'd0,g} << 1) + {8'd0,g})
-			   + (({8'd0,b} << 4) + ({8'd0,b} << 1) + {8'd0,b});
-			t = mode ? t1 : t0;
+			t = mode ? (54 * r + 183 * g + 19 * b)
+			         : (77 * r + 150 * g + 29 * b);
 			lum_sel = t[15:8];
 		end
 	endfunction
@@ -120,42 +107,26 @@ module preproc_basic #(
 		end
 	endfunction
 
-	// ★ 2026-10-28 压 DSP: 乘数 (g+8) 只有 5 位 (8..23), 用移位加法替代乘法器。
-	//   等价性: 移位加法是模 2^16 精确运算; x 范围 -128..127, x*23 = -2944..2921,
-	//   16 位有符号容器不溢出, 与原式逐位相同。
 	function [7:0] contrast8;
 		input [7:0] c;
 		input [3:0] g;
-		reg signed [15:0] t, x;
-		reg [4:0] m;
-		integer k;
+		reg signed [15:0] t;
 		begin
-			x = $signed({8'd0, c}) - 16'sd128;
-			m = {1'b0, g} + 5'd8;
-			t = 16'sd0;
-			for (k = 0; k < 5; k = k + 1)
-				if (m[k]) t = t + (x <<< k);
+			t = ($signed({8'd0, c}) - 16'sd128) * $signed({12'd0, g} + 16'sd8);
 			t = (t >>> 3) + 16'sd128;
 			contrast8 = clamp8(t);
 		end
 	endfunction
 
 	// 逐通道混合: s=0 -> 原图, s=8 -> 完全用滤波结果 (单调, 不会过冲)
-// ★ 2026-10-28 压 DSP: 乘数 s 只有 4 位 (0..8), 用移位加法替代乘法器。
-        //   d 范围 -255..255, d*8 = -2040..2040, 16 位有符号容器不溢出。
-        //   注意是 (d <<< k) 不是 (d >>> k) —— s 的第 k 位代表 2^k。
-        function [7:0] mix8;
-                input [7:0] orig;
-                input [7:0] filt;
-                input [3:0] s;
-                reg signed [15:0] d, acc;
-                integer k;
-                begin
-                        d = $signed({8'd0, filt}) - $signed({8'd0, orig});
-                        acc = 16'sd0;
-                        for (k = 0; k < 4; k = k + 1)
-                                if (s[k]) acc = acc + (d <<< k);
-                        d = acc >>> 3;
+	function [7:0] mix8;
+		input [7:0] orig;
+		input [7:0] filt;
+		input [3:0] s;
+		reg signed [15:0] d;
+		begin
+			d = $signed({8'd0, filt}) - $signed({8'd0, orig});
+			d = (d * $signed({12'd0, s})) >>> 3;
 			mix8 = clamp8($signed({8'd0, orig}) + d);
 		end
 	endfunction
@@ -254,12 +225,7 @@ module preproc_basic #(
 	reg [2:0]  st;
 	reg [5:0]  wait_cnt;
 	reg [7:0]  bin;
-	// ★ 2026-10-28: 原来是 2 相位(phase 1 bit)，最长路径 hq* -> 4 路相加 -> 限幅 -> cdf2 加 -> 减 cdfmin
-	//   -> DSP 乘 -> 移位 -> 限斜率 -> ERAM 写 共 17.32ns@70MHz(需 14.24) —— 14 级 ADDER。
-	//   改成 **3 相位**，并在相位 1 把各路累加结果锁存 (hs_r)，相位 2 才用它算 CDF/LUT。
-	//   代价：每个 bin 2 -> 3 拍 (256*3=768 拍)，而 1080p 场消隐 ~99k 拍，余量巨大。
-	reg [1:0]  ph;
-	reg [25:0] hs_r;          // 本 bin 的 hsum_use，打一拍供相位 2 使用
+	reg        phase;
 	reg [25:0] cdf, cdfmin, total;
 	reg [25:0] cdf2;
 	reg [24:0] scale;
@@ -280,15 +246,9 @@ module preproc_basic #(
 
 	wire [7:0] raddr = ((st == S_SUM) || (st == S_LUT)) ? bin : hsel_lum;
 
-  // hs_r: 相位 1 锁存本 bin 的累加结果, 相位 2 才用它算 CDF/LUT (切断 17.3ns 加法链)
-  always @(posedge clk or negedge rst_n) begin
-      if (!rst_n) hs_r <= 26'd0;
-      else        hs_r <= hsum_use;
-  end
-
-	wire [25:0] cdf_n    = cdf + hs_r;
-	wire [25:0] cdfmin_n = (cdf == 26'd0 && hs_r != 26'd0) ? (cdf + hs_r) : cdfmin;
-	wire [25:0] cdf2_n   = cdf2 + hs_r;
+	wire [25:0] cdf_n    = cdf + hsum_use;
+	wire [25:0] cdfmin_n = (cdf == 26'd0 && hsum_use != 26'd0) ? cdf_n : cdfmin;
+	wire [25:0] cdf2_n   = cdf2 + hsum_use;
 	wire [25:0] lut_rel  = (cdf2_n >= cdfmin) ? (cdf2_n - cdfmin) : 26'd0;
 	wire [51:0] lut_prod = lut_rel * scale + 52'd2048;   // +0.5 四舍五入
 	wire [25:0] lut_div  = lut_prod >> 12;
@@ -416,7 +376,7 @@ module preproc_basic #(
 				lut2[bin] <= bin;
 				lut3[bin] <= bin;
 				lutp[bin] <= bin;
-			end else if ((st == S_LUT) && (ph == 2'd2)) begin
+			end else if ((st == S_LUT) && phase) begin
 				lut0[bin] <= lutv_t;
 				lut1[bin] <= lutv_t;
 				lut2[bin] <= lutv_t;
@@ -434,7 +394,7 @@ module preproc_basic #(
 			st       <= S_INIT;
 			wait_cnt <= 6'd0;
 			bin      <= 8'd0;
-			ph       <= 2'd0;
+			phase    <= 1'b0;
 			cdf      <= 26'd0;
 			cdfmin   <= 26'd0;
 			total    <= 26'd0;
@@ -471,7 +431,7 @@ module preproc_basic #(
 					if (wait_cnt == 6'd15) begin
 						st     <= S_SUM;
 						bin    <= 8'd0;
-						ph     <= 2'd0;
+						phase  <= 1'b0;
 						cdf    <= 26'd0;
 						cdfmin <= 26'd0;
 						total  <= 26'd0;
@@ -481,8 +441,8 @@ module preproc_basic #(
 				end
 
 				S_SUM: begin
-					if (ph != 2'd2) begin
-						ph <= ph + 2'd1;
+					if (!phase) begin
+						phase <= 1'b1;
 					end else begin
 						if (bin == 8'd255) begin
 							total  <= cdf_n;
@@ -499,7 +459,7 @@ module preproc_basic #(
 							cdf    <= cdf_n;
 							cdfmin <= cdfmin_n;
 							bin    <= bin + 8'd1;
-							ph     <= 2'd0;
+							phase  <= 1'b0;
 						end
 					end
 				end
@@ -526,7 +486,7 @@ module preproc_basic #(
 							scale    <= nx_q[24:0];
 							st       <= S_LUT;
 							bin      <= 8'd0;
-							ph       <= 2'd0;
+							phase    <= 1'b0;
 							cdf2     <= 26'd0;
 							lut_last <= 9'd0;      // bin0 从 0 开始限制斜率
 						end
@@ -534,8 +494,8 @@ module preproc_basic #(
 				end
 
 				S_LUT: begin
-					if (ph != 2'd2) begin
-						ph <= ph + 2'd1;
+					if (!phase) begin
+						phase <= 1'b1;
 					end else begin
 						cdf2     <= cdf2_n;
 						lutv     <= lutv_n;
@@ -545,7 +505,7 @@ module preproc_basic #(
 							bin <= 8'd0;
 						end else begin
 							bin   <= bin + 8'd1;
-							ph <= 2'd0;
+							phase <= 1'b0;
 						end
 					end
 				end
@@ -661,14 +621,64 @@ module preproc_basic #(
 	//      (二项式 [1 2 1] 卷 3 次 = [1 6 15 20 15 6 1], 与高斯 sigma≈1.24 等价)
 	//      硬件恒在跑; 选 3x3/5x5 时只取前 1/2 遍的结果, 不影响"并行实现"。
 	//-------------------------------------------------------------------------
-	//---------------------------------------------------------------------
-	// 2026-10-28: 7x7 高斯(第 3 遍 3x3)彻底删除 —— 不再支持 7x7 核。
-	//   原三级级联各占 10 块 ERAM(合计 30, 占全设计 13%), 而第三遍只为 7x7 服务,
-	//   注释原文即为"硬件恒在跑; 选 3x3/5x5 时只取前 1/2 遍的结果"。
-	//   删除后: 省 10 ERAM + ~134 LUT。高斯核只剩 0=3x3 / 1=5x5。
-	//   寄存器 0xF8 写 2 会被下面的 ker_eff 钳到 1(5x5), 老脚本不会黑屏。
-	//---------------------------------------------------------------------
-	wire [1:0] ker_eff = (i_gauss_ker == 2'd2) ? 2'd1 : i_gauss_ker;   // 7x7 -> 5x5
+	wire [127:0] g2_rgb = {
+		{8'h00, p2_pack[95:88], p2_pack[87:80], p2_pack[79:72]},
+		{8'h00, p2_pack[71:64], p2_pack[63:56], p2_pack[55:48]},
+		{8'h00, p2_pack[47:40], p2_pack[39:32], p2_pack[31:24]},
+		{8'h00, p2_pack[23:16], p2_pack[15:8],  p2_pack[7:0]}
+	};
+
+	wire         w3_tvalid, w3_tuser, w3_tlast;
+	wire [2:0]   w3_rowmask;
+	wire [143:0] w3_winA, w3_winB, w3_winC;
+	wire [127:0] w3_rgb;
+
+	preproc_win3x3_rgb #(
+		.PX_PER_CLK (PX_PER_CLK)
+	) u_win3 (
+		.clk       (clk),
+		.rst_n     (rst_n),
+		.I_nw      (nw16),
+		.i_tvalid  (w2_tvalid),
+		.i_tuser   (w2_tuser),
+		.i_tlast   (w2_tlast),
+		.i_rgb     (g2_rgb),
+		.o_tvalid  (w3_tvalid),
+		.o_tuser   (w3_tuser),
+		.o_tlast   (w3_tlast),
+		.o_rowmask (w3_rowmask),
+		.o_winA    (w3_winA),
+		.o_winB    (w3_winB),
+		.o_winC    (w3_winC),
+		.o_rgb     (w3_rgb)
+	);
+
+	wire [143:0] f3A = w3_rowmask[2] ? w3_winA : w3_winC;
+	wire [143:0] f3B = w3_rowmask[1] ? w3_winB : w3_winC;
+	wire [143:0] f3C = w3_winC;
+
+	wire [95:0] p3_pack;
+
+	generate
+	for (j = 0; j < 4; j = j + 1) begin : g_p3
+		for (c = 0; c < 3; c = c + 1) begin : g_p3c
+			wire [7:0] a0 = f3A[(24*j)     + 8*c +: 8];
+			wire [7:0] a1 = f3A[(24*(j+1)) + 8*c +: 8];
+			wire [7:0] a2 = f3A[(24*(j+2)) + 8*c +: 8];
+			wire [7:0] b0 = f3B[(24*j)     + 8*c +: 8];
+			wire [7:0] b1 = f3B[(24*(j+1)) + 8*c +: 8];
+			wire [7:0] b2 = f3B[(24*(j+2)) + 8*c +: 8];
+			wire [7:0] c0 = f3C[(24*j)     + 8*c +: 8];
+			wire [7:0] c1 = f3C[(24*(j+1)) + 8*c +: 8];
+			wire [7:0] c2 = f3C[(24*(j+2)) + 8*c +: 8];
+
+			wire [11:0] gsum3 = {4'b0, a0} + {3'b0, a1, 1'b0} + {4'b0, a2}
+			                  + {3'b0, b0, 1'b0} + {2'b0, b1, 2'b0} + {3'b0, b2, 1'b0}
+			                  + {4'b0, c0} + {3'b0, c1, 1'b0} + {4'b0, c2};
+			assign p3_pack[(24*j) + 8*c +: 8] = (gsum3 + 12'd8) >> 4;
+		end
+	end
+	endgenerate
 
 	//-------------------------------------------------------------------------
 	// 11. 12 拍对齐: 3 遍窗口各 4 拍, 所以原始数据要延迟 8 拍(相对 w_* 已 +4)
@@ -732,30 +742,29 @@ module preproc_basic #(
 	generate
 	for (j = 0; j < 4; j = j + 1) begin : g_blend
 		wire [7:0]  cl  = cl_d8[(8*j) +: 8];      // 原始亮度 (BT.601, 与直方图同定义)
-		// ★★ V54o (2026-11-01): lq 链必须少打一拍 —— 否则 HE 整体右移 4 像素 ★★
-		//
-		//  lq0 <= lut0[c_l0] 是**同步读 RAM**, 所以 lq_pack 天生比 cl_pack 晚 1 拍。
-		//  两条链都打 8 拍后, lq_d8 实际对应的是"9 拍前的像素", 而 cl_d8 是
-		//  "8 拍前的像素" —— 于是 hd = hv - cl 用的是错位的两个像素,
-		//  亮度重映射增量被施加到水平方向错开 4 像素的位置上
-		//  (强亮度边缘出现 4 像素宽过冲/黑边)。改用 lq_d7 后两者严格同拍。
-		wire [7:0]  lqv = lq_d7[(8*j) +: 8];      // HE LUT 查表结果 (与 cl_d8 同拍)
+		wire [7:0]  lqv = lq_d8[(8*j) +: 8];      // HE LUT 查表结果
 
-		// 2026-10-28: 7x7(第 3 遍)已删除, 只保留 3x3(p1) / 5x5(p2) 两遍结果
+		// 三遍滤波结果(每像素 {R,G,B})与原图都在同一拍
 		wire [7:0] f1_r = p1_d8[(24*j) + 16 +: 8];
 		wire [7:0] f1_g = p1_d8[(24*j) +  8 +: 8];
 		wire [7:0] f1_b = p1_d8[(24*j)      +: 8];
 		wire [7:0] f2_r = p2_d4[(24*j) + 16 +: 8];
 		wire [7:0] f2_g = p2_d4[(24*j) +  8 +: 8];
 		wire [7:0] f2_b = p2_d4[(24*j)      +: 8];
+		wire [7:0] f3_r = p3_pack[(24*j) + 16 +: 8];
+		wire [7:0] f3_g = p3_pack[(24*j) +  8 +: 8];
+		wire [7:0] f3_b = p3_pack[(24*j)      +: 8];
 
 		wire [7:0] rp = rgb_d8[(32*j) + 16 +: 8];
 		wire [7:0] gp = rgb_d8[(32*j) +  8 +: 8];
 		wire [7:0] bp = rgb_d8[(32*j)      +: 8];
 
-		wire [7:0] pr = (ker_eff == 2'd0) ? f1_r : f2_r;
-		wire [7:0] pg = (ker_eff == 2'd0) ? f1_g : f2_g;
-		wire [7:0] pb = (ker_eff == 2'd0) ? f1_b : f2_b;
+		wire [7:0] pr = (i_gauss_ker == 2'd0) ? f1_r :
+		                (i_gauss_ker == 2'd1) ? f2_r : f3_r;
+		wire [7:0] pg = (i_gauss_ker == 2'd0) ? f1_g :
+		                (i_gauss_ker == 2'd1) ? f2_g : f3_g;
+		wire [7:0] pb = (i_gauss_ker == 2'd0) ? f1_b :
+		                (i_gauss_ker == 2'd1) ? f2_b : f3_b;
 
 		// 逐通道混合 (0=原图, 8=完全用滤波结果)
 		wire [7:0] rg = i_en[1] ? mix8(rp, pr, i_gauss_str) : rp;
@@ -773,51 +782,31 @@ module preproc_basic #(
 		wire [7:0] bb2 = i_en[2] ? clamp8($signed({8'd0, bg}) + hd) : bg;
 
 		assign rgb_b[(32*j) +: 32] = {8'h00, rr2, gg2, bb2};
-		// ★ 2026-10-28: 原来这里直接 assign lum_b = lum_sel(rr2,gg2,bb2)。
-		//   实测该链 17.85ns@70MHz(需 14.0): p2_d4 -> pr mux -> mix8 -> HE 混合 -> hd -> clamp
-		//   -> lum_sel 3 个 DSP 加链 -> lum_s。已把 lum_sel 移到 rgb_q 之后单独成一级。
+		assign lum_b[(8*j)   +: 8] = lum_sel(rr2, gg2, bb2, i_gray_mode);
 	end
 	endgenerate
 
 	// 未使用信号占位 (保留便于波形观察)
-	// 2026-10-28: w3_* 随 7x7 删除一并移除
-	wire unused_ok = &{1'b0, w2_rgb[0], w2_tvalid, w2_tuser, w2_tlast};
+	wire unused_ok = &{1'b0, w2_rgb[0], w2_tvalid, w2_tuser, w2_tlast,
+	                   w3_rgb[0], w3_tvalid, w3_tuser, w3_tlast};
 
 	reg         vb, ub, tb;
 	reg [127:0] rgb_s;
 	reg [31:0]  lum_s;
-	reg [127:0] rgb_q;          // ★ 流水: 混合+HE+clamp 的结果先寄存
-	reg         v_q, u_q, t_q;
 
 	always @(posedge clk or negedge rst_n) begin
 		if (!rst_n) begin
 			vb <= 1'b0; ub <= 1'b0; tb <= 1'b0;
 			rgb_s <= 128'd0;
 			lum_s <= 32'd0;
-			rgb_q <= 128'd0;
-			v_q <= 1'b0; u_q <= 1'b0; t_q <= 1'b0;
 		end else begin
-			vb    <= v_q;
-			ub    <= u_q;
-			tb    <= t_q;
-			rgb_s <= rgb_q;
+			vb    <= v_d8;
+			ub    <= u_d8;
+			tb    <= t_d8;
+			rgb_s <= rgb_b;
 			lum_s <= lum_b;
-			v_q   <= v_d8;
-			u_q   <= u_d8;
-			t_q   <= t_d8;
-			rgb_q <= rgb_b;
 		end
 	end
-
-	// 亮度从 rgb_q 算, 与 rgb_s 同一级 -> 仍然对齐
-	generate
-	for (j = 0; j < 4; j = j + 1) begin : g_lum
-		assign lum_b[(8*j) +: 8] = lum_sel(rgb_q[(32*j) + 16 +: 8],
-		                                  rgb_q[(32*j) +  8 +: 8],
-		                                  rgb_q[(32*j)      +: 8],
-		                                  i_gray_mode);
-	end
-	endgenerate
 
 	//-------------------------------------------------------------------------
 	// 12. Stage C: 灰度 / 对比度 / 反色 -> 输出
@@ -839,11 +828,9 @@ module preproc_basic #(
 		wire [7:0] g4 = i_en[3] ? contrast8(g3, i_contrast) : g3;
 		wire [7:0] b4 = i_en[3] ? contrast8(b3, i_contrast) : b3;
 
-// 2026-10-27: 反色(bit4) 已删除 —— 不在赛题硬指标(高斯/直方图/灰度/对比度拉伸)
-	//   里。i_en[4] 保留但不再使用, 写 1 不会反色也不会报错。
-	wire [7:0] r5 = r4;
-	wire [7:0] g5 = g4;
-	wire [7:0] b5 = b4;
+		wire [7:0] r5 = i_en[4] ? (8'hFF - r4) : r4;
+		wire [7:0] g5 = i_en[4] ? (8'hFF - g4) : g4;
+		wire [7:0] b5 = i_en[4] ? (8'hFF - b4) : b4;
 
 		assign final_pix[(32*j) +: 32] = {8'h00, r5, g5, b5};
 	end

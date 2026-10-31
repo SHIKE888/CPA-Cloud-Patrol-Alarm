@@ -82,25 +82,15 @@ module rgb_to_yuv422_quad (
             end
         end else begin
             for (k=0;k<4;k=k+1) begin
-                // ★ 2026-10-28 压 DSP: 9 个系数全是 localparam 常量, 用移位加法替代
-                //   原 36 个乘法器 (综合成 20 DSP)。18 位中间值足够
-                //   (255*157 = 40035 < 2^16)。
-                //     47 =2^5+2^3+2^2+2^1+2^0   157=2^7+2^4+2^3+2^2+2^0   16 =2^4
-                //     26 =2^4+2^3+2^1           86 =2^6+2^4+2^2+2^1
-                //     112=2^6+2^5+2^4           102=2^6+2^5+2^2+2^1        10 =2^3+2^1
-                m_yr[k] <= ({10'd0,pr[k]}<<5)+({10'd0,pr[k]}<<3)+({10'd0,pr[k]}<<2)
-                         + ({10'd0,pr[k]}<<1)+({10'd0,pr[k]});
-                m_yg[k] <= ({10'd0,pg[k]}<<7)+({10'd0,pg[k]}<<4)+({10'd0,pg[k]}<<3)
-                         + ({10'd0,pg[k]}<<2)+({10'd0,pg[k]});
-                m_yb[k] <= ({10'd0,pb[k]}<<4);
-                m_ur[k] <= ({10'd0,pr[k]}<<4)+({10'd0,pr[k]}<<3)+({10'd0,pr[k]}<<1);
-                m_ug[k] <= ({10'd0,pg[k]}<<6)+({10'd0,pg[k]}<<4)+({10'd0,pg[k]}<<2)
-                         + ({10'd0,pg[k]}<<1);
-                m_ub[k] <= ({10'd0,pb[k]}<<6)+({10'd0,pb[k]}<<5)+({10'd0,pb[k]}<<4);
-                m_vr[k] <= ({10'd0,pr[k]}<<6)+({10'd0,pr[k]}<<5)+({10'd0,pr[k]}<<4);
-                m_vg[k] <= ({10'd0,pg[k]}<<6)+({10'd0,pg[k]}<<5)+({10'd0,pg[k]}<<2)
-                         + ({10'd0,pg[k]}<<1);
-                m_vb[k] <= ({10'd0,pb[k]}<<3)+({10'd0,pb[k]}<<1);
+                m_yr[k] <= pr[k] * C_Y_R;
+                m_yg[k] <= pg[k] * C_Y_G;
+                m_yb[k] <= pb[k] * C_Y_B;
+                m_ur[k] <= pr[k] * C_CB_R;
+                m_ug[k] <= pg[k] * C_CB_G;
+                m_ub[k] <= pb[k] * C_CB_B;
+                m_vr[k] <= pr[k] * C_CR_R;
+                m_vg[k] <= pg[k] * C_CR_G;
+                m_vb[k] <= pb[k] * C_CR_B;
             end
         end
     end
@@ -158,19 +148,9 @@ module rgb_to_yuv422_quad (
         end else begin
             o_data     <= { cr[3], yv[3], cb[2], yv[2],
                             cr[1], yv[1], cb[0], yv[0] };
-            // ★ V54 (2026-10-30) 修正: 控制链比数据链晚一拍
-            //   数据: pr -> m_* -> s_* -> yv/cb/cr -> o_data  = 4 拍
-            //   控制: i_de -> de_d[0..3] -> o_de              = 5 拍
-            //   用 de_d[3] 时 o_de 比 o_data 晚一拍, 而 system_top 里
-            //     S_ud_wtvalid = S_yuv_de ,  S_ud_wtdata = S_yuv_data
-            //   后果: dbuf 写侧**每行丢掉第一组 4 像素**, 其余整体左移 4 像素,
-            //         行尾多写一组越界数据, tlast 也跟着错一拍。
-            //   4/3840 = 0.1%, 肉眼看不出, 所以从 V20 起一直没被发现
-            //   (tb_pre2jpeg 用定点参考模型逐字节比对才抓出来)。
-            //   改用 de_d[2], 让 valid/user/last 与 o_data 同拍。
-            o_de       <= de_d[2];
-            o_user_sof <= sof_d[2];
-            o_last     <= last_d[2];
+            o_de       <= de_d[3];
+            o_user_sof <= sof_d[3];
+            o_last     <= last_d[3];
         end
     end
 

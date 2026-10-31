@@ -61,7 +61,6 @@ module preproc_win3x3_rgb #(
 	reg [95:0] mem1 [0:NW-1];
 	reg [95:0] mem2 [0:NW-1];
 	reg [AW-1:0] addr, addr_d1;
-	reg [AW-1:0] addr_d2, addr_d3;   // V54o: 组索引再打两拍, 与 lcnt_d3 同拍对齐
 	reg [95:0] r1_raw, r2_raw;
 	reg [11:0] lcnt, lcnt_d1, lcnt_d2, lcnt_d3;
 
@@ -71,8 +70,6 @@ module preproc_win3x3_rgb #(
 		if (!rst_n) begin
 			addr    <= {AW{1'b0}};
 			addr_d1 <= {AW{1'b0}};
-			addr_d2 <= {AW{1'b0}};
-			addr_d3 <= {AW{1'b0}};
 			r1_raw  <= 96'd0;
 			r2_raw  <= 96'd0;
 			lcnt    <= 12'd0;
@@ -100,8 +97,6 @@ module preproc_win3x3_rgb #(
 					addr <= addr + 1'b1;
 				end
 				addr_d1 <= addr;
-				addr_d2 <= addr_d1;
-				addr_d3 <= addr_d2;
 			end
 		end
 	end
@@ -168,13 +163,9 @@ module preproc_win3x3_rgb #(
 
 	// 行首组(第 0 组)的左邻钳位到本组: 否则会用上一行最后一组的数据
 	// (这就是"行首 16 像素是上一行行尾"的另一半原因, 单靠 mask 不够)
-	// ★ V54o (2026-11-01): 原判据用的是 **lcnt_d3 (行号) == 0** —— 那对第 0 行的
-	//   全部组都成立(12 位行号在一整行内保持不变), 效果是第 0 行每一组都把
-	//   "本组"当左邻, 每 4 像素错 1 个; 其余行反而正常。判据应该是**组索引**:
-	//   addr 是行内组计数(0..I_nw-1), 此处用 addr_d3 与 lcnt_d3 同拍对齐。
-	wire [95:0] a_pp = (addr_d3 == {AW{1'b0}}) ? a_p1 : a_p2;
-	wire [95:0] b_pp = (addr_d3 == {AW{1'b0}}) ? b_p1 : b_p2;
-	wire [95:0] c_pp = (addr_d3 == {AW{1'b0}}) ? c_p1 : c_p2;
+	wire [95:0] a_pp = (lcnt_d3 == 12'd0) ? a_p1 : a_p2;
+	wire [95:0] b_pp = (lcnt_d3 == 12'd0) ? b_p1 : b_p2;
+	wire [95:0] c_pp = (lcnt_d3 == 12'd0) ? c_p1 : c_p2;
 
 	always @(posedge clk or negedge rst_n) begin
 		if (!rst_n) begin

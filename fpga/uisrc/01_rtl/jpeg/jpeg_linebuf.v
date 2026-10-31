@@ -41,7 +41,7 @@ module jpeg_linebuf #(
 
     // ---------------- MCU 读 ----------------
     input  wire [2:0]  i_rd_row,        // 0..7
-    input  wire [8:0]  i_rd_grp,        // 组索引 (W=3840 时需要 9 位: 0..479)
+    input  wire [7:0]  i_rd_grp,        // 组索引
     input  wire [1:0]  i_rd_sel,        // 0=Y块0 1=Y块1 2=Cb 3=Cr
     output reg  [63:0] o_rd_data,
 
@@ -64,11 +64,6 @@ module jpeg_linebuf #(
 
     localparam integer YDEP = 16 * GYP;
     localparam integer CDEP = 16 * GCP;
-    // ★ 2026-10-26: 地址位宽原来写死 12 位。W=3840 时 GYW=9 ->
-    //   {buf,row(3),grp(9)} = 13 位, 被截成 12 位后就只能访问一半缓冲,
-    //   读写都错位 (4K 模式必填)。这里改成按实际深度推导。
-    localparam integer YAW = (YDEP <= 1) ? 1 : $clog2(YDEP);
-    localparam integer CAW = (CDEP <= 1) ? 1 : $clog2(CDEP);
 
     //=============================================================== 存储
     // ★ 2026-10-21 为省 slice 改: 去掉 initial 循环清零。
@@ -103,8 +98,8 @@ module jpeg_linebuf #(
     wire [2:0]   csub = wx[2:0];
     wire [GCW-1:0] cgrp = wx[GCW+2:3];  // /8
 
-    wire [YAW-1:0] yaddr = {wr_buf, wrow, ygrp};
-    wire [CAW-1:0] caddr = {wr_buf, wrow, cgrp};
+    wire [11:0] yaddr = {wr_buf, wrow, ygrp};
+    wire [11:0] caddr = {wr_buf, wrow, cgrp};
 
     // ★ 2026-10-21 改: 原来这里是**窄写** —— 每次只写 64 位存储字里的 16 位
     //   (Y) 或 8 位 (Cb/Cr)。块 RAM 推断不了这种写法, 综合器只能退回寄存器实现,
@@ -177,36 +172,14 @@ module jpeg_linebuf #(
     end
 
     //=============================================================== 读侧
-    //  raddr 用 rd_buf/row/grp 位拼接, 深度按**参数** W 取最大分辨率;
-    //  运行时 W 更小时高位的组索引自然为 0, 不会越界。
-    wire [YAW-1:0] raddr_y = {rd_buf, i_rd_row, i_rd_grp[GYW-1:0]};
-    wire [CAW-1:0] raddr_c = {rd_buf, i_rd_row, i_rd_grp[GCW-1:0]};
-
-    // ★ 2026-10-28: 这里原来是"3 个 RAM 共用一个 o_rd_data 寄存器 + case 选择"，
-    //   TD 无法把它推断成 ERAM（块 RAM 的输出寄存器必须属于该 RAM 自己），
-    //   于是整个行缓冲退回分布式 LUT-RAM：实测 #dram lut = 9264，
-    //   白吃 14.4% 的 slice（LUT 只用了 43.6%，slice 却 65.8%）。
-    //   现在改成：每个阵列各自一个 DOUT 寄存器，之后再用组合 mux 选。
-    //   代价 = 2 个 64bit 寄存器（128 FF，FF 才用 23.9%，完全够），
-    //   收益 = 行缓冲变成 ERAM（约 27 块，ERAM 还剩 99 块）。
-    //   ⚠ 数据与延迟(1 拍)完全不变，逐字节回归必须仍然是 IDENTICAL。
-    reg [63:0] y_q, cb_q, cr_q;
+    wire [11:0] raddr_y = {rd_buf, i_rd_row, i_rd_grp[GYW-1:0]};
+    wire [11:0] raddr_c = {rd_buf, i_rd_row, i_rd_grp[GCW-1:0]};
 
     always @(posedge clk) begin
-        y_q  <= y_mem [raddr_y];
-    end
-    always @(posedge clk) begin
-        cb_q <= cb_mem[raddr_c];
-    end
-    always @(posedge clk) begin
-        cr_q <= cr_mem[raddr_c];
-    end
-
-    always @(*) begin
         case (i_rd_sel)
-        2'd0, 2'd1: o_rd_data = y_q;
-        2'd2:       o_rd_data = cb_q;
-        default:    o_rd_data = cr_q;
+        2'd0, 2'd1: o_rd_data <= y_mem [raddr_y];
+        2'd2:       o_rd_data <= cb_mem[raddr_c];
+        default:    o_rd_data <= cr_mem[raddr_c];
         endcase
     end
 

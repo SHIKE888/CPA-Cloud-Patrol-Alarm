@@ -27,22 +27,10 @@ module jpeg_bitpack (
     // 一帧结束: 用 1 补齐剩余位并输出
     input  wire        i_flush,
 
-    // ★ 2026-10-28: DRI(重启间隔) 支持。一帧内每 N 个 MCU 在熵编码流里插一个
-    //   RST 标记 (FF D0~D7)。插入前必须把不满一字节的位用 1 补齐(和 flush 一样)，
-    //   而 FF/Dn 这两个字节是**标记，不做 0xFF->00 字节填充**。
-    input  wire        i_rst_req,    // 脉冲: 请求插入一个 RST 标记
-    input  wire [2:0]  i_rst_idx,    // RST0..RST7
-    output reg         o_rst_done,   // 脉冲: 标记已完全吐出
-
     // 一次 put (码字 + 附加位已在上游合并)
     input  wire        i_valid,
     input  wire [31:0] i_code,
     input  wire [5:0]  i_len,        // 1..32
-    // ★ 2026-10-28: 第二符号 (一拍发两个符号时有效)。不再在上游拼成 32 位,
-    //   改在这里用**两条并行**移位器同时落位, 去掉一串串行嵌套的 32 位变量移位。
-    input  wire [31:0] i_code2,
-    input  wire [5:0]  i_len2,
-    input  wire        i_two,
     output wire        i_ready,      // 累加器是否有余量接收本次 put
 
     // 字节流输出
@@ -79,22 +67,11 @@ module jpeg_bitpack (
     //   n 的上界有保证: huff 只在 i_ready=1 (即 n+i_len<=32) 时才发, 所以一次
     //   put 之后 n <= 32, 再一次 put 之后 n <= 64 —— 正好装满 64 位 acc,
     //   移位量 64-n-len >= 64-32-32 = 0, 不会下溢。
-
-    // ★ 2026-10-28 (147.5MHz): 两个符号的并行落位版本
-    //   len_tot = 本次 put 一共要落多少位
-    //   ★ 符号1 在**高位**(先输出), 所以它移位少: 64 - n - len1
-    //     符号2 跟在符号1 后面:                 64 - n - len1 - len2
-    //   两条移位器是**并行**的, 不前后嵌套 —— 这是去掉那 ~2ns 的关键。
-    //   (原来在上游 huff 里做 (ac_code << ac_len_n) | ac_code_n, 串行依赖)
-    wire [6:0]  len_tot = i_two ? ({1'b0, i_len} + {1'b0, i_len2}) : {1'b0, i_len};
-    wire [63:0] put_two = ({32'd0, i_code}  << (7'd64 - n - {1'b0, i_len}))
-                        | ({32'd0, i_code2} << (7'd64 - n - len_tot));
-    wire        do_put  = i_valid && (len_tot != 7'd0);
-    wire [63:0] acc_p   = do_put
-                        ? (acc | (i_two ? put_two
-                                        : ({32'd0, i_code} << (7'd64 - n - {1'b0, i_len}))))
-                        : acc;
-    wire [6:0]  n_p     = do_put ? (n + len_tot) : n;
+    wire        do_put = i_valid && (i_len != 6'd0);
+    wire [63:0] acc_p  = do_put
+                       ? (acc | ({32'd0, i_code} << (7'd64 - n - {1'b0, i_len})))
+                       : acc;
+    wire [6:0]  n_p    = do_put ? (n + {1'b0, i_len}) : n;
 
     // 背压: 只按累加器容量判断, 【不能】把 pend_00 算进去。
     //   原因: huff 在拍 N 用 i_ready(N) 决定是否发某个符号; 若拍 N+1 因为
@@ -130,11 +107,6 @@ module jpeg_bitpack (
     wire        out_go = (!o_valid || o_ready);
     reg         flush_pend;
 
-    // ---- RST 标记插入子状态机: 0=空闲 1=发 FF 2=发 Dn ----
-    reg         rst_pend;
-    reg  [1:0]  rst_st;
-    reg  [2:0]  rst_idx_r;
-
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             acc        <= 64'd0;
@@ -144,10 +116,6 @@ module jpeg_bitpack (
             o_valid    <= 1'b0;
             o_data     <= 8'd0;
             o_byte_cnt <= 32'd0;
-            rst_pend   <= 1'b0;
-            rst_st     <= 2'd0;
-            rst_idx_r  <= 3'd0;
-            o_rst_done <= 1'b0;
         end else begin
             // ---------------- put: 与输出是否冻结无关 ----------------
             if (do_put) begin
@@ -155,15 +123,10 @@ module jpeg_bitpack (
                 n   <= n_p;
             end
             if (i_flush) flush_pend <= 1'b1;
-            if (i_rst_req) begin
-                rst_pend  <= 1'b1;
-                rst_idx_r <= i_rst_idx;
-            end
 
             // ---------------- 输出: 只有真能吐出去才动 ----------------
             if (out_go) begin
-                o_valid    <= 1'b0;
-                o_rst_done <= 1'b0;
+                o_valid <= 1'b0;
 
                 if (pend_00) begin
                     o_data     <= 8'h00;
@@ -183,35 +146,6 @@ module jpeg_bitpack (
                     acc        <= acc_p << 8;       // 消耗最高 8 位
                     n          <= n_p - 7'd8;
                 end
-                else if (rst_pend) begin
-                    // 走到这里 has_byte 已为 0, 即 acc 里的完整字节都吐完了
-                    // -> 先把不满一字节的位用 1 补齐输出 (和 flush 一致)
-                    rst_pend <= 1'b0;
-                    if (n_p != 7'd0) begin
-                        o_data     <= fl_byte;
-                        o_valid    <= 1'b1;
-                        o_byte_cnt <= o_byte_cnt + 32'd1;
-                        // 填充字节本身若是 0xFF, 仍然要遵守字节填充规则
-                        pend_00    <= (fl_byte == 8'hFF);
-                    end
-                    acc    <= 64'd0;
-                    n      <= 7'd0;
-                    rst_st <= 2'd1;
-                end
-                else if (rst_st == 2'd1) begin
-                    // 标记的 FF —— 原样输出, 不补 00 (pend_00 在这里必须为 0)
-                    o_data     <= 8'hFF;
-                    o_valid    <= 1'b1;
-                    o_byte_cnt <= o_byte_cnt + 32'd1;
-                    rst_st     <= 2'd2;
-                end
-                else if (rst_st == 2'd2) begin
-                    o_data     <= 8'hD0 | {5'd0, rst_idx_r};
-                    o_valid    <= 1'b1;
-                    o_byte_cnt <= o_byte_cnt + 32'd1;
-                    rst_st     <= 2'd0;
-                    o_rst_done <= 1'b1;
-                end
                 else if (flush_pend) begin
                     flush_pend <= 1'b0;
                     if (n_p != 7'd0) begin
@@ -228,94 +162,3 @@ module jpeg_bitpack (
     end
 
 endmodule
-
-
-/*===========================================================================
- * Filename     : jpeg_seg_merge.v  (本文件内合并, 避免 TD 把独立文件当黑盒)
- * Description  : 双引擎"半行段"交替合并器
- *
- *  一张 3840x1080 的 JPEG 由两个引擎各编半行(120 MCU)拼成。因为设了
- *  DRI=120, 每个半行是一个**独立熵编码段**, 所以可以直接背对背拼接:
- *
- *      头部(3840宽, DRI=120) | L(r0) RST0 | R(r0) RST1 | L(r1) RST2 | ...
- *
- *  两个引擎天然错开 ~55us (右目的像素本来就在一行后半段才到), 而合并器
- *  1 字节/拍的输出速度远高于单个引擎 ~1 字节/3 拍 的产生速度, 所以左段的
- *  字节在右段开始前就已经吐完 —— 不需要大 FIFO, 一个 2:1 mux 就够。
- *
- *  ★ 切换时机必须精确: 段结束那一拍对应的最后一个字节还没被下游接住时
- *    不能切, 否则那个字节会被另一个引擎的数据顶掉。所以用 done_p 锁存,
- *    等"最后一个字节被 o_ready 接走"或"已经没有有效字节"才切。
- *==========================================================================*/
-module jpeg_seg_merge (
-    input  wire        clk,
-    input  wire        rst_n,
-    input  wire        i_start,      // 帧开始 (脉冲): 选择器回到左引擎
-
-    input  wire        l_valid,
-    input  wire [7:0]  l_data,
-    input  wire        l_last,
-    output wire        l_ready,
-    input  wire        l_seg_done,   // 左引擎一段吐完 (脉冲)
-
-    input  wire        r_valid,
-    input  wire [7:0]  r_data,
-    input  wire        r_last,
-    output wire        r_ready,
-    input  wire        r_seg_done,   // 右引擎一段吐完 (脉冲)
-
-    output reg         o_valid,
-    output reg  [7:0]  o_data,
-    output reg         o_last,
-    input  wire        o_ready,
-
-    output reg  [9:0]  o_seg_cnt     // 调试: 本帧已完成的段数
-);
-
-    reg  sel;          // 0 = 输出左引擎
-    reg  l_done_p, r_done_p;
-
-    assign l_ready = (sel == 1'b0) && o_ready;
-    assign r_ready = (sel == 1'b1) && o_ready;
-
-    always @(*) begin
-        if (sel == 1'b0) begin
-            o_valid = l_valid; o_data = l_data; o_last = l_last;
-        end else begin
-            o_valid = r_valid; o_data = r_data; o_last = r_last;
-        end
-    end
-
-    // 可以切换的条件: 本段已经吐完, 且(没有待发的字节 或 那个字节这拍被接走)
-    wire l_can_sw = l_done_p && (!l_valid || o_ready);
-    wire r_can_sw = r_done_p && (!r_valid || o_ready);
-
-    always @(posedge clk or negedge rst_n) begin
-        if (!rst_n) begin
-            sel      <= 1'b0;
-            l_done_p <= 1'b0;
-            r_done_p <= 1'b0;
-            o_seg_cnt <= 10'd0;
-        end else if (i_start) begin
-            sel       <= 1'b0;
-            l_done_p  <= 1'b0;
-            r_done_p  <= 1'b0;
-            o_seg_cnt <= 10'd0;
-        end else begin
-            if (l_seg_done) l_done_p <= 1'b1;
-            if (r_seg_done) r_done_p <= 1'b1;
-
-            if ((sel == 1'b0) && l_can_sw) begin
-                sel      <= 1'b1;
-                l_done_p <= 1'b0;
-                o_seg_cnt <= o_seg_cnt + 10'd1;
-            end else if ((sel == 1'b1) && r_can_sw) begin
-                sel      <= 1'b0;
-                r_done_p <= 1'b0;
-                o_seg_cnt <= o_seg_cnt + 10'd1;
-            end
-        end
-    end
-
-endmodule
-
