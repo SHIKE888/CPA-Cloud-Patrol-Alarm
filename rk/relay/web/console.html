@@ -191,6 +191,24 @@ body{
 #viewMap .popt2 input{ width: 46px; padding: 3px 6px; font-size: 12px;
     background: #0d1117; border: 1px solid #30363d; color: #e6edf3;
     border-radius: 6px; font-family: ui-monospace, monospace; }
+/* 警戒区参数表：左列标签、右列输入+单位，行距统一，窄屏也不会错位 */
+#viewMap .gform{
+    display: grid; grid-template-columns: max-content minmax(0, 1fr);
+    gap: 6px 10px; align-items: center;
+    margin: 10px 0 0; padding-top: 10px; border-top: 1px solid #21262d;
+    font-size: 12px; color: var(--dim);
+  }
+#viewMap .gform label{ white-space: nowrap; }
+#viewMap .gform .gi{ display: flex; align-items: center; gap: 5px; min-width: 0; }
+#viewMap .gform .gi input{
+    flex: 1 1 auto; width: 100%; min-width: 0;
+    padding: 4px 7px; font-size: 12px; text-align: right;
+    background: #0d1117; border: 1px solid #30363d; color: #e6edf3;
+    border-radius: 6px; font-family: ui-monospace, monospace;
+  }
+#viewMap .gform .gi input:focus{ outline: none; border-color: var(--acc2); }
+#viewMap .gform .gi i{ font-style: normal; color: #6e7681; font-size: 11px;
+    width: 14px; flex: none; text-align: left; }
 #viewMap #toast{
     position: absolute; left: 50%; transform: translateX(-50%); bottom: 18px;
     padding: 7px 14px; border-radius: 8px; background: #1f6feb33; border: 1px solid #1f6feb;
@@ -1255,25 +1273,35 @@ html, body{overflow:hidden}
       <section id="guardbox">
         <h3>警戒区域 / 人员定位</h3>
         <div class="plist" id="zlist"></div>
-        <div class="popt2" style="margin-top:8px">
-          <span>刷新</span><input id="gPollSec" type="number" min="0.3" max="10" step="0.1" value="1">
-          <span>秒 · 冷却</span><input id="gCoolSec" type="number" min="5" max="3600" step="5" value="60">
-          <span>秒</span>
+
+        <!-- 参数表：左标签右输入，单位固定在输入框右边（原来一行里塞
+             "刷新 1 秒 · 冷却 60 秒" 这种混排，窄屏会折行错位）。 -->
+        <div class="gform">
+          <label for="gPollSec">采样间隔</label>
+          <span class="gi"><input id="gPollSec" type="number" min="0.3" max="10" step="0.1" value="1"><i>秒</i></span>
+
+          <label for="gWarnN">预警阈值</label>
+          <span class="gi"><input id="gWarnN" type="number" min="1" max="200" step="1" value="5"><i>次</i></span>
+
+          <label for="gAlarmN">报警阈值</label>
+          <span class="gi"><input id="gAlarmN" type="number" min="1" max="200" step="1" value="10"><i>次</i></span>
+
+          <label for="gCoolSec">同目标冷却</label>
+          <span class="gi"><input id="gCoolSec" type="number" min="5" max="3600" step="5" value="60"><i>秒</i></span>
+
+          <label for="gYawOff">云台零点偏置</label>
+          <span class="gi"><input id="gYawOff" type="number" min="-180" max="180" step="1" value="0"><i>°</i></span>
+
+          <label for="gWinDeg">雷达方位窗口</label>
+          <span class="gi"><input id="gWinDeg" type="number" min="2" max="30" step="1" value="7"><i>°</i></span>
         </div>
-        <div class="popt2" style="margin-top:6px">
-          <span>云台零点偏置</span><input id="gYawOff" type="number" min="-180" max="180" step="1" value="0">
-          <span>°（云台零点相对车头）</span>
-        </div>
-        <div class="popt2" style="margin-top:6px">
-          <span>雷达方位窗口</span><input id="gWinDeg" type="number" min="2" max="30" step="1" value="7">
-          <span>°</span>
-        </div>
-        <div class="btnrow wide" style="margin-top:8px">
+
+        <div class="btnrow wide" style="margin-top:10px">
           <button id="btnGuardReport" class="tool on" title="关掉只在本页弹提示，不往云端上报">上报云端</button>
           <button id="btnGuardClear" class="tool">清空区域</button>
         </div>
         <div class="btnrow wide" style="margin-top:8px">
-          <button id="btnGuardLidar" class="tool on" title="用 /scan 在该方位最近的归波修正双目距离（水平面距离以雷达为准）：单靠双目几何算人脚位置误差偏大">融合雷达</button>
+          <button id="btnGuardLidar" class="tool on" title="用 /scan 里与双目距离一致的那一簇回波修正水平距离；明显比人近的（椅子/箱子）当障碍物丢掉">融合雷达</button>
           <button id="btnGuardDbg" class="tool" title="在浏览器控制台打一下这一拍用到的原始数据">打印调试</button>
         </div>
         <div class="hint"><span id="stGuard">未开始</span><b id="stGuard2">—</b></div>
@@ -3301,7 +3329,8 @@ html, body{overflow:hidden}
   // ⚠ 这几个用 var：draw() 可能在这场脚本还没跑到这里时就被 ResizeObserver 调到，
   //   用 let 会踩「暂时性死区」(Cannot access 'gData' before initialization)。
   var gCfg = { poll: 1.0, cool: 60, yawOff: 0, report: true,
-               lidar: true, win: 7 };   // lidar=融合/scan，win=雷达方位窗口(度)
+               lidar: true, win: 7,          // lidar=融合/scan，win=雷达方位窗口(度)
+               warnN: 5, alarmN: 10 };       // 连续在区 N 次→预警 / N 次→报警
   var gDraft = null;             // 圆形草稿 {cx, cy, r}：点一下定圆心，再拖定半径
   var gPrev = null;              // 矩形预览 {x0,y0,x1,y1}
   var gData = null;              // 最近一次 /api/targets
@@ -3321,12 +3350,17 @@ html, body{overflow:hidden}
         if (typeof o.report === 'boolean') gCfg.report = o.report;
         if (typeof o.lidar === 'boolean') gCfg.lidar = o.lidar;
         if (isFinite(o.win)) gCfg.win = Math.min(30, Math.max(2, +o.win));
+        if (isFinite(o.warnN)) gCfg.warnN = Math.min(200, Math.max(1, Math.round(+o.warnN)));
+        if (isFinite(o.alarmN)) gCfg.alarmN = Math.min(200, Math.max(1, Math.round(+o.alarmN)));
       }
     } catch (e) {}
+    if (gCfg.alarmN < gCfg.warnN) gCfg.alarmN = gCfg.warnN;   // 报警不能早于预警
     if ($('gPollSec')) $('gPollSec').value = gCfg.poll;
     if ($('gCoolSec')) $('gCoolSec').value = gCfg.cool;
     if ($('gYawOff')) $('gYawOff').value = gCfg.yawOff;
     if ($('gWinDeg')) $('gWinDeg').value = gCfg.win;
+    if ($('gWarnN')) $('gWarnN').value = gCfg.warnN;
+    if ($('gAlarmN')) $('gAlarmN').value = gCfg.alarmN;
     if ($('btnGuardReport')) $('btnGuardReport').classList.toggle('on', gCfg.report);
     if ($('btnGuardLidar')) $('btnGuardLidar').classList.toggle('on', gCfg.lidar !== false);
   }
@@ -3474,46 +3508,67 @@ html, body{overflow:hidden}
     return gScan;
   }
 
-  // ── 雷达辅助：在"人的方位"上找最近的回波 ────────────────────────────
+  // ── 雷达辅助：在"人的方位"上挑出**属于人**的那一簇回波 ──────────────
   //   为什么能这么用：2D 激光扫的是约 0.2m 高的一圈水平面，站着的人的腿一定
-  //   会打断激光，所以"那个方位上最近的一簇点"就是人。双目给的是**人身上某点**
-  //   （头/胸）的斜距，投影到地面会受俯仰、身体厚度、框中心位置影响，
-  //   3m 外差 0.3~0.6m 很常见；雷达给的是水平面真距，所以融合时以它为准。
-  //   前提：扫描窗口里没有比人更近的东西。
-  //   ⚠ 0.35m 以下一律丢：激光装在前部，最近的那几个点常常是**车体自己**
-  //   （实测在 0.26m/96° 处就有一腋回波），拿来当“人”会系统性偏近。
+  //   会打断激光，所以那个方位上的点簇就是人。雷达给的是水平面真距，
+  //   双目给的是身上某点（框中心）的斜距，融合时以雷达为准。
+  //   ★ 障碍物过滤（2026-11-01 用户要求）：人的正前方可能还立着椅子/箱子/柱子，
+  //   它们比人更近。所以不能直接取"最近点"，而是：
+  //     1) 窗口内按距离**切簇**（相邻点距离断档 >0.3m 就算另一段）；
+  //     2) 只保留 ≥4 个点的簇（零散噪点/反光不参与）；
+  //     3) 拿双目距离当裁判，**挑中位距离与双目最接近的那一簇**；
+  //        差超过 max(0.5, 0.35*r) 就整簇不要（宁可回退双目）。
+  //   这样"人前面 0.5m 的椅子"自然被判成障碍物丢掉。
+  //   ⚠ 0.35m 以下一律丢：激光装在前部，最近那几个点常常是**车体自己**
+  //   （实测在 0.26m/96° 处就有一簇回波），拿来当"人"会系统性偏近。
   function lidarProbe(bear, rHint) {
     const P = scanPointsBase();
     if (!P || P.n < 30) return { ok: false, why: '无激光数据' };
     const RMIN = 0.35, RMAX = 8.0;
     const win = Math.min(30, Math.max(2, Number(gCfg.win) || 7)) * Math.PI / 180;
-    // 只在双目值附近找：避免把"人背后 8m 的墙"当成目标
-    const gate = Math.max(0.8, (rHint || 3) * 0.45);
-    let bestR = Infinity;
+    const tol = Math.max(0.5, (rHint || 3) * 0.35);
+    const pts = [];
     for (let i = 0; i < P.n; i++) {
       const x = P.bx[i], y = P.by[i];
       const d = Math.hypot(x, y);
       if (d < RMIN || d > RMAX) continue;
-      if (Math.abs(angDiff(Math.atan2(y, x), bear)) > win) continue;
-      if (rHint && Math.abs(d - rHint) > gate) continue;
-      if (d < bestR) bestR = d;
-    }
-    if (!isFinite(bestR)) return { ok: false, why: '该方位无回波' };
-    // 最近点 ±0.6m 内算一簇，取中位距离 + 圆均值方位
-    const ds = [];
-    let ss = 0, cc = 0, cnt = 0;
-    for (let i = 0; i < P.n; i++) {
-      const x = P.bx[i], y = P.by[i];
-      const d = Math.hypot(x, y);
-      if (d < RMIN || d > bestR + 0.6) continue;
       const ang = Math.atan2(y, x);
       if (Math.abs(angDiff(ang, bear)) > win) continue;
-      ds.push(d); ss += Math.sin(ang); cc += Math.cos(ang); cnt++;
+      pts.push({ d: d, a: ang });
     }
-    if (cnt < 3) return { ok: false, why: '回波太少(' + cnt + ')' };
-    ds.sort(function (a, b) { return a - b; });
-    return { ok: true, r: ds[ds.length >> 1], b: Math.atan2(ss, cc),
-             n: cnt, dmin: bestR };
+    if (pts.length < 4) return { ok: false, why: '该方位无回波' };
+    pts.sort(function (p, q) { return p.d - q.d; });
+    // 1) 按距离断档切簇
+    const clusters = [];
+    let cur = [pts[0]];
+    for (let i = 1; i < pts.length; i++) {
+      if (pts[i].d - cur[cur.length - 1].d > 0.30) { clusters.push(cur); cur = [pts[i]]; }
+      else cur.push(pts[i]);
+    }
+    clusters.push(cur);
+    // 2) 每簇算中位距离 + 圆均值方位，点数太少的丢掉
+    const cand = [];
+    for (let c = 0; c < clusters.length; c++) {
+      const g = clusters[c];
+      if (g.length < 4) continue;
+      const ds = g.map(function (p) { return p.d; }).sort(function (a, b) { return a - b; });
+      let ss = 0, cc = 0;
+      for (let k = 0; k < g.length; k++) { ss += Math.sin(g[k].a); cc += Math.cos(g[k].a); }
+      cand.push({ n: g.length, r: ds[ds.length >> 1], b: Math.atan2(ss, cc),
+                  dmin: ds[0], dmax: ds[ds.length - 1] });
+    }
+    if (!cand.length) return { ok: false, why: '回波太碎' };
+    // 3) 挑与双目最接近的簇；差太多就当"没看见人"（前面的障碍物被打掉）
+    let best = null;
+    for (let i = 0; i < cand.length; i++) {
+      const dd = Math.abs(cand[i].r - (rHint || cand[i].r));
+      if (!best || dd < best.dd) best = { c: cand[i], dd: dd };
+    }
+    if (best.dd > tol) {
+      return { ok: false,
+               why: '雷达 ' + best.c.r.toFixed(2) + 'm 与双目差太多' };
+    }
+    return { ok: true, r: best.c.r, b: best.c.b, n: best.c.n, dmin: best.c.dmin };
   }
 
   // ---- 车体系 → 地图系 ----
@@ -3646,12 +3701,24 @@ html, body{overflow:hidden}
     }
   }
 
-  // ---- 越界判定 + 上报 ----
+  // ---- 越界判定 + 两级上报（预警 / 报警）---------------------------------
+  //  按**目标**累积，不按"区域+目标"：一个人同时压住多个重叠的警戒区时只算
+  //  一条，上报时把区名合成 "圆形警戒1+矩形警戒2"（用户要求：交叉位置合并上报）。
+  //  · 连续在区 N 次 → 预警（warnN，默认 5）
+  //  · 连续在区 N 次 → 报警（alarmN，默认 10，必须 ≥ warnN）
+  //  · 两个阈值都可配；一进门先预警，够次数再升级报警，各只报一次；
+  //  · 离开要超出**所有**区 0.4m 才复位（滞回），复位后才允许下一轮再报；
+  //  · 同一目标还有冷却（cool，默认 60s），短时间内反复进出不会刷屏。
   function guardEval() {
-    if (!gData || !S.pose || !S.zones.length) return;
+    // ⚠ 不能因为"没有区域"就整体 return：那样清空区域后状态卡在"在区"，
+    //   再画一个区域会从旧计数接着数（实测 19/10 一直不归零）。
+    if (!gData || !S.pose) return;
     const now = Date.now();
-    const seen = {};
+    const warnN = Math.max(1, Math.round(Number(gCfg.warnN) || 5));
+    let alarmN = Math.max(1, Math.round(Number(gCfg.alarmN) || 10));
+    if (alarmN < warnN) alarmN = warnN;
     const cold = Math.max(5, Number(gCfg.cool) || 60) * 1000;
+    const seen = {};
     const list = gData.targets || [];
     for (let i = 0; i < list.length; i++) {
       const t = list[i];
@@ -3662,52 +3729,75 @@ html, body{overflow:hidden}
       const key = (t.tid === null || t.tid === undefined)
         ? ('p' + Math.round(w.x * 10) + '_' + Math.round(w.y * 10))
         : String(t.tid);
+      seen[key] = 1;
+      t._k = key;                      // 状态行要用它查连续计数
+      const st = gState[key] || (gState[key] = { n: 0, in: false,
+                                                 warn: false, alarm: false, t: 0 });
+      // 这个人在哪些区里（重叠的都要）
+      let zs = [];
+      let outMin = Infinity;
       for (let j = 0; j < S.zones.length; j++) {
         const z = S.zones[j];
         if (z.on === false) continue;
-        const k = z.id + '|' + key;
-        seen[k] = 1;
-        const st = gState[k] || (gState[k] = { n: 0, in: false, t: 0 });
-        if (zoneInside(z, w.x, w.y)) {
-          st.n++;
-          if (!st.in && st.n >= 2) {            // 连续两拍在区内才算「进入」
-            st.in = true;
-            if (now - (st.t || 0) >= cold) {
-              st.t = now;
-              guardReport(z, t, w);
-            }
-          }
-        } else if (st.in && zoneOutDist(z, w.x, w.y) > 0.4) {
-          st.in = false; st.n = 0;              // 超出 0.4m 才算离开（滞回）
-        } else if (!st.in) {
-          st.n = 0;
+        if (zoneInside(z, w.x, w.y)) zs.push(z);
+        else outMin = Math.min(outMin, zoneOutDist(z, w.x, w.y));
+      }
+      if (zs.length) {
+        st.n++;
+        st.in = true;
+        st.zones = zs.map(function (z) { return z.name; }).join('+');
+        if (!st.warn && st.n >= warnN && now - (st.t || 0) >= cold) {
+          st.warn = true;
+          guardReport(zs, t, w, 1, st.n);
         }
+        if (!st.alarm && st.n >= alarmN && now - (st.t || 0) >= cold) {
+          // 升级报警时预警已报过就只补报警这一条；冷却从报警起算
+          st.alarm = true;
+          st.t = now;
+          guardReport(zs, t, w, 2, st.n);
+        }
+      } else if (st.in && (!isFinite(outMin) || outMin > 0.4)) {
+        st.in = false; st.n = 0; st.warn = false; st.alarm = false;
+        st.zones = '';
+      } else if (!st.in) {
+        st.n = 0;
       }
     }
-    // 人走了 / 区域被删了 / 关了：把状态清掉，下次进来算新的一次
+    // 人走了 / 区域被删了 / 关了：复位（下次进来算新的一次）
     for (const k in gState) {
       if (!seen[k]) {
         gState[k].in = false;
         gState[k].n = 0;
+        gState[k].warn = false;
+        gState[k].alarm = false;
         if (now - (gState[k].t || 0) > 600000) delete gState[k];
       }
     }
   }
 
-  function guardReport(z, t, w) {
+  function guardReport(zs, t, w, lvl, n) {
+    const names = zs.map(function (z) { return z.name; }).join('+');
     const dist = (w && w.r != null) ? w.r.toFixed(2) + ' m'
                                     : ((t.dist_m == null) ? '距离未知' : t.dist_m.toFixed(2) + ' m');
     const src = (w && w.src) ? ('[' + w.src + ']') : '';
-    const note = z.name + ' · ID' + (t.tid == null ? '-' : t.tid) + ' · ' + dist + src +
+    const lv = (lvl >= 2) ? '报警' : '预警';
+    const note = names + ' · ' + lv + ' ' + n + '次 · ID' +
+                 (t.tid == null ? '-' : t.tid) + ' · ' + dist + src +
                  ' · (' + w.x.toFixed(2) + ', ' + w.y.toFixed(2) + ')';
-    toast('越界告警：' + note, true);
+    toast('越界' + lv + '：' + note, lvl >= 2);
     if (!gCfg.report) return;
     const body = {
-      label: 'intrude', cn: '越界入侵事件', lvl: 2, src: 'guard',
+      // 预警用独立 label：云端 "intrude" 有 6s 同名去抖，预警+报警挤在一起会
+      // 被合并掉一条；分成 intrude_warn / intrude 才能两级都留下记录。
+      label: (lvl >= 2) ? 'intrude' : 'intrude_warn',
+      cn: (lvl >= 2) ? '越界入侵事件' : '越界预警',
+      lvl: (lvl >= 2) ? 2 : 1, src: 'guard',
       tid: (t.tid == null ? null : t.tid),
       score: t.score || 0,
       note: note,
-      m: { zone_id: z.id, zone: z.name, kind: z.type,
+      m: { zone_id: zs.map(function (z) { return z.id; }).join('+'),
+           zone: names, kind: zs.map(function (z) { return z.type; }).join('+'),
+           level: (lvl >= 2) ? 'alarm' : 'warn', n: n,
            dist: (w && w.r != null) ? +w.r.toFixed(2) : null,
            dist_stereo: (w && w.rStereo != null) ? +w.rStereo.toFixed(2) : null,
            src: (w && w.src) || '',
@@ -3740,9 +3830,14 @@ html, body{overflow:hidden}
     if (locked) {
       const lw = locked._w;
       const rr = (lw && lw.r != null) ? lw.r : locked.dist_m;
+      const st = gState[locked._k];
+      const nn = (st && st.n) ? st.n : 0;
+      const aN = Math.max(1, Math.round(Number(gCfg.alarmN) || 10));
       b.textContent = 'ID' + (locked.tid == null ? '-' : locked.tid) + ' ' +
                       rr.toFixed(2) + 'm ' +
                       (lw && lw.src ? '·' + lw.src + ' ' : '') +
+                      (nn ? ('· 在区 ' + nn + '/' + aN +
+                             (st.alarm ? '(已报警)' : (st.warn ? '(已预警)' : '')) + ' ') : '') +
                       (locked.locked ? '（锁定）' : '');
     } else if (!ai.active) {
       b.textContent = ai.ok ? 'AI 未运行（切「AI 标注」或「仅推理」）' : 'AI 未启用';
@@ -3792,20 +3887,30 @@ html, body{overflow:hidden}
     guardCfgLoad();
     // 延后一次：map_base 还没拿到时先用全局键
     renderZones();
-    const poll = $('gPollSec'), cool = $('gCoolSec'), off = $('gYawOff');
-    if (poll) poll.onchange = function () {
-      gCfg.poll = Math.min(10, Math.max(0.3, Number(poll.value) || 1));
-      poll.value = gCfg.poll; guardCfgSave();
-      if (gTimer) guardStart();
-    };
-    if (cool) cool.onchange = function () {
-      gCfg.cool = Math.min(3600, Math.max(5, Number(cool.value) || 60));
-      cool.value = gCfg.cool; guardCfgSave();
-    };
-    if (off) off.onchange = function () {
-      gCfg.yawOff = Math.max(-180, Math.min(180, Number(off.value) || 0));
-      off.value = gCfg.yawOff; guardCfgSave(); draw();
-    };
+    // 数值输入统一走这里：钳位 -> 回写 -> 存盘（可选回调）
+    function bindNum(id, key, lo, hi, onSet) {
+      const el = $(id);
+      if (!el) return;
+      el.onchange = function () {
+        let v = Number(el.value);
+        if (!isFinite(v)) v = gCfg[key];
+        v = Math.min(hi, Math.max(lo, v));
+        if (key === 'warnN' || key === 'alarmN') v = Math.round(v);
+        gCfg[key] = v;
+        // 报警阈值不能早于预警阈值
+        if (key === 'warnN' && gCfg.alarmN < v) gCfg.alarmN = v;
+        if (key === 'alarmN' && v < gCfg.warnN) gCfg.alarmN = gCfg.warnN;
+        guardCfgSave();
+        guardCfgLoad();               // 把联动后的值回写到另一个输入框
+        if (onSet) onSet(v);
+      };
+    }
+    bindNum('gPollSec', 'poll', 0.3, 10, function () { if (gTimer) guardStart(); });
+    bindNum('gCoolSec', 'cool', 5, 3600);
+    bindNum('gYawOff', 'yawOff', -180, 180, function () { draw(); });
+    bindNum('gWinDeg', 'win', 2, 30, function () { guardPoll(); });
+    bindNum('gWarnN', 'warnN', 1, 200);
+    bindNum('gAlarmN', 'alarmN', 1, 200);
     if ($('btnGuardReport')) $('btnGuardReport').onclick = function () {
       gCfg.report = !gCfg.report; guardCfgSave();
       this.classList.toggle('on', gCfg.report);

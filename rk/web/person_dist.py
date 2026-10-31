@@ -260,13 +260,24 @@ def match_targets(dets, depth, ai_wh, yaw_deg=0.0, pitch_deg=0.0,
         cam_cy = float(depth.get("cam_cy") or h_full * 0.5)
         base_m = float(depth.get("baseline_m") or 0.0)
 
-        aim = d.get("aim")
+        # ---- 采样点 = **AI 框中心**（2026-11-01 用户要求）----
+        #   之前用 ai_overlay 的 aim（头/几何中心，会随"能否全包"在两种之间切），
+        #   切换时采样点会在人身上跳 0.3~0.6 个画面宽，距离跟着抖。
+        #   框中心是确定的：任何时候都取同一个几何点。框无效（宽高<2px）才退回 aim。
         box = d.get("box") or [0, 0, 0, 0]
-        if not (aim and len(aim) >= 2):
-            aim = [(box[0] + box[2]) / 2.0, (box[1] + box[3]) / 2.0]
+        try:
+            bx0, by0, bx1, by1 = [float(v) for v in box[:4]]
+        except (TypeError, ValueError):
+            bx0 = by0 = bx1 = by1 = 0.0
+        if (bx1 - bx0) > 2 and (by1 - by0) > 2:
+            u_ai = (bx0 + bx1) / 2.0
+            v_ai = (by0 + by1) / 2.0
+        else:
+            aim = d.get("aim") or [aw * 0.5, ah * 0.5]
+            u_ai, v_ai = float(aim[0]), float(aim[1])
         # AI 像素 -> 视频全分辨率像素
-        u_v = float(aim[0]) / aw * w_full
-        v_v = float(aim[1]) / ah * h_full
+        u_v = u_ai / aw * w_full
+        v_v = v_ai / ah * h_full
         box_w_v = max(1.0, (float(box[2]) - float(box[0])) / aw * w_full)
 
         st = _probe_video_pt(q, depth, u_v, v_v, box_w_v, zlo, zhi)
@@ -350,8 +361,8 @@ def _selftest():
              "baseline_m": 0.048133, "img2rect": None,
              "age": 0.05,
              "heat": base64.b64encode(q.tobytes()).decode("ascii")}
-    # AI 帧 960x540，人在正中间（u=480），框覆盖中间那一块
-    dets = [{"tid": 7, "box": [330, 110, 620, 480], "aim": [480, 300], "score": 0.9}]
+    # AI 帧 960x540，人在正中间（框中心 u=480），框覆盖中间那一块
+    dets = [{"tid": 7, "box": [330, 110, 630, 480], "aim": [480, 300], "score": 0.9}]
     r = match_targets(dets, depth, [960, 540], yaw_deg=0.0, pitch_deg=0.0)
     t = r[0]
     ok = abs(t["dist_m"] - 2.0) < 0.12 and abs(t["bearing_deg"]) < 0.5
@@ -373,7 +384,8 @@ def _selftest():
     u_l = 133.0 / hw * 1920.0                    # 人在左目像上的 u（像素）
     d_px = 1448.5 * 0.048133 / 2.0               # 2m 的视差
     u_r_ai = (u_l - d_px) / 1920.0 * 960.0       # 换算到 AI(960 宽) 坐标
-    dets2 = [{"tid": 8, "box": [300, 110, 640, 480], "aim": [u_r_ai, 300]}]
+    dets2 = [{"tid": 8, "box": [u_r_ai - 170, 110, u_r_ai + 170, 480],
+              "aim": [u_r_ai, 300]}]
     rr = match_targets(dets2, dep2, [960, 540], 0.0, 0.0, ai_on_left=False)
     want = math.degrees(math.atan2(u_l - 960.0, 1448.5))
     ok4 = abs(rr[0]["bearing_deg"] - want) < 0.4
