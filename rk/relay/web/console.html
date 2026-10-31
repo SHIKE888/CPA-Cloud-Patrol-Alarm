@@ -3326,6 +3326,13 @@ html, body{overflow:hidden}
   // ═══════════════════════════════════════════════════════════════════════
   const GUARD_CKEY = 'guard:cfg';
   const GUARD_ZKEY = 'guard:zones';
+  // ⚠ 2026-11-01 用户反馈"其他设备同步的警戒区域不一致，导致错报"：
+  //   区域/参数原来只存在 localStorage —— 每台设备各一份。手机上可能是空的、
+  //   也可能是几天前画的老区域，于是同一时刻两台设备对"人在不在区里"结论不同，
+  //   老区域那台就会把不该报的报了。现在改成**板端存唯一一份**：
+  //   `GET/POST /api/guard`（按地图名分组），页面打开/改完都与它对齐。
+  const GUARD_API = '/api/guard';
+  const GUARD_SYNC_EVERY = 5;    // 每 N 拍轮询跟板端对一次（poll=1s 即 5s）
   // ⚠ 这几个用 var：draw() 可能在这场脚本还没跑到这里时就被 ResizeObserver 调到，
   //   用 let 会踩「暂时性死区」(Cannot access 'gData' before initialization)。
   var gCfg = { poll: 1.0, cool: 60, yawOff: 0, report: true,
@@ -3338,22 +3345,25 @@ html, body{overflow:hidden}
   var gTimer = null, gBusy = false;
   var gMapSeen = null;           // 上次绑定的地图身份（区域跟地图走）
   var gState = {};               // '区域ID|目标键' -> {n, in, t}
+  var gZRev = 0;                 // 本设备已看到的板端版本号（每写一次 +1）
+  var gZAdopt = false;           // 正在采纳板端数据（防止回写成环）
+  var gZPushQ = null, gZPushBusy = false;   // 待推送改动（合并成一次 POST）
+  var gPollN = 0;                // 轮询计数（每 GUARD_SYNC_EVERY 拍对一次板端）
 
   // ---- 配置存取 ----
-  function guardCfgLoad() {
-    try {
-      const o = JSON.parse(localStorage.getItem(GUARD_CKEY) || '{}');
-      if (o && typeof o === 'object') {
-        if (isFinite(o.poll)) gCfg.poll = Math.min(10, Math.max(0.3, +o.poll));
-        if (isFinite(o.cool)) gCfg.cool = Math.min(3600, Math.max(5, +o.cool));
-        if (isFinite(o.yawOff)) gCfg.yawOff = +o.yawOff;
-        if (typeof o.report === 'boolean') gCfg.report = o.report;
-        if (typeof o.lidar === 'boolean') gCfg.lidar = o.lidar;
-        if (isFinite(o.win)) gCfg.win = Math.min(30, Math.max(2, +o.win));
-        if (isFinite(o.warnN)) gCfg.warnN = Math.min(200, Math.max(1, Math.round(+o.warnN)));
-        if (isFinite(o.alarmN)) gCfg.alarmN = Math.min(200, Math.max(1, Math.round(+o.alarmN)));
-      }
-    } catch (e) {}
+  // `guardCfgApply(o)` 把一份参数合并进 gCfg 并回写到界面 —— localStorage 和
+  //   板端都走它，保证"从哪来"不影响结果。
+  function guardCfgApply(o) {
+    if (o && typeof o === 'object') {
+      if (isFinite(o.poll)) gCfg.poll = Math.min(10, Math.max(0.3, +o.poll));
+      if (isFinite(o.cool)) gCfg.cool = Math.min(3600, Math.max(5, +o.cool));
+      if (isFinite(o.yawOff)) gCfg.yawOff = +o.yawOff;
+      if (typeof o.report === 'boolean') gCfg.report = o.report;
+      if (typeof o.lidar === 'boolean') gCfg.lidar = o.lidar;
+      if (isFinite(o.win)) gCfg.win = Math.min(30, Math.max(2, +o.win));
+      if (isFinite(o.warnN)) gCfg.warnN = Math.min(200, Math.max(1, Math.round(+o.warnN)));
+      if (isFinite(o.alarmN)) gCfg.alarmN = Math.min(200, Math.max(1, Math.round(+o.alarmN)));
+    }
     if (gCfg.alarmN < gCfg.warnN) gCfg.alarmN = gCfg.warnN;   // 报警不能早于预警
     if ($('gPollSec')) $('gPollSec').value = gCfg.poll;
     if ($('gCoolSec')) $('gCoolSec').value = gCfg.cool;
@@ -3364,8 +3374,14 @@ html, body{overflow:hidden}
     if ($('btnGuardReport')) $('btnGuardReport').classList.toggle('on', gCfg.report);
     if ($('btnGuardLidar')) $('btnGuardLidar').classList.toggle('on', gCfg.lidar !== false);
   }
+  function guardCfgLoad() {
+    try {
+      guardCfgApply(JSON.parse(localStorage.getItem(GUARD_CKEY) || '{}'));
+    } catch (e) { guardCfgApply(null); }
+  }
   function guardCfgSave() {
     try { localStorage.setItem(GUARD_CKEY, JSON.stringify(gCfg)); } catch (e) {}
+    guardPush({ cfg: gCfg });          // 参数也要同步：阈值不同 = 上报时机不同
   }
 
   // ---- 区域存取（跟地图走：换一张图 = 换一批警戒区）----
@@ -3396,6 +3412,7 @@ html, body{overflow:hidden}
   }
   function guardSave() {
     try { localStorage.setItem(guardKey(), JSON.stringify(S.zones)); } catch (e) {}
+    guardPush({ zones: S.zones });
   }
   function guardLoad() {
     let raw = null;
@@ -3403,11 +3420,72 @@ html, body{overflow:hidden}
     S.zones = guardParse(raw);
     renderZones();
   }
+
+  // ---- 板端共享（唯一一份区域，多设备一致）-------------------------------
+  //  写：本地先存（断网也不丢）→ 合并成一次 POST（连续拖拽不会打爆请求）。
+  //  读：每 GUARD_SYNC_EVERY 拍对一次；板端 rev 更新了就**采纳板端**。
+  //  板端还没有这张图的记录（rev=0）→ 把本机历史区域推上去（自动迁移）。
+  function guardPush(part) {
+    if (gZAdopt) return;                       // 采纳中，别回写（会成环）
+    gZPushQ = Object.assign(gZPushQ || {}, part);
+    guardDrain();
+  }
+  function guardDrain() {
+    if (gZPushBusy || !gZPushQ) return;
+    gZPushBusy = true;
+    const body = Object.assign({ map: S.mapBase || '', rev: gZRev }, gZPushQ);
+    gZPushQ = null;
+    fetch(GUARD_API, {
+      method: 'POST', cache: 'no-store',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    }).then(function (r) { return r.json(); }).then(function (j) {
+      if (j && j.ok) {
+        gZRev = j.rev;
+        // rev 对不上 = 期间别的设备改过。仍然按本机写入（用户的动作不能被吞），
+        // 但要告诉用户一声，否则会以为是"悄悄变回去了"。
+        if (j.conflict) toast('警戒区已被其他设备改过，已按本机的覆盖并同步到板端');
+      }
+    }).catch(function () {}).then(function () {
+      gZPushBusy = false;
+      guardDrain();                            // 期间又攒了新改动就再发一次
+    });
+  }
+  function guardAdopt(j) {
+    gZAdopt = true;
+    try {
+      S.zones = guardParse(JSON.stringify(j.zones || []));
+      if (j.cfg && typeof j.cfg === 'object') guardCfgApply(j.cfg);
+      try { localStorage.setItem(guardKey(), JSON.stringify(S.zones)); } catch (e) {}
+      try { localStorage.setItem(GUARD_CKEY, JSON.stringify(gCfg)); } catch (e) {}
+    } finally { gZAdopt = false; }
+    gZRev = j.rev || 0;
+    renderZones(); S.sceneRev++; draw();
+  }
+  function guardFetch() {
+    const mk = S.mapBase || '';
+    fetch(GUARD_API + '?map=' + encodeURIComponent(mk), { cache: 'no-store' })
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        if (!j || !j.ok) return;
+        if (mk !== (S.mapBase || '')) return;      // 期间地图换了，这次结果作废
+        if (j.rev > gZRev) { guardAdopt(j); return; }
+        if (j.rev === 0 && S.zones.length) {
+          // 板端还没有这张图的记录 -> 把本机（localStorage 里的历史）推上去
+          guardPush({ zones: S.zones, cfg: gCfg });
+        }
+      })
+      .catch(function () {});                      // 板端不可达就只用本机缓存
+  }
+
   // 地图身份变了 -> 换一批警戒区（和巡检点同样的规则）
   function guardSyncToMap() {
     if (!S.mapBase || S.mapBase === gMapSeen) return;
     gMapSeen = S.mapBase;
-    guardLoad();
+    gZRev = 0;                 // 换图 = 换一份板端记录
+    gZPushQ = null;
+    guardLoad();               // 先用本机缓存顶上（断网也能看）
+    guardFetch();              // 再跟板端对齐（板端有就以板端为准）
     S.sceneRev++;
     draw();
   }
@@ -3865,6 +3943,9 @@ html, body{overflow:hidden}
       guardEval();
       guardStatus(d);
       draw();
+      // 每 GUARD_SYNC_EVERY 拍跟板端对一次：别的设备改了区域/参数，这边跟着变。
+      // 放轮询里而不是另开定时器：调度页不可见时本来就不跑，这里自动跟着停。
+      if ((++gPollN % GUARD_SYNC_EVERY) === 0) guardFetch();
     } catch (e) {
       gData = null;
       guardStatus(null, e.message);
@@ -3887,6 +3968,7 @@ html, body{overflow:hidden}
     guardCfgLoad();
     // 延后一次：map_base 还没拿到时先用全局键
     renderZones();
+    guardFetch();          // 跟板端对齐一次（板端有就以板端为准）
     // 数值输入统一走这里：钳位 -> 回写 -> 存盘（可选回调）
     function bindNum(id, key, lo, hi, onSet) {
       const el = $(id);
@@ -3946,6 +4028,8 @@ html, body{overflow:hidden}
   window.__guardSnapshot = function () {
     return {
       cfg: JSON.parse(JSON.stringify(gCfg)),
+      rev: gZRev,                 // 板端区域版本（多设备是否已对齐看它）
+      map: S.mapBase || '',
       pose: S.pose ? { x: S.pose.x, y: S.pose.y, yaw: S.pose.yaw } : null,
       zones: S.zones.map(function (z) { return { id: z.id, name: z.name, type: z.type, on: z.on }; }),
       scan: { n: gScan.n, age_ms: gScan.t ? (Date.now() - gScan.t) : null },

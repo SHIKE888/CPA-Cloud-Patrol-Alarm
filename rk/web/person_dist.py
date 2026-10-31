@@ -9,8 +9,8 @@ AI（`/api/ai`）和深度（`/api/depth`）是两条独立管线：
     值是 8bit 的**对数**量化（0=无效，1..255 对应 zlo..zhi）。
 两条链路的更新节奏也不同（AI ~30fps 推理、深度 10Hz）。这里只做三件事：
 
-  1) 把 AI 的"瞄准点"（头/几何中心）换算到热力图坐标，取一个小窗口的
-     **有效深度中位数**当这个人到相机的距离；
+  1) 把 AI 给的**肩部中点**（没跑姿态关键点时才退回瞄准点 / 框中心）换算到
+     热力图坐标，取一个小窗口的**有效深度中位数**当这个人到相机的距离；
   2) 用同一窗口的 u 偏移 + 焦距算水平方位角 `atan((u-cx)/f)`；
   3) 结合云台 yaw/pitch，把 (距离, 方位) 变成**相机→车体**的向量
      （车体系：x 前 / y 左 / z 上），前端再按小车位姿转到地图系。
@@ -122,7 +122,7 @@ def _apply_h(H, u, v):
     return x / w, y / w
 
 
-def _probe_video_pt(q, depth, u_v, v_v, box_w_v, zlo, zhi):
+def _probe_video_pt(q, depth, u_v, v_v, box_w_v, zlo, zhi, src="aim"):
     """在**视频坐标**给的点上取深度。
 
     视频坐标 ≠ 热力图坐标：标定后的极线校正会把左图横向压缩并旋转（本工程
@@ -139,7 +139,7 @@ def _probe_video_pt(q, depth, u_v, v_v, box_w_v, zlo, zhi):
     st = _window_stats(q, hu - r, hv - r, hu + r + 1, hv + r + 1,
                        zlo, zhi, MIN_AIM_VALID)
     if st is not None:
-        st["src"] = "aim"
+        st["src"] = src
         return st
     # 兜底：用框宽当窗口（人身上总有一点有效深度）
     rb = max(r, int(round(0.20 * max(1.0, box_w_v) / w_full * hw)))
@@ -148,6 +148,43 @@ def _probe_video_pt(q, depth, u_v, v_v, box_w_v, zlo, zhi):
     if st is not None:
         st["src"] = "box"
     return st
+
+
+def _pick_sample_pt(d, aw, ah):
+    """挑深度采样点（AI 帧像素坐标）。返回 (u, v, src, pair)。
+
+    优先级（2026-11-01 用户要求：深度采样**优先取肩部中心**）：
+      1. `sh`  两肩中点 —— 肩/颈根那一块正对相机、面积大、不会被手臂和背包
+                挡住，是整幅人体上深度最稳的地方；而且不随"框被裁"滑动
+                （框中心会：人走近或走到画面边缘时框被切，中心滑到大腿）；
+      2. `aim` ai_overlay 的瞄准点（能全包 = 头脚中点，装不下 = 头部）；
+      3. 框中心 —— 连瞄准点都没有（没跑姿态模型）时才用。
+    """
+    # 1) 肩部中点
+    sh = d.get("sh")
+    try:
+        if sh and len(sh) >= 2 and (aw <= 0 or (0 <= float(sh[0]) < aw)):
+            return (float(sh[0]), float(sh[1]), "shoulder",
+                    bool(d.get("sh_pair", True)))
+    except (TypeError, ValueError):
+        pass
+    # 2) 瞄准点
+    aim = d.get("aim")
+    try:
+        if aim and len(aim) >= 2:
+            return float(aim[0]), float(aim[1]), "aim", False
+    except (TypeError, ValueError):
+        pass
+    # 3) 框中心
+    box = d.get("box") or [0, 0, 0, 0]
+    try:
+        bx0, by0, bx1, by1 = [float(v) for v in box[:4]]
+    except (TypeError, ValueError):
+        bx0 = by0 = bx1 = by1 = 0.0
+    if (bx1 - bx0) > 2 and (by1 - by0) > 2:
+        return (bx0 + bx1) / 2.0, (by0 + by1) / 2.0, "box", False
+    return aw * 0.5, ah * 0.5, "frame", False
+
 
 
 # --------------------------------------------------------------- 坐标变换
@@ -260,27 +297,21 @@ def match_targets(dets, depth, ai_wh, yaw_deg=0.0, pitch_deg=0.0,
         cam_cy = float(depth.get("cam_cy") or h_full * 0.5)
         base_m = float(depth.get("baseline_m") or 0.0)
 
-        # ---- 采样点 = **AI 框中心**（2026-11-01 用户要求）----
-        #   之前用 ai_overlay 的 aim（头/几何中心，会随"能否全包"在两种之间切），
-        #   切换时采样点会在人身上跳 0.3~0.6 个画面宽，距离跟着抖。
-        #   框中心是确定的：任何时候都取同一个几何点。框无效（宽高<2px）才退回 aim。
-        box = d.get("box") or [0, 0, 0, 0]
-        try:
-            bx0, by0, bx1, by1 = [float(v) for v in box[:4]]
-        except (TypeError, ValueError):
-            bx0 = by0 = bx1 = by1 = 0.0
-        if (bx1 - bx0) > 2 and (by1 - by0) > 2:
-            u_ai = (bx0 + bx1) / 2.0
-            v_ai = (by0 + by1) / 2.0
-        else:
-            aim = d.get("aim") or [aw * 0.5, ah * 0.5]
-            u_ai, v_ai = float(aim[0]), float(aim[1])
+        # ---- 采样点 = **肩部中心** > 瞄准点 > 框中心（见 _pick_sample_pt）----
+        #   用户 2026-11-01 要求"深度采样点优先取肩部中心"：腰腹（框中心）常被
+        #   手臂/背包挡住，人走近时框被裁、中心还会滑到大腿；肩/颈根那一块正对
+        #   相机、面积大，深度中位数最稳。
+        u_ai, v_ai, src0, pair = _pick_sample_pt(d, aw, ah)
         # AI 像素 -> 视频全分辨率像素
         u_v = u_ai / aw * w_full
         v_v = v_ai / ah * h_full
-        box_w_v = max(1.0, (float(box[2]) - float(box[0])) / aw * w_full)
+        box_v = d.get("box") or [0, 0, 0, 0]
+        try:
+            box_w_v = max(1.0, (float(box_v[2]) - float(box_v[0])) / aw * w_full)
+        except (TypeError, ValueError, IndexError):
+            box_w_v = 1.0
 
-        st = _probe_video_pt(q, depth, u_v, v_v, box_w_v, zlo, zhi)
+        st = _probe_video_pt(q, depth, u_v, v_v, box_w_v, zlo, zhi, src0)
         if st is None:
             item["reason"] = "窗口内没有有效深度"
             out.append(item)
@@ -294,8 +325,8 @@ def match_targets(dets, depth, ai_wh, yaw_deg=0.0, pitch_deg=0.0,
         if (not ai_on_left) and base_m > 0 and cam_fx > 0:
             d_shift = cam_fx * base_m / max(float(st["z"]), 0.05)
             st2 = _probe_video_pt(q, depth, u_v + d_shift, v_v,
-                                  box_w_v, zlo, zhi)
-            if st2 is not None and st2["src"] == "aim":
+                                  box_w_v, zlo, zhi, src0)
+            if st2 is not None and st2["src"] != "box":
                 st = st2
             u_v += d_shift
 
@@ -317,6 +348,8 @@ def match_targets(dets, depth, ai_wh, yaw_deg=0.0, pitch_deg=0.0,
             conf *= 0.6                       # 窗口里混了背景
         if st["src"] == "box":
             conf *= 0.8                       # 用的是兜底取样
+        if st["src"] == "shoulder" and not pair:
+            conf *= 0.9                       # 只看见一侧肩（侧身 / 遮挡）
         if int(st["n"]) < MIN_AIM_VALID * 2:
             conf *= 0.8                       # 有效像素偏少
 
@@ -392,7 +425,17 @@ def _selftest():
     print("  右目 u=%.1f -> bearing=%.2f° (应 %.2f°), dist=%s" %
           (u_r_ai, rr[0]["bearing_deg"] if rr[0]["ok"] else float("nan"),
            want, rr[0].get("dist_m")))
-    ok = ok and ok2 and ok3 and ok4
+    # 肩部中点优先：把框向右挪到人外面（框中心落在背景 6m 上），
+    # 但肩中点仍在人身上 -> 应取到 2m、src=shoulder。
+    dets3 = [{"tid": 9, "box": [500, 110, 800, 480], "aim": [650, 300],
+              "sh": [480, 250], "sh_pair": True}]
+    r5 = match_targets(dets3, depth, [960, 540], 0.0, 0.0)
+    t5 = r5[0]
+    ok5 = (bool(t5.get("ok")) and t5.get("src") == "shoulder"
+           and abs(t5["dist_m"] - 2.0) < 0.15)
+    print("  肩中点优先: dist=%s src=%s （同一个人框中心落在背景上）" %
+          (t5.get("dist_m"), t5.get("src")))
+    ok = ok and ok2 and ok3 and ok4 and ok5
     print("PASS" if ok else "FAIL")
     return 0 if ok else 2
 
