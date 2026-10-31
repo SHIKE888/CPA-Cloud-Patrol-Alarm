@@ -4691,24 +4691,43 @@ def main():
                         _zone.append((float(_x), float(_y)))
                 except Exception:
                     print("[ai] --ai-zone 解析失败, 已忽略", file=sys.stderr)
-            AI_OVERLAY = AiOverlay(ai_dir=args.ai_dir,
-                                   det_model=args.ai_det_model,
-                                   pose_model=args.ai_pose_model,
-                                   ai_fps=args.ai_fps,
-                                   kpt_margin=args.ai_kpt_margin,
-                                   kpt_scale_max=args.ai_kpt_max_dist,
-                                   det_interval=args.ai_det_interval,
-                                   pose_budget=args.ai_pose_budget,
-                                   pipeline=bool(args.ai_pipeline),
-                                   copy_frame=args.ai_copy_frame,
-                                   source=args.ai_source,
-                                   zone=_zone,
-                                   state_path=state_file,
-                                   action_model=getattr(args, "ai_action_model", ""),
-                                   action_npz=getattr(args, "ai_action_npz", ""),
-                                   action_window=getattr(args, "ai_action_window", 1.2),
-                                   action_backend=getattr(args, "ai_action_backend", "demo"),
-                                   verbose=args.verbose)
+            # ★ 2026-10-31: 板端 ai_overlay.py 可能是旧版(不接受 action_*/verbose)。
+            #   直接传会 TypeError -> systemd 每 10 秒重启循环(2026-10-28 踩过一次)。
+            #   这里按 __init__ 的真实签名过滤关键字参数, 新旧版都能起来:
+            #   旧版不认识的参数只打一行提示, 不让整个推流服务起不来。
+            _ai_kw = dict(
+                ai_dir=args.ai_dir,
+                det_model=args.ai_det_model,
+                pose_model=args.ai_pose_model,
+                ai_fps=args.ai_fps,
+                kpt_margin=args.ai_kpt_margin,
+                kpt_scale_max=args.ai_kpt_max_dist,
+                det_interval=args.ai_det_interval,
+                pose_budget=args.ai_pose_budget,
+                pipeline=bool(args.ai_pipeline),
+                copy_frame=args.ai_copy_frame,
+                source=args.ai_source,
+                zone=_zone,
+                state_path=state_file,
+                action_model=getattr(args, "ai_action_model", ""),
+                action_npz=getattr(args, "ai_action_npz", ""),
+                action_window=getattr(args, "ai_action_window", 1.2),
+                action_backend=getattr(args, "ai_action_backend", "demo"),
+                verbose=args.verbose)
+            try:
+                import inspect as _insp
+                _params = _insp.signature(AiOverlay.__init__).parameters
+                if not any(_q.kind == _q.VAR_KEYWORD
+                           for _q in _params.values()):
+                    _dropped = [k for k in _ai_kw if k not in _params]
+                    if _dropped:
+                        print("[ai] 板端 ai_overlay 是旧版, 忽略参数: %s"
+                              % ", ".join(_dropped))
+                    _ai_kw = dict((k, v) for k, v in _ai_kw.items()
+                                  if k in _params)
+            except (TypeError, ValueError):
+                pass
+            AI_OVERLAY = AiOverlay(**_ai_kw)
             AI_OVERLAY.start()
             print("[ai] AI 叠加已启用: source=%s  %.1f fps  (网页上可切换画面源)"
                   % (AI_OVERLAY.source, AI_OVERLAY.ai_fps))
