@@ -191,26 +191,25 @@ body{
 #viewMap .popt2 input{ width: 46px; padding: 3px 6px; font-size: 12px;
     background: #0d1117; border: 1px solid #30363d; color: #e6edf3;
     border-radius: 6px; font-family: ui-monospace, monospace; }
-/* 警戒区参数表：每组 = "标签 ……… 输入框+单位"，标签贴块左、数字贴块右，
-   宽屏两列各占一半（两端与下面按钮行对齐），手机单列。
-   2026-11-01 用户反馈"框太长了"：输入框原来 flex:1 撑满（约 224px），
-   一个"1"字占一大片。现在固定 72px 右对齐，块内用 space-between 把
-   标签和数字推到两端 —— 既短又整齐，不会右边空一大片。 */
+/* 警戒区参数表：每组 = "标签 ……… 输入框+单位"，标签贴块左、数字贴块右。
+   2026-11-01 用户两次反馈：
+     · "框太长了" -> 输入框从 flex:1（约 224px）改成固定 72px 右对齐；
+     · "显示不全"（手机 390 视口下仍排成两列，每组只剩 ~165px，
+       "同目标冷却/云台零点偏置/雷达方位窗口" 全被省略号截断）
+       -> 不再用固定断点，改 auto-fit + 每组至少 240px：
+          侧栏 >=500px 才两列，否则单列，永远不给标签留不下字的宽度。 */
 #viewMap .gform{
-    display: grid; grid-template-columns: minmax(0, 1fr);
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
     gap: 7px 20px; align-items: center;
     margin: 10px 0 0; padding-top: 10px; border-top: 1px solid #21262d;
     font-size: 12px; color: var(--dim);
   }
-@media (min-width: 560px){
-  #viewMap .gform{ grid-template-columns: repeat(2, minmax(0, 1fr)); }
-}
 #viewMap .gform .gf{
     display: flex; align-items: center; justify-content: space-between;
     gap: 8px; min-width: 0;
   }
-#viewMap .gform label{ white-space: nowrap; overflow: hidden;
-    text-overflow: ellipsis; }
+#viewMap .gform label{ white-space: nowrap; }
 #viewMap .gform .gi{ display: flex; align-items: center; gap: 5px; flex: none; }
 #viewMap .gform .gi input{
     flex: none; width: 72px; min-width: 0;
@@ -1298,13 +1297,13 @@ html, body{overflow:hidden}
           <span class="gf"><label for="gAlarmN">报警阈值</label>
             <span class="gi"><input id="gAlarmN" type="number" min="1" max="200" step="1" value="10"><i>次</i></span></span>
 
-          <span class="gf"><label for="gCoolSec">同目标冷却</label>
+          <span class="gf"><label for="gCoolSec" title="同一个目标两次上报的最小间隔">目标冷却</label>
             <span class="gi"><input id="gCoolSec" type="number" min="5" max="3600" step="5" value="60"><i>秒</i></span></span>
 
-          <span class="gf"><label for="gYawOff">云台零点偏置</label>
+          <span class="gf"><label for="gYawOff" title="云台零点相对车头的角度偏置">云台偏置</label>
             <span class="gi"><input id="gYawOff" type="number" min="-180" max="180" step="1" value="0"><i>°</i></span></span>
 
-          <span class="gf"><label for="gWinDeg">雷达方位窗口</label>
+          <span class="gf"><label for="gWinDeg" title="在多少度的方位范围内去找雷达回波">雷达窗口</label>
             <span class="gi"><input id="gWinDeg" type="number" min="2" max="30" step="1" value="7"><i>°</i></span></span>
         </div>
 
@@ -2812,9 +2811,8 @@ html, body{overflow:hidden}
     if (!box) return;
     const running = !!S.patrolTimer;
     if (!S.patrol.length) {
-      box.innerHTML = '<div class="pempty">还没有巡检点：先用「无向目标 / 有向目标」' +
-        '在地图上点出目标，再点「加入巡检」按顺序加进来。' +
-        '（巡检跑在导航模式上，用的就是当前导航那张图）</div>';
+      box.innerHTML = '<div class="pempty">还没有巡检点：先在地图上放目标，' +
+        '再点「加入巡检」（跑在导航模式，用当前导航图）</div>';
     } else {
       let h = '';
       for (let i = 0; i < S.patrol.length; i++) {
@@ -3516,9 +3514,8 @@ html, body{overflow:hidden}
     const box = $('zlist');
     if (!box) return;
     if (!S.zones.length) {
-      box.innerHTML = '<div class="pempty">还没有警戒区：选「矩形警戒」从一角拖到对角；' +
-        '或选「圆形警戒」点一下定圆心、再按住往外拖定半径。<br>' +
-        '人员位置来自「云台锁定 + 双目深度」，人进区就提示并上报云端。</div>';
+      box.innerHTML = '<div class="pempty">还没有警戒区：矩形拖对角，' +
+        '圆形点圆心再拖半径（人进区自动上报云端）</div>';
       return;
     }
     let h = '';
