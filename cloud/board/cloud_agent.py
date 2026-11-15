@@ -22,6 +22,7 @@ from __future__ import print_function
 
 import argparse
 import gzip
+import ipaddress
 import json
 import os
 import socket
@@ -196,6 +197,10 @@ def read_uptime():
         return None
 
 
+# 上报给云端 /ctrl 的地址里默认排除的网段：车端专网（end1=192.168.100.2 → Jetson）
+DEFAULT_LAN_SKIP = [ipaddress.ip_network("192.168.100.0/24")]
+
+
 def detect_ip():
     try:
         out = subprocess.run(["ip", "-4", "-o", "addr", "show"],
@@ -212,7 +217,7 @@ def detect_ip():
     return None
 
 
-def detect_ips():
+def detect_ips(skip=None):
     """列出本机全部局域网 IPv4，**无线优先**。
 
     2026-11-16：云端 /ctrl 页需要知道“浏览器能用哪个地址直连板子”。
@@ -222,29 +227,43 @@ def detect_ips():
     两条都可能对，也可能有一条不可达，所以**全部上报**，由网页逐个探测。
     无线放前面是因为它才最可能是和客户端同一张网。
 
+    skip: 要排除的网段列表（ip_network），默认排除车端专网 192.168.100.0/24。
+    那条是端1（end1=192.168.100.2）到 Jetson 的内部链路，浏览器永远进不来；
+    留在候选里只会让探测白跑 2.5s，还会在失败时让用户看到“最后一条是 100.2”。
+
     返回 [{"ip":..., "iface":..., "kind":"wifi"|"eth"}, ...]
     """
-    out = []
+    if skip is None:
+        skip = DEFAULT_LAN_SKIP
+    addrs = []
     try:
         raw = subprocess.run(["ip", "-4", "-o", "addr", "show"],
                              capture_output=True, text=True, timeout=2).stdout
     except Exception:                                         # noqa: BLE001
-        return out
+        return addrs
     for line in raw.splitlines():
         p = line.split()
         if "inet" not in p or len(p) < 4:
             continue
         iface = p[1].rstrip(":")
-        addr = p[p.index("inet") + 1].split("/")[0]
+        cidr = p[p.index("inet") + 1]
+        addr = cidr.split("/")[0]
         if addr.startswith("127.") or addr.startswith("169.254."):
+            continue
+        try:
+            net = ipaddress.ip_interface(cidr).network
+        except Exception:                                     # noqa: BLE001
+            net = None
+        if net is not None and any(net.subnet_of(s) or net.overlaps(s)
+                                   for s in skip):
             continue
         kind = "wifi" if (iface.startswith(("wl", "wlan"))
                           or "/wireless" in line) else "eth"
-        out.append({"ip": addr, "iface": iface, "kind": kind})
-    out.sort(key=lambda x: (0 if x["kind"] == "wifi" else 1,
-                            0 if x["ip"].startswith("192.168.") else 1,
-                            x["iface"]))
-    return out
+        addrs.append({"ip": addr, "iface": iface, "kind": kind})
+    addrs.sort(key=lambda x: (0 if x["kind"] == "wifi" else 1,
+                              0 if x["ip"].startswith("192.168.") else 1,
+                              x["iface"]))
+    return addrs
 
 
 # ---------------------------------------------------------------------------
@@ -532,7 +551,7 @@ class Agent(object):
         self.fps_bad_since = 0
         self.ai_bad_since = 0
         self.node_ip = detect_ip()
-        self.node_ips = detect_ips()
+        self.node_ips = detect_ips(self.a.lan_skip)
         self.node_ips_ts = time.time()
         self.seq = 0
         self.stop = threading.Event()
@@ -998,7 +1017,7 @@ class Agent(object):
         if now - self.node_ips_ts < every:
             return
         self.node_ips_ts = now
-        ips = detect_ips()
+        ips = detect_ips(self.a.lan_skip)
         if [x["ip"] for x in ips] != [x["ip"] for x in self.node_ips]:
             log("lan ips: %s -> %s"
                 % ([x["ip"] for x in self.node_ips], [x["ip"] for x in ips]))
@@ -1121,6 +1140,10 @@ def main():
     ap.add_argument("--web-port", type=int, default=80,
                     help="网页端口（云端 /ctrl 页拿它拼 http://<ip>:<port>）。"
                          "板上 nginx 在 80，所以默认 80")
+    ap.add_argument("--lan-skip", default="192.168.100.0/24",
+                    help="上报给云端 /ctrl 的局域网地址里要排除的网段（逗号分隔）。"
+                         "默认排除车端专网：end1=192.168.100.2 是到 Jetson 的内部链路，"
+                         "浏览器永远连不上，留在候选里只会白等探测超时")
     ap.add_argument("--interval", type=float, default=5.0)
     ap.add_argument("--cooldown", type=float, default=15.0)
     ap.add_argument("--snap-width", type=int, default=640)
@@ -1169,6 +1192,18 @@ def main():
     a.clip_post = max(0.0, min(15.0, a.clip_post))
     a.ring_fps = max(2, min(15, a.ring_fps))
     a.clip_width = max(320, min(1280, a.clip_width))
+    # 排除网段：解析成 ip_network 列表，写错就退回默认值（不能因为一个参数起不来）
+    _skip = []
+    for _s in str(a.lan_skip or "").split(","):
+        _s = _s.strip()
+        if not _s:
+            continue
+        try:
+            _skip.append(ipaddress.ip_network(_s, strict=False))
+        except Exception:                                     # noqa: BLE001
+            sys.stderr.write("--lan-skip 忽略无效网段: %s\n" % _s)
+    a.lan_skip = _skip or list(DEFAULT_LAN_SKIP)
+    log("lan skip: %s" % ", ".join(str(x) for x in a.lan_skip))
 
     ag = Agent(a)
     ag.health_alarm = bool(getattr(a, "health_alarm", 0))

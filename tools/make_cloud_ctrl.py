@@ -141,6 +141,14 @@ i.cl-badge{font-style:normal; font-size:11px; color:#8fd0ff; border:1px solid #2
   function pickBoard(lan) {
     var port = lan.web_port || 80;
     var ips = (lan.ips && lan.ips.length) ? lan.ips.slice() : (lan.ip ? [lan.ip] : []);
+    // 上次连通的地址优先：多网口时能省掉几轮探测。
+    // 只在本轮上报列表里重排，不把已下线的旧地址当候选（否则白发一个 2.5s 超时）。
+    try {
+      var last = localStorage.getItem('ctrl_base') || '';
+      var host = last.replace(/^https?:\/\//, '').split(':')[0];
+      var at = host ? ips.indexOf(host) : -1;
+      if (at > 0) { ips.splice(at, 1); ips.unshift(host); }
+    } catch (e) {}
     if (!ips.length) return Promise.resolve(null);
     var i = 0;
     function next() {
@@ -159,6 +167,7 @@ i.cl-badge{font-style:normal; font-size:11px; color:#8fd0ff; border:1px solid #2
     try {
       // 地图页的 rosbridge 也要指向板子（云端页面没有同源 /rosbridge）
       localStorage.setItem('ros_ws', ws);
+      localStorage.setItem('ctrl_base', board);   // 下次打开优先探测这个地址
     } catch (e) {}
     var inp = document.getElementById('vAddr');
     if (inp) inp.value = board;
