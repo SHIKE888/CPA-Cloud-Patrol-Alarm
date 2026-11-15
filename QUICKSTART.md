@@ -497,6 +497,5 @@ ssh afc03 'i2cset -y 9 0x40 0xda 0'      # 0=RGGB 1=GRBG 2=GBRG 3=BGGR
 | [`rk/web/README.md`](rk/web/README.md) | 网页推流、采集后端对比、HTTP API、颜色根因、帧率优化 |
 | [`rk/ai/README.md`](rk/ai/README.md) | AI 模型转换与部署、危险动作规则、级联空间约束 |
 | [`rk/deploy/PERFORMANCE.md`](rk/deploy/PERFORMANCE.md) | 帧率能力实测报告 |
-| [`MODIFICATIONS.md`](MODIFICATIONS.md) | 相对官方例程的改动清单 |
 | [`docs/IMX415_4K_MODE.md`](docs/IMX415_4K_MODE.md) | IMX415 4K 模式寄存器差表与改动清单 |
 | [`docs/JPEG_ENCODER_DESIGN.md`](docs/JPEG_ENCODER_DESIGN.md) | FPGA 硬件 JPEG 编码器设计（规划中） |

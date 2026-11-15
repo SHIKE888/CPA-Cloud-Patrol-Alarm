@@ -515,7 +515,7 @@ sequenceDiagram
 ```
 08_csi2rk_mipi_imx415/
 ├── README.md                    # 本技术报告
-├── QUICKSTART.md / MODIFICATIONS.md
+├── QUICKSTART.md
 ├── fpga/
 │   ├── fpga_prj.al              # TD 工程（GUI 会覆盖此文件，勿手改）
 │   ├── uisrc/01_rtl/            # 自研 RTL
