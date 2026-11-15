@@ -475,6 +475,21 @@ else:
 
 ALARM_LIGHT = None       # 由 main() 创建; HTTP 线程只改输入量
 
+# ------------------------------------------------------------------ 可选 车端状态
+# 通过 rosbridge 订阅底盘 /PowerVoltage（轮趣底盘驱动发布，单位 V），
+# 网页顶栏常驻显示“电压 + 估算电量”。连不上/驱动没起时只显示“—”，不影响其它功能。
+try:
+    if SCRIPT_DIR not in sys.path:
+        sys.path.insert(0, SCRIPT_DIR)
+    from car_link import CarLink
+except Exception as _e:                                   # pragma: no cover
+    CarLink = None
+    _CAR_IMPORT_ERR = "%s: %s" % (type(_e).__name__, _e)
+else:
+    _CAR_IMPORT_ERR = ""
+
+CAR_LINK = None          # 由 main() 创建; HTTP 线程只读快照
+
 # ------------------------------------------------------------------ 可选 云台
 # QGimbal 走 USB CDC-ACM (/dev/ttyACM0)。串口协议复用 rk/gimbal/gimbal_keyctrl.py,
 # 限幅 / 看门狗 / 追踪逻辑都在 gimbal_web.py 里（那边有完整的安全说明）。
@@ -4635,6 +4650,9 @@ class Handler(BaseHTTPRequestHandler):
                 # 每 100ms 把 AI 的人数喂进去，别在这里做（1s 一次太粗）。
                 st["lamp"] = (ALARM_LIGHT.snapshot()
                               if ALARM_LIGHT is not None else None)
+                # 车端电池（/PowerVoltage）：后台线程订阅，这里只拿快照
+                st["car"] = (CAR_LINK.snapshot()
+                             if CAR_LINK is not None else None)
                 _cap = Handler.capture
                 st["dual"] = (_cap.dual_status()
                               if (_cap is not None
@@ -5504,6 +5522,11 @@ def main():
                     help="危险动作红灯快闪保持秒数 (默认 5)")
     ap.add_argument("--lamp-intrude-s", type=float, default=5.0,
                     help="越界持续多少秒升级红灯 (默认 5)")
+    ap.add_argument("--car-ros", default="ws://192.168.100.87:9090",
+                    help="车端 rosbridge 地址，用于订阅 /PowerVoltage（底盘电压）。"
+                         "传空字符串=关闭")
+    ap.add_argument("--car-on", type=int, default=1, choices=[0, 1],
+                    help="是否后台自动订阅车端电池电压（默认 1；0=不连车端）")
     ap.add_argument("--state-file", default=STATE_FILE_DEFAULT,
                     help="参数存档路径 (默认 同目录 state.json; 传空字符串=不保存)")
     args = ap.parse_args()
@@ -5743,6 +5766,24 @@ def main():
 
         threading.Thread(target=_lamp_feed_loop, daemon=True,
                          name="lamp-feed").start()
+
+    # ---- 车端电池（rosbridge 订阅 /PowerVoltage）----
+    #  自动订阅，无需网页触发；连不上/底盘驱动没起时只在日志里提一句，
+    #  /api/status 的 car 字段会带 online=False，网页显示“—”。
+    global CAR_LINK
+    _car_url = str(getattr(args, "car_ros", "") or "").strip()
+    if not int(getattr(args, "car_on", 1) or 0):
+        print("[car] 已关闭 (--car-on 0)")
+    elif CarLink is None:
+        print("[car] 无法启用: %s" % (_CAR_IMPORT_ERR or "car_link 不可用"),
+              file=sys.stderr)
+    elif not _car_url:
+        print("[car] 已关闭 (--car-ros 为空)")
+    else:
+        CAR_LINK = CarLink(_car_url)
+        CAR_LINK.start()
+        print("[car] 后台订阅 /PowerVoltage（rosbridge %s），网页顶栏显示电压/电量"
+              % _car_url)
 
     # ---- 云台 (QGimbal) ----
     # 只实例化，不打开串口：第一次收到动作请求时才连（避免开机时和

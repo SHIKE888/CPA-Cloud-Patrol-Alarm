@@ -29,6 +29,26 @@ body{
 .topnav a.tab.active{ background: #1f6feb; border-color: #1f6feb; color: #fff; font-weight: 600; }
 .topnav .sp{ margin-left: auto; }
 .topnav .host{ color: #8b949e; font-size: 12px; font-family: ui-monospace, monospace; }
+/* 车端电池：常驻顶栏右侧（视频/地图两个视图都在），数据来自 /api/status 的 car */
+.topnav .carbat{ display: inline-flex; align-items: center; gap: 6px;
+    padding: 2px 9px; border-radius: 999px; border: 1px solid #2a323d;
+    background: #0d1117; color: #9fb0c4; font-size: 12px;
+    font-variant-numeric: tabular-nums; }
+.topnav .carbat .batt{ position: relative; width: 20px; height: 10px;
+    border: 1px solid #6e7681; border-radius: 2px; display: inline-block; }
+.topnav .carbat .batt::after{ content: ''; position: absolute; right: -3px; top: 2px;
+    width: 2px; height: 4px; background: #6e7681; border-radius: 0 1px 1px 0; }
+.topnav .carbat .batt b{ position: absolute; left: 1px; top: 1px; bottom: 1px; width: 0;
+    background: #3fb950; border-radius: 1px; transition: width .4s, background .4s; }
+.topnav .carbat.warn{ color: #d29922; border-color: #513f14; }
+.topnav .carbat.warn .batt{ border-color: #d29922; }
+.topnav .carbat.warn .batt::after{ background: #d29922; }
+.topnav .carbat.warn .batt b{ background: #d29922; }
+.topnav .carbat.bad{ color: #f85149; border-color: #5a1f1c; }
+.topnav .carbat.bad .batt{ border-color: #f85149; }
+.topnav .carbat.bad .batt::after{ background: #f85149; }
+.topnav .carbat.bad .batt b{ background: #f85149; }
+.topnav .carbat.off{ opacity: .55; }
 .view{ flex: 1; display: flex; flex-direction: column; min-height: 0; }
 .view[hidden]{ display: none !important; }
 #viewMap header{
@@ -57,6 +77,9 @@ body{
 #viewMap button.primary{ background: #238636; border-color: #2ea043; }
 #viewMap button.danger{ background: #8b2c2c; border-color: #b34242; }
 #viewMap button.warn{ background: #8a6300; border-color: #b8860b; }
+/* 开关型按钮（跟随）：开着时高亮，尺寸/圆角与「适应画面」一致 */
+#viewMap button.toggle.on{ background: #1f6feb; border-color: #1f6feb; color: #fff; font-weight: 600; }
+#viewMap button.toggle.on:hover{ background: #2b7bf5; }
 #viewMap #dot{ width: 9px; height: 9px; border-radius: 50%; background: #8b949e; display: inline-block; }
 #viewMap #dot.on{ background: #3fb950; box-shadow: 0 0 8px #3fb950; }
 #viewMap header .grp{ color: #8b949e; font-size: 12px; margin: 0 4px 0 8px; }
@@ -883,6 +906,9 @@ html, body{overflow:hidden}
   <a href="#" class="tab active" data-view="video">视频采集</a>
   <a href="#" class="tab" data-view="map">调度控制</a>
   <span class="sp"></span>
+  <span id="carBat" class="carbat off" title="车端电池：/PowerVoltage">
+    <i class="batt"><b id="carBatFill"></b></i><span id="carBatTxt">电池 —</span>
+  </span>
   <span class="host" id="topHost"></span>
 </nav>
 
@@ -1428,10 +1454,7 @@ html, body{overflow:hidden}
   <input id="addr" type="text" spellcheck="false" placeholder="ws://192.168.0.100:9090">
   <button class="primary" id="connect">连接</button>
   <button id="fit">适应画面</button>
-  <label style="display:flex;gap:5px;align-items:center;color:#8b949e;cursor:pointer">
-    <input type="checkbox" id="follow"> 跟随
-  </label>
-  <button id="reloadMap">重订阅 /map</button>
+  <button id="follow" class="toggle" title="视角跟随小车位置（拖地图/滚轮缩放会自动关闭）">跟随</button>
 </header>
 
 <main>
@@ -4432,7 +4455,7 @@ html, body{overflow:hidden}
   // 所有“平移地图”的入口都走这里。只有真去拽地图才关掉「跟随」——
   // 放个目标点不应该把跟随也关掉。
   function startPan(e, extra) {
-    S.follow = false; $('follow').checked = false;
+    setFollow(false, true);
     drag = Object.assign({ pan: true, x: e.clientX, y: e.clientY,
                            ox: S.ox, oy: S.oy }, extra || {});
   }
@@ -4593,7 +4616,7 @@ html, body{overflow:hidden}
 
   cv.addEventListener('wheel', function (e) {
     e.preventDefault();
-    S.follow = false; $('follow').checked = false;
+    setFollow(false, true);
     const r = cv.getBoundingClientRect();
     const mx = e.clientX - r.left, my = e.clientY - r.top;
     const w = s2w(mx, my);
@@ -4606,18 +4629,18 @@ html, body{overflow:hidden}
 
   $('connect').addEventListener('click', function () { reconnectTries = 0; connect(); });
   $('fit').addEventListener('click', fitView);
-  $('follow').addEventListener('change', function (e) {
-    S.follow = e.target.checked;
-    if (S.follow) toast('已开启跟随机器人');
+  // 「跟随」是开关型按钮：quiet=true 用于“拖地图/缩放自动关掉”这种情况，
+  // 只改状态不弹提示、不重画（调用方自己会画）。
+  function setFollow(on, quiet) {
+    const was = S.follow;
+    S.follow = !!on;
+    const b = $('follow');
+    if (b) b.classList.toggle('on', S.follow);
+    if (quiet) return;
+    if (S.follow && !was) toast('已开启跟随机器人');
     draw();
-  });
-  $('reloadMap').addEventListener('click', function () {
-    if (!connected) { toast('未连接', true); return; }
-    try { topics.map.unsubscribe(); } catch (e) {}
-    S.map = null;
-    subMap();
-    toast('重新订阅 /map');
-  });
+  }
+  $('follow').addEventListener('click', function () { setFollow(!S.follow); });
   elAddr.addEventListener('keydown', function (e) { if (e.key === 'Enter') { reconnectTries = 0; connect(); } });
 
   elAddr.value = defaultUrl();
@@ -6863,6 +6886,28 @@ $("gz_pred").addEventListener("input", e => {
     gzPost({ action: "config", predict_s: Number(e.target.value) / 100 }), 150);
 });
 
+/* ---------------- 车端电池（/PowerVoltage）----------------
+   常驻顶栏右上：电量百分比是厂家经验曲线算的，中段电压平台很平，
+   只能当参考；电压本身是底盘串口原始读数，可信。 */
+function renderCarBat(c) {
+  const el = $("carBat"), fill = $("carBatFill"), txt = $("carBatTxt");
+  if (!el) return;
+  const on = !!(c && c.online && c.voltage != null);
+  const pct = (c && c.pct != null) ? c.pct : null;
+  el.classList.toggle("off", !on);
+  el.classList.toggle("warn", on && pct != null && pct <= 40 && pct > 15);
+  el.classList.toggle("bad", on && pct != null && pct <= 15);
+  if (fill) fill.style.width = (on && pct != null ? Math.max(3, Math.min(100, pct)) : 0) + "%";
+  if (txt) {
+    txt.textContent = on
+      ? (Number(c.voltage).toFixed(1) + "V" + (pct != null ? " " + pct + "%" : ""))
+      : "电池 —";
+  }
+  el.title = on
+    ? ("车端电池 " + Number(c.voltage).toFixed(2) + "V，估算 " + pct + "%（/PowerVoltage）")
+    : ("车端电池不可用" + (c && c.err ? "：" + c.err : "（底盘驱动未启动或车端不通）"));
+}
+
 /* ---------------- 状态轮询 ---------------- */
 let _camTick = 0;
 async function poll() {
@@ -6874,6 +6919,8 @@ async function poll() {
       const _bz = !!st.lamp.buzzer;
       if (_bz !== buzzOn) { buzzOn = _bz; buzzRender(); }
     }
+    // 车端电池：顶栏常驻
+    renderCarBat(st.car);
     $("sState").textContent   = "运行中";
     // 后端框只显示视频节点：原来拼成 "opencv / /dev/video22"，
     // 采集方式对使用者没有意义，留个设备路径就够了。
