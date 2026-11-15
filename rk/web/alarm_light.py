@@ -84,7 +84,13 @@ def _selfcheck_crc():
 #  状态名 -> (颜色, 灯态)
 #  灯态: 0 关 / 1 常亮 / 2 慢闪 / 3 快闪 / 4 暴闪
 STATE_LAMP = {
-    "boot":     ("blue",   1),      # 上电：蓝灯常亮
+    # 2026-11-16 用户要求（分两段）：
+    #   boot     = 刚上电、云台还没动  -> 蓝灯**常亮**
+    #   bootmove = 云台开始动（自检执行中）-> 蓝灯**慢闪**
+    #   自检结束 -> 转绿（green 长亮）。
+    # 两段分开是因为"通了电"和"真的在动作"是两件事，闪/不闪本身就是进度。
+    "boot":     ("blue",   1),      # 上电待机：蓝灯常亮
+    "bootmove": ("blue",   2),      # 云台自检动作中：蓝灯慢闪
     "normal":   ("green",  1),      # 正常：绿灯长亮
     "person":   ("yellow", 1),      # 仅识别到人员（不在警戒区）：黄灯长亮
     "intrude":  ("yellow", 3),      # 进入警戒区（立即）：黄灯快闪
@@ -220,9 +226,13 @@ class AlarmLight(object):
 
         # ---- 内部状态 ----
         # 蓝灯（boot）不再固定几秒：上电时 udev 会先点亮一次，服务接管后继续蓝着，
-        # 直到**画面真的出来了**（mipi_webstream 发现 fps>0 就调 boot_done()）。
-        # _boot_until 只是兜底：万一 boot_done 永远没来，最多蓝 120 秒后转正常。
-        self._boot_until = time.time() + 120.0
+        # 直到**云台自检结束 + 画面真的出来了**（mipi_webstream 的 lamp-feed 线程
+        # 两个条件都满足才调 boot_done()）。2026-11-16 用户要求自检期间蓝灯闪。
+        # _boot_until 只是兜底：万一 boot_done 永远没来，最多蓝 5 分钟转正常。
+        # 5 分钟是因为自检本身最长约 90~120s（串口等 30s + 回零 60s + 摆动），
+        # 原来 120s 会在自检还没完就把蓝灯提前切走。
+        self._boot_until = time.time() + 300.0
+        self._boot_motion = False         # 云台是否已开始动作（决定蓝灯常亮/慢闪）
         self._boot_done = False
         self._state = None
         self._sent = None                 # 最近一次成功下发的 (reg, state)
@@ -282,9 +292,17 @@ class AlarmLight(object):
                 self._danger_until = now + self.danger_hold_s
 
     def boot_done(self):
-        """画面真正出来了：结束蓝灯，进入正常运行状态（绿/黄/红）。"""
+        """启动完成：结束蓝灯，进入正常运行状态（绿/黄/红）。"""
         with self._lock:
             self._boot_done = True
+
+    def boot_motion(self, on):
+        """云台是否正在动作：True -> 蓝灯慢闪，False -> 蓝灯常亮（仅 boot 阶段有效）。
+
+        2026-11-16 用户要求：上电时蓝灯常亮，云台一开始运动才闪。
+        """
+        with self._lock:
+            self._boot_motion = bool(on)
 
     def set_buzzer(self, on):
         with self._lock:
@@ -322,7 +340,8 @@ class AlarmLight(object):
     def _compute_state(self, now):
         """把输入量折算成灯状态。优先级：boot > danger > intrude5s > intrude/person > normal。"""
         if not self._boot_done and now < self._boot_until:
-            return "boot"
+            # 上电待机蓝灯常亮；云台开始动作（自检）时转慢闪
+            return "bootmove" if self._boot_motion else "boot"
         # 1) 危险动作：红灯快闪，保持 danger_hold_s
         if now < self._danger_until:
             return "danger"
@@ -368,8 +387,11 @@ class AlarmLight(object):
             self._last_open_try = now
             if not self._open():
                 return
-        # 先全灭再点目标：避免上一个颜色的灯还亮着（四色灯是独立通道）
-        if self._sent is not None and self._sent[0] != reg:
+        # 先全灭再点目标：避免上一个颜色的灯还亮着（四色灯是独立通道）。
+        # 2026-11-16：灯态变化（常亮 <-> 慢闪）也先灭一次 —— 蓝灯要在
+        # "上电常亮" 和 "云台动作时慢闪" 之间切换，有的模块只在
+        # "灭 -> 点亮" 时重新解析闪烁模式，直接改值可能仍按常亮走。
+        if self._sent is not None and self._sent != want:
             self._write(REG_ALL_OFF, 0x00)
         self._write(reg, lamp)
         self._sent = want

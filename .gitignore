@@ -88,3 +88,7 @@ rk/web/action_net_weights.js
 Thumbs.db
 desktop.ini
 .DS_Store
+
+# ---- 云端版 /ctrl 生成产物（由 tools/make_cloud_ctrl.py 生成，源是 rk/relay/web/console.html）----
+cloud/static/ctrl.html
+cloud/static/vendor/

@@ -365,3 +365,75 @@ def handle(payload, ctx):
 已登记的占位：`gimbal`（云台）、`record`（录像）、`webhook`（钉钉/企微）、
 `zone`（多区域/多摄像头）、`ota`（远程升级）。
 示例见 `ext/_example.py`。
+
+---
+
+## 云端控制台 `/ctrl`（2026-11-16）
+
+把板端控制台 `rk/relay/web/console.html` **原样搬一份**到云端
+`http://ros.absozero.cn/ctrl`，用途是「页面从服务器加载、操作仍走局域网」：
+
+| 环节 | 做法 |
+|---|---|
+| 页面 | `tools/make_cloud_ctrl.py` 由 `console.html` 生成 `cloud/static/ctrl.html`（**不要手改**） |
+| 密码 | 与看板同一套：`POST /api/login` → HttpOnly cookie `cd_sid`；默认 `admin`（`config.json` 的 `ui_pass`） |
+| 板子地址 | 板端 `cloud-agent` 每 5~10s 把**全部局域网 IPv4**（无线优先）随心跳 `/api/ingest` 上报；云端 `GET /api/lan` 返回给网页 |
+| 自动连接 | 网页逐个探测 `http://<ip>:80/api/ping`（2.5s 超时），第一个通的自动填进「连接」框并自动连接 |
+| 启动遮罩 | 沿用板端那套 `#bootMask`，只是轮询地址换成板子；自检结束（`boot.done`）才淡出 |
+| 离线页 | `http://ros.absozero.cn/ctrl/offline` —— 板子没上报地址/探测失败时自动跳过去，8s 自动重试，通了自动回 `/ctrl` |
+| 板子本身 | **完全不动**：`http://<板子IP>/` 还是原来那份 `console.html` |
+
+### 为什么板端要开跨域
+
+云端页面（`ros.absozero.cn`）向 `http://<板子IP>/api/...` 发请求属于跨域，
+且 POST+JSON 会先发预检。预检必须在 **nginx 层**直接答 ——
+`mipi_webstream` 是 `BaseHTTPRequestHandler`，没有 `do_OPTIONS`，转发过去只会 501。
+
+板上 `/etc/nginx/sites-available/ros-relay` 的 `/api/` 段已有
+`if ($request_method = OPTIONS) { ... return 204; }`；
+⚠ **真实响应不要再加 `Access-Control-Allow-Origin`** —— 后端 `_json()` 已经发了一份，
+nginx 再加一份会让响应出现两个 ACAO，浏览器直接判跨域失败（实测踩到）。
+
+### 部署（改动后重跑这一串）
+
+```bash
+# 1) 生成页面（源是 rk/relay/web/console.html；锚点变了会直接报错，不会产出半坏页面）
+python tools/make_cloud_ctrl.py
+
+# 2) 静态页面 + 依赖的 vendor 资源
+scp cloud/static/ctrl.html cloud/static/ctrl_offline.html absozero:/tmp/
+scp cloud/static/vendor/roslib.min.js absozero:/tmp/
+ssh absozero '
+  WEB=/www/wwwroot/ros.absozero.cn
+  install -o www -g www -m 644 /tmp/ctrl.html /tmp/ctrl_offline.html "$WEB/"
+  mkdir -p "$WEB/vendor"
+  install -o www -g www -m 644 /tmp/roslib.min.js "$WEB/vendor/"
+  chown -R www:www "$WEB"'
+
+# 3) 后端（新增 GET /api/lan）
+scp cloud/server.py absozero:/tmp/
+ssh absozero 'install -o csidash -g csidash -m 755 /tmp/server.py /opt/csi-dashboard/server.py &&
+              systemctl restart csi-dashboard'
+
+# 4) 板端代理（心跳里带上全部局域网 IP）
+scp cloud/board/cloud_agent.py afc03:/tmp/
+ssh afc03 'install -m 755 /tmp/cloud_agent.py /root/rk/cloud/cloud_agent.py &&
+           systemctl restart cloud-agent'
+```
+
+`cloud/static/ctrl.html` 与 `cloud/static/vendor/` 是生成物，已在 `.gitignore` 里。
+
+nginx 侧需要这三段（已写入 `/www/server/panel/vhost/nginx/ros.absozero.cn.conf`）：
+
+```nginx
+location = /ctrl         { add_header Cache-Control "no-store"; try_files /ctrl.html =404; }
+location = /ctrl/        { add_header Cache-Control "no-store"; try_files /ctrl.html =404; }
+location = /ctrl/offline { add_header Cache-Control "no-store"; try_files /ctrl_offline.html =404; }
+```
+
+### 已知边界
+
+- 手机用**流量**打开 `/ctrl` 只会看到离线页 —— 画面和控制必须和板子同处一个局域网。
+- 板子同时有 eth（`192.168.137.100`，常是跟某台 PC 直连）、WiFi（`192.168.1.118`）、
+  连车端的 `192.168.100.2`；三条都会上报，网页按「无线优先」逐个探测，失败自动换下一条。
+- 地图页的 rosbridge 会指向 `ws://<板子IP>/rosbridge`（不是云端域名），同样依赖局域网。

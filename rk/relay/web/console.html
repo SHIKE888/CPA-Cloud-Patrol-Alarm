@@ -707,9 +707,177 @@ html, body{overflow:hidden}
   }
 }
 
+/* ---------------------------------------------------------------------------
+   上电启动遮罩 #bootMask
+   ---------------------------------------------------------------------------
+   盖住「网页打开了但板子还没就绪」这段：推流服务没起来 -> 云台上电自检中。
+   数据来源是 /api/status 的 boot 字段（mipi_webstream.py 里的 GIMBAL_SELFTEST），
+   云台自检结束（或跳过/报错）后淡出，之后本次会话不再出现。
+   注意：这段样式和紧跟 body 的那段脚本都是**独立的**，不依赖其它 IIFE ——
+   后面任何一个脚本报错都不应该把遮罩钉死在屏幕上。
+--------------------------------------------------------------------------- */
+#bootMask{
+  position:fixed; inset:0; z-index:10000;
+  display:flex; align-items:center; justify-content:center;
+  background:radial-gradient(120% 100% at 50% 0%, #131c2b 0%, #080b11 55%, #04060a 100%);
+  transition:opacity .5s ease, visibility .5s ease;
+}
+#bootMask.bm-done{opacity:0; visibility:hidden; pointer-events:none}
+#bootMask .bm-box{
+  width:min(520px, 92vw); padding:34px 34px 26px; border-radius:18px;
+  text-align:center; background:rgba(14,18,25,.92);
+  border:1px solid #232c39; box-shadow:0 24px 70px rgba(0,0,0,.7);
+}
+#bootMask .bm-ring{position:relative; width:96px; height:96px; margin:2px auto 18px}
+#bootMask .bm-ring i{
+  position:absolute; inset:0; border-radius:50%;
+  border:3px solid transparent;
+}
+#bootMask .bm-ring i:nth-child(1){border-top-color:#4ea1ff; animation:bmspin 1.1s linear infinite}
+#bootMask .bm-ring i:nth-child(2){inset:11px; border-right-color:#39d98a; animation:bmspin 1.7s linear infinite reverse}
+#bootMask .bm-ring i:nth-child(3){inset:22px; border-bottom-color:#ffd75f; animation:bmspin 2.3s linear infinite}
+#bootMask .bm-ring b{
+  position:absolute; inset:36px; border-radius:50%;
+  background:#4ea1ff; animation:bmpulse 1.4s ease-in-out infinite;
+}
+@keyframes bmspin{to{transform:rotate(360deg)}}
+@keyframes bmpulse{0%,100%{opacity:.15; transform:scale(.8)} 50%{opacity:.55; transform:scale(1.06)}}
+#bootMask .bm-title{font-size:20px; font-weight:700; color:#fff; letter-spacing:.5px}
+#bootMask .bm-step{margin-top:10px; color:#8fb6e6; font-size:14px; min-height:20px}
+#bootMask .bm-bar{
+  margin:18px auto 0; width:100%; height:4px; border-radius:2px;
+  background:#1b2431; overflow:hidden;
+}
+#bootMask .bm-bar span{
+  display:block; height:100%; width:35%; border-radius:2px;
+  background:linear-gradient(90deg, transparent, #4ea1ff, transparent);
+  animation:bmslide 1.5s ease-in-out infinite;
+}
+@keyframes bmslide{0%{transform:translateX(-110%)}100%{transform:translateX(320%)}}
+#bootMask .bm-steps{
+  display:flex; justify-content:space-between; gap:6px;
+  margin:18px 0 0; padding:0; list-style:none;
+}
+#bootMask .bm-steps li{
+  flex:1; font-size:12px; color:#5d6b7d; padding-top:16px; position:relative;
+  transition:color .3s;
+}
+#bootMask .bm-steps li::before{
+  content:''; position:absolute; left:50%; top:2px; width:9px; height:9px;
+  margin-left:-4.5px; border-radius:50%; background:#2b3646;
+  transition:background .3s, box-shadow .3s;
+}
+#bootMask .bm-steps li.cur{color:#8fb6e6}
+#bootMask .bm-steps li.cur::before{
+  background:#4ea1ff; box-shadow:0 0 0 4px rgba(78,161,255,.18);
+  animation:bmpulse 1.2s infinite;
+}
+#bootMask .bm-steps li.ok{color:#7bbf9b}
+#bootMask .bm-steps li.ok::before{background:#39d98a}
+#bootMask .bm-foot{
+  margin-top:16px; display:flex; align-items:center; justify-content:center;
+  gap:14px; color:#5d6b7d; font-size:12px;
+}
+#bootMask .bm-foot .t{font-variant-numeric:tabular-nums; color:#8fb6e6}
+#bootMask .bm-skip{
+  background:#222c3a; color:#b9c7d8; border:1px solid #314054; border-radius:8px;
+  padding:5px 14px; font-size:12px; cursor:pointer;
+}
+#bootMask .bm-skip:hover{background:#2b3849; color:#fff}
+
 </style>
 </head>
 <body>
+<!-- 上电启动遮罩：盖住「服务没起来 / 云台自检中」，自检结束自动淡出 -->
+<div id="bootMask">
+  <div class="bm-box">
+    <div class="bm-ring"><i></i><i></i><i></i><b></b></div>
+    <div class="bm-title">系统启动中</div>
+    <div class="bm-step" id="bmStep">正在连接板子…</div>
+    <div class="bm-bar"><span></span></div>
+    <ul class="bm-steps">
+      <li data-p="wait">云台串口</li>
+      <li data-p="home">回零</li>
+      <li data-p="swing">摆动自检</li>
+      <li data-p="zero">归零停稳</li>
+    </ul>
+    <div class="bm-foot">
+      <span>已等待 <b class="t" id="bmElapsed">0.0</b> s</span>
+      <button class="bm-skip" id="bmSkip">跳过</button>
+    </div>
+  </div>
+</div>
+<script>
+/* 上电启动遮罩：轮询 /api/status 的 boot 字段，done=true 才淡出。
+   单独一段 IIFE，比页面其它脚本先执行 —— 任何一处 JS 报错都不能把遮罩钉死。
+   兜底：150s 无论如何放行（云台自检最长约 90s），另有「跳过」按钮。 */
+(function () {
+  var m = document.getElementById('bootMask');
+  if (!m) return;
+  var elStep  = document.getElementById('bmStep');
+  var elEl    = document.getElementById('bmElapsed');
+  var lis     = m.querySelectorAll('.bm-steps li');
+  var ORDER   = ['wait', 'home', 'swing', 'zero'];
+  var T0      = Date.now();
+  var done    = false;
+  var fails   = 0;
+  var timer   = null;
+
+  function markAll(cls) {
+    for (var i = 0; i < lis.length; i++) lis[i].className = cls;
+  }
+
+  function paint(phase, text) {
+    var idx = ORDER.indexOf(phase);
+    for (var i = 0; i < lis.length; i++) {
+      var pi = ORDER.indexOf(lis[i].getAttribute('data-p'));
+      lis[i].className = (idx > pi) ? 'ok' : (idx === pi ? 'cur' : '');
+    }
+    if (text) elStep.textContent = text;
+  }
+
+  function finish() {
+    if (done) return;
+    done = true;
+    if (timer) { clearInterval(timer); timer = null; }
+    markAll('ok');
+    m.classList.add('bm-done');
+  }
+
+  function tick() {
+    if (done) return;
+    elEl.textContent = ((Date.now() - T0) / 1000).toFixed(1);
+    fetch('/api/status', { cache: 'no-store' })
+      .then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); })
+      .then(function (j) {
+        fails = 0;
+        var b = (j && j.boot) || {};
+        if (b.done) {
+          paint('zero', b.text || '自检完成，正在进入控制台…');
+          finish();
+          return;
+        }
+        if (b.phase === 'skip' || b.phase === 'error') {
+          paint('zero', b.text || '自检结束');
+          finish();
+          return;
+        }
+        paint(b.phase || 'wait', b.text || '云台自检中…');
+      })
+      .catch(function () {
+        fails++;
+        elStep.textContent = fails > 3
+          ? '推流服务还没起来，继续等待…'
+          : '正在连接板子…';
+      });
+  }
+
+  document.getElementById('bmSkip').addEventListener('click', finish);
+  setTimeout(finish, 150000);
+  tick();
+  timer = setInterval(tick, 700);
+})();
+</script>
 <nav class="topnav">
   <span class="brand">云端智联定点巡航安防预警系统 <i>局域网控制平台</i></span>
   <a href="#" class="tab active" data-view="video">视频采集</a>
@@ -838,7 +1006,7 @@ html, body{overflow:hidden}
         <div class="row"><label>闭环码控</label>
           <div style="flex:1;display:flex;gap:6px">
             <button class="ghost on" data-jrc="0" style="flex:1">关(定 Q)</button>
-            <button class="ghost" data-jrc="1" style="flex:1">开(收敛到目标)</button>
+            <button class="ghost" data-jrc="1" style="flex:1">开</button>
           </div>
         </div>
 

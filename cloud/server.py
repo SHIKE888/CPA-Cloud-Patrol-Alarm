@@ -1208,6 +1208,30 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(204, b"", "image/x-icon")
             if path == "/api/ping":
                 return self._json({"ok": 1, "app": APP, "ver": VER})
+            if path == "/api/lan":
+                # 给云端 /ctrl 页用：板子上报的**局域网**地址（不靠 NAT 后的公网 IP）。
+                # 返回 ips 列表（无线优先），由网页逐个探测哪个真能连。
+                if not self._need_ui():
+                    return
+                with LOCK:
+                    node = dict(S.get("node") or {})
+                    hb = dict(S.get("hb") or {})
+                ips = [x for x in (node.get("ips") or []) if x]
+                ip0 = node.get("ip") or ""
+                if ip0 and ip0 not in ips:
+                    ips.insert(0, ip0)
+                _ts = hb.get("ts") or 0
+                return self._json({
+                    "ok": True,
+                    "ip": ips[0] if ips else "",
+                    "ips": ips,
+                    "ifaces": node.get("ifaces") or [],
+                    "web_port": int(node.get("web_port") or 80),
+                    "node": node.get("name") or "",
+                    "mode": node.get("mode") or "",
+                    "hb_age": (round(now() - _ts, 1) if _ts else None),
+                    "offline_sec": int(CFG.get("offline_sec") or 30),
+                })
             if path == "/api/state":
                 if not self._need_ui():
                     return
@@ -1399,7 +1423,11 @@ class Handler(BaseHTTPRequestHandler):
                 with LOCK:
                     node = body.get("node")
                     if isinstance(node, dict) and node:
-                        S["node"] = {k: node[k] for k in ("id", "name", "ver", "ip", "mode", "host")
+                        # ips/ifaces/web_port 是 2026-11-16 加的：云端 /ctrl 页靠它
+                        # 拿到“浏览器能直连的局域网地址”，所以必须原样存下来。
+                        S["node"] = {k: node[k] for k in
+                                     ("id", "name", "ver", "ip", "mode", "host",
+                                      "ips", "ifaces", "web_port")
                                      if k in node}
                     tel = body.get("tel")
                     if isinstance(tel, dict):

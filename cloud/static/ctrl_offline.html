@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>设备离线 · 云端智联定点巡航安防预警系统</title>
+<style>
+  :root{
+    --bg:#080b11; --card:#12161d; --line:#2a3340; --txt:#e6eef8;
+    --mut:#8b9bb0; --dim:#5d6b7d; --acc:#4ea1ff; --bad:#ff6b6b; --ok:#39d98a;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0}
+  body{
+    background:radial-gradient(120% 100% at 50% 0%, #131c2b 0%, #080b11 55%, #04060a 100%);
+    color:var(--txt);
+    font:14px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif;
+    display:flex; align-items:center; justify-content:center; padding:20px;
+  }
+  .wrap{width:min(520px,94vw); background:rgba(18,22,29,.94); border:1px solid var(--line);
+        border-radius:18px; box-shadow:0 24px 70px rgba(0,0,0,.7); padding:30px 30px 24px}
+  .ico{width:74px; height:74px; margin:0 auto 18px; position:relative}
+  .ico svg{width:100%; height:100%; display:block}
+  .ico .pulse{
+    position:absolute; inset:0; border-radius:50%; border:2px solid var(--bad);
+    opacity:.28; animation:pl 2.2s ease-out infinite;
+  }
+  @keyframes pl{0%{transform:scale(.72); opacity:.45} 100%{transform:scale(1.22); opacity:0}}
+  h1{font-size:20px; margin:0 0 6px; text-align:center; letter-spacing:.5px}
+  .sub{color:var(--mut); font-size:13px; text-align:center; margin-bottom:18px}
+  .box{background:#0c131b; border:1px solid var(--line); border-radius:12px;
+       padding:14px 16px; font-size:12.5px; color:var(--mut); margin-bottom:16px}
+  .box .row{display:flex; justify-content:space-between; gap:12px; padding:3px 0}
+  .box .row b{color:var(--txt); font-weight:600; font-variant-numeric:tabular-nums;
+              text-align:right; word-break:break-all}
+  .box .hint{margin-top:10px; padding-top:10px; border-top:1px dashed var(--line);
+             color:var(--dim); line-height:1.7}
+  .btns{display:flex; gap:10px}
+  button{flex:1; padding:11px 0; border-radius:10px; border:1px solid var(--line);
+         background:#222c3a; color:#cfdcea; font-size:14px; cursor:pointer}
+  button:hover{background:#2b3849; color:#fff}
+  button.primary{background:#2f7fe0; border-color:#2f7fe0; color:#fff; font-weight:600}
+  button.primary:hover{background:#3c8bed}
+  button[disabled]{opacity:.55; cursor:default}
+  .foot{margin-top:16px; text-align:center; color:var(--dim); font-size:11.5px}
+  .badge{display:inline-block; font-size:11px; color:#8fd0ff; border:1px solid #2b6ea8;
+         background:#0f2740; border-radius:6px; padding:1px 6px; margin-left:6px}
+  .dot{display:inline-block; width:7px; height:7px; border-radius:50%; background:var(--bad);
+       margin-right:6px; vertical-align:middle; animation:bl 1.4s infinite}
+  @keyframes bl{0%,100%{opacity:.25} 50%{opacity:1}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="ico">
+    <div class="pulse"></div>
+    <svg viewBox="0 0 100 100" fill="none" stroke="#ff6b6b" stroke-width="5"
+         stroke-linecap="round" stroke-linejoin="round">
+      <rect x="16" y="26" width="68" height="44" rx="8" stroke="#5d6b7d"/>
+      <path d="M22 60 L38 44 L50 56 L60 46 L78 62" stroke="#5d6b7d"/>
+      <path d="M34 86 L66 14" stroke="#ff6b6b" stroke-width="6"/>
+    </svg>
+  </div>
+  <h1>设备离线<span class="badge">云端版</span></h1>
+  <div class="sub"><span class="dot"></span>和板子失去联系，暂时无法进入控制台</div>
+
+  <div class="box">
+    <div class="row"><span>板子上报地址</span><b id="oIp">—</b></div>
+    <div class="row"><span>最后心跳</span><b id="oHb">—</b></div>
+    <div class="row"><span>本页自动重试</span><b id="oTry">每 8 秒</b></div>
+    <div class="hint" id="oHint">页面由云端加载，画面与控制需要<b>同一局域网</b>直连板子。<br>
+      请确认：① 手机/电脑连的是和板子同一个路由器；② 板子已上电并启动完成。</div>
+  </div>
+
+  <div class="btns">
+    <button class="primary" id="bRetry">立即重试</button>
+    <button id="bBack">返回控制台</button>
+  </div>
+
+  <div class="foot">离线页仅云端版提供 · 板子本地那份页面不受影响</div>
+</div>
+
+<script>
+(function () {
+  var oIp = document.getElementById('oIp');
+  var oHb = document.getElementById('oHb');
+  var oTry = document.getElementById('oTry');
+  var oHint = document.getElementById('oHint');
+  var bRetry = document.getElementById('bRetry');
+  var busy = false;
+  var tries = 0;
+
+  function reasonText(r) {
+    if (r === 'noip') return '板子还没把局域网地址上报到服务器（可能刚上电，等 10 秒再试）。';
+    if (r === 'unreach') return '板子地址已上报，但当前网络连不上它 —— 多半是手机/电脑不在同一个局域网。';
+    return '';
+  }
+  var qr = new URLSearchParams(location.search).get('r');
+  if (reasonText(qr)) oHint.innerHTML = reasonText(qr) +
+    '<br>请确认：① 手机/电脑连的是和板子同一个路由器；② 板子已上电并启动完成。';
+
+  function probe(base, ms) {
+    var ctl = window.AbortController ? new AbortController() : null;
+    var tm = setTimeout(function () { if (ctl) ctl.abort(); }, ms);
+    return fetch(base + '/api/ping', { cache: 'no-store',
+                                       signal: ctl ? ctl.signal : undefined })
+      .then(function (r) { clearTimeout(tm); return !!r.ok; })
+      .catch(function () { clearTimeout(tm); return false; });
+  }
+
+  function check() {
+    if (busy) return;
+    busy = true;
+    tries++;
+    oTry.textContent = '已重试 ' + tries + ' 次';
+    bRetry.disabled = true;
+    fetch('/api/lan', { cache: 'no-store' }).then(function (r) {
+      if (r.status === 401) { location.replace('/ctrl'); return null; }
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    }).then(function (lan) {
+      if (!lan) return;
+      var port = lan.web_port || 80;
+      var ips = (lan.ips && lan.ips.length) ? lan.ips : (lan.ip ? [lan.ip] : []);
+      oIp.textContent = ips.length ? ips.join(' / ') : '（尚未上报）';
+      oHb.textContent = (lan.hb_age == null) ? '（无心跳）'
+                       : (lan.hb_age < 60 ? Math.round(lan.hb_age) + ' 秒前'
+                                          : Math.round(lan.hb_age / 60) + ' 分钟前');
+      if (!ips.length) return;
+      var i = 0;
+      (function next() {
+        if (i >= ips.length) return;
+        var base = 'http://' + ips[i++] + (port == 80 ? '' : ':' + port);
+        probe(base, 2000).then(function (ok) {
+          if (ok) { location.replace('/ctrl'); return; }
+          next();
+        });
+      })();
+    }).catch(function (e) {
+      oHb.textContent = '服务器接口异常';
+    }).then(function () {
+      busy = false;
+      bRetry.disabled = false;
+    });
+  }
+
+  bRetry.onclick = check;
+  document.getElementById('bBack').onclick = function () { location.replace('/ctrl'); };
+  check();
+  setInterval(check, 8000);
+})();
+</script>
+</body>
+</html>

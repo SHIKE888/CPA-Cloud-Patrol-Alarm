@@ -212,6 +212,41 @@ def detect_ip():
     return None
 
 
+def detect_ips():
+    """列出本机全部局域网 IPv4，**无线优先**。
+
+    2026-11-16：云端 /ctrl 页需要知道“浏览器能用哪个地址直连板子”。
+    板上同时有两条链路：
+      · wlx*/wlan*  USB WiFi（和手机/PC 共用的路由器，例 192.168.1.118）
+      · end0/eth0   千兆网线（常是跟某台 PC 直连的 192.168.137.x，别人进不来）
+    两条都可能对，也可能有一条不可达，所以**全部上报**，由网页逐个探测。
+    无线放前面是因为它才最可能是和客户端同一张网。
+
+    返回 [{"ip":..., "iface":..., "kind":"wifi"|"eth"}, ...]
+    """
+    out = []
+    try:
+        raw = subprocess.run(["ip", "-4", "-o", "addr", "show"],
+                             capture_output=True, text=True, timeout=2).stdout
+    except Exception:                                         # noqa: BLE001
+        return out
+    for line in raw.splitlines():
+        p = line.split()
+        if "inet" not in p or len(p) < 4:
+            continue
+        iface = p[1].rstrip(":")
+        addr = p[p.index("inet") + 1].split("/")[0]
+        if addr.startswith("127.") or addr.startswith("169.254."):
+            continue
+        kind = "wifi" if (iface.startswith(("wl", "wlan"))
+                          or "/wireless" in line) else "eth"
+        out.append({"ip": addr, "iface": iface, "kind": kind})
+    out.sort(key=lambda x: (0 if x["kind"] == "wifi" else 1,
+                            0 if x["ip"].startswith("192.168.") else 1,
+                            x["iface"]))
+    return out
+
+
 # ---------------------------------------------------------------------------
 # 视频：最近 10s 环形缓存（SD 卡）+ 事件前后 5s 合成 MP4
 #   * 抓帧走 9012 的 /snapshot.jpg?w=&q=（缩图在 web 进程里用 cv2 做，本进程仅标准库）
@@ -497,6 +532,8 @@ class Agent(object):
         self.fps_bad_since = 0
         self.ai_bad_since = 0
         self.node_ip = detect_ip()
+        self.node_ips = detect_ips()
+        self.node_ips_ts = time.time()
         self.seq = 0
         self.stop = threading.Event()
         self.clips = ClipRing(a, self.local, self.cloud)
@@ -949,9 +986,32 @@ class Agent(object):
                 time.sleep(3)
 
     # ---------------- 主循环 ----------------
+    def refresh_ips(self, every=10.0):
+        """定期重探局域网地址（默认 10s）。
+
+        为什么不只在启动时探一次：WiFi 往往比 cloud-agent 晚起来（上电后
+        要让 NetworkManager 连上路由器），启动时可能只有网线那一条，
+        甚至一条都没有。用户要求“连上网络后立即把 ip 传到服务器”，
+        所以这里每 10s 重新探一次，地址变了就马上跟着心跳上去。
+        """
+        now = time.time()
+        if now - self.node_ips_ts < every:
+            return
+        self.node_ips_ts = now
+        ips = detect_ips()
+        if [x["ip"] for x in ips] != [x["ip"] for x in self.node_ips]:
+            log("lan ips: %s -> %s"
+                % ([x["ip"] for x in self.node_ips], [x["ip"] for x in ips]))
+            self.node_ips = ips
+        self.node_ip = ips[0]["ip"] if ips else None
+
     def node_info(self):
         return {"id": self.a.node, "name": self.a.name, "ver": self.a.fw,
-                "ip": self.node_ip or "", "mode": self.mode_str()}
+                "ip": self.node_ip or "", "mode": self.mode_str(),
+                # 云端 /ctrl 页用：候选地址列表（无线优先）+ 网页端口
+                "ips": [x["ip"] for x in (self.node_ips or [])],
+                "ifaces": self.node_ips or [],
+                "web_port": int(self.a.web_port)}
 
     def mode_str(self):
         cam = ((self.fpga_cache or {}).get("phys") or {})
@@ -963,6 +1023,7 @@ class Agent(object):
         return base + (str(int(fps)) if fps else "")
 
     def run_once(self):
+        self.refresh_ips()
         tel, st, ai = self.collect()
         body = {"node": self.node_info(), "tel": tel}
         code, raw = self.cloud.post("/api/ingest", body, timeout=8)
@@ -1057,6 +1118,9 @@ def main():
     ap.add_argument("--node", default=socket.gethostname())
     ap.add_argument("--name", default="AFC03 IMX415")
     ap.add_argument("--fw", default="V45")
+    ap.add_argument("--web-port", type=int, default=80,
+                    help="网页端口（云端 /ctrl 页拿它拼 http://<ip>:<port>）。"
+                         "板上 nginx 在 80，所以默认 80")
     ap.add_argument("--interval", type=float, default=5.0)
     ap.add_argument("--cooldown", type=float, default=15.0)
     ap.add_argument("--snap-width", type=int, default=640)

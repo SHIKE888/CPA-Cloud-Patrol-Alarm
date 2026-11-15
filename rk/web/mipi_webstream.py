@@ -489,6 +489,43 @@ except Exception as _e:                                   # pragma: no cover
 else:
     _GIMBAL_IMPORT_ERR = ""
 
+# ------------------------------------------------------------------ 上电进度
+# 「网页打开 → 推流服务起来 → 云台自检结束」这段是黑屏等待期，页面上的启动
+# 遮罩（console.html 的 #bootMask）就是靠这个字典显示进度。
+#
+# 为什么放全局而不放 /api/gimbal：遮罩要能在云台完全没启用时也能正常收起，
+# 而 /api/gimbal 在未启用时返回 503。
+#
+# 写者：main() 里的自检线程（低频，几十秒几次）。读者：HTTP 线程（500ms 一次）。
+# 只做单键赋值的 dict 更新，CPython 下读到的中间态最多慢一拍，不需要加锁。
+GIMBAL_SELFTEST = {
+    "enabled": False,    # 启动参数 --gimbal-selftest 是否为 1
+    "done": False,       # 遮罩是否可以收起
+    "phase": "off",      # off|wait|home|swing|zero|done|skip|error
+    "text": "",          # 给人看的一句话
+    "t0": 0.0,            # 自检开始时刻
+    "t_done": 0.0,
+    "error": "",
+}
+
+
+def boot_mark(phase=None, text=None, done=None, error=None):
+    """更新上电进度（网页启动遮罩用）。参数为 None 表示该项不改。"""
+    try:
+        if phase is not None:
+            GIMBAL_SELFTEST["phase"] = phase
+        if text is not None:
+            GIMBAL_SELFTEST["text"] = text
+        if done is not None:
+            GIMBAL_SELFTEST["done"] = bool(done)
+            if done:
+                GIMBAL_SELFTEST["t_done"] = time.time()
+        if error is not None:
+            GIMBAL_SELFTEST["error"] = error
+    except Exception:                                    # noqa: BLE001
+        pass
+
+
 # ------------------------------------------------------------------ 双目深度
 # 下右框「深度」的点云引擎。纯软件实现(cv2 SGBM)，只在网页 10Hz 拉
 # /api/depth 时才真正计算 —— 没人看的时候线程在睡觉，零开销。
@@ -4610,6 +4647,12 @@ class Handler(BaseHTTPRequestHandler):
                     "cv2": HAVE_CV2,
                     "gst_launch": _have_cmd("gst-launch-1.0"),
                 }
+                # 上电进度（网页启动遮罩）。done=True 之前遮罩一直盖着，
+                # 页面每 700ms 拉一次接口，所以这里必须便宜：一次 dict 拷贝。
+                _bs = dict(GIMBAL_SELFTEST)
+                _t0 = _bs.get("t0") or 0.0
+                _bs["elapsed"] = round(time.time() - _t0, 1) if _t0 else 0.0
+                st["boot"] = _bs
                 return self._json(st)
             if path == "/api/ai":
                 if AI_OVERLAY is None:
@@ -5465,6 +5508,12 @@ def main():
                     help="参数存档路径 (默认 同目录 state.json; 传空字符串=不保存)")
     args = ap.parse_args()
 
+    # 上电进度初值：默认「未完成」，网页启动遮罩会一直等到云台自检结束。
+    # 不自检（--gimbal-selftest 0）时立刻放行，别让人对着遮罩干等。
+    GIMBAL_SELFTEST["enabled"] = bool(int(getattr(args, "gimbal_selftest", 1) or 0))
+    if not GIMBAL_SELFTEST["enabled"]:
+        boot_mark(phase="off", text="未启用云台自检", done=True)
+
     # ★ GIL 切换间隔：**试过，别调**。
     #   默认 5ms。曾怀疑 AI 的纯 Python 后处理与 3 个编码线程抢 GIL，
     #   导致 MJPEG 帧间隔抖动（实测平均帧率不变 58.7 vs 59.4，但 stdev 0.68 -> 3.57ms、
@@ -5660,16 +5709,25 @@ def main():
             while True:
                 try:
                     if ALARM_LIGHT is not None:
-                        # 蓝灯（boot）要撑到**第一帧真的出来**为止：上电时 udev
-                        # 已经先点亮过一次，这里接管后继续蓝着，fps 起来才算启动完成。
+                        # 蓝灯（boot，慢闪）只以**云台自检结束**为准，不再等 fps。
+                        #
+                        # 2026-11-16 实测教训：原来要求「自检结束 且 fps>1」才转绿，
+                        # 结果一次上电后采集链路卡住（frame_id 一直是 1、fps=0），
+                        # 蓝灯就永远闪下去，看起来像"灯坏了"。而 fps 反映的是
+                        # 采集链路是否活着，跟"系统启动完成没有"是两件事 ——
+                        # 采集故障应该在网页/dmesg 上排查，不该让灯卡在启动态。
+                        # 现在：自检结束（done=True）就转绿；不自检/云台未启用时
+                        # 由 boot_mark(done=True) 立刻放行。
                         if not boot_flag[0]:
-                            try:
-                                _hs = hub.status() or {}
-                            except Exception:                 # noqa: BLE001
-                                _hs = {}
-                            if (_hs.get("fps") or 0) > 1.0:
+                            if GIMBAL_SELFTEST.get("done"):
                                 boot_flag[0] = True
                                 ALARM_LIGHT.boot_done()
+                            else:
+                                # 蓝灯两段：上电常亮 -> 云台一动就慢闪。
+                                # phase 为 home/swing/zero 就是云台真在动。
+                                ALARM_LIGHT.boot_motion(
+                                    GIMBAL_SELFTEST.get("phase")
+                                    in ("home", "swing", "zero"))
                         if AI_OVERLAY is not None:
                             _s = AI_OVERLAY.status() or {}
                             ALARM_LIGHT.feed(persons=_s.get("persons") or 0)
@@ -5695,6 +5753,7 @@ def main():
         if GimbalWeb is None:
             print("[gimbal] 无法启用: %s" % (_GIMBAL_IMPORT_ERR or "gimbal_web 不可用"),
                   file=sys.stderr)
+            boot_mark(phase="off", text="云台驱动不可用", done=True)
         else:
             def _gz_ensure_ai():
                 """追踪需要 AI 在跑：没开就切到「仅推理」（画面不变）。"""
@@ -5788,6 +5847,10 @@ def main():
                     time.sleep(0.2)
 
                 def _gimbal_selftest(gz):
+                    # 上电进度打点：网页启动遮罩（console.html #bootMask）按 phase
+                    # 画步骤。所有分支都必须把 done 置 True，否则遮罩下不去。
+                    GIMBAL_SELFTEST["t0"] = time.time()
+                    boot_mark(phase="wait", text="等待云台串口…")
                     try:
                         for _ in range(60):            # 最多等 30s 串口
                             if getattr(gz, "connected", False):
@@ -5795,6 +5858,8 @@ def main():
                             time.sleep(0.5)
                         if not getattr(gz, "connected", False):
                             _gzlog("自检跳过: 串口没连上")
+                            boot_mark(phase="skip", text="云台串口未连接，跳过自检",
+                                      done=True)
                             return
                         time.sleep(1.5)                # 等第一帧 status
                         _old = getattr(gz, "speed_max", 25.0)
@@ -5802,6 +5867,7 @@ def main():
                             # ---- 1) 回零（22°/s，比固件全速温和，但不再拖沓） ----
                             gz.apply({"action": "config", "speed_max": 22})
                             _gzlog("自检: 回零中 (22°/s)…")
+                            boot_mark(phase="home", text="云台回零中（22°/s）…")
                             _gz_rate_to(gz, 0.0, 0.0, 22.0, 1.2, 60.0)
                             gz.apply({"action": "home"})
                             _t0 = time.time()
@@ -5813,6 +5879,7 @@ def main():
                             # ---- 2) 摆动自检：yaw ±20°，pitch 下-40°→上+40°→回0 ----
                             gz.apply({"action": "config", "speed_max": 60})
                             _gzlog("自检: 摆动 yaw ±20°…")
+                            boot_mark(phase="swing", text="摆动自检：左右 ±20°…")
                             for _y, _h in ((40, 0.5),      # +20°
                                            (-40, 1.0),     # -20°
                                            (40, 0.5)):     # 回 0
@@ -5823,10 +5890,13 @@ def main():
                             # pitch 大幅俯仰 ±30°（原来 ±40 会贴到
                             # pitch_abs=39.6 的软件限位，靠刹车兜底不保险）
                             _gzlog("自检: pitch -30° …")
+                            boot_mark(text="摆动自检：俯仰 −30°…")
                             _gz_rate_to(gz, 0.0, -30.0, 60.0, 1.5, 15.0)
                             _gzlog("自检: pitch +30° …")
+                            boot_mark(text="摆动自检：俯仰 +30°…")
                             _gz_rate_to(gz, 0.0, 30.0, 60.0, 1.5, 20.0)
                             _gzlog("自检: pitch 回 0 …")
+                            boot_mark(text="摆动自检：俯仰回 0°…")
                             _gz_rate_to(gz, 0.0, 0.0, 60.0, 1.2, 15.0)
                             st2 = gz.status() or {}
                             _gzlog("自检: 摆动结束 yaw_rel=%s pitch_rel=%s"
@@ -5834,23 +5904,40 @@ def main():
                                       st2.get("pitch_rel_deg")))
                             # ---- 3) 回零停住 ----
                             gz.apply({"action": "config", "speed_max": 22})
+                            boot_mark(phase="zero", text="归零停稳…")
                             _gz_rate_to(gz, 0.0, 0.0, 22.0, 1.2, 30.0)
                             gz.apply({"action": "home"})
-                            time.sleep(3)
+                            # ★ 灯要在这一个瞬间转绿，不能等后面的停稳：
+                            #   home 是立即返回的非阻塞命令，云台到这里已经回到零点、
+                            #   不再有可见运动了。原来 done 打在 sleep(3) 之后，
+                            #   用户看到的是"云台停了、蓝灯又闪了一会儿才变绿"。
+                            #   网页启动遮罩也跟着这一下消失，同一个道理。
+                            _gzlog("上电自检完成, 停在零点 (已置 done, 随后停稳)")
+                            boot_mark(phase="done",
+                                      text="自检完成，正在进入控制台…",
+                                      done=True)
+                            time.sleep(3)          # 停稳缓冲（此时灯已是绿灯）
                         finally:
                             try:
                                 gz.apply({"action": "config",
                                           "speed_max": _old})
                             except Exception:          # noqa: BLE001
                                 pass
-                        _gzlog("上电自检完成, 停在零点")
                     except Exception as _e:            # noqa: BLE001
                         _gzlog("自检异常: %s" % _e)
+                        boot_mark(phase="error", text="自检异常: %s" % _e,
+                                  done=True, error=str(_e))
 
                 threading.Thread(target=_gimbal_selftest, args=(gimbal,),
                                  daemon=True, name="gimbal-selftest").start()
+            else:
+                # --gimbal-selftest 0：没有自检就没什么可等的，立刻放行遮罩/蓝灯
+                boot_mark(phase="off", text="未启用云台自检", done=True)
     else:
         print("[gimbal] 云台控制已关闭 (--gimbal-port '')")
+        # 云台整个没开（没接 / 故意关掉）：上电进度也不能卡着，否则网页
+        # 启动遮罩要等 150s 兜底、蓝灯要闪 5 分钟才转绿。
+        boot_mark(phase="off", text="云台未启用", done=True)
 
     # ---- 2026-10-25: 上电先把单目通道设对, 再打开采集设备 ----
     #   必须在 cap.start() 之前: 一旦以"没有模组的那一路"去 open /dev/video22,
