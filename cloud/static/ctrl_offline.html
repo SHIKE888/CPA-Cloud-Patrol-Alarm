@@ -109,7 +109,12 @@
 
   function reasonText(r) {
     if (r === 'noip') return '设备尚未上报局域网地址，请稍候重试。';
-    if (r === 'unreach') return '设备地址已上报，但当前浏览器无法直连该地址。新版 Chrome / Edge 会阻止公网页面访问局域网设备，也可能本机与设备不在同一局域网。';
+    if (r === 'unreach') {
+      if (location.protocol === 'https:') {
+        return '本页为 HTTPS，浏览器会拦截对 http 局域网地址的请求。请在地址栏授权「本地网络访问」后重试，或直接打开设备页面。';
+      }
+      return '设备地址已上报，但当前浏览器无法直连该地址。新版 Chrome / Edge 会阻止公网页面访问局域网设备，也可能本机与设备不在同一局域网。';
+    }
     return '';
   }
   var qr = new URLSearchParams(location.search).get('r');

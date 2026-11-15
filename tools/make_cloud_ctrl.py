@@ -133,7 +133,10 @@ i.cl-badge{font-style:normal; font-size:11px; color:#8fd0ff; border:1px solid #2
   function probe(base, ms) {
     var ctl = window.AbortController ? new AbortController() : null;
     var tm = setTimeout(function () { if (ctl) ctl.abort(); }, ms);
-    return fetch(base + '/api/ping', { cache: 'no-store',
+    // targetAddressSpace:'local'：Local Network Access 要求发起方声明目标地址空间，
+    // 否则 Chrome/Edge 直接以「Permission was denied」拒掉，连授权弹窗都不会出现。
+    // 不支持的浏览器会忽略这个字段，无副作用。
+    return fetch(base + '/api/ping', { cache: 'no-store', targetAddressSpace: 'local',
                                        signal: ctl ? ctl.signal : undefined })
       .then(function (r) { clearTimeout(tm); return !!r.ok; })
       .catch(function () { clearTimeout(tm); return false; });

@@ -464,5 +464,26 @@ resource is in more-private address space `local`.
 因此 `/ctrl` 的兜底是**一键跳设备页面**：顶层导航不受 CORS/PNA 约束（实测 Edge 156 可正常打开）。
 离线页的「打开设备页面」按钮就是 `http://<首个上报地址>/` —— 那是同一份 `console.html`，
 功能完全一致。这也是「页面放云端 + 操作走局域网」在当前浏览器策略下的实际可用路径。
+
+#### 换成 HTTPS 之后（2026-11-16 实测，Edge 156 无头 + 日志）
+
+证书部署后 `https://ros.absozero.cn` 可用（`/ctrl` 200）。但私网请求仍不通，**报错换了**：
+
+| 场景 | 报错 |
+|---|---|
+| `http://` 页面 | `The request client is not a secure context and the resource is in more-private address space 'local'`（硬拦，无解） |
+| `https://` 页面 | `Permission was denied for this request to access the 'local' address space`（LNA 权限） |
+| `https://` + `--disable-features=LocalNetworkAccessChecks` | `Mixed Content: ... has been blocked`（混合内容接管） |
+
+也就是说 https 把「硬拦」换成了「要授权」：**LNA 生效时混合内容不再阻断**（实测那条只是警告，
+真正拦的是权限），需要用户在地址栏授予「本地网络访问」。无头浏览器自动拒绝授权，
+所以只能在真实 Edge 里验证；`fetch` 已带 `targetAddressSpace:'local'`，便于触发授权。
+
+⚠ 两个必须知道的副作用：
+1. **https 页面在 Electron（VS Code 内置浏览器）里反而不能用了** —— 它没有 LNA，
+   直接按混合内容拦掉 `http://192.168.x.x`。所以**云端控制台仍用 `http://ros.absozero.cn/ctrl`**，
+   https 留给不需要碰局域网的看板首页。**不要开「强制 HTTPS」跳转**。
+2. `ws://<板子>/rosbridge`（地图页）在 https 页面下被禁（需 wss，板子没有证书），
+   所以 https 下地图页不可用。
 - 公网页面访问私网地址还需要浏览器放行：板端 nginx 已返回
   `Access-Control-Allow-Private-Network: true`（Chrome 138+ 若弹「本地网络访问」授权需允许）。
