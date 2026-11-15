@@ -485,5 +485,23 @@ resource is in more-private address space `local`.
    https 留给不需要碰局域网的看板首页。**不要开「强制 HTTPS」跳转**。
 2. `ws://<板子>/rosbridge`（地图页）在 https 页面下被禁（需 wss，板子没有证书），
    所以 https 下地图页不可用。
+
+#### ⚠ 装了证书之后，`http://` 会被浏览器自动升级成 `https://`
+
+实测（Edge 156 无头，专门做了个回显 `location.href` 的探针页）：
+
+```
+Edge 打开 http://ros.absozero.cn/proto.html  ->  实际 URL = https://ros.absozero.cn/proto.html
+```
+
+服务端**没有**做 301（`curl http://ros.absozero.cn/ctrl` 返回 200、无 redirect），
+是 Chromium 的 HTTPS-Upgrades 默认行为干的。后果：
+
+- 只要 443 还在服务，Chromium 系浏览器就不会再用 http 打开本站；
+- 而 https 页面又拦私网请求（LNA / 混合内容），所以 `/ctrl` 在 Chromium 里两条路都堵住；
+- 想恢复 http 路径，必须**停掉 443**（HTTPS 连不上时浏览器才会回落 http）。
+
+当前结论：**云端控制台以「打开设备页面」为主要入口**；若确实需要 /ctrl 原生直连，
+只有「https + 浏览器授权本地网络访问」这一条，且地图页（ws）仍然不可用。
 - 公网页面访问私网地址还需要浏览器放行：板端 nginx 已返回
   `Access-Control-Allow-Private-Network: true`（Chrome 138+ 若弹「本地网络访问」授权需允许）。
