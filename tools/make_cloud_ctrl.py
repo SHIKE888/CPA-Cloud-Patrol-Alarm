@@ -115,6 +115,7 @@ i.cl-badge{font-style:normal; font-size:11px; color:#8fd0ff; border:1px solid #2
   var passEl  = document.getElementById('clPass');
   var errEl   = document.getElementById('clErr');
   var started = false;
+  var tries = 0;
 
   function step(t) {
     var e = document.getElementById('bmStep');
@@ -188,20 +189,23 @@ i.cl-badge{font-style:normal; font-size:11px; color:#8fd0ff; border:1px solid #2
 
   function start() {
     if (started) return;
-    step('正在获取设备地址…');
+    tries++;
+    step(tries > 1 ? '无法连接服务器，正在重试…' : '正在获取设备地址…');
     fetch('/api/lan', { cache: 'no-store' }).then(function (r) {
       if (r.status === 401) { showLogin(); return null; }
       if (!r.ok) throw new Error('HTTP ' + r.status);
       return r.json();
     }).then(function (lan) {
-      if (!lan) return;
+      if (!lan) return;                       // 需要登录，登录成功后会再走一次
       started = true;
       return pickBoard(lan).then(function (base) {
         if (!base) { offline((lan.ips && lan.ips.length) ? 'unreach' : 'noip'); return; }
         bind(base);
       });
-    }).catch(function (e) {
-      step('服务器接口异常：' + (e && e.message ? e.message : e));
+    }).catch(function () {
+      // 服务器/网络抶动：退避重试，不要把遮罩钉在“接口异常”上
+      if (tries < 10) setTimeout(start, Math.min(3000, 600 * tries));
+      else step('无法连接服务器，请检查网络后刷新页面');
     });
   }
 
