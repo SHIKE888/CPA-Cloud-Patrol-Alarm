@@ -85,9 +85,6 @@
   <div class="btns">
     <button id="bRetry">重新检测</button>
   </div>
-  <div class="btns" id="bHttpRow" hidden>
-    <button id="bHttp">改用 HTTP 访问（推荐）</button>
-  </div>
 
   <div class="beian">
     <a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener">陇ICP备2024013668号</a>
@@ -114,7 +111,7 @@
     if (r === 'noip') return '设备尚未上报局域网地址，请稍候重试。';
     if (r === 'unreach') {
       if (location.protocol === 'https:') {
-        return '本页为 HTTPS，浏览器会拦截对 http 局域网地址的请求。请改用 HTTP 访问（下方按钮），或直接打开设备页面。';
+        return '本页为 HTTPS，浏览器会拦截对 http 局域网地址的请求。请直接打开设备页面。';
       }
       return '设备地址已上报，但当前浏览器无法直连该地址。新版 Chrome / Edge 会阻止公网页面访问局域网设备，也可能本机与设备不在同一局域网。';
     }
@@ -179,17 +176,6 @@
   bRetry.onclick = check;
   bOpen.onclick = function () { if (openUrl) location.href = openUrl; };
   document.getElementById('bBack').onclick = function () { location.replace('/ctrl'); };
-  // HTTPS 页面访问 http 私网必被拦（混合内容 / LNA 权限），而 http 页面里 Electron/Firefox
-  // 都能正常直连。所以 https 情况下直接给一个回到 http 的入口（顶层导航不受限）。
-  if (location.protocol === 'https:') {
-    var row = document.getElementById('bHttpRow');
-    if (row) {
-      row.hidden = false;
-      document.getElementById('bHttp').onclick = function () {
-        location.href = 'http://' + location.host + '/ctrl';
-      };
-    }
-  }
   check();
   setInterval(check, 8000);
 })();

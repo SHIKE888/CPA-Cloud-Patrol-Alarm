@@ -499,7 +499,27 @@ Edge 打开 http://ros.absozero.cn/proto.html  ->  实际 URL = https://ros.abso
 
 - 只要 443 还在服务，Chromium 系浏览器就不会再用 http 打开本站；
 - 而 https 页面又拦私网请求（LNA / 混合内容），所以 `/ctrl` 在 Chromium 里两条路都堵住；
-- 想恢复 http 路径，必须**停掉 443**（HTTPS 连不上时浏览器才会回落 http）。
+- 想恢复 http 路径，必须让 **443 对本域名拒绝握手**（握手失败=网络错误，浏览器才会回落 http）。
+
+#### 最终采用的 443 配置（2026-11-16，实测有效）
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name ros.absozero.cn;
+    ssl_reject_handshake on;      # 不需要证书文件
+}
+```
+
+踩过的两个坑：
+
+| 尝试 | 结果 |
+|---|---|
+| 443 什么都不配 | 落到 default_server(absozero.cn) → 证书不匹配 + 404 |
+| 443 `return 301 http://…` | **死循环**：Chrome 会把跳转目标再升级一次 → `ERR_TOO_MANY_REDIRECTS`（Electron 里实测） |
+| 443 `ssl_reject_handshake on` | ✅ TLS 握手失败（curl exit 35），Chrome/Edge 自动升级失败后回落 http，正常打开 `/ctrl` |
+
+⚠ 若浏览器之前缓存过那个 301，需要清一次缓存（或换个 URL 参数）才会恢复。
 
 当前结论：**云端控制台以「打开设备页面」为主要入口**；若确实需要 /ctrl 原生直连，
 只有「https + 浏览器授权本地网络访问」这一条，且地图页（ws）仍然不可用。
