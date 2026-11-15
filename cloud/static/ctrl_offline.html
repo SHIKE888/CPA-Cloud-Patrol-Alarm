@@ -36,6 +36,7 @@
   .box .hint{margin-top:10px; padding-top:10px; border-top:1px dashed var(--line);
              color:var(--dim); line-height:1.7}
   .btns{display:flex; gap:10px}
+  .btns + .btns{margin-top:10px}
   button{flex:1; padding:11px 0; border-radius:10px; border:1px solid var(--line);
          background:#222c3a; color:#cfdcea; font-size:14px; cursor:pointer}
   button:hover{background:#2b3849; color:#fff}
@@ -78,8 +79,11 @@
   </div>
 
   <div class="btns">
-    <button class="primary" id="bRetry">立即重试</button>
+    <button class="primary" id="bOpen" disabled>打开设备页面</button>
     <button id="bBack">返回控制台</button>
+  </div>
+  <div class="btns">
+    <button id="bRetry">重新检测</button>
   </div>
 
   <div class="beian">
@@ -98,16 +102,19 @@
   var oTry = document.getElementById('oTry');
   var oHint = document.getElementById('oHint');
   var bRetry = document.getElementById('bRetry');
+  var bOpen  = document.getElementById('bOpen');
+  var openUrl = '';
   var busy = false;
   var tries = 0;
 
   function reasonText(r) {
     if (r === 'noip') return '设备尚未上报局域网地址，请稍候重试。';
-    if (r === 'unreach') return '设备地址已上报，但当前网络无法连通，请确认与本机处于同一局域网。';
+    if (r === 'unreach') return '设备地址已上报，但当前浏览器无法直连该地址。新版 Chrome / Edge 会阻止公网页面访问局域网设备，也可能本机与设备不在同一局域网。';
     return '';
   }
   var qr = new URLSearchParams(location.search).get('r');
-  if (reasonText(qr)) oHint.innerHTML = reasonText(qr) + '<br>请确认：① 本机与设备处于同一局域网；② 设备已上电并完成启动。';
+  if (reasonText(qr)) oHint.innerHTML = reasonText(qr) +
+    '<br>设备页面与云端控制台为同一套页面，功能一致，可直接在该页面操作。';
 
   function probe(base, ms) {
     var ctl = window.AbortController ? new AbortController() : null;
@@ -136,6 +143,13 @@
       oHb.textContent = (lan.hb_age == null) ? '（无心跳）'
                        : (lan.hb_age < 60 ? Math.round(lan.hb_age) + ' 秒前'
                                           : Math.round(lan.hb_age / 60) + ' 分钟前');
+      // 顶层导航不受 CORS / PNA 限制：浏览器拦得住 fetch，拦不住点链接跳转。
+      // 所以把首个地址挂到「打开设备页面」上，保证 Edge/Chrome 也有一条可用的路。
+      if (ips.length) {
+        openUrl = 'http://' + ips[0] + (port == 80 ? '' : ':' + port) + '/';
+        bOpen.disabled = false;
+        bOpen.title = openUrl;
+      }
       if (!ips.length) return;
       var i = 0;
       (function next() {
@@ -155,6 +169,7 @@
   }
 
   bRetry.onclick = check;
+  bOpen.onclick = function () { if (openUrl) location.href = openUrl; };
   document.getElementById('bBack').onclick = function () { location.replace('/ctrl'); };
   check();
   setInterval(check, 8000);

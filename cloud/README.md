@@ -440,5 +440,28 @@ location = /ctrl/offline { add_header Cache-Control "no-store"; try_files /ctrl_
   那是内部链路，浏览器永远连不上，留在列表里只会白等 2.5s 探测超时。
   需要改的话用 `cloud_agent.py --lan-skip 192.168.100.0/24,10.0.0.0/8`。
 - 地图页的 rosbridge 会指向 `ws://<板子IP>/rosbridge`（不是云端域名），同样依赖局域网。
+
+### ⚠ 浏览器硬性限制：公网页面**不能**直连局域网设备
+
+Edge 156 / Chrome 新版会拦截，控制台原文（`--enable-logging=stderr` 实测）：
+
+```
+Access to fetch at 'http://192.168.1.118/api/ping' from origin 'http://ros.absozero.cn'
+has been blocked by CORS policy: The request client is not a secure context and the
+resource is in more-private address space `local`.
+```
+
+这是 Chromium 的 `InsecurePrivateNetworkRequests` 检查，**加任何响应头都绕过不了**，
+而且 `fetch` / `<img>` / `WebSocket` 全被拦（实测四种方式全部失败）。
+板端已经带了 `Access-Control-Allow-Private-Network: true`，只对「安全上下文 → 私网」
+那一档生效；`http://ros.absozero.cn` 不是安全上下文。
+
+- VS Code 内置浏览器（Electron）不实现这套检查，所以能在里面打开；
+- 换成 HTTPS 也不一定能解决：`https://` 页面请求 `http://192.168.x.x` 会改踩「混合内容」，
+  除非浏览器授予「本地网络访问」权限。
+
+因此 `/ctrl` 的兜底是**一键跳设备页面**：顶层导航不受 CORS/PNA 约束（实测 Edge 156 可正常打开）。
+离线页的「打开设备页面」按钮就是 `http://<首个上报地址>/` —— 那是同一份 `console.html`，
+功能完全一致。这也是「页面放云端 + 操作走局域网」在当前浏览器策略下的实际可用路径。
 - 公网页面访问私网地址还需要浏览器放行：板端 nginx 已返回
   `Access-Control-Allow-Private-Network: true`（Chrome 138+ 若弹「本地网络访问」授权需允许）。
