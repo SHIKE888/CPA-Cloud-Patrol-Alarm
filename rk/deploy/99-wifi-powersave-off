@@ -1,0 +1,27 @@
+#!/bin/sh
+# NetworkManager dispatcher：WiFi 一连接就关掉省电模式。
+#
+# 为什么必须有这个：AIC8800 USB 网卡默认 Power save=on，控制器会攒够信标周期
+# 才收发包，实测到网关的 ping 从
+#     avg 1052ms / max 2967ms / mdev 820ms（还带重复包）
+# 降到
+#     avg   92ms / max  141ms / mdev  30ms
+# 网页/视频的"卡一下"主要就是它。
+#
+# 放在 dispatcher 而不是一次性脚本：换 WiFi（509 / Pura70 / 手机热点）都会
+# 重新触发 up 事件，每次都能确保省电是关的。
+
+IFACE="$1"
+ACTION="$2"
+
+[ "$ACTION" = "up" ] || exit 0
+[ -n "$IFACE" ] || exit 0
+
+case "$IFACE" in
+    wl*)
+        /sbin/iw dev "$IFACE" set power_save off 2>/dev/null || \
+        /usr/sbin/iw dev "$IFACE" set power_save off 2>/dev/null
+        ;;
+esac
+
+exit 0

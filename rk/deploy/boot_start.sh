@@ -33,6 +33,40 @@ fi
 
 log() { echo "[boot] $*"; }
 
+# ---- 0. CPU 调频器 ondemand -> performance ----
+#  板子是 8 核异构: cpu0-3 = A53@1.92G, cpu4-7 = A72@2.11G, 默认全是 ondemand。
+#
+#  板上 A/B 实测 (双目 3840x1080 + AI + 深度全开, 2 客户端):
+#    指标        ondemand   performance
+#    video fps     27.9  ->   29.3
+#    AI fps        17.9  ->   20.4
+#    det_ms        78.3  ->   18.4     <- 4.2 倍
+#    run_ms       101.4  ->   19.4
+#    depth ms     113.8  ->   87.8
+#    loadavg       7.88  ->   6.11
+#    SoC 温度     62.8C  ->   59.2C     <- 反而更低
+#
+#  为什么 ondemand 更慢: 它要"采样 -> 判定 -> 升频", 这条延迟落在 33ms 的
+#  帧间隔里就是一次掉帧; 而且负载在阈值附近来回跳, 频率也跟着抖。
+#  常频之后没有升降频的空转, 所以温度反而降了。
+#
+#  (只写 scaling_governor, 不动 min/max freq, 不用 userspace 锁频)
+for _g in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
+    [ -w "$_g" ] || continue
+    cur=$(cat "$_g" 2>/dev/null)
+    [ "$cur" = "performance" ] || echo performance > "$_g" 2>/dev/null
+done
+unset _g cur
+log "CPU governor -> $(cat /sys/devices/system/cpu/cpu4/cpufreq/scaling_governor 2>/dev/null)"
+
+# ---- 0.5 兜底：点亮四色灯的蓝灯 ----
+#  正常路径是 udev 在 CH340 枚举时（开机 2~4 秒）就点亮，比本脚本早约 20 秒。
+#  这里只是保险：udev 规则没装/没触发时，服务启动时补一次，避免这 20 秒全黑。
+#  AlarmLight 稍后接管时会再发一次蓝灯，两者幂等。
+if [ -x /root/rk/deploy/lamp_boot.sh ]; then
+    /root/rk/deploy/lamp_boot.sh 2>/dev/null || true
+fi
+
 # ---- 1. 等设备节点就绪（I2C 桥 / video 节点可能比本服务晚出现） ----
 for i in $(seq 1 40); do
     [ -e /dev/i2c-9 ] && [ -e "$DEV" ] && break

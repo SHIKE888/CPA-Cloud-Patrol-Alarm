@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<Project Version="3" Minor="2" Path="C:/Users/shike/Desktop/csi2rk2hdmi/08_csi2rk_mipi_imx415/fpga">
+<Project Version="3" Minor="2" Path="C:/Users/shike/Desktop/08_csi2rk_mipi_imx415/fpga">
     <Project_Created_Time></Project_Created_Time>
     <TD_Encoding>UTF-8</TD_Encoding>
     <TD_Version>6.2.200067</TD_Version>

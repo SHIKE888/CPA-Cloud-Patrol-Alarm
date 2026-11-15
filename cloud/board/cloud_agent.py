@@ -487,6 +487,10 @@ class Agent(object):
         # 健康告警（link_down / fps_zero / fpga_err / disk_full / temp_high）
         # 是“持续状态”：只在从正常→异常的边沿报一次，恢复前完全静默。
         self.health_on = {}        # label -> 已上报且尚未恢复（首次上报时刻）
+        # ★ 2026-11-16 用户要求：health 类（视频无帧 / FPGA 读失败 / 推流不可达 /
+        #   磁盘 / 温度）**不接受、不记录**。默认 0 = 只填遥测、不产生报警。
+        #   遇到自己重启导致的大量“视频无帧”时尤其需要这个（实测刷了 6 条噪声）。
+        self.health_alarm = False
         self.recovered = []        # 待向云端声明“已恢复”的 label（ingest 成功后清空）
         self.fail_local = 0
         self.fail_cloud = 0
@@ -694,7 +698,11 @@ class Agent(object):
             elif sy["temp"] > 72:
                 h["warn"].append("温度 %.0f°C" % sy["temp"])
 
-        self.health_sync(act, h)
+        # ★ health 类告警默认不上报（--health-alarm 1 才开）。
+        #   tel["health"] 仍然照常填，web 页面能看当前健康状态，
+        #   只是不走 health_sync 产生边沿报警 -> 云端不接收、不入库。
+        if self.health_alarm:
+            self.health_sync(act, h)
 
     def health_sync(self, act, h):
         """健康告警边沿触发：一次异常只报一次，恢复后才允许再报。
@@ -1055,6 +1063,9 @@ def main():
     ap.add_argument("--snap-quality", type=int, default=55)
     ap.add_argument("--insecure", action="store_true")
     ap.add_argument("--once", action="store_true", help="只发一次心跳（调试）")
+    ap.add_argument("--health-alarm", type=int, default=0, choices=[0, 1],
+                    help="健康类告警（视频无帧 / FPGA读失败 / 推流不可达 / 磁盘 / 温度）"
+                         "是否上报。默认 0 = 只进遥测、不报警不入库")
     # ---- 事件视频（前 5s 环形缓存 + 后 5s，mp4 上传）----
     ap.add_argument("--ring-dir", default="/mnt/sd/csi_ring",
                     help="环形缓存目录（SD 卡；放 /dev/shm 可省卡寿命）")
@@ -1096,6 +1107,7 @@ def main():
     a.clip_width = max(320, min(1280, a.clip_width))
 
     ag = Agent(a)
+    ag.health_alarm = bool(getattr(a, "health_alarm", 0))
     if a.selftest_clip:
         return selftest_clip(ag, a.selftest_clip)
     if a.once:

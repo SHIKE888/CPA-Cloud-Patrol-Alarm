@@ -488,10 +488,20 @@ body{
    还会被当成滚动或拖拽 -> pointerup 收不到，车/云台就会一直动。
    user-select 管选择，-webkit-touch-callout 管 iOS 长按菜单，
    touch-action:none 管浏览器手势；安卓的 contextmenu 在 JS 里兜底拦掉。 */
-#viewMap #dpad button, #viewVideo .gzpad, #viewVideo .gzbtn{
+#viewMap #dpad, #viewMap #dpad button,
+#viewVideo .gzpad, #viewVideo .gzbtn{
   -webkit-user-select:none; user-select:none;
   -webkit-touch-callout:none; -webkit-user-drag:none;
   touch-action:none;
+}
+/* 2026-11-16 用户反馈「手机端按方向键会触发选中」：
+   原来只给 button 设了 user-select:none，**容器**没设 —— 手指按住按钮再滑到
+   按钮之间的间隙（或按第二个方向键时手指跨过 gap）就选中了页面文字。
+   这里把容器一起禁掉；注意 touch-action:none 不能加到 #dpad 上，
+   否则里面的「线速/角速」range 滑条会拖不动。 */
+#viewMap #dpad, #viewVideo .gzpad{
+  -webkit-user-select:none; user-select:none;
+  -webkit-touch-callout:none;
 }
 #viewVideo .gzbtn[data-jog="up"]{grid-area:1/2}
 #viewVideo .gzbtn[data-jog="left"]{grid-area:2/1}
@@ -716,6 +726,8 @@ html, body{overflow:hidden}
   <input id="vAddr" type="text" value="" spellcheck="false"
          title="中继板 IP（视频已反代到 80 端口，留空即用当前页面地址）">
   <button class="primary" id="btnConn">连接</button>
+  <button id="btnBuzz"
+          title="蜂鸣器总开关（默认关）：开启后仅在黄/红报警时鸣叫">蜂鸣</button>
   <button id="btnSnap">抓拍</button>
   <span style="display:flex;gap:4px;align-items:center;margin-left:6px">
     <span style="color:var(--dim);font-size:12px">画面源</span>
@@ -3911,6 +3923,36 @@ html, body{overflow:hidden}
     }
   }
 
+  // ---- 四色指示灯：越界状态推送 ----------------------------------------
+  //  灯的驱动在板端 alarm_light.py，本页只负责把「有没有人进警戒区」推给它
+  //  （判定需要地图坐标 + 车体位姿，只有前端算得出来）。
+  //  ⚠ 必须定义在**本 IIFE 内**：guardEval 也在这一块。页面里另一个 <script>
+  //     是独立的 IIFE，写在那边会报 "lampPushInZone is not defined"（踩过）。
+  //  ⚠ 用同源相对路径 /api/：nginx 已把 /api/ 反代到板子 9012。
+  let _lampInZone = null;
+  let _lampTimer = null;
+  function lampPushInZone(v) {
+    const nv = !!v;
+    if (nv === _lampInZone) return;
+    _lampInZone = nv;
+    clearTimeout(_lampTimer);
+    _lampTimer = setTimeout(function () {
+      fetch("/api/light", {
+        method: "POST", cache: "no-store",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ in_zone: _lampInZone })
+      }).catch(function () { /* 灯不在也不影响主流程 */ });
+    }, 120);
+  }
+  window.addEventListener("beforeunload", function () {
+    try {
+      if (navigator.sendBeacon) {
+        navigator.sendBeacon("/api/light",
+          new Blob(['{"in_zone":false}'], { type: "application/json" }));
+      }
+    } catch (e) { /* ignore */ }
+  });
+
   // ---- 越界判定 + 两级上报（预警 / 报警）---------------------------------
   //  按**目标**累积，不按"区域+目标"：一个人同时压住多个重叠的警戒区时只算
   //  一条，上报时把区名合成 "圆形警戒1+矩形警戒2"（用户要求：交叉位置合并上报）。
@@ -3922,13 +3964,15 @@ html, body{overflow:hidden}
   function guardEval() {
     // ⚠ 不能因为"没有区域"就整体 return：那样清空区域后状态卡在"在区"，
     //   再画一个区域会从旧计数接着数（实测 19/10 一直不归零）。
-    if (!gData || !S.pose) return;
+    //   但灯必须收到 false，否则会停在最后一次红闪。
+    if (!gData || !S.pose) { lampPushInZone(false); return; }
     const now = Date.now();
     const warnN = Math.max(1, Math.round(Number(gCfg.warnN) || 5));
     let alarmN = Math.max(1, Math.round(Number(gCfg.alarmN) || 10));
     if (alarmN < warnN) alarmN = warnN;
     const cold = Math.max(5, Number(gCfg.cool) || 60) * 1000;
     const seen = {};
+    let anyIn = false;          // 本拍是否有人处于任一警戒区内（喂给四色灯）
     const list = gData.targets || [];
     for (let i = 0; i < list.length; i++) {
       const t = list[i];
@@ -3953,6 +3997,7 @@ html, body{overflow:hidden}
         else outMin = Math.min(outMin, zoneOutDist(z, w.x, w.y));
       }
       if (zs.length) {
+        anyIn = true;
         st.n++;
         st.in = true;
         st.zones = zs.map(function (z) { return z.name; }).join('+');
@@ -3983,6 +4028,8 @@ html, body{overflow:hidden}
         if (now - (gState[k].t || 0) > 600000) delete gState[k];
       }
     }
+    // 四色灯：进警戒区立即黄灯快闪，满 5s 升级红灯（板端状态机做升级）
+    lampPushInZone(anyIn);
   }
 
   function guardReport(zs, t, w, lvl, n) {
@@ -4737,6 +4784,17 @@ document.addEventListener("contextmenu", (e) => {
   if (t && t.closest && t.closest("#dpad button, .gzbtn")) e.preventDefault();
 });
 
+/* 2026-11-16: 「手机端按方向键会触发选中」——CSS 的 user-select:none 在部分
+   安卓浏览器上对 button 不够用（尤其是手指从按钮滑到按钮之间的间隙）。
+   这里直接拦 selectstart，只拦方向键区域，页面别处选字不受影响。 */
+document.addEventListener("selectstart", (e) => {
+  const t = e.target;
+  if (t && t.closest && t.closest("#dpad, .gzpad")) {
+    if (e.cancelable) e.preventDefault();
+    return false;
+  }
+});
+
 /* 滑块绑定 */
 ["brightness","contrast","saturation","hue","gamma","scale","quality","fps",
  "depth_z_near","depth_pan_gain"]
@@ -5369,6 +5427,40 @@ $("btnSnap").onclick = async () => {
     toast("抓拍失败: " + e.message, true);
   }
 };
+
+/* ---------------- 蜂鸣器 / 四色指示灯 ----------------
+   灯由板端 alarm_light.py 驱动（Modbus-RTU 9600，协议见 docs/串口四色指示灯通讯协议2025版.pdf）。
+   本页只做两件事：
+     1) 蜂鸣器总开关 -> POST /api/buzz
+     2) 把本页算出来的【越界状态】推给板端 -> POST /api/light
+   为什么越界要由页面推：判定需要地图坐标 + 车体位姿，板端没有这些。
+   只有本页开着时才推；页面关掉时主动推一次 false，否则灯会停在最后一次的红闪。
+   ------------------------------------------------------ */
+let buzzOn = false;
+function buzzRender() {
+  const b = $("btnBuzz"); if (!b) return;
+  b.textContent = buzzOn ? "蜂鸣 开" : "蜂鸣";
+  b.className = buzzOn ? "primary" : "";
+  b.title = buzzOn ? "报警时蜂鸣器会响（点击关闭）"
+                   : "蜂鸣器已静音（点击开启：黄/红报警时鸣叫）";
+}
+async function buzzSet(on) {
+  try {
+    const r = await fetch(base + "/api/buzz", {
+      method: "POST", cache: "no-store",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ on: !!on })
+    });
+    const j = await r.json().catch(function () { return {}; });
+    if (!r.ok || !j.ok) {
+      toast("蜂鸣器不可用：" + (j.error || ("HTTP " + r.status)), true);
+      return;
+    }
+    buzzOn = !!j.buzzer; buzzRender();
+    toast(buzzOn ? "蜂鸣器已开启（报警时鸣叫）" : "蜂鸣器已关闭");
+  } catch (e) { toast("蜂鸣器请求失败：" + e.message, true); }
+}
+if ($("btnBuzz")) $("btnBuzz").onclick = function () { buzzSet(!buzzOn); };
 
 /* ---------------- FPGA 硬件参数 (I2C @0x40) ---------------- */
 let fpgaRegs = {};
@@ -6609,6 +6701,11 @@ async function poll() {
   if (!base) return;
   try {
     const st = await api("/api/status");
+    // 四色灯/蜂鸣器：以板端为唯一真源（别的设备 / 刷新页面后都要对齐）
+    if (st.lamp) {
+      const _bz = !!st.lamp.buzzer;
+      if (_bz !== buzzOn) { buzzOn = _bz; buzzRender(); }
+    }
     $("sState").textContent   = "运行中";
     // 后端框只显示视频节点：原来拼成 "opencv / /dev/video22"，
     // 采集方式对使用者没有意义，留个设备路径就够了。

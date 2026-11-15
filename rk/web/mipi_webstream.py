@@ -459,6 +459,22 @@ else:
 
 AI_OVERLAY = None        # 由 main() 创建; 编码线程只读
 
+# ------------------------------------------------------------------ 可选 四色灯/蜂鸣器
+# 串口四色指示灯 (Modbus-RTU, 9600 8N1)，协议见
+# docs/串口四色指示灯通讯协议2025版.pdf。
+# 设备不在（/dev/ttyUSB0 打不开）时静默降级：只更新状态，不影响推流与报警。
+try:
+    if SCRIPT_DIR not in sys.path:
+        sys.path.insert(0, SCRIPT_DIR)
+    from alarm_light import AlarmLight
+except Exception as _e:                                   # pragma: no cover
+    AlarmLight = None
+    _LAMP_IMPORT_ERR = "%s: %s" % (type(_e).__name__, _e)
+else:
+    _LAMP_IMPORT_ERR = ""
+
+ALARM_LIGHT = None       # 由 main() 创建; HTTP 线程只改输入量
+
 # ------------------------------------------------------------------ 可选 云台
 # QGimbal 走 USB CDC-ACM (/dev/ttyACM0)。串口协议复用 rk/gimbal/gimbal_keyctrl.py,
 # 限幅 / 看门狗 / 追踪逻辑都在 gimbal_web.py 里（那边有完整的安全说明）。
@@ -4578,6 +4594,10 @@ class Handler(BaseHTTPRequestHandler):
                 st["port"] = self.args.port
                 st["python"] = sys.executable
                 st["ai"] = AI_OVERLAY.status() if AI_OVERLAY is not None else None
+                # 四色指示灯：只读状态。输入量由 main 里的 lamp-feed 线程
+                # 每 100ms 把 AI 的人数喂进去，别在这里做（1s 一次太粗）。
+                st["lamp"] = (ALARM_LIGHT.snapshot()
+                              if ALARM_LIGHT is not None else None)
                 _cap = Handler.capture
                 st["dual"] = (_cap.dual_status()
                               if (_cap is not None
@@ -4824,6 +4844,35 @@ class Handler(BaseHTTPRequestHandler):
                           % (out["seq"], body.get("label"),
                              body.get("tid"), body.get("note") or ""))
                 return self._json(out)
+            if path == "/api/light":
+                # 网页侧推送**越界状态**（板端没有地图与车体位姿，算不了越界）。
+                # 只改内存里的输入量，真正的串口下发在 alarm-light 线程做。
+                if ALARM_LIGHT is None:
+                    return self._json({"ok": False,
+                                       "error": "指示灯未启用"}, 503)
+                body = self._read_json()
+                if not isinstance(body, dict):
+                    body = {}
+                ALARM_LIGHT.feed(
+                    persons=body.get("persons"),
+                    in_zone=body.get("in_zone"),
+                    danger=bool(body.get("danger")),
+                    intrude_s=body.get("intrude_s"))
+                return self._json({"ok": True, "lamp": ALARM_LIGHT.snapshot()})
+            if path == "/api/buzz":
+                # 蜂鸣器开关（默认关）。传 {"on":true/false} 显式设置，
+                # 不传则取反。开关只管「报警时是否鸣叫」，平时一律静音。
+                if ALARM_LIGHT is None:
+                    return self._json({"ok": False,
+                                       "error": "蜂鸣器未启用"}, 503)
+                body = self._read_json()
+                if isinstance(body, dict) and "on" in body:
+                    on = ALARM_LIGHT.set_buzzer(bool(body.get("on")))
+                else:
+                    on = ALARM_LIGHT.toggle_buzzer()
+                _bump_rev("buzz")
+                return self._json({"ok": True, "buzzer": on,
+                                   "lamp": ALARM_LIGHT.snapshot()})
             if path == "/api/guard":
                 # 写警戒区域 / 告警参数（板端唯一副本，谁写谁负责 rev）。
                 return self._json(GUARD_ST.apply(self._read_json()))
@@ -5394,12 +5443,24 @@ def main():
     ap.add_argument("--gimbal-auto-open", type=int, default=1, choices=[0, 1],
                     help="启动即占用串口(默认 1)。0=等页面上第一次点动/追踪再连;"
                          " 需要留串口给官方上位机/键盘脚本时设 0")
+    ap.add_argument("--gimbal-selftest", type=int, default=1, choices=[0, 1],
+                    help="上电云台自检(默认 1 开): 缓慢回中 -> 小幅左右摆动 -> 停在零点。"
+                         "全程限速 8°/s，幅度远小于限位；0=不自检")
     ap.add_argument("--gimbal-drive", default="speed",
                     choices=["speed", "angle"],
                     help="云台驱动方式: speed=连续控制(默认, 每拍下发 ctrl speed,"
                          " 云台连续转, 不会一顿一顿) / angle=步进控制(旧行为,"
                          " 每拍下发绝对角, 固件到点停)")
     ap.add_argument("--verbose", action="store_true", help="打印每条 HTTP 日志")
+    ap.add_argument("--lamp-port", default="/dev/ttyUSB0",
+                    help="四色指示灯串口 (默认 /dev/ttyUSB0；传空字符串=关闭)。"
+                         "协议为 Modbus-RTU 9600 8N1，见 docs/串口四色指示灯通讯协议2025版.pdf")
+    ap.add_argument("--lamp-baud", type=int, default=9600,
+                    help="四色指示灯波特率 (默认 9600)")
+    ap.add_argument("--lamp-danger-s", type=float, default=5.0,
+                    help="危险动作红灯快闪保持秒数 (默认 5)")
+    ap.add_argument("--lamp-intrude-s", type=float, default=5.0,
+                    help="越界持续多少秒升级红灯 (默认 5)")
     ap.add_argument("--state-file", default=STATE_FILE_DEFAULT,
                     help="参数存档路径 (默认 同目录 state.json; 传空字符串=不保存)")
     args = ap.parse_args()
@@ -5555,6 +5616,76 @@ def main():
                 _pp_on, _pp_desc = _fpga_pp_on(FpgaI2C(args.fpga_bus, args.fpga_addr))
                 print("[ai] FPGA 预处理: %s" % _pp_desc)
 
+    # ---- 四色指示灯 + 蜂鸣器 ----
+    #  状态机全在 AlarmLight 里，这里只负责建对象、把人数喂进去。
+    #  串口打不开（比如插的是 CH340 而内核没编这个驱动）不影响其它任何功能。
+    global ALARM_LIGHT
+    _lamp_port = str(getattr(args, "lamp_port", "") or "").strip()
+    if not _lamp_port:
+        print("[lamp] 已关闭 (--lamp-port 为空)")
+    elif AlarmLight is None:
+        print("[lamp] 无法启用: %s" % (_LAMP_IMPORT_ERR or "alarm_light 不可用"),
+              file=sys.stderr)
+    else:
+        ALARM_LIGHT = AlarmLight(
+            port=_lamp_port,
+            baud=int(getattr(args, "lamp_baud", 9600) or 9600),
+            danger_hold_s=float(getattr(args, "lamp_danger_s", 5.0) or 5.0),
+            intrude_alarm_s=float(getattr(args, "lamp_intrude_s", 5.0) or 5.0))
+        ALARM_LIGHT.start()
+        _ls = ALARM_LIGHT.snapshot()
+        print("[lamp] 四色指示灯: port=%s baud=%d CRC自检=%s%s"
+              % (_lamp_port, ALARM_LIGHT.baud,
+                 "OK" if _ls.get("crc_selftest") else "失败",
+                 "" if _ls.get("open")
+                 else "  (暂不可用: %s)" % (_ls.get("err") or "未连接")))
+
+        def _lamp_feed_loop():
+            """把 AI 的人数/动作事件每 100ms 喂给灯状态机。
+
+            为什么不放在 /api/status 里：那是按网页轮询节奏（1s 级）跑的，
+            没人开网页时灯就不更新了。越界状态另由网页 POST /api/light 推。
+
+            危险动作：`ai.events` 里出现比上次更新的一条就触发红灯。
+            首次启动先记下当前水位，避免把历史事件当成新告警闪 5 秒。
+            """
+            too_old = [0.0]
+            boot_flag = [False]
+            try:
+                _s0 = AI_OVERLAY.status() if AI_OVERLAY is not None else None
+                for _e0 in ((_s0 or {}).get("events") or []):
+                    too_old[0] = max(too_old[0], float(_e0.get("t") or 0))
+            except Exception:                                 # noqa: BLE001
+                pass
+            while True:
+                try:
+                    if ALARM_LIGHT is not None:
+                        # 蓝灯（boot）要撑到**第一帧真的出来**为止：上电时 udev
+                        # 已经先点亮过一次，这里接管后继续蓝着，fps 起来才算启动完成。
+                        if not boot_flag[0]:
+                            try:
+                                _hs = hub.status() or {}
+                            except Exception:                 # noqa: BLE001
+                                _hs = {}
+                            if (_hs.get("fps") or 0) > 1.0:
+                                boot_flag[0] = True
+                                ALARM_LIGHT.boot_done()
+                        if AI_OVERLAY is not None:
+                            _s = AI_OVERLAY.status() or {}
+                            ALARM_LIGHT.feed(persons=_s.get("persons") or 0)
+                            _evs = _s.get("events") or []
+                            if _evs:
+                                _tmax = max(float(e.get("t") or 0) for e in _evs)
+                                if _tmax > too_old[0]:
+                                    too_old[0] = _tmax
+                                    ALARM_LIGHT.feed(danger=True)
+                except Exception:                             # noqa: BLE001
+                    pass
+                time.sleep(0.1)
+
+        threading.Thread(target=_lamp_feed_loop, daemon=True,
+                         name="lamp-feed").start()
+
     # ---- 云台 (QGimbal) ----
     # 只实例化，不打开串口：第一次收到动作请求时才连（避免开机时和
     # gimbal_keyctrl.py / 官方上位机抢 /dev/ttyACM0）。
@@ -5601,6 +5732,123 @@ def main():
                      gimbal.speed_max, gimbal.period * 1000.0, gimbal.accel,
                      gimbal.predict_s, "开" if gimbal.kalman else "关",
                      "" if gimbal.available else " (不可用: %s)" % gimbal.msg))
+
+            # ---- 上电云台自检: 缓慢回中 -> 小幅自检动作 -> 停在零点 ----
+            #  云台是唯一"输出会改变物理世界"的机构，所以这里刻意做保守：
+            #    · 全程限速：把 speed_max 临时压到 8°/s（jog 走这条限速）
+            #    · 动作幅度远小于软件限位（Yaw ±170° / Pitch ±42°）
+            #    · 任何异常只打日志，绝不影响视频/报警链路
+            #    · 结束把 speed_max 还原
+            #  回中本身用的是固件的 `ctrl angle`（home），速度由固件决定；
+            #  "缓慢"主要体现在自检动作和限速上。
+            if int(getattr(args, "gimbal_selftest", 1) or 0):
+                _log_path = "/tmp/gimbal_selftest.log"
+
+                def _gzlog(msg):
+                    """自检日志单独写文件。
+
+                    本机 journald 收不到进程的 print（`journalctl -u` 一直是
+                    No entries），排查自检时序非常不方便，所以另存一份。
+                    """
+                    try:
+                        with open(_log_path, "a") as _f:
+                            _f.write("%s %s\n"
+                                     % (time.strftime("%m-%d %H:%M:%S"), msg))
+                    except Exception:                      # noqa: BLE001
+                        pass
+                    print("[gimbal] %s" % msg)
+
+                def _gz_rate_to(gz, ty, tp, speed, tol, timeout):
+                    """速度闭环走到 (ty, tp)。
+
+                    为什么不用固件的 `ctrl angle`：它是一次性给目标、固件自己全速
+                    走完，95° 会"一下飞过去"。这里改成每 120ms 读一次角度、
+                    按误差比例给速度（接近时自动减速），全程不超过 speed。
+                    """
+                    t0 = time.time()
+                    while time.time() - t0 < timeout:
+                        st = gz.status() or {}
+                        y = st.get("yaw_rel_deg")
+                        p = st.get("pitch_rel_deg")
+                        if y is None or p is None:
+                            time.sleep(0.1)
+                            continue
+                        ey, ep = ty - y, tp - p
+                        if abs(ey) <= tol and abs(ep) <= tol:
+                            break
+                        # 比例系数 5.0：误差 >12° 就全速，只在最后十几度减速。
+                        # 原来是 2.5（误差 24° 就开始降速），pitch 扫 80° 有一半
+                        # 时间在减速段，实测每段要 2s；改成 5.0 后约 1.4s。
+                        vy = max(-speed, min(speed, ey * 5.0))
+                        vp = max(-speed, min(speed, ep * 5.0))
+                        gz.apply({"action": "jog", "yaw": vy, "pitch": vp,
+                                  "hold": 0.25})
+                        time.sleep(0.12)
+                    gz.apply({"action": "stop"})
+                    time.sleep(0.2)
+
+                def _gimbal_selftest(gz):
+                    try:
+                        for _ in range(60):            # 最多等 30s 串口
+                            if getattr(gz, "connected", False):
+                                break
+                            time.sleep(0.5)
+                        if not getattr(gz, "connected", False):
+                            _gzlog("自检跳过: 串口没连上")
+                            return
+                        time.sleep(1.5)                # 等第一帧 status
+                        _old = getattr(gz, "speed_max", 25.0)
+                        try:
+                            # ---- 1) 回零（22°/s，比固件全速温和，但不再拖沓） ----
+                            gz.apply({"action": "config", "speed_max": 22})
+                            _gzlog("自检: 回零中 (22°/s)…")
+                            _gz_rate_to(gz, 0.0, 0.0, 22.0, 1.2, 60.0)
+                            gz.apply({"action": "home"})
+                            _t0 = time.time()
+                            while time.time() - _t0 < 15:
+                                if str(getattr(gz, "msg", "")).startswith("回零完成"):
+                                    break
+                                time.sleep(0.2)
+                            _gzlog("自检: 回零完成")
+                            # ---- 2) 摆动自检：yaw ±20°，pitch 下-40°→上+40°→回0 ----
+                            gz.apply({"action": "config", "speed_max": 60})
+                            _gzlog("自检: 摆动 yaw ±20°…")
+                            for _y, _h in ((40, 0.5),      # +20°
+                                           (-40, 1.0),     # -20°
+                                           (40, 0.5)):     # 回 0
+                                gz.apply({"action": "jog", "yaw": _y,
+                                          "pitch": 0, "hold": _h})
+                                time.sleep(_h + 0.12)
+                            gz.apply({"action": "stop"})
+                            # pitch 大幅俯仰 ±30°（原来 ±40 会贴到
+                            # pitch_abs=39.6 的软件限位，靠刹车兜底不保险）
+                            _gzlog("自检: pitch -30° …")
+                            _gz_rate_to(gz, 0.0, -30.0, 60.0, 1.5, 15.0)
+                            _gzlog("自检: pitch +30° …")
+                            _gz_rate_to(gz, 0.0, 30.0, 60.0, 1.5, 20.0)
+                            _gzlog("自检: pitch 回 0 …")
+                            _gz_rate_to(gz, 0.0, 0.0, 60.0, 1.2, 15.0)
+                            st2 = gz.status() or {}
+                            _gzlog("自检: 摆动结束 yaw_rel=%s pitch_rel=%s"
+                                   % (st2.get("yaw_rel_deg"),
+                                      st2.get("pitch_rel_deg")))
+                            # ---- 3) 回零停住 ----
+                            gz.apply({"action": "config", "speed_max": 22})
+                            _gz_rate_to(gz, 0.0, 0.0, 22.0, 1.2, 30.0)
+                            gz.apply({"action": "home"})
+                            time.sleep(3)
+                        finally:
+                            try:
+                                gz.apply({"action": "config",
+                                          "speed_max": _old})
+                            except Exception:          # noqa: BLE001
+                                pass
+                        _gzlog("上电自检完成, 停在零点")
+                    except Exception as _e:            # noqa: BLE001
+                        _gzlog("自检异常: %s" % _e)
+
+                threading.Thread(target=_gimbal_selftest, args=(gimbal,),
+                                 daemon=True, name="gimbal-selftest").start()
     else:
         print("[gimbal] 云台控制已关闭 (--gimbal-port '')")
 

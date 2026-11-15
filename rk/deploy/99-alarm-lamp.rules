@@ -1,0 +1,3 @@
+# 上电/插入 CH340 时立刻点亮四色灯的蓝灯（"设备已上电、正在启动"）。
+# 跑的是用户态 CH340 驱动（本内核没有 ch341 模块），见 /root/rk/deploy/lamp_boot.py
+ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="1a86", ATTR{idProduct}=="7523", RUN+="/root/rk/deploy/lamp_boot.sh"
