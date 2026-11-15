@@ -218,18 +218,19 @@ def detect_ip():
 
 
 def detect_ips(skip=None):
-    """列出本机全部局域网 IPv4，**无线优先**。
+    """列出本机全部局域网 IPv4，**以太网优先，其次无线**。
 
     2026-11-16：云端 /ctrl 页需要知道“浏览器能用哪个地址直连板子”。
     板上同时有两条链路：
-      · wlx*/wlan*  USB WiFi（和手机/PC 共用的路由器，例 192.168.1.118）
-      · end0/eth0   千兆网线（常是跟某台 PC 直连的 192.168.137.x，别人进不来）
+      · end0/eth0   千兆网线（例 192.168.137.100，跟某台 PC 直连）
+      · wlx*/wlan*  USB WiFi（例 192.168.1.118，和手机/PC 共用的路由器）
     两条都可能对，也可能有一条不可达，所以**全部上报**，由网页逐个探测。
-    无线放前面是因为它才最可能是和客户端同一张网。
+    顺序按用户要求：有以太网就先用以太网，没有再试 WiFi。
+    （网线更稳定；WiFi 偶尔会掉/重连，用户希望别优先选它。）
 
     skip: 要排除的网段列表（ip_network），默认排除车端专网 192.168.100.0/24。
     那条是端1（end1=192.168.100.2）到 Jetson 的内部链路，浏览器永远进不来；
-    留在候选里只会让探测白跑 2.5s，还会在失败时让用户看到“最后一条是 100.2”。
+    留在候选里只会让探测白跑一轮超时，还会让用户看到“最后一条是 100.2”。
 
     返回 [{"ip":..., "iface":..., "kind":"wifi"|"eth"}, ...]
     """
@@ -260,7 +261,8 @@ def detect_ips(skip=None):
         kind = "wifi" if (iface.startswith(("wl", "wlan"))
                           or "/wireless" in line) else "eth"
         addrs.append({"ip": addr, "iface": iface, "kind": kind})
-    addrs.sort(key=lambda x: (0 if x["kind"] == "wifi" else 1,
+    # 以太网优先（kind=eth 排 0），同类里再按 192.168 私有网段、接口名稳定排序
+    addrs.sort(key=lambda x: (0 if x["kind"] == "eth" else 1,
                               0 if x["ip"].startswith("192.168.") else 1,
                               x["iface"]))
     return addrs
@@ -1027,7 +1029,7 @@ class Agent(object):
     def node_info(self):
         return {"id": self.a.node, "name": self.a.name, "ver": self.a.fw,
                 "ip": self.node_ip or "", "mode": self.mode_str(),
-                # 云端 /ctrl 页用：候选地址列表（无线优先）+ 网页端口
+                # 云端 /ctrl 页用：候选地址列表（以太网优先）+ 网页端口
                 "ips": [x["ip"] for x in (self.node_ips or [])],
                 "ifaces": self.node_ips or [],
                 "web_port": int(self.a.web_port)}

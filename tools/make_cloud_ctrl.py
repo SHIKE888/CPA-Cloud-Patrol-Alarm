@@ -141,15 +141,9 @@ i.cl-badge{font-style:normal; font-size:11px; color:#8fd0ff; border:1px solid #2
 
   function pickBoard(lan) {
     var port = lan.web_port || 80;
+    // 顺序完全按服务端给的来：板端已按「以太网优先，其次 WiFi」排好，
+    // 这里不再自作主张重排（之前会拿上次连通的地址顶到前面，会把以太网优先抵掉）。
     var ips = (lan.ips && lan.ips.length) ? lan.ips.slice() : (lan.ip ? [lan.ip] : []);
-    // 上次连通的地址优先：多网口时能省掉几轮探测。
-    // 只在本轮上报列表里重排，不把已下线的旧地址当候选（否则白发一个 2.5s 超时）。
-    try {
-      var last = localStorage.getItem('ctrl_base') || '';
-      var host = last.replace(/^https?:\/\//, '').split(':')[0];
-      var at = host ? ips.indexOf(host) : -1;
-      if (at > 0) { ips.splice(at, 1); ips.unshift(host); }
-    } catch (e) {}
     if (!ips.length) return Promise.resolve(null);
     var i = 0;
     function next() {
@@ -157,7 +151,8 @@ i.cl-badge{font-style:normal; font-size:11px; color:#8fd0ff; border:1px solid #2
       var ip = ips[i++];
       var base = 'http://' + ip + (port == 80 ? '' : ':' + port);
       step('正在连接 ' + ip + ' …');
-      return probe(base, 2500).then(function (ok) { return ok ? base : next(); });
+      // 1.8s：局域网 ping 只要几十毫秒，不可达时早点换下一条
+      return probe(base, 1800).then(function (ok) { return ok ? base : next(); });
     }
     return next();
   }
@@ -168,7 +163,6 @@ i.cl-badge{font-style:normal; font-size:11px; color:#8fd0ff; border:1px solid #2
     try {
       // 地图页的 rosbridge 也要指向板子（云端页面没有同源 /rosbridge）
       localStorage.setItem('ros_ws', ws);
-      localStorage.setItem('ctrl_base', board);   // 下次打开优先探测这个地址
     } catch (e) {}
     var inp = document.getElementById('vAddr');
     if (inp) inp.value = board;
