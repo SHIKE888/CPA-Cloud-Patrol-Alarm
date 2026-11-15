@@ -129,6 +129,14 @@ body{
 #viewMap #mtab-ctl > *{ flex: 0 0 auto; }
 #viewMap #mtab-ctl > .bottominfo{ margin-top: auto; }
 #viewMap #mtab-ctl > .bottominfo + .bottominfo{ margin-top: 14px; }
+/* 链路/位姿这块与上方按钮区分开：链路上方加一条分割线（margin-top:auto 仍负责推到底部）。
+   线用绝对定位放在 top:10px —— 相当于在「导航用图」下面多留 10px 空白，
+   padding-top 再保证「链路」标题不被线压住。 */
+#viewMap #mtab-ctl > .bottominfo.sep{ position: relative; padding-top: 22px; }
+#viewMap #mtab-ctl > .bottominfo.sep::before{
+  content: ''; position: absolute; left: 0; right: 0; top: 10px;
+  border-top: 1px solid var(--line);
+}
 /* 按钮行：三列等宽 / 两列等宽，行距统一 8px */
 #viewMap .btnrow{ display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
 #viewMap .btnrow + .btnrow{ margin-top: 8px; }
@@ -1528,7 +1536,7 @@ html, body{overflow:hidden}
 
       <!-- 2026-11-01 用户要求：链路 / 位姿挪到页签最下方（按钮、方向键靠上，状态靠下）。
            .bottominfo 同时是 layoutDpad() 插入窄屏方向键的锚点 —— 方向键插在它前面。 -->
-      <section class="bottominfo">
+      <section class="bottominfo sep">
         <h3>链路</h3>
         <div class="metrics">
           <div class="m"><i>状态</i><b id="st">未连接</b></div>
