@@ -43,6 +43,12 @@
   button.primary:hover{background:#3c8bed}
   button[disabled]{opacity:.55; cursor:default}
   .foot{margin-top:16px; text-align:center; color:var(--dim); font-size:11.5px}
+  .beian{margin-top:14px; padding-top:12px; border-top:1px solid var(--line);
+         display:flex; align-items:center; justify-content:center; gap:18px;
+         font-size:11.5px; color:#6b7a8d; white-space:nowrap}
+  .beian a{color:#6b7a8d; text-decoration:none; display:inline-flex; align-items:center; gap:5px}
+  .beian a:hover{color:#9fb0c4; text-decoration:underline}
+  .beian img{height:13px; width:auto; display:block}
   .badge{display:inline-block; font-size:11px; color:#8fd0ff; border:1px solid #2b6ea8;
          background:#0f2740; border-radius:6px; padding:1px 6px; margin-left:6px}
   .dot{display:inline-block; width:7px; height:7px; border-radius:50%; background:var(--bad);
@@ -62,14 +68,13 @@
     </svg>
   </div>
   <h1>设备离线<span class="badge">云端版</span></h1>
-  <div class="sub"><span class="dot"></span>和板子失去联系，暂时无法进入控制台</div>
+  <div class="sub"><span class="dot"></span>与设备失去连接，无法进入控制台</div>
 
   <div class="box">
-    <div class="row"><span>板子上报地址</span><b id="oIp">—</b></div>
+    <div class="row"><span>设备地址</span><b id="oIp">—</b></div>
     <div class="row"><span>最后心跳</span><b id="oHb">—</b></div>
-    <div class="row"><span>本页自动重试</span><b id="oTry">每 8 秒</b></div>
-    <div class="hint" id="oHint">页面由云端加载，画面与控制需要<b>同一局域网</b>直连板子。<br>
-      请确认：① 手机/电脑连的是和板子同一个路由器；② 板子已上电并启动完成。</div>
+    <div class="row"><span>自动重试</span><b id="oTry">每 8 秒</b></div>
+    <div class="hint" id="oHint">控制指令经局域网直连设备，需与本机处于同一局域网。</div>
   </div>
 
   <div class="btns">
@@ -77,7 +82,13 @@
     <button id="bBack">返回控制台</button>
   </div>
 
-  <div class="foot">离线页仅云端版提供 · 板子本地那份页面不受影响</div>
+  <div class="beian">
+    <a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener">陇ICP备2024013668号</a>
+    <a href="http://www.beian.gov.cn/portal/registerSystemInfo?recordcode=%2062082102202094"
+       target="_blank" rel="noopener"><img
+       src="https://beian.mps.gov.cn/web/assets/logo01.6189a29f.png"
+       alt="公安网备">甘公网安备62082102202094号</a>
+  </div>
 </div>
 
 <script>
@@ -91,13 +102,12 @@
   var tries = 0;
 
   function reasonText(r) {
-    if (r === 'noip') return '板子还没把局域网地址上报到服务器（可能刚上电，等 10 秒再试）。';
-    if (r === 'unreach') return '板子地址已上报，但当前网络连不上它 —— 多半是手机/电脑不在同一个局域网。';
+    if (r === 'noip') return '设备尚未上报局域网地址，请稍候重试。';
+    if (r === 'unreach') return '设备地址已上报，但当前网络无法连通，请确认与本机处于同一局域网。';
     return '';
   }
   var qr = new URLSearchParams(location.search).get('r');
-  if (reasonText(qr)) oHint.innerHTML = reasonText(qr) +
-    '<br>请确认：① 手机/电脑连的是和板子同一个路由器；② 板子已上电并启动完成。';
+  if (reasonText(qr)) oHint.innerHTML = reasonText(qr) + '<br>请确认：① 本机与设备处于同一局域网；② 设备已上电并完成启动。';
 
   function probe(base, ms) {
     var ctl = window.AbortController ? new AbortController() : null;

@@ -37,6 +37,21 @@ OUT = os.path.join(ROOT, "cloud", "static", "ctrl.html")
 VENDOR = ["vendor/roslib.min.js"]
 
 
+# ---------------------------------------------------------------- 备案信息条
+# 按备案规范：网站底部需展示 ICP 备案号与公安网备号（公安备需带官方图标）。
+# 作为 body 的最后一个 flex 子项，不遮挡任何内容；同时把视频工作台那两处
+# 写死的 calc(100vh - 128px) 改成 -150px（128 + 22），否则底部会被裁掉 22px。
+BEIAN = r"""
+<footer id="ctrlBeian">
+  <a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener">陇ICP备2024013668号</a>
+  <a href="http://www.beian.gov.cn/portal/registerSystemInfo?recordcode=%2062082102202094"
+     target="_blank" rel="noopener"><img
+     src="https://beian.mps.gov.cn/web/assets/logo01.6189a29f.png"
+     alt="公安网备">甘公网安备62082102202094号</a>
+</footer>
+"""
+
+
 # ---------------------------------------------------------------- 注入的引导层
 # 放在 <body> 之后、页面脚本之前：
 #   1) 登录层（密码逻辑与看板一致）
@@ -68,6 +83,19 @@ BOOT = r"""
 #ctrlLogin .cl-tip{color:#5d6b7d; font-size:11.5px; margin-top:10px; line-height:1.6}
 i.cl-badge{font-style:normal; font-size:11px; color:#8fd0ff; border:1px solid #2b6ea8;
   background:#0f2740; border-radius:6px; padding:1px 6px; margin-left:8px; vertical-align:middle}
+/* ---- 备案信息条（页脚）---- */
+#ctrlBeian{flex:none; display:flex; align-items:center; justify-content:center; gap:18px;
+  height:22px; font-size:11.5px; color:#6b7a8d; background:#0a0e14;
+  border-top:1px solid #1c2430; white-space:nowrap; overflow:hidden}
+#ctrlBeian a{color:#6b7a8d; text-decoration:none; display:inline-flex;
+  align-items:center; gap:5px}
+#ctrlBeian a:hover{color:#9fb0c4; text-decoration:underline}
+#ctrlBeian img{height:13px; width:auto; display:block}
+/* 页脚占 22px：把视频工作台写死的高度计算同步扣掉，避免底部被裁 */
+@media(min-width:1101px){
+  #viewVideo #colLeft{height:calc(100vh - 150px); max-height:calc(100vh - 150px)}
+  #viewVideo #colRight{max-height:calc(100vh - 150px)}
+}
 </style>
 
 <div id="ctrlLogin" hidden>
@@ -77,7 +105,6 @@ i.cl-badge{font-style:normal; font-size:11px; color:#8fd0ff; border:1px solid #2
     <input type="password" id="clPass" autocomplete="current-password" placeholder="密码">
     <button type="submit">进入控制台</button>
     <div class="cl-err" id="clErr"></div>
-    <div class="cl-tip">页面由云端加载；画面、参数、云台等操作仍然走<b>局域网</b>直连板子。</div>
   </form>
 </div>
 
@@ -120,7 +147,7 @@ i.cl-badge{font-style:normal; font-size:11px; color:#8fd0ff; border:1px solid #2
       if (i >= ips.length) return Promise.resolve(null);
       var ip = ips[i++];
       var base = 'http://' + ip + (port == 80 ? '' : ':' + port);
-      step('正在连接板子 ' + ip + ' …');
+      step('正在连接 ' + ip + ' …');
       return probe(base, 2500).then(function (ok) { return ok ? base : next(); });
     }
     return next();
@@ -135,7 +162,7 @@ i.cl-badge{font-style:normal; font-size:11px; color:#8fd0ff; border:1px solid #2
     } catch (e) {}
     var inp = document.getElementById('vAddr');
     if (inp) inp.value = board;
-    step('已连接 ' + board + '，正在建立画面…');
+    step('正在建立画面连接…');
     // 页面脚本在 body 末尾才定义 relayVideoActivate / __ctrlMapConnect，轮询等它们就绪
     var n = 0;
     var iv = setInterval(function () {
@@ -152,7 +179,7 @@ i.cl-badge{font-style:normal; font-size:11px; color:#8fd0ff; border:1px solid #2
 
   function start() {
     if (started) return;
-    step('正在向服务器查询板子地址…');
+    step('正在获取设备地址…');
     fetch('/api/lan', { cache: 'no-store' }).then(function (r) {
       if (r.status === 401) { showLogin(); return null; }
       if (!r.ok) throw new Error('HTTP ' + r.status);
@@ -189,8 +216,7 @@ i.cl-badge{font-style:normal; font-size:11px; color:#8fd0ff; border:1px solid #2
     });
   }
 
-  // 给顶栏加个「云端版」标记，避免和板子本地那份页面混淆
-  // （本脚本在 <body> 开头就跑，那时 <nav> 还没解析出来，必须等 DOM 就绪）
+  // 顶栏标注：区分云端版与设备本地页面（本脚本在 <body> 开头执行，须等 DOM 就绪）
   function addBadge() {
     try {
       var sp = document.querySelector('.topnav .sp');
@@ -198,7 +224,7 @@ i.cl-badge{font-style:normal; font-size:11px; color:#8fd0ff; border:1px solid #2
       var b = document.createElement('i');
       b.className = 'cl-badge';
       b.textContent = '云端版';
-      b.title = '页面由 ros.absozero.cn 提供；画面与控制仍走局域网直连板子';
+      b.title = '页面由云端提供，控制经局域网直连设备';
       sp.parentNode.insertBefore(b, sp);
     } catch (e) {}
   }
@@ -292,6 +318,9 @@ def build(src_text):
 
     # 7) 注入登录 + 引导层（必须紧跟 <body>，遮罩脚本靠 window.CTRL_BASE 拼地址）
     s = _sub(s, "<body>\n", "<body>\n" + BOOT, "body 注入")
+
+    # 8) 备案信息页脚（备案规范要求展示 ICP 与公安网备号）
+    s = _sub(s, "\n</body>\n</html>", BEIAN + "</body>\n</html>", "备案页脚")
     return s
 
 

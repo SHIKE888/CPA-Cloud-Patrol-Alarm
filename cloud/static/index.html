@@ -250,6 +250,10 @@ button.play{padding:3px 8px;font-size:11.5px}
 .login-err{color:var(--bad);font-size:12.5px;min-height:18px}
 input[type=password]{background:#0c131b;border:1px solid var(--line);border-radius:8px;padding:8px 10px;width:100%}
 footer{color:#5a6b80;font-size:11.5px;text-align:center;margin-top:18px;line-height:1.9}
+.beian{margin-top:10px;display:flex;align-items:center;justify-content:center;gap:16px;flex-wrap:wrap}
+.beian a{color:#5a6b80;text-decoration:none;display:inline-flex;align-items:center;gap:5px}
+.beian a:hover{color:#93a3b8;text-decoration:underline}
+.beian img{height:13px;width:auto;display:block}
 .sw{display:inline-flex;align-items:center;gap:5px;margin-left:10px;font-size:11px;
   opacity:.45;cursor:pointer;user-select:none;transition:opacity .2s}
 .sw:hover{opacity:1}
@@ -394,6 +398,13 @@ footer{color:#5a6b80;font-size:11.5px;text-align:center;margin-top:18px;line-hei
 关闭后这些事件不再记录（不进事件列表、不进统计、不出视频），灯的实时状态照常显示。">
     <input type="checkbox" id="swHealth">系统报警
   </label>
+  <div class="beian">
+    <a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener">陇ICP备2024013668号</a>
+    <a href="http://www.beian.gov.cn/portal/registerSystemInfo?recordcode=%2062082102202094"
+       target="_blank" rel="noopener"><img
+       src="https://beian.mps.gov.cn/web/assets/logo01.6189a29f.png"
+       alt="公安网备">甘公网安备62082102202094号</a>
+  </div>
 </footer>
 </div>
 
