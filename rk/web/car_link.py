@@ -1,12 +1,25 @@
 # -*- coding: utf-8 -*-
-"""车端状态直连：通过 rosbridge 订阅底盘话题（目前只用 /PowerVoltage）。
+"""车端状态直连：读底盘电压（/PowerVoltage），默认走车端 relay_ctl 的 HTTP 端点。
 
-为什么自己实现 WebSocket
-------------------------
+链路
+----
+车端 relay_ctl（rospy 节点）订阅 /PowerVoltage，并开一个
+`http://<车>:9097/voltage` → `{"voltage": 23.85, "age": 0.3, "base": true}`；
+板上本模块用 urllib 每 2 秒轮询一次。
+
+为什么不用 rosbridge
+--------------------
+2026-11-16 实测车端 rosbridge（AutobahnPython 17.10.1）对本模块自写的 WS
+客户端只记日志「Subscribed to /PowerVoltage」，随后一个字节都不回；
+同样端口浏览器（roslib.js）却正常收图收激光。试过 Origin、permessage-deflate、
+ROSLIB 完整报文、/rosout、/scan，全部 0 字节，根因没定位。
+为一个电压值继续逆推它不划算，所以在车端自己开 20 行 HTTP 端点。
+
+为什么自己实现 WebSocket（ws:// 备用通路仍保留）
+------------------------------------------------
 板上 python 3.8 没有 `websocket-client` / `websockets` / `roslibpy`
 （实测三个都没有），而这条链路只用到「文本帧 + JSON」两件事。
 为一个电压值去改环境装依赖不划算：装包要联网，板上断网就部署不了。
-所以这里用标准库 socket 自己握手 + 编解码，不到 200 行，零依赖。
 
 数据来源（源码已确认）
 ----------------------
@@ -16,7 +29,7 @@ turn_on_wheeltec_robot/src/wheeltec_robot.cpp:160  Publish_Voltage()
 
 用法
 ----
-    cl = CarLink("ws://192.168.100.87:9090")
+    cl = CarLink("http://192.168.100.87:9097/voltage")
     cl.start()                 # 后台线程，自动重连
     cl.snapshot()              # {"online":bool,"voltage":..,"pct":..,"age":..,"err":..}
 """
@@ -28,6 +41,7 @@ import socket
 import struct
 import threading
 import time
+import urllib.request
 from urllib.parse import urlparse
 
 TOPIC = "/PowerVoltage"
@@ -169,11 +183,25 @@ class _WS(object):
 
 # ---------------------------------------------------------------- 对外接口
 class CarLink(object):
-    def __init__(self, url="ws://192.168.100.87:9090", reconnect_s=5.0,
-                 stale_s=12.0):
+    """车端电压来源。
+
+    支持两种 URL：
+      · http://host:9097/voltage  —— **推荐**。车端 relay_ctl 直接把
+        /PowerVoltage 做成 JSON 端点，普通 HTTP 轮询，不依赖 rosbridge。
+      · ws://host:9090            —— 旧的 rosbridge 订阅方式（保留备用）。
+
+    为什么默认改成 HTTP：2026-11-16 实测车端 rosbridge（Autobahn 17.10.1）
+    对本进程的 WS 客户端只记录「Subscribed」但一个字节都不回（浏览器连同一个
+    端口却正常），查了很久没定位到根因。与其继续和它较劲，不如让车端多开一个
+    20 行的 HTTP 端点 —— 板子这边用 urllib 轮询，链路简单、可控、好排查。
+    """
+
+    def __init__(self, url="http://192.168.100.87:9097/voltage",
+                 reconnect_s=5.0, stale_s=12.0, interval_s=2.0):
         self.url = url
         self.reconnect_s = float(reconnect_s)
         self.stale_s = float(stale_s)         # 超过这么久没收到 = 视为离线
+        self.interval_s = max(0.5, float(interval_s))
         self._lock = threading.Lock()
         self._voltage = None
         self._ts = 0.0
@@ -223,6 +251,34 @@ class CarLink(object):
                 setattr(self, "_" + k, v)
 
     def _run(self):
+        if self.url.lower().startswith("ws"):
+            self._run_ws()
+        else:
+            self._run_http()
+
+    # ---- 方式 A：HTTP 轮询车端 relay_ctl 的 /voltage（默认）
+    def _run_http(self):
+        while not self._stop.is_set():
+            try:
+                req = urllib.request.Request(
+                    self.url, headers={"Accept": "application/json"})
+                with urllib.request.urlopen(req, timeout=4.0) as r:
+                    body = r.read(4096)
+                obj = json.loads(body.decode("utf-8", "replace"))
+                v = obj.get("voltage")
+                if isinstance(v, (int, float)) and v > 0:
+                    self._set(voltage=float(v), ts=time.time(),
+                              online=True, err="")
+                else:
+                    self._set(online=False,
+                             err="车端未发布 %s（电压为空）" % TOPIC)
+            except Exception as e:                       # noqa: BLE001
+                self._set(online=False,
+                         err="%s: %s" % (type(e).__name__, e))
+            self._stop.wait(self.interval_s)
+
+    # ---- 方式 B：rosbridge 订阅（备用，车端 rosbridge 正常时可用）
+    def _run_ws(self):
         while not self._stop.is_set():
             ws = None
             try:
@@ -261,9 +317,10 @@ class CarLink(object):
             time.sleep(self.reconnect_s)
 
 
-if __name__ == "__main__":                # 手工自检：python3 car_link.py [ws地址]
+if __name__ == "__main__":                # 手工自检：python3 car_link.py [url]
     import sys
-    cl = CarLink(sys.argv[1] if len(sys.argv) > 1 else "ws://192.168.100.87:9090")
+    cl = CarLink(sys.argv[1] if len(sys.argv) > 1
+                 else "http://192.168.100.87:9097/voltage")
     cl.start()
     for _ in range(10):
         time.sleep(1.0)

@@ -16,14 +16,18 @@
 import json
 import os
 import subprocess
+import threading
 import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import rospy
 import rosgraph
+import rosnode
 import tf2_ros
 import numpy as np
 from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import OccupancyGrid
+from std_msgs.msg import Float32
 from std_srvs.srv import Trigger, TriggerResponse
 
 HOME = os.path.expanduser('~')
@@ -62,7 +66,103 @@ def ensure_master(timeout=15.0):
     return False
 
 
+# ---------------- 底盘保活（让 /PowerVoltage 一直在）----------------
+# 2026-11-16 用户要求：不点「开始建图 / 进入导航」时，网页顶栏也要能显示车电量。
+# /PowerVoltage 只有底盘节点 wheeltec_robot 在跑时才发，而它平时只有
+# mapping.launch / navigation.launch 才带起来。所以这里在"没任务"的空隙里
+# 补一个单底盘 launch；点建图/导航时 kill_launches() 会先杀掉它、并静默 60s。
+# 注意：底盘节点常驻 = 电机使能、/cmd_vel 有人订阅；没有指令时输出 0 速度，
+# 不会自己走，但任何误发指令都会让车动。
+_BASE_SUPPRESS_UNTIL = 0.0
+_LAST_BASE_TRY = 0.0
+
+# ---------------- 电量 HTTP 端点（给板子读，绕开 rosbridge）----------------
+# 2026-11-16 实测车端 rosbridge(Autobahn 17.10.1) 对板子的自写 WS 客户端
+# 只记日志「Subscribed」但一字节不回（浏览器连同一端口却正常），定位不动。
+# 所以这里自己开个 20 行的 HTTP 端点，板子 urllib 轮询即可，链路可控。
+VOLT_PORT = 9097
+_VOLT = {'v': None, 'ts': 0.0}
+_BASE_ALIVE = False          # 由 keep_base_alive 定时刷新，HTTP 线程只读
+
+
+def _volt_cb(msg):
+    try:
+        _VOLT['v'] = round(float(msg.data), 3)
+        _VOLT['ts'] = time.time()
+    except Exception:                                     # noqa: BLE001
+        pass
+
+
+class _VoltHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if not self.path.startswith('/voltage'):
+            self.send_response(404)
+            self.send_header('Content-Length', '0')
+            self.end_headers()
+            return
+        now = time.time()
+        body = json.dumps({
+            'voltage': _VOLT['v'],
+            'age': (round(now - _VOLT['ts'], 1) if _VOLT['ts'] else None),
+            'base': _BASE_ALIVE,
+        }).encode('utf-8')
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Content-Length', str(len(body)))
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, fmt, *args):
+        pass
+
+
+def start_volt_http():
+    try:
+        srv = ThreadingHTTPServer(('0.0.0.0', VOLT_PORT), _VoltHandler)
+    except Exception as e:                                # noqa: BLE001
+        rospy.logwarn('relay_ctl: 电量 HTTP 端点没起来 (%s)' % e)
+        return
+    threading.Thread(target=srv.serve_forever, name='volt-http',
+                     daemon=True).start()
+    rospy.loginfo('relay_ctl: 电量端点 http://0.0.0.0:%d/voltage' % VOLT_PORT)
+
+
+
+def base_node_alive():
+    """底盘节点在不在（单底盘 launch、建图或导航 launch 带起来的都算）。"""
+    try:
+        return bool(rosnode.rosnode_ping('/wheeltec_robot', max_count=1,
+                                        verbose=False))
+    except Exception:                                     # noqa: BLE001
+        return False
+
+
+def keep_base_alive(_evt=None):
+    """定时检查：底盘节点不在就补起一个单底盘 launch（不再抢串口）。"""
+    global _LAST_BASE_TRY, _BASE_ALIVE
+    now = time.time()
+    alive = base_node_alive()
+    _BASE_ALIVE = alive
+    if now < _BASE_SUPPRESS_UNTIL:
+        return
+    if alive:
+        return
+    if now - _LAST_BASE_TRY < 25.0:          # 别把 launch 打架
+        return
+    _LAST_BASE_TRY = now
+    if not ensure_master():
+        return
+    rospy.loginfo('relay_ctl: 底盘节点不在，补起单底盘 launch（提供 /PowerVoltage）')
+    launch('roslaunch turn_on_wheeltec_robot turn_on_wheeltec_robot.launch',
+           'relay_base.log')
+
+
 def kill_launches():
+    global _BASE_SUPPRESS_UNTIL
+    # 切换 launch 期间别让底盘保活去抢底盘串口（mapping/navigation 自带的底盘节点
+    # 起得比较慢，实测要 10~20s）
+    _BASE_SUPPRESS_UNTIL = time.time() + 60.0
     for pat in ('roslaunch turn_on_wheeltec_robot',
                 'roslaunch.*mapping.launch',
                 'roslaunch.*navigation.launch'):
@@ -364,6 +464,12 @@ def main():
                      ('stop', srv_stop)):
         rospy.Service('/relay/' + name, Trigger, cb)
     rospy.loginfo('relay_ctl ready: /relay/{start_mapping,save_map,start_navigation,last_pose,stop}')
+    # 底盘保活：空闲时也保证 /PowerVoltage 有数据（网页顶栏电量）
+    rospy.Timer(rospy.Duration(10.0), keep_base_alive)
+    rospy.Timer(rospy.Duration(3.0), keep_base_alive, oneshot=True)
+    # 电量直接以 HTTP 暴露给板子（不依赖 rosbridge）
+    rospy.Subscriber('/PowerVoltage', Float32, _volt_cb, queue_size=1)
+    start_volt_http()
     rospy.spin()
 
 

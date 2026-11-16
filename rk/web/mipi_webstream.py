@@ -5522,9 +5522,9 @@ def main():
                     help="危险动作红灯快闪保持秒数 (默认 5)")
     ap.add_argument("--lamp-intrude-s", type=float, default=5.0,
                     help="越界持续多少秒升级红灯 (默认 5)")
-    ap.add_argument("--car-ros", default="ws://192.168.100.87:9090",
-                    help="车端 rosbridge 地址，用于订阅 /PowerVoltage（底盘电压）。"
-                         "传空字符串=关闭")
+    ap.add_argument("--car-ros", default="http://192.168.100.87:9097/voltage",
+                    help="车端电池电压地址（车端 relay_ctl 的 HTTP 端点；"
+                         "也接受 ws://host:9090 走 rosbridge）。传空字符串=关闭")
     ap.add_argument("--car-on", type=int, default=1, choices=[0, 1],
                     help="是否后台自动订阅车端电池电压（默认 1；0=不连车端）")
     ap.add_argument("--state-file", default=STATE_FILE_DEFAULT,
