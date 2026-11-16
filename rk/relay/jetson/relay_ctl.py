@@ -26,7 +26,7 @@ import rosnode
 import tf2_ros
 import numpy as np
 from geometry_msgs.msg import PoseStamped
-from nav_msgs.msg import OccupancyGrid
+from nav_msgs.msg import OccupancyGrid, Odometry
 from std_msgs.msg import Float32
 from std_srvs.srv import Trigger, TriggerResponse
 
@@ -84,6 +84,46 @@ VOLT_PORT = 9097
 _VOLT = {'v': None, 'ts': 0.0}
 _BASE_ALIVE = False          # 由 keep_base_alive 定时刷新，HTTP 线程只读
 
+# ---------------- 车辆运动 / 模式（给板子上的四色灯用）----------------
+# 用户要求（2026-11-16）：车真在运动时绿灯暴闪，优先级高；
+# 处于巡检（导航）模式下静止时绿灯慢闪。
+# 运动判据用 /odom 的 twist：底盘自己报的速度，比看 cmd_vel 真实
+# （遥控有看门狗、导航有减速段，cmd_vel 非零不等于真在动）。
+# 原地转也算动，所以把角速度折算一个等效线速度。
+_MOTION = {'v': 0.0, 'w': 0.0, 'ts': 0.0}
+MODE = {'name': 'idle'}          # idle / mapping / navigation
+_NAV_UP = False                  # 导航栈是否在跑，定时刷新（HTTP 线程只读）
+MOVE_V = 0.02                    # m/s，低于这个当静止
+MOVE_W = 0.05                    # rad/s
+_ODOM_TTL = 2.0                  # odom 断了超过这么久就当静止
+
+
+def _odom_cb(msg):
+    try:
+        tw = msg.twist.twist
+        _MOTION['v'] = abs(float(tw.linear.x))
+        _MOTION['w'] = abs(float(tw.angular.z))
+        _MOTION['ts'] = time.time()
+    except Exception:                                     # noqa: BLE001
+        pass
+
+
+def motion_state():
+    """返回 (是否在动, 等效速度 m/s)。"""
+    now = time.time()
+    if _MOTION['ts'] <= 0 or (now - _MOTION['ts']) > _ODOM_TTL:
+        return False, 0.0
+    v = max(_MOTION['v'], _MOTION['w'] * 0.3)
+    return (v > MOVE_V or _MOTION['w'] > MOVE_W), round(v, 3)
+
+
+def current_mode():
+    """当前模式。以**实际在跑的栈**为准：relay_ctl 重启过、或者导航是
+    车端直接用命令行起的，MODE 会掉回 idle，但 /amcl 还在跑。"""
+    if _NAV_UP:
+        return 'navigation'
+    return MODE['name']
+
 
 def _volt_cb(msg):
     try:
@@ -101,10 +141,14 @@ class _VoltHandler(BaseHTTPRequestHandler):
             self.end_headers()
             return
         now = time.time()
+        mv, sp = motion_state()
         body = json.dumps({
             'voltage': _VOLT['v'],
             'age': (round(now - _VOLT['ts'], 1) if _VOLT['ts'] else None),
             'base': _BASE_ALIVE,
+            'moving': mv,
+            'speed': sp,
+            'mode': current_mode(),
         }).encode('utf-8')
         self.send_response(200)
         self.send_header('Content-Type', 'application/json')
@@ -256,6 +300,7 @@ def srv_start_mapping(_req):
     reset_latched_map()          # 先把上一轮 latch 的图冲掉，否则页面看着像没重启
     launch('roslaunch turn_on_wheeltec_robot mapping.launch mapping_mode:=gmapping',
            'relay_mapping.log')
+    MODE['name'] = 'mapping'
     return TriggerResponse(True, '已重新开始建图（gmapping），约 10-20 秒后 /map 有数据')
 
 
@@ -295,12 +340,14 @@ def srv_start_navigation(_req):
     kill_launches()
     launch('roslaunch turn_on_wheeltec_robot navigation.launch map_file:=%s' % yaml_path,
            'relay_navigation.log')
+    MODE['name'] = 'navigation'
     return TriggerResponse(True, '正在启动导航（地图 %s），到位后用「设为当前位置」定初始位姿'
                            % os.path.basename(yaml_path))
 
 
 def srv_stop(_req):
     kill_launches()
+    MODE['name'] = 'idle'
     return TriggerResponse(True, '已停止 launch')
 
 
@@ -318,6 +365,19 @@ def nav_stack_up():
         return True
     except Exception:  # noqa: BLE001
         return False
+
+
+def refresh_mode(_evt=None):
+    """定时缓存导航栈状态，供 /voltage 端点（HTTP 线程）读取。
+
+    不要在 HTTP 线程里直接 lookupNode —— 那是走 master XMLRPC，
+    每 2 秒一次的轮询没必要花这个钱，而且 master 卡住会拖住请求。
+    """
+    global _NAV_UP
+    try:
+        _NAV_UP = nav_stack_up()
+    except Exception:                                     # noqa: BLE001
+        _NAV_UP = False
 
 
 def srv_last_pose(_req):
@@ -467,9 +527,13 @@ def main():
     # 底盘保活：空闲时也保证 /PowerVoltage 有数据（网页顶栏电量）
     rospy.Timer(rospy.Duration(10.0), keep_base_alive)
     rospy.Timer(rospy.Duration(3.0), keep_base_alive, oneshot=True)
-    # 电量直接以 HTTP 暴露给板子（不依赖 rosbridge）
+    # 电量/运动状态直接以 HTTP 暴露给板子（不依赖 rosbridge）
     rospy.Subscriber('/PowerVoltage', Float32, _volt_cb, queue_size=1)
+    rospy.Subscriber('/odom', Odometry, _odom_cb, queue_size=1)
     start_volt_http()
+    # 导航栈状态每 5 秒刷一次（HTTP 线程只读缓存值）
+    rospy.Timer(rospy.Duration(5.0), refresh_mode)
+    rospy.Timer(rospy.Duration(1.0), refresh_mode, oneshot=True)
     rospy.spin()
 
 

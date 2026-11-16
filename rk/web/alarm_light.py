@@ -93,6 +93,11 @@ STATE_LAMP = {
     "bootmove": ("blue",   2),      # 云台自检动作中：蓝灯慢闪
     "bootlink": ("blue",   4),      # 自检已完成 / 等车端 ROS：蓝灯暴闪（最快档）
     "normal":   ("green",  1),      # 正常：绿灯长亮
+    # 2026-11-16 用户要求：
+    #   moving  = 车真的在动（车端 /odom 速度 > 阈值）-> 绿灯**暴闪**（看得见在跑）
+    #   inspect = 处于巡检/导航模式但静止 -> 绿灯**慢闪**（模式在线、车没动）
+    "moving":   ("green",  4),      # 车辆运动：绿灯暴闪
+    "inspect":  ("green",  2),      # 巡检/导航模式静止：绿灯慢闪
     "person":   ("yellow", 1),      # 仅识别到人员（不在警戒区）：黄灯长亮
     "intrude":  ("yellow", 3),      # 进入警戒区（立即）：黄灯快闪
     "danger":   ("red",    3),      # 危险动作：红灯快闪
@@ -244,6 +249,8 @@ class AlarmLight(object):
         # 完整进度：蓝常亮 -> 蓝慢闪(云台自检) -> 蓝暴闪 2s(ROS 就绪) -> 绿。
         self.link_min_s = 2.0
         self._boot_done = False
+        self._moving = False              # 车在动吗（车端 /odom 速度）
+        self._inspect = False             # 处于巡检/导航模式吗
         self._state = None
         self._sent = None                 # 最近一次成功下发的 (reg, state)
         self._ser = None
@@ -271,16 +278,23 @@ class AlarmLight(object):
         self._close()
 
     # ------------------------------------------------------------ 外部输入
-    def feed(self, persons=None, in_zone=None, danger=False, intrude_s=None):
+    def feed(self, persons=None, in_zone=None, danger=False, intrude_s=None,
+             moving=None, inspect=None):
         """喂入实时状态。全部可选，只覆盖显式传入的项。
 
-        persons   : 画面中的人数（int）
+        persons   : 画面中的人数（int
         in_zone   : 是否有人位于警戒区内（bool）
         danger    : 本次调用是否检测到危险动作（True 会重置保持计时）
         intrude_s : 越界升级红灯的阈值秒数（可运行时改）
+        moving    : 车是否真在动（车端 /odom 速度）-> 绿灯暴闪
+        inspect   : 是否处于巡检/导航模式 -> 静止时绿灯慢闪
         """
         now = time.time()
         with self._lock:
+            if moving is not None:
+                self._moving = bool(moving)
+            if inspect is not None:
+                self._inspect = bool(inspect)
             if intrude_s is not None:
                 try:
                     self.intrude_alarm_s = max(0.0, float(intrude_s))
@@ -360,29 +374,42 @@ class AlarmLight(object):
 
     # ------------------------------------------------------------ 状态机
     def _compute_state(self, now):
-        """把输入量折算成灯状态。优先级：boot > danger > intrude5s > intrude/person > normal。"""
+        """把输入量折算成灯状态。
+
+        优先级（高 -> 低）：
+          boot/bootmove/bootlink > danger > moving > intrude5s > intrude
+          > person > inspect > normal
+
+        为什么 moving 放在红灯之下：车在跑时如果同时识别到危险动作，
+        红灯 + 蜂鸣是安全告警，不能被"车在动"这个状态盖掉
+        （声音是跟状态绑定的，盖掉就没警示了）。
+        """
         # 自检刚结束的最短暴闪窗：即使 ROS 已就绪也先闪够 link_min_s 秒，
         # 否则这一段会被跳过去，上电看不到暴闪（用户实测反馈）。
         if self._boot_selftest_done and now < self._boot_link_until:
             return "bootlink"
         if not self._boot_done and now < self._boot_until:
             # 上电待机蓝灯常亮；云台开始动作（自检）时转慢闪；
-            # 自检完了还在等车端 ROS -> 快闪
+            # 自检完了还在等车端 ROS -> 暴闪
             if self._boot_motion:
                 return "bootmove"
             return "bootlink" if self._boot_selftest_done else "boot"
         # 1) 危险动作：红灯快闪，保持 danger_hold_s
         if now < self._danger_until:
             return "danger"
-        # 2) 越界持续满 N 秒：红灯快闪，直到人离开
+        # 2) 车真的在动（车端 /odom 速度）：绿灯暴闪，压过黄灯
+        if self._moving:
+            return "moving"
+        # 3) 越界持续满 N 秒：红灯快闪，直到人离开
         if self._in_zone and self._in_zone_since is not None:
             if (now - self._in_zone_since) >= self.intrude_alarm_s:
                 return "intrude5s"
             return "intrude"
-        # 3) 画面里有人：黄灯快闪
+        # 4) 画面里有人：黄灯快闪
         if self._persons > 0:
             return "person"
-        return "normal"
+        # 5) 巡检/导航模式下静止：绿灯慢闪，表示"模式在线、车没动"
+        return "inspect" if self._inspect else "normal"
 
     # ------------------------------------------------------------ 串口线程
     def _run(self):

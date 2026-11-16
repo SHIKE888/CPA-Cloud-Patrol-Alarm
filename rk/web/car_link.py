@@ -207,6 +207,10 @@ class CarLink(object):
         self._ts = 0.0
         self._err = "尚未连接"
         self._online = False
+        # 车端 /voltage 端点额外给的字段（四色灯用）
+        self._moving = False
+        self._speed = 0.0
+        self._mode = "idle"
         self._stop = threading.Event()
         self._thr = None
 
@@ -229,11 +233,14 @@ class CarLink(object):
     def snapshot(self):
         with self._lock:
             v, ts, err, on = self._voltage, self._ts, self._err, self._online
+            mv, sp, md = self._moving, self._speed, self._mode
         now = time.time()
         age = round(now - ts, 1) if ts else None
         if on and age is not None and age > self.stale_s:
             on = False
             err = "超过 %.0fs 没收到 %s" % (self.stale_s, TOPIC)
+        if not on:
+            mv, sp, md = False, 0.0, "idle"
         return {
             "online": bool(on),
             "topic": TOPIC,
@@ -242,6 +249,10 @@ class CarLink(object):
             "age": age,
             "err": "" if on else err,
             "url": self.url,
+            # ---- 供四色灯用：车真在动（/odom 速度）/ 当前模式 ----
+            "moving": bool(mv),
+            "speed": sp,
+            "mode": md,
         }
 
     # ---- 内部
@@ -266,14 +277,20 @@ class CarLink(object):
                     body = r.read(4096)
                 obj = json.loads(body.decode("utf-8", "replace"))
                 v = obj.get("voltage")
+                _mv = bool(obj.get("moving"))
+                _sp = obj.get("speed")
+                _md = obj.get("mode") or "idle"
                 if isinstance(v, (int, float)) and v > 0:
                     self._set(voltage=float(v), ts=time.time(),
-                              online=True, err="")
+                              online=True, err="", moving=_mv,
+                              speed=(float(_sp) if isinstance(_sp, (int, float))
+                                     else 0.0), mode=str(_md))
                 else:
-                    self._set(online=False,
+                    self._set(online=False, moving=False, speed=0.0,
+                             mode="idle",
                              err="车端未发布 %s（电压为空）" % TOPIC)
             except Exception as e:                       # noqa: BLE001
-                self._set(online=False,
+                self._set(online=False, moving=False, speed=0.0, mode="idle",
                          err="%s: %s" % (type(e).__name__, e))
             self._stop.wait(self.interval_s)
 

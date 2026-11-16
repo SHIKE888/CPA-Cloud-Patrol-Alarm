@@ -5782,6 +5782,17 @@ def main():
                                 if _tmax > too_old[0]:
                                     too_old[0] = _tmax
                                     ALARM_LIGHT.feed(danger=True)
+                        # 车端状态喂给灯（2026-11-16 用户要求）：
+                        #   车真在动 -> 绿灯暴闪（moving，优先级高于黄灯）
+                        #   巡检/导航模式但静止 -> 绿灯慢闪（inspect）
+                        # 数据来自车端 relay_ctl 的 HTTP 端点（/odom 速度 + mode），
+                        # 车端不通时 moving/inspect 都是 False，灯按普通逻辑走。
+                        _cl = CAR_LINK
+                        if _cl is not None:
+                            _cs = _cl.snapshot() or {}
+                            ALARM_LIGHT.feed(
+                                moving=bool(_cs.get("moving")),
+                                inspect=(_cs.get("mode") == "navigation"))
                 except Exception:                             # noqa: BLE001
                     pass
                 time.sleep(0.1)
