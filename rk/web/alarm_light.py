@@ -84,13 +84,14 @@ def _selfcheck_crc():
 #  状态名 -> (颜色, 灯态)
 #  灯态: 0 关 / 1 常亮 / 2 慢闪 / 3 快闪 / 4 暴闪
 STATE_LAMP = {
-    # 2026-11-16 用户要求（分两段）：
+    # 2026-11-16 用户要求（分三段，闪烁频率本身就是进度）：
     #   boot     = 刚上电、云台还没动  -> 蓝灯**常亮**
-    #   bootmove = 云台开始动（自检执行中）-> 蓝灯**慢闪**
-    #   自检结束 -> 转绿（green 长亮）。
-    # 两段分开是因为"通了电"和"真的在动作"是两件事，闪/不闪本身就是进度。
+    #   bootmove = 云台开始动（自检执行中）-> 蓝灯**慢闪**（慢 = 云台在动作）
+    #   bootlink = 自检完了，在等/已确认车端 ROS -> 蓝灯**暴闪**（最快的闪）
+    #   ROS 就绪 -> 转绿（green 长亮）。没就绪就一直暴闪。
     "boot":     ("blue",   1),      # 上电待机：蓝灯常亮
     "bootmove": ("blue",   2),      # 云台自检动作中：蓝灯慢闪
+    "bootlink": ("blue",   4),      # 自检已完成 / 等车端 ROS：蓝灯暴闪（最快档）
     "normal":   ("green",  1),      # 正常：绿灯长亮
     "person":   ("yellow", 1),      # 仅识别到人员（不在警戒区）：黄灯长亮
     "intrude":  ("yellow", 3),      # 进入警戒区（立即）：黄灯快闪
@@ -231,8 +232,16 @@ class AlarmLight(object):
         # _boot_until 只是兜底：万一 boot_done 永远没来，最多蓝 5 分钟转正常。
         # 5 分钟是因为自检本身最长约 90~120s（串口等 30s + 回零 60s + 摆动），
         # 原来 120s 会在自检还没完就把蓝灯提前切走。
-        self._boot_until = time.time() + 300.0
+        self._boot_until = time.time() + 1800.0     # 兜底 30 分钟
         self._boot_motion = False         # 云台是否已开始动作（决定蓝灯常亮/慢闪）
+        self._boot_selftest_done = False  # 云台自检完了没（决定蓝灯慢闪/快闪）
+        self._boot_link_until = 0.0       # 蓝暴闪最少保到什么时候
+        # 2026-11-16 实测：车端 ROS 往往比云台自检早就绪，"等到就绪"这个条件
+        # 一开始就成立 -> 自检一结束直接转绿，肉眼根本看不到闪那一段。
+        # 所以加一个**最短保持时间**，保证能看到完整进度：
+        # 蓝常亮 -> 蓝慢闪(云台自检) -> 蓝暴闪 2s(ROS 就绪) -> 绿。
+        # 没就绪的话暴闪一直保持到车端通（兜底 30 分钟）。
+        self.link_min_s = 2.0
         self._boot_done = False
         self._state = None
         self._sent = None                 # 最近一次成功下发的 (reg, state)
@@ -304,6 +313,18 @@ class AlarmLight(object):
         with self._lock:
             self._boot_motion = bool(on)
 
+    def boot_selftest_done(self, on=True):
+        """云台自检是否结束。
+
+        2026-11-16 用户要求：自检结束后蓝灯**快闪**，不再是直接转绿 ——
+        蓝快闪 = "板子这边准备好了，在等车端 ROS（relay_ctl/底盘）就绪"。
+        等车端真的通了再调 boot_done()，才转绿灯。
+        """
+        with self._lock:
+            if on and not self._boot_selftest_done:
+                self._boot_link_until = time.time() + self.link_min_s
+            self._boot_selftest_done = bool(on)
+
     def set_buzzer(self, on):
         with self._lock:
             self._buzzer_on = bool(on)
@@ -339,9 +360,16 @@ class AlarmLight(object):
     # ------------------------------------------------------------ 状态机
     def _compute_state(self, now):
         """把输入量折算成灯状态。优先级：boot > danger > intrude5s > intrude/person > normal。"""
+        # 自检刚结束的最短暴闪窗：即使 ROS 已就绪也先闪够 link_min_s 秒，
+        # 否则这一段会被跳过去，上电看不到暴闪（用户实测反馈）。
+        if self._boot_selftest_done and now < self._boot_link_until:
+            return "bootlink"
         if not self._boot_done and now < self._boot_until:
-            # 上电待机蓝灯常亮；云台开始动作（自检）时转慢闪
-            return "bootmove" if self._boot_motion else "boot"
+            # 上电待机蓝灯常亮；云台开始动作（自检）时转慢闪；
+            # 自检完了还在等车端 ROS -> 快闪
+            if self._boot_motion:
+                return "bootmove"
+            return "bootlink" if self._boot_selftest_done else "boot"
         # 1) 危险动作：红灯快闪，保持 danger_hold_s
         if now < self._danger_until:
             return "danger"

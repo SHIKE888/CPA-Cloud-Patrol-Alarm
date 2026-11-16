@@ -5712,6 +5712,12 @@ def main():
                  "" if _ls.get("open")
                  else "  (暂不可用: %s)" % (_ls.get("err") or "未连接")))
 
+        # 蓝灯最后一段（快闪）要不要等车端 ROS：只在真的启用了车端轮询时才等。
+        # 没接车 / --car-on 0 / 地址为空 -> 不等，自检结束直接转绿。
+        car_gate = [bool(int(getattr(args, "car_on", 1) or 0))
+                    and CarLink is not None
+                    and bool(str(getattr(args, "car_ros", "") or "").strip())]
+
         def _lamp_feed_loop():
             """把 AI 的人数/动作事件每 100ms 喂给灯状态机。
 
@@ -5732,25 +5738,41 @@ def main():
             while True:
                 try:
                     if ALARM_LIGHT is not None:
-                        # 蓝灯（boot，慢闪）只以**云台自检结束**为准，不再等 fps。
+                        # 蓝灯三段（2026-11-16 用户要求）：
+                        #   上电常亮 -> 云台一动慢闪 -> 自检结束快闪 -> ROS 就绪转绿。
                         #
-                        # 2026-11-16 实测教训：原来要求「自检结束 且 fps>1」才转绿，
-                        # 结果一次上电后采集链路卡住（frame_id 一直是 1、fps=0），
-                        # 蓝灯就永远闪下去，看起来像"灯坏了"。而 fps 反映的是
-                        # 采集链路是否活着，跟"系统启动完成没有"是两件事 ——
-                        # 采集故障应该在网页/dmesg 上排查，不该让灯卡在启动态。
-                        # 现在：自检结束（done=True）就转绿；不自检/云台未启用时
-                        # 由 boot_mark(done=True) 立刻放行。
+                        # 为什么快闪这一段要等车端：蓝快闪 = 「板子这边好了，
+                        # 在等车」。车端就绪的判据用 CAR_LINK（车端 relay_ctl 的
+                        # /voltage HTTP 端点），它活着就说明 ROS master + relay_ctl
+                        # 都在，网页建图/导航的服务调用才有意义。
+                        #
+                        # 历史教训：原来要求「自检结束 且 fps>1」才转绿，结果一次
+                        # 采集链路卡住（fps=0）就永远蓝闪，看着像灯坏了。fps 反映
+                        # 采集链路，跟「启动完成没有」是两件事，所以这里不再看 fps。
+                        #
+                        # 没接车（--car-on 0 / car_link 不可用）时不做等待，
+                        # 自检结束直接转绿，否则没车的场合灯永远卡在蓝快闪。
                         if not boot_flag[0]:
-                            if GIMBAL_SELFTEST.get("done"):
-                                boot_flag[0] = True
-                                ALARM_LIGHT.boot_done()
-                            else:
-                                # 蓝灯两段：上电常亮 -> 云台一动就慢闪。
+                            _phase = GIMBAL_SELFTEST.get("phase")
+                            if not GIMBAL_SELFTEST.get("done"):
+                                ALARM_LIGHT.boot_selftest_done(False)
+                                # 蓝灯前两段：上电常亮 -> 云台一动就慢闪。
                                 # phase 为 home/swing/zero 就是云台真在动。
                                 ALARM_LIGHT.boot_motion(
-                                    GIMBAL_SELFTEST.get("phase")
-                                    in ("home", "swing", "zero"))
+                                    _phase in ("home", "swing", "zero"))
+                            else:
+                                ALARM_LIGHT.boot_motion(False)
+                                ALARM_LIGHT.boot_selftest_done(True)
+                                if not car_gate[0]:
+                                    boot_flag[0] = True
+                                    ALARM_LIGHT.boot_done()
+                                else:
+                                    _cl = CAR_LINK
+                                    _cs = (_cl.snapshot() if _cl is not None
+                                           else None) or {}
+                                    if _cs.get("online"):
+                                        boot_flag[0] = True
+                                        ALARM_LIGHT.boot_done()
                         if AI_OVERLAY is not None:
                             _s = AI_OVERLAY.status() or {}
                             ALARM_LIGHT.feed(persons=_s.get("persons") or 0)
