@@ -5309,6 +5309,18 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _serve_stream(self):
+        # 可选 ?fps=N：限制这一路流的推流帧率（缺省或 0 = 不限）。
+        # 弱网（手机热点）下让推流帧率贴着链路能力走，多出来的帧直接丢，
+        # 不排进队列 —— 这样延迟不会累积。详见下面丢帧处的说明。
+        fps_cap = 0.0
+        if "?" in self.path:
+            for _kv in self.path.split("?", 1)[1].split("&"):
+                if _kv.startswith("fps="):
+                    try:
+                        fps_cap = max(0.0, float(_kv[4:]))
+                    except ValueError:
+                        fps_cap = 0.0
+
         # 并发上限: 每个客户端一个线程, 而且卡在 wait_next 里。
         # 一旦采集侧出问题(比如切完模式 select 超时), 前端看门狗会不断重连,
         # 不限流就会堆成几十个僵尸连接把服务拖死。
@@ -5357,27 +5369,52 @@ class Handler(BaseHTTPRequestHandler):
                                        socket.TCP_NODELAY, 1)
             self.connection.setsockopt(socket.SOL_SOCKET,
                                        socket.SO_SNDBUF, 64 * 1024)
-            # ★ 2026-11-18：**必须有写超时**，否则慢客户端会把连接变成僵尸。
-            #   实测（手机热点，板子上 ss -tn sport=:80）：
-            #     同一个客户端 IP 挂着两条 /stream，其中一条 Send-Q 堆到 940KB，
-            #     因为采集侧 30 Mbps 远超它实际能收的速率，write 一直阻塞。
-            #   而单 IP 顶号（_stream_acquire）是在循环里检查的 ——
-            #   线程卡在 write 上就永远走不到那次检查，旧连接不会自己退场，
-            #   于是每重连一次就多一条吃满带宽的僵尸流，延迟越堆越长
-            #   （用户实测几千到上万毫秒）。
-            #   这里给 socket 加写超时：5 秒还写不出去就抛异常退出线程，
-            #   浏览器重新连上来直接拿最新帧，延迟归零而不是越积越多。
+            # ★★ 2026-11-18 真正的元凶：TCP_NOTSENT_LOWAT（选项号 23）。
+            #   这块板子默认 net.ipv4.tcp_notsent_lowat = 4294967295（等于无限），
+            #   内核允许把**任意量**"已排队未发出"的数据留在发送队列里。
+            #   于是 write() 立刻返回、应用层以为发出去了，实际数据在核里慢慢
+            #   排队。实测板子本地回环读流落后 0 帧（服务端没问题），而经 WiFi
+            #   读同一路流落后 210~360 帧 ≈ 7~13 秒 —— 全部是这段内核队列。
+            #   压到 32KB（约 1/5 帧）后，write 会阻塞，背压直达采集侧，
+            #   采集侧继续用新帧覆盖旧帧，"落后"就被钉死在小常数上。
+            #   （Python 3.8 没有这个常量名，Linux 上是 23。）
+            self.connection.setsockopt(socket.IPPROTO_TCP, 23, 32 * 1024)
+            # 写超时：慢客户端 5 秒还写不出去就断开重连，避免僵尸流。
             self.connection.settimeout(STREAM_WRITE_TIMEOUT)
         except OSError:
             pass
 
         self.hub.add_client()
         last = -1
+        _last_send = 0.0
+        # ---- 自适应推流帧率（手机热点/弱网必须）----
+        # 实测：3840x1080@25 的 MJPEG 要 29 Mbps，而这台手机热点给到这块
+        # USB 网卡只有 6~14 Mbps。超发的帧不会报错，而是积在 WiFi 驱动/AP 的
+        # 队列里 —— 实测流里最新帧落后实时帧 113 帧（4.5 秒）；
+        # 把帧率压到链路能承受后（?fps=4）落后变成 0。
+        # 所以这里按"实际写出的吞吐"反推安全帧率，贴着链路发，多余的直接丢。
+        _win_t0 = time.time()
+        _win_bytes = 0
+        _auto_fps = 0.0
+        _frame_sz = 0
+        _UTIL = 0.8               # 只用链路能力的 80%，留点余量给控制包
         try:
             while True:
                 # 被同 IP 的新连接顶掉 -> 主动退出
                 if _stream_gen(ip) != gen:
                     break
+                if fps_cap <= 0:
+                    _now = time.time()
+                    _span = _now - _win_t0
+                    if _span >= 1.0 and _frame_sz > 0:
+                        _bw = _win_bytes / _span
+                        if _bw > 60 * 1024:       # 低于 60KB/s 的数据不可信
+                            _auto_fps = max(1.0, min(60.0,
+                                                    _bw * _UTIL / _frame_sz))
+                        _win_bytes = 0
+                        _win_t0 = _now
+                    if _auto_fps > 0 and (_now - _last_send) < (1.0 / _auto_fps):
+                        continue              # 直接丢这一帧，去等更新的帧
                 # 超时不能太长: 客户端断开后这里回收不到,
                 # 连接数会一直挂在旧值上
                 jpeg, last = self.hub.wait_next(last, timeout=1.5)
@@ -5385,15 +5422,35 @@ class Handler(BaseHTTPRequestHandler):
                     # ★ 超时也要写一次最后一帧:
                     #   否则客户端已经断开了这里也不会报错, 僵尸连接永远不退出。
                     #   重发同一帧在浏览器侧无损(只是多一次解码)。
-                    jpeg, _ = self.hub.snapshot()
+                    jpeg, _sid = self.hub.snapshot()
                     if jpeg is None:
+                        continue
+                else:
+                    _sid = last
+                # ★ ?fps=N：把这路流的推流帧率硬限到 N（覆盖自适应）。
+                #   弱网下多发出去的帧只会堆在 WiFi 驱动/AP 队列里变成延迟。
+                if fps_cap > 0:
+                    _now = time.time()
+                    if (_now - _last_send) < (1.0 / fps_cap):
                         continue
                 self.wfile.write(b"--" + BOUNDARY.encode() + b"\r\n")
                 self.wfile.write(b"Content-Type: image/jpeg\r\n")
+                # ★ 2026-11-18：把采集帧号一起发出去，用于**客观测量端到端延迟**。
+                #   浏览器会忽略这个头；用 Python 读流、对比 /api/status 的
+                #   frame_id，就能算出"流里最新帧"落后实时帧多少帧 -> 多少毫秒，
+                #   从而区分是服务端缓冲、网络队列，还是浏览器渲染慢。
+                #   （现象：热点下网页显示网络延时只有 200ms，但画面晚了数秒，
+                #     光看指标无法定位，必须有这个帧号。）
+                self.wfile.write(b"X-Frame-Id: %d\r\n" % _sid)
                 self.wfile.write(b"Content-Length: %d\r\n\r\n" % len(jpeg))
                 self.wfile.write(jpeg)
                 self.wfile.write(b"\r\n")
                 self.wfile.flush()
+                # 写完之后才计时/计字节：write 阻塞的时间就是数据真正进网的时间，
+                # 拿它算吞吐才是链路真实能力（而不是我们自己的发送速度）。
+                _last_send = time.time()
+                _win_bytes += len(jpeg)
+                _frame_sz = len(jpeg)
         except (BrokenPipeError, ConnectionResetError, OSError):
             pass
         finally:
