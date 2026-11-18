@@ -5337,6 +5337,25 @@ class Handler(BaseHTTPRequestHandler):
         self._cors()
         self.end_headers()
 
+        # ★ 2026-11-18 手机热点下延迟优化（实测：热点链路 ping 网关
+        #   min 2ms / avg 101ms / max 378ms，4K 推流开着时小包全排在后面）。
+        #   原因：4K 单帧约 125KB，26fps ≈ 26 Mbps，而这块 USB 网卡在 -61dBm
+        #   的热点上实测上行只有 4.6 MB/s（约 37 Mbps）——链路本来就快满了；
+        #   再叠加内核默认允许单条 TCP 囤 4MB 发送缓冲（tcp_wmem 上限
+        #   4194304 ≈ 三十多帧），控制请求只能等这些旧帧发完。
+        #   这里做两件事：
+        #     1) TCP_NODELAY：关 Nagle，帧头/帧尾别等凑包；
+        #     2) SO_SNDBUF 压到 64KB(内核会翻倍)：写满就阻塞 —— 这是**故意**的
+        #        背压，采集侧继续用新帧覆盖旧帧，恢复后直接跳到当前画面，
+        #        而不是把积压的旧帧慢慢补放（那样延迟只会越来越大）。
+        try:
+            self.connection.setsockopt(socket.IPPROTO_TCP,
+                                       socket.TCP_NODELAY, 1)
+            self.connection.setsockopt(socket.SOL_SOCKET,
+                                       socket.SO_SNDBUF, 64 * 1024)
+        except OSError:
+            pass
+
         self.hub.add_client()
         last = -1
         try:
