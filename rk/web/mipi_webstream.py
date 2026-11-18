@@ -262,6 +262,12 @@ STREAM_IP = {}              # ip -> {"n": 当前路数, "gen": 代次}
 STREAM_IP_LOCK = threading.Lock()
 MAX_STREAMS_PER_IP = 1
 
+# 每路推流**实际发出去的**帧率（ip -> fps）。
+# 为什么需要：`fps` 反映的是采集侧（相机/FPGA 出帧），跟推出去多少没关系。
+# 2440x1080 的 MJPEG 单帧 145KB，手机热点只给 1.6 Mbps 时自适应会把推流压到
+# 1~3 fps，而页面上仍显示 27 fps，看着像“很流畅”，实际是慢动作。
+STREAM_FPS = {}
+
 
 def _stream_acquire(ip, limit=MAX_STREAMS_PER_IP):
     """登记一路流。
@@ -1065,6 +1071,12 @@ class FrameHub:
             d["fps"] = round(self._fps, 1)
             d["frame_id"] = self._frame_id
             d["clients"] = self._clients
+            # 推流侧实际帧率（多客户端取最大，没有客户端时为 0）
+            try:
+                d["stream_fps"] = (round(max(STREAM_FPS.values()), 1)
+                                   if STREAM_FPS else 0.0)
+            except ValueError:
+                d["stream_fps"] = 0.0
             return d
 
     def latency(self):
@@ -5398,6 +5410,8 @@ class Handler(BaseHTTPRequestHandler):
         _auto_fps = 0.0
         _frame_sz = 0
         _UTIL = 0.8               # 只用链路能力的 80%，留点余量给控制包
+        _sent_n = 0               # 本秒实际发出去的帧数（给页面显示用）
+        _sent_t0 = time.time()
         try:
             while True:
                 # 被同 IP 的新连接顶掉 -> 主动退出
@@ -5451,10 +5465,17 @@ class Handler(BaseHTTPRequestHandler):
                 _last_send = time.time()
                 _win_bytes += len(jpeg)
                 _frame_sz = len(jpeg)
+                _sent_n += 1
+                _ds = _last_send - _sent_t0
+                if _ds >= 1.0:
+                    STREAM_FPS[ip] = _sent_n / _ds
+                    _sent_n = 0
+                    _sent_t0 = _last_send
         except (BrokenPipeError, ConnectionResetError, OSError):
             pass
         finally:
             _stream_release(ip)
+            STREAM_FPS.pop(ip, None)
             self.hub.del_client()
 
 
