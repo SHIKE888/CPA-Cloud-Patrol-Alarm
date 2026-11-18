@@ -140,6 +140,10 @@ except Exception as _e:                                   # pragma: no cover
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 BOUNDARY = "frame"
 
+# 推流连接的单次写超时（秒）。慢客户端 5 秒还写不出去就断开重连，
+# 避免"僵尸流"一直占着带宽把延迟越堆越长（见 _serve_stream 里的说明）。
+STREAM_WRITE_TIMEOUT = 5.0
+
 # 推流并发上限。每个客户端独占一个线程并阻塞在 wait_next 里。
 # 实测 10 个客户端时把采集线程饿死(rkcif 队列溢出 -> 采不到帧);
 # 1 个 4K 客户端约 5MB/s, 5 个已经接近这条链路的舒适区。
@@ -5353,6 +5357,17 @@ class Handler(BaseHTTPRequestHandler):
                                        socket.TCP_NODELAY, 1)
             self.connection.setsockopt(socket.SOL_SOCKET,
                                        socket.SO_SNDBUF, 64 * 1024)
+            # ★ 2026-11-18：**必须有写超时**，否则慢客户端会把连接变成僵尸。
+            #   实测（手机热点，板子上 ss -tn sport=:80）：
+            #     同一个客户端 IP 挂着两条 /stream，其中一条 Send-Q 堆到 940KB，
+            #     因为采集侧 30 Mbps 远超它实际能收的速率，write 一直阻塞。
+            #   而单 IP 顶号（_stream_acquire）是在循环里检查的 ——
+            #   线程卡在 write 上就永远走不到那次检查，旧连接不会自己退场，
+            #   于是每重连一次就多一条吃满带宽的僵尸流，延迟越堆越长
+            #   （用户实测几千到上万毫秒）。
+            #   这里给 socket 加写超时：5 秒还写不出去就抛异常退出线程，
+            #   浏览器重新连上来直接拿最新帧，延迟归零而不是越积越多。
+            self.connection.settimeout(STREAM_WRITE_TIMEOUT)
         except OSError:
             pass
 
