@@ -33,6 +33,7 @@ import json
 import os
 import re
 import socket
+import struct
 import subprocess
 import sys
 import threading
@@ -262,11 +263,21 @@ STREAM_IP = {}              # ip -> {"n": 当前路数, "gen": 代次}
 STREAM_IP_LOCK = threading.Lock()
 MAX_STREAMS_PER_IP = 1
 
-# 每路推流**实际发出去的**帧率（ip -> fps）。
-# 为什么需要：`fps` 反映的是采集侧（相机/FPGA 出帧），跟推出去多少没关系。
-# 2440x1080 的 MJPEG 单帧 145KB，手机热点只给 1.6 Mbps 时自适应会把推流压到
-# 1~3 fps，而页面上仍显示 27 fps，看着像“很流畅”，实际是慢动作。
-STREAM_FPS = {}
+# TCP_INFO 里 tcpi_bytes_acked 的偏移（struct tcp_info 第 120 字节，u64）。
+# 拿它算"对端已确认的字节数"，才是**真正送达**的帧率。
+# 之前用"write() 返回了几次"统计，那是数据进了内核发送队列而已 ——
+# 实测服务端说 56 fps，客户端只收到 8 fps，差的就是这一层。
+_TCP_INFO = getattr(socket, "TCP_INFO", 11)
+_TCP_INFO_ACKED_OFF = 120
+
+
+def _tcp_acked(sock):
+    """已经送达对端的字节数（不可用时返回 None）。"""
+    try:
+        info = sock.getsockopt(socket.IPPROTO_TCP, _TCP_INFO, 256)
+        return struct.unpack_from("Q", info, _TCP_INFO_ACKED_OFF)[0]
+    except Exception:                                     # noqa: BLE001
+        return None
 
 
 def _stream_acquire(ip, limit=MAX_STREAMS_PER_IP):
@@ -588,8 +599,13 @@ DEFAULT_PARAMS = {
     "mirror":     0,      #  0/1               (水平镜像)
     "flipv":      0,      #  0/1               (垂直翻转)
     "rotate":     0,      #  0/90/180/270      (旋转)
-    "scale":      1.0,    #  0.25 .. 1.5       (相对 --stream-width 的缩放)
-    "quality":    80,     #  30 .. 95          (JPEG 质量)
+    # ★ 2026-11-18 用户要求：打开热点/弱网时也能直推不卡，把推流尺寸和
+    #   质量整体调小 —— 1920x1080 单帧 65 KB，链路跟不上就会在 WiFi 驱动/AP
+    #   里排队（实测延迟 4.5 秒）；降到 1280x720 (scale 0.67) + Q25，单帧
+    #   约 20 KB，同样的链路能直接跑满帧率，不需要在服务端挑帧。
+    #   想要高清把这两个值调回去即可（页面滑条 / POST /api/params）。
+    "scale":      0.67,   #  0.25 .. 1.5       (相对 --stream-width 的缩放)
+    "quality":    25,     #  30 .. 95          (JPEG 质量)
     "fps":        60,     #  1 .. 120          (推流帧率上限, 默认 60 = 当前链路上限)
     # 双目拼接: 0 = 单目全屏(默认), 1 = 双目拼接(左 cam1 / 右 cam0)。
 #   ★ 2026-10-31 用户确认物理排布: **左目 = cam1(J3), 右目 = cam0(J2)**。
@@ -634,7 +650,7 @@ PARAM_RANGE = {
     "flipv":      (0, 1),
     "rotate":     (0, 270),
     "scale":      (0.25, 1.5),
-    "quality":    (30, 95),
+    "quality":    (20, 95),
     # 上限放宽到 120。注意这只是一个"限速阀", 实际上限由链路决定:
     # 本工程 FPGA 固定输出 1080p60, 所以填 60 以上等于不限速, 结果仍是 ~59.6fps。
     # 想真的超过 60 得改 FPGA 侧 (ui_vtc 时序 / PLL / D-PHY byte clk)。
@@ -1071,12 +1087,6 @@ class FrameHub:
             d["fps"] = round(self._fps, 1)
             d["frame_id"] = self._frame_id
             d["clients"] = self._clients
-            # 推流侧实际帧率（多客户端取最大，没有客户端时为 0）
-            try:
-                d["stream_fps"] = (round(max(STREAM_FPS.values()), 1)
-                                   if STREAM_FPS else 0.0)
-            except ValueError:
-                d["stream_fps"] = 0.0
             return d
 
     def latency(self):
@@ -5321,19 +5331,7 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _serve_stream(self):
-        # 可选 ?fps=N：限制这一路流的推流帧率（缺省或 0 = 不限）。
-        # 弱网（手机热点）下让推流帧率贴着链路能力走，多出来的帧直接丢，
-        # 不排进队列 —— 这样延迟不会累积。详见下面丢帧处的说明。
-        fps_cap = 0.0
-        if "?" in self.path:
-            for _kv in self.path.split("?", 1)[1].split("&"):
-                if _kv.startswith("fps="):
-                    try:
-                        fps_cap = max(0.0, float(_kv[4:]))
-                    except ValueError:
-                        fps_cap = 0.0
-
-        # 并发上限: 每个客户端一个线程, 而且卡在 wait_next 里。
+        # 接管并发上限: 每个客户端一个线程, 而且卡在 wait_next 里。
         # 一旦采集侧出问题(比如切完模式 select 超时), 前端看门狗会不断重连,
         # 不限流就会堆成几十个僵尸连接把服务拖死。
         if self.hub._clients >= MAX_STREAM_CLIENTS:
@@ -5398,37 +5396,11 @@ class Handler(BaseHTTPRequestHandler):
 
         self.hub.add_client()
         last = -1
-        _last_send = 0.0
-        # ---- 自适应推流帧率（手机热点/弱网必须）----
-        # 实测：3840x1080@25 的 MJPEG 要 29 Mbps，而这台手机热点给到这块
-        # USB 网卡只有 6~14 Mbps。超发的帧不会报错，而是积在 WiFi 驱动/AP 的
-        # 队列里 —— 实测流里最新帧落后实时帧 113 帧（4.5 秒）；
-        # 把帧率压到链路能承受后（?fps=4）落后变成 0。
-        # 所以这里按"实际写出的吞吐"反推安全帧率，贴着链路发，多余的直接丢。
-        _win_t0 = time.time()
-        _win_bytes = 0
-        _auto_fps = 0.0
-        _frame_sz = 0
-        _UTIL = 0.8               # 只用链路能力的 80%，留点余量给控制包
-        _sent_n = 0               # 本秒实际发出去的帧数（给页面显示用）
-        _sent_t0 = time.time()
         try:
             while True:
                 # 被同 IP 的新连接顶掉 -> 主动退出
                 if _stream_gen(ip) != gen:
                     break
-                if fps_cap <= 0:
-                    _now = time.time()
-                    _span = _now - _win_t0
-                    if _span >= 1.0 and _frame_sz > 0:
-                        _bw = _win_bytes / _span
-                        if _bw > 60 * 1024:       # 低于 60KB/s 的数据不可信
-                            _auto_fps = max(1.0, min(60.0,
-                                                    _bw * _UTIL / _frame_sz))
-                        _win_bytes = 0
-                        _win_t0 = _now
-                    if _auto_fps > 0 and (_now - _last_send) < (1.0 / _auto_fps):
-                        continue              # 直接丢这一帧，去等更新的帧
                 # 超时不能太长: 客户端断开后这里回收不到,
                 # 连接数会一直挂在旧值上
                 jpeg, last = self.hub.wait_next(last, timeout=1.5)
@@ -5441,41 +5413,22 @@ class Handler(BaseHTTPRequestHandler):
                         continue
                 else:
                     _sid = last
-                # ★ ?fps=N：把这路流的推流帧率硬限到 N（覆盖自适应）。
-                #   弱网下多发出去的帧只会堆在 WiFi 驱动/AP 队列里变成延迟。
-                if fps_cap > 0:
-                    _now = time.time()
-                    if (_now - _last_send) < (1.0 / fps_cap):
-                        continue
+                # ★ 2026-11-18 恢复**直推**：hub 里最新一帧直接写出去，
+                #   不做自适应限速、不在服务端挑帧。链路跟不上就调小
+                #   推流分辨率(scale)/质量(quality)，让单帧本身变小。
                 self.wfile.write(b"--" + BOUNDARY.encode() + b"\r\n")
                 self.wfile.write(b"Content-Type: image/jpeg\r\n")
-                # ★ 2026-11-18：把采集帧号一起发出去，用于**客观测量端到端延迟**。
-                #   浏览器会忽略这个头；用 Python 读流、对比 /api/status 的
-                #   frame_id，就能算出"流里最新帧"落后实时帧多少帧 -> 多少毫秒，
-                #   从而区分是服务端缓冲、网络队列，还是浏览器渲染慢。
-                #   （现象：热点下网页显示网络延时只有 200ms，但画面晚了数秒，
-                #     光看指标无法定位，必须有这个帧号。）
+                # X-Frame-Id：诊断用，浏览器忽略；用 Python 读流对比
+                # /api/status 的 frame_id 就能算出真实端到端延迟。
                 self.wfile.write(b"X-Frame-Id: %d\r\n" % _sid)
                 self.wfile.write(b"Content-Length: %d\r\n\r\n" % len(jpeg))
                 self.wfile.write(jpeg)
                 self.wfile.write(b"\r\n")
                 self.wfile.flush()
-                # 写完之后才计时/计字节：write 阻塞的时间就是数据真正进网的时间，
-                # 拿它算吞吐才是链路真实能力（而不是我们自己的发送速度）。
-                _last_send = time.time()
-                _win_bytes += len(jpeg)
-                _frame_sz = len(jpeg)
-                _sent_n += 1
-                _ds = _last_send - _sent_t0
-                if _ds >= 1.0:
-                    STREAM_FPS[ip] = _sent_n / _ds
-                    _sent_n = 0
-                    _sent_t0 = _last_send
         except (BrokenPipeError, ConnectionResetError, OSError):
             pass
         finally:
             _stream_release(ip)
-            STREAM_FPS.pop(ip, None)
             self.hub.del_client()
 
 
