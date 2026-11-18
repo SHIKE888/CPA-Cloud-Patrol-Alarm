@@ -4671,6 +4671,19 @@ class Handler(BaseHTTPRequestHandler):
                 st["device"] = self.args.device
                 st["port"] = self.args.port
                 st["python"] = sys.executable
+                # 推流**实际输出**尺寸（已乘 scale，双目拼接则宽度×2）。
+                # 页面「输出缩放」条旁边直接显示它，免得只看到一个 0.67
+                # 不知道到底是多少像素。
+                try:
+                    _tc = Handler.capture
+                    _p = self.params.get()
+                    _tw, _th = _tc._target_size(_p["scale"])
+                    if int(_p.get("dual") or 0):
+                        _tw *= 2
+                    st["stream_width"] = int(_tw)
+                    st["stream_height"] = int(_th)
+                except Exception:                     # noqa: BLE001
+                    pass
                 st["ai"] = AI_OVERLAY.status() if AI_OVERLAY is not None else None
                 # 四色指示灯：只读状态。输入量由 main 里的 lamp-feed 线程
                 # 每 100ms 把 AI 的人数喂进去，别在这里做（1s 一次太粗）。
