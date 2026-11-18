@@ -2163,13 +2163,19 @@ class OpenCVCapture(threading.Thread):
             if frame is None:
                 continue
             frame = self._process(frame, p)
-            self._put(self._bgr_q, (seq, frame, t_cap, "bgr", src))
+            # ★ 2026-11-18：把**原始 YUV 缓冲**一起带下去。
+            #   推流用的 frame 已经按 scale 缩过（比如 0.67 -> 1286x724），
+            #   而双目深度必须吃原始分辨率：视差是像素差，分辨率减半视差减半，
+            #   远处深度误差直接翻倍 —— 用户实测「深度图也被影响了」。
+            #   scale 只该影响推流，不该拖累深度，所以这里多带一份 raw（只传
+            #   引用不拷贝，队列深度 3，最多多占 ~12MB）。
+            self._put(self._bgr_q, (seq, frame, t_cap, "bgr", src, raw))
 
     def _enc_loop(self):
         """末级: JPEG 编码。多个线程跑同一段代码, 靠 GIL 释放真正并行。"""
         while not self.stop_flag.is_set():
             try:
-                seq, payload, t_cap, kind, src = self._bgr_q.get(timeout=0.5)
+                seq, payload, t_cap, kind, src, raw = self._bgr_q.get(timeout=0.5)
             except queue.Empty:
                 continue
             p = self.params.get()
@@ -2234,7 +2240,7 @@ class OpenCVCapture(threading.Thread):
                                              height=frame.shape[0])
                 elif self._dual_now:
                     # 真双目拼接
-                    got = self._dual_compose(src, frame, t_cap, seq)
+                    got = self._dual_compose(src, frame, t_cap, seq, raw)
                     if got is None:
                         frame = None
                     else:
@@ -2365,7 +2371,7 @@ class OpenCVCapture(threading.Thread):
             return None
         return None
 
-    def _dual_compose(self, src, frame, t_cap, seq):
+    def _dual_compose(self, src, frame, t_cap, seq, raw=None):
         """把当前帧和另一路最近一帧拼成一张。返回 (frame, t_cap, tag) 或 None。
 
         - 两路都新鲜且帧号相邻 -> cv2.hconcat, tag='dual'
@@ -2376,7 +2382,7 @@ class OpenCVCapture(threading.Thread):
         now = time.time()
         with self._dual_lock:
             # ★ 先入槽再判发布: 否则被跳过的那些帧根本进不了配对缓冲
-            self._dual_slot[src] = (frame, t_cap, now, seq)
+            self._dual_slot[src] = (frame, t_cap, now, seq, raw)
 
             # 每一路本身只有 30fps (FPGA 交替出帧), 每到达 2 帧才有一对"全新"的
             # 组合。只在主路(cam0; cam0 掉线时退化成 cam1)到达时发布 → 输出 30fps:
@@ -2411,7 +2417,8 @@ class OpenCVCapture(threading.Thread):
                     _l = self._dual_slot[DUAL_LEFT_SRC]
                     _r = self._dual_slot[DUAL_RIGHT_SRC]
                     # 真配对 -> 顺手喂一份给深度引擎(非阻塞; 没人看时内部直接丢)
-                    self._depth_feed(_l[0], _r[0])
+                    self._depth_feed(_l[0], _r[0], _l[4] if len(_l) > 4 else None,
+                                     _r[4] if len(_r) > 4 else None)
                     return (cv2.hconcat([_l[0], _r[0]]),
                             min(a[1], b[1]), "dual")
 
@@ -2525,16 +2532,39 @@ class OpenCVCapture(threading.Thread):
         out[:dh, x0:x0 + dw] = drawn[:dh, :dw]
         return out
 
-    def _depth_feed(self, left, right):
+    def _depth_feed(self, left, right, left_raw=None, right_raw=None):
         """把一对左右目帧交给深度引擎（非阻塞、不拷贝）。
 
         _dual_compose 已经保证这两帧是同一对、且做过 CAM1_SHIFT_PX 对齐，
         所以这里只管转手。引擎自己判断"有没有人在看"，不需要这里再判。
+
+        ★ 2026-11-18：优先用**原始分辨率**重转一份给深度。
+          传进来的 left/right 是推流帧，已经按 params.scale 缩过（0.67 ->
+          1286x724）。视差是像素差，分辨率减半 => 视差减半 => 深度误差翻倍，
+          远处基本不可用。用户实测「深度图也被影响了」就是这个原因。
+          scale 只该影响推流画质，不该动深度精度。
+          代价：wanted 时每 100ms 才做一次 YUV->BGR（深度本身 ~200ms 一轮，
+          10Hz 喂帧足够），没人看时一次都不做。
         """
         d = self._depth
         if d is None:
             return
         try:
+            now = time.time()
+            if not d.wanted(now):
+                return
+            if left_raw is not None and right_raw is not None:
+                # 有原始缓冲就**只用原始分辨率**喂深度：宁可少喂几帧，
+                # 也绝不混进缩放帧（否则深度会时而按 1920 算、时而按 576 算，
+                # 视差/焦距全乱）。深度本身 ~83ms 一轮，10Hz 喂帧完全够。
+                if now - getattr(self, "_depth_fed_ts", 0.0) < 0.1:
+                    return
+                self._depth_fed_ts = now
+                lf = self._to_bgr(left_raw, None)
+                rf = self._to_bgr(right_raw, None)
+                if lf is None or rf is None:
+                    return
+                left, right = lf, rf
             d.submit(left, right)
         except Exception as e:                                 # noqa: BLE001
             print("[depth] 喂帧异常: %s" % e, file=sys.stderr)
